@@ -1,0 +1,100 @@
+# GLOWMAG 单机 Docker Compose —— 对齐《高可用架构设计-v2》§7.0 方案零
+# 纪律：单机起步 / 入口最小化（仅回环 + Cloudflare 前置）/ 资源上限防互杀 / 每日异地备份 + 季度恢复演练
+# 用法：cp .env.example .env 填好密钥 → 首次部署流程见 deploy.md §2
+name: glowmag
+
+x-glowmag-build: &glowmag-build
+  context: .                        # 构建上下文 = 仓库根（prototype/ 静态站需进镜像）
+  dockerfile: server/Dockerfile
+
+x-glowmag-env: &glowmag-env         # api/worker/migrate 共用运行环境（密钥全部外置 .env，代码零硬编码）
+  GM_DB: mysql+pymysql://glowmag:${GM_MYSQL_PASSWORD:?请在 .env 设置 GM_MYSQL_PASSWORD}@mysql:3306/glowmag?charset=utf8mb4
+  GM_JWT_SECRET: ${GM_JWT_SECRET:?请在 .env 设置 GM_JWT_SECRET}
+  GM_ENV: prod
+      GM_ADMIN_TOKEN_HOURS: ${GM_ADMIN_TOKEN_HOURS:-12}    # 后台会话时效（小时）
+      GM_ALLOWED_ORIGINS: ${GM_ALLOWED_ORIGINS:-}       # CORS 白名单（空=同源不加 CORS）
+  TZ: ${TZ:-UTC}
+
+services:
+  mysql:                            # 数据层：3306 不映射宿主机，仅 glowmag-net 内网可达（§7.0 入口最小化）
+    image: mysql:8.0
+    container_name: glowmag-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${GM_MYSQL_ROOT_PASSWORD:?请在 .env 设置 GM_MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: glowmag       # 官方镜像自动建库 + 建用户并对 glowmag.* 授权（替代 init SQL 手工 GRANT 方案）
+      MYSQL_USER: glowmag
+      MYSQL_PASSWORD: ${GM_MYSQL_PASSWORD}
+      TZ: ${TZ:-UTC}
+    command:
+      - --character-set-server=utf8mb4            # §3.1 库表字符集统一 utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    volumes:
+      - glowmag-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [glowmag-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512m              # §7.0 资源上限纪律：防 mysql OOM 拖死整机；大促可上调 1g（deploy.md §5）
+
+  api:                              # FastAPI 单体（含 prototype 静态站挂载），api/worker/migrate 复用同一镜像
+    build: *glowmag-build
+    container_name: glowmag-api
+    restart: unless-stopped
+    environment:
+      <<: *glowmag-env
+      GM_STRIPE_KEY: ${GM_STRIPE_KEY:-}   # 可选：接入 Stripe 时填入（当前 MVP 支付 Mock）
+    ports:
+      - "127.0.0.1:8000:8000"      # 仅回环！入口交给 Cloudflare/反代（§7.0），绝不直接暴露公网
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [glowmag-net]
+    deploy:
+      resources:
+        limits:
+          memory: 512m              # uvicorn 2 workers 常驻约 200M；扩 workers 时同步上调（deploy.md §5）
+
+  worker:                           # 后台任务：outbox 消费/超时关单/弃购召回/积分过期/每日对账（GET_LOCK 单实例）
+    build: *glowmag-build
+    container_name: glowmag-worker
+    restart: unless-stopped
+    command: python scripts/worker.py --loop --interval 60
+    environment: *glowmag-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      api:
+        condition: service_healthy  # 先保证 API 就绪（迁移/种子已跑）再消费任务
+    networks: [glowmag-net]
+
+  migrate:                          # 一次性迁移服务：docker compose --profile deploy run --rm migrate
+    build: *glowmag-build
+    profiles: ["deploy"]            # 不随 up -d 常驻（§7.0 最小常驻面），发布时手工触发
+    command: alembic upgrade head
+    environment: *glowmag-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+    networks: [glowmag-net]
+
+volumes:
+  glowmag-mysql:
+    name: glowmag-mysql             # 显式命名：备份/恢复文档直接引用
+
+networks:
+  glowmag-net:
+    name: glowmag-net

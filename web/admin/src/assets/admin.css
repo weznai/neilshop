@@ -1,0 +1,86 @@
+/* GLOWMAG 后台共享样式（10 个 admin*.html 公共布局/组件）
+   依赖 assets/style.css 的 Design Tokens，页面引入顺序：style.css → admin.css
+   不重复 style.css 已有的 .btn/.table/.tag/.modal/.toast 等；
+   唯一已知重复：.switch（见下方注释，与 style.css 互为镜像，需两处同步） */
+body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
+.main{font-size:13.5px}
+.main .table{font-size:13px}
+.main .table th{font-size:11px}
+.main .table td{padding:10px 12px}
+.main .panel h3{font-size:14.5px}
+.main .stat .vl{font-size:22px}
+.admin{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+.aside{background:#fff;color:var(--ink);padding:20px 12px;position:sticky;top:0;height:100vh;overflow-y:auto;border-right:1px solid var(--gray-light)}
+.aside .logo{color:var(--plum);font-size:20px;padding:0 12px 18px;display:block}
+.aside .logo span{color:var(--rose)}
+.anav{display:flex;flex-direction:column;gap:2px}
+.anav a{padding:10px 12px;border-radius:8px;font-size:13.5px;color:var(--gray);display:flex;gap:11px;align-items:center}
+.anav a.on,.anav a:hover{background:var(--rose-pale);color:var(--plum)}
+.anav a.on svg,.anav a:hover svg{stroke:var(--plum)}
+.anav .sep{border-top:1px solid var(--gray-light);margin:10px 12px}
+.main{padding:24px 28px;min-width:0}
+.panel{background:#fff;border-radius:12px;box-shadow:var(--shadow-card);padding:20px;margin-bottom:20px}
+.panel h3{font-size:15px;margin-bottom:14px}
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.stat{background:#fff;border-radius:12px;padding:18px;box-shadow:var(--shadow-card)}
+.stat .lb{font-size:12px;color:var(--gray);letter-spacing:.5px}
+.stat .vl{font-size:24px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
+.stat .delta{font-size:12px;font-weight:600;margin-top:2px}
+.delta.up{color:var(--success)}
+.delta.down{color:var(--error)}
+.abadge{background:var(--coral);color:#fff;font-size:10px;font-weight:700;border-radius:8px;padding:1px 6px;margin-left:auto}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+/* 开关：与 assets/style.css 的 .switch 为已知重复（保留两份）——本份在其基础上追加 display:inline-block/vertical-align:middle 行内对齐，其余声明一致；改尺寸/配色需两处同步 */.switch{position:relative;width:42px;height:24px;background:var(--gray-light);border-radius:12px;cursor:pointer;transition:background .2s;flex:none;display:inline-block;vertical-align:middle}
+.switch::after{content:"";position:absolute;width:20px;height:20px;border-radius:50%;background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.switch.on{background:var(--success)}
+.switch.on::after{left:20px}
+.cols{display:grid;grid-template-columns:1.4fr 1fr;gap:20px}
+.mini-bar{display:grid;grid-template-columns:120px 1fr 44px;gap:10px;align-items:center;font-size:13px;padding:6px 0}
+.mini-bar .track{height:8px;background:var(--gray-light);border-radius:4px;overflow:hidden}
+.mini-bar .fill{height:100%;background:var(--plum);border-radius:4px}
+/* 后台响应式：≤900px 侧栏折叠为图标栏 */
+@media(max-width:900px){
+  .admin{grid-template-columns:64px 1fr}
+  .aside .logo span,.anav a span,.aside div[style*="letter-spacing"]{display:none}
+  .anav a{justify-content:center;padding:10px 8px}
+  .stat-grid{grid-template-columns:1fr 1fr}
+  .cols{grid-template-columns:1fr}
+}
+/* 手动折叠（side-min）：与响应式同一形态；桌面端点击切换、localStorage 记忆 */
+.admin.side-min{grid-template-columns:64px 1fr}
+.admin.side-min .aside .logo span,
+.admin.side-min .anav a span,
+.admin.side-min .aside div[style*="letter-spacing"]{display:none}
+.admin.side-min .anav a{justify-content:center;padding:10px 8px}
+.side-toggle{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);width:36px;height:36px;border-radius:10px;background:var(--rose-pale);color:var(--plum);display:flex;align-items:center;justify-content:center;transition:background .2s}
+.side-toggle:hover{background:var(--rose);color:#fff}
+.admin.side-min .side-toggle svg{transform:scaleX(-1)}
+.aside{display:flex;flex-direction:column}
+.aside .anav{flex:1}
+/* 数值列对齐 + 宽表滚动 */
+.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl-wrap{overflow-x:auto}
+.tbl-wrap table{min-width:720px}
+
+/* 登录页独立外壳（勿复用 .admin——那是侧栏+主区两栏 grid） */
+.alogin-page{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--rose-pale);padding:20px}
+
+/* ===== v13 收编：此前多页 <style> 逐字重复的公共组件（页面本地副本已删，选择器并列免改页内 JS） ===== */
+/* 库存语义色（products/product-edit/inventory 三页重复） */
+.stock-low{color:var(--warn);font-weight:700}
+.stock-out{color:var(--error);font-weight:700}
+/* 定时上架标签（product-edit 独立打开时原依赖 products 页定义才生效） */
+.tag-sched{background:#FBF3DC;color:#8A6D1B}
+/* 可排序表头（orders/products 两页重复） */
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:var(--plum)}
+.sort-ind{font-size:10px;color:var(--plum);margin-left:2px}
+/* 顶栏（原 admin/orders 两份 <style> + 其余页 inline 三种写法统一） */
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:10px;flex-wrap:wrap}
+/* pill 形 tab（marketing/content/settings/tickets 四页 .mtab/.ctab/.stab/.ttab 同构） */
+.mtab,.ctab,.stab,.ttab{padding:9px 18px;border-radius:999px;border:1.5px solid var(--gray-light);font-size:13.5px;font-weight:600;color:var(--gray);background:#fff}
+.mtab.on,.ctab.on,.stab.on,.ttab.on{border-color:var(--plum);background:var(--plum);color:#fff}
+/* 下划线 tab（orders/returns 两页 .otab/.rtab 同构） */
+.otab,.rtab{display:flex;gap:4px;border-bottom:1px solid var(--gray-light);margin-bottom:14px}
+.otab button,.rtab button{padding:9px 16px;font-size:13.5px;font-weight:600;color:var(--gray);border-bottom:2.5px solid transparent}
+.otab button.on,.rtab button.on{color:var(--plum);border-color:var(--plum)}

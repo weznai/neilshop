@@ -1,0 +1,212 @@
+"""轻量可观测性：统一 X-Request-Id / 结构化访问日志 / 进程内 Prometheus 文本指标 / 应用级滑动窗限流。"""
+
+import logging
+import math
+import threading
+import time
+import uuid
+from collections import deque
+from contextvars import ContextVar
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
+
+logger = logging.getLogger("glowmag.access")
+logger.setLevel(logging.INFO)
+
+_RID_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._"
+)
+_RID_VAR: ContextVar[str] = ContextVar("glowmag_request_id", default="")
+
+_LOCK = threading.Lock()
+_COUNTERS: dict[tuple[str, str, int], int] = {}
+_SAMPLES: deque[tuple[str, float]] = deque(maxlen=10000)
+
+RATE_WINDOW = 60.0
+RATE_RULES: list[tuple[str, int]] = [
+    ("/api/account/login", 60),
+    ("/api/account/register", 30),
+    ("/api/account/password-reset", 20),
+    ("/api/payments/mock-pay", 120),
+    ("/api/support/tickets", 30),
+]
+_RATE_BUCKETS: dict[tuple[str, str], deque[float]] = {}
+
+
+def get_request_id() -> str:
+    return _RID_VAR.get()
+
+
+def _sanitize_rid(value: str) -> str:
+    return "".join(c for c in value if c in _RID_CHARS)[:32]
+
+
+def path_group(path: str) -> str:
+    if path == "/api/health":
+        return "/api/health"
+    if path in ("/docs", "/redoc", "/openapi.json"):
+        return "openapi"
+    if not path.startswith("/api/"):
+        return "static"
+    segments = [
+        seg if not any(c.isdigit() for c in seg) else "{id}"
+        for seg in path.rstrip("/").split("/")
+    ]
+    return "/".join(segments)
+
+
+def _record(method: str, group: str, status: int, ms: float) -> None:
+    with _LOCK:
+        _COUNTERS[(method, group, status)] = _COUNTERS.get((method, group, status), 0) + 1
+        _SAMPLES.append((group, ms))
+
+
+def get_metrics_snapshot() -> dict:
+    with _LOCK:
+        return {"requests": dict(_COUNTERS), "durations": list(_SAMPLES)}
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    idx = min(len(values) - 1, max(0, math.ceil(q * len(values)) - 1))
+    return values[idx]
+
+
+def render_metrics() -> str:
+    with _LOCK:
+        counters = dict(_COUNTERS)
+        samples = list(_SAMPLES)
+    lines = [
+        "# HELP glowmag_http_requests_total Total HTTP requests",
+        "# TYPE glowmag_http_requests_total counter",
+    ]
+    for method, group, status in sorted(counters):
+        lines.append(
+            'glowmag_http_requests_total{method="%s",path="%s",status="%s"} %d'
+            % (method, group, status, counters[(method, group, status)])
+        )
+    by_path: dict[str, list[float]] = {}
+    for group, ms in samples:
+        by_path.setdefault(group, []).append(ms)
+    lines += [
+        "# HELP glowmag_http_request_duration_ms Request duration",
+        "# TYPE glowmag_http_request_duration_ms summary",
+    ]
+    for group in sorted(by_path):
+        vals = sorted(by_path[group])
+        lines.append(
+            'glowmag_http_request_duration_ms{path="%s",quantile="0.5"} %.1f'
+            % (group, _quantile(vals, 0.5))
+        )
+        lines.append(
+            'glowmag_http_request_duration_ms{path="%s",quantile="0.95"} %.1f'
+            % (group, _quantile(vals, 0.95))
+        )
+        lines.append(
+            'glowmag_http_request_duration_ms_count{path="%s"} %d' % (group, len(vals))
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _check_rate_limit(ip: str, path: str) -> tuple[str | None, int]:
+    for prefix, limit in RATE_RULES:
+        if path.startswith(prefix):
+            now = time.monotonic()
+            key = (ip, prefix)
+            with _LOCK:
+                bucket = _RATE_BUCKETS.setdefault(key, deque())
+                while bucket and bucket[0] <= now - RATE_WINDOW:
+                    bucket.popleft()
+                if len(bucket) >= limit:
+                    return prefix, max(1, math.ceil(bucket[0] + RATE_WINDOW - now))
+                bucket.append(now)
+            return prefix, 0
+    return None, 0
+
+
+def setup(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def observability_middleware(request: Request, call_next):
+        rid = _sanitize_rid(request.headers.get("x-request-id", "")) or uuid.uuid4().hex[:12]
+        token = _RID_VAR.set(rid)
+        method = request.method
+        path = request.url.path
+        ip = request.client.host if request.client else "unknown"
+        start = time.perf_counter()
+        try:
+            prefix, retry = _check_rate_limit(ip, path)
+            if retry:
+                logger.warning(
+                    "rid=%s rate_limited ip=%s path=%s rule=%s retry_after=%s",
+                    rid, ip, path, prefix, retry,
+                )
+                response = JSONResponse(
+                    {"detail": "rate_limited", "retry_after": retry},
+                    status_code=429,
+                    headers={"Retry-After": str(retry)},
+                )
+            else:
+                try:
+                    response = await call_next(request)
+                except Exception:
+                    ms = (time.perf_counter() - start) * 1000
+                    if path != "/metrics":
+                        _record(method, path_group(path), 500, ms)
+                    logger.info(
+                        "rid=%s method=%s path=%s status=500 ms=%s",
+                        rid, method, path, int(ms),
+                    )
+                    raise
+            ms = (time.perf_counter() - start) * 1000
+            if path != "/metrics":
+                _record(method, path_group(path), response.status_code, ms)
+            logger.info(
+                "rid=%s method=%s path=%s status=%s ms=%s",
+                rid, method, path, response.status_code, int(ms),
+            )
+            response.headers["X-Request-Id"] = rid
+            _apply_security_headers(path, method, response)
+            return response
+        finally:
+            _RID_VAR.reset(token)
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics_endpoint():
+        return Response(
+            content=render_metrics(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
+
+SECURITY_HEADERS: list[tuple[str, str]] = [
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ("Permissions-Policy", "camera=(), microphone=(), geolocation=()"),
+    (
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' https: data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https:; "
+        "connect-src 'self' https:; font-src 'self' https: data:",
+    ),
+]
+
+_CACHEABLE_EXT = {
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+    ".ico", ".woff", ".woff2", ".ttf", ".otf", ".map",
+}
+
+
+def _apply_security_headers(path: str, method: str, response: Response) -> None:
+    for name, value in SECURITY_HEADERS:
+        if name not in response.headers:
+            response.headers[name] = value
+    if not path.startswith("/api/") and method in ("GET", "HEAD") \
+            and "Cache-Control" not in response.headers:
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+        if "." + ext in _CACHEABLE_EXT:
+            response.headers["Cache-Control"] = "public, max-age=604800"
+        else:
+            response.headers["Cache-Control"] = "no-cache"

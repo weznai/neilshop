@@ -1,0 +1,194 @@
+"""运营域服务 —— 看板聚合编排 / 会员管理与风控 / 审计日志"""
+
+from datetime import datetime, timedelta, timezone
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from app.core.db import utcnow
+from app.models import AdminLog, User
+from app.domains.ops import repository as repo
+from app.domains.ops.schemas import REASON_TEXT, RiskIn
+
+
+def log_admin(db: Session, admin: User, action: str, entity: str, entity_id: int, diff: dict | None = None):
+    db.add(AdminLog(
+        admin_id=admin.id,
+        action=action,
+        entity=entity,
+        entity_id=int(entity_id or 0),
+        diff_json=diff,
+    ))
+
+
+def _naive_utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+# ===== 看板 =====
+
+
+def dashboard(db: Session) -> dict:
+    now = utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def _win(start):
+        orders = repo.orders_placed_since(db, start)
+        gmv = repo.paid_gmv_since(db, start)
+        return {"gmv_cents": int(gmv), "orders": int(orders)}
+
+    views = repo.newsletter_count(db) + repo.cookie_consent_count(db)
+    add_to_cart = repo.carts_with_items_count(db)
+    orders_today = repo.orders_placed_since(db, today_start)
+    paid_today = repo.paid_orders_since(db, today_start)
+    cutoff = _naive_utcnow() - timedelta(hours=24)
+    abandoned = repo.abandoned_carts_count(db, cutoff)
+    pending_orders = repo.pending_orders_count(db)
+    low_stock = repo.low_stock_count(db)
+    pending_reviews = repo.pending_reviews_count(db)
+    open_tickets = repo.open_tickets_count(db)
+    top = repo.top_products(db, 5)
+    daily: list = []
+    try:
+        d_start = (now - timedelta(days=13)).replace(hour=0, minute=0, second=0, microsecond=0)
+        rows = repo.daily_paid_rows(db, d_start)
+        by_day = {str(r[0]): (int(r[1] or 0), int(r[2] or 0)) for r in rows}
+        for i in range(14):
+            day = (d_start + timedelta(days=i)).date()
+            gmv, cnt = by_day.get(str(day), (0, 0))
+            daily.append({"date": day.strftime("%m-%d"), "gmv_cents": gmv, "orders": cnt})
+    except Exception:
+        daily = []
+    reconcile = None
+    try:
+        rec = repo.latest_reconciliation(db)
+        if rec:
+            reconcile = {
+                "reconcile_date": rec.reconcile_date,
+                "diff_payment": rec.diff_payment,
+                "diff_points": rec.diff_points,
+                "status": rec.status,
+            }
+    except Exception:
+        reconcile = None
+    low_stock_top: list = []
+    try:
+        lows = repo.low_stock_top_rows(db, 5)
+        low_stock_top = [{"sku": r[0], "title": r[1], "stock": r[2]} for r in lows]
+    except Exception:
+        low_stock_top = []
+    return {
+        "today": _win(today_start),
+        "last7": _win(now - timedelta(days=7)),
+        "last30": _win(now - timedelta(days=30)),
+        "funnel": {
+            "views": int(views),
+            "add_to_cart": add_to_cart,
+            "orders": int(orders_today),
+            "paid": int(paid_today),
+            "approximate": True,
+        },
+        "pending_orders": int(pending_orders),
+        "low_stock": int(low_stock),
+        "pending_reviews": int(pending_reviews),
+        "open_tickets": int(open_tickets),
+        "abandoned_carts": abandoned,
+        "top_products": [
+            {"id": p.id, "slug": p.slug, "title": p.title, "sold_count": p.sold_count}
+            for p in top
+        ],
+        "daily": daily,
+        "reconcile": reconcile,
+        "low_stock_top": low_stock_top,
+    }
+
+
+# ===== 会员管理 =====
+
+
+def list_members(db: Session, q: str | None, tier: int | None, page: int, size: int) -> dict:
+    query = repo.members_query(db, q, tier)
+    rows, total = repo.page(query, page, size)
+    return {
+        "items": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "name": u.name,
+                "tier": u.tier,
+                "points": u.points,
+                "total_spent": u.total_spent,
+                "last_order_at": u.last_order_at,
+                "risk_flag": u.risk_flag,
+            }
+            for u in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
+
+
+def member_detail(db: Session, user_id: int) -> dict:
+    u = repo.member_by_id(db, user_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="member not found")
+    ledger = repo.member_ledger_recent(db, u.id, 10)
+    return {
+        "id": u.id,
+        "email": u.email,
+        "name": u.name,
+        "tier": u.tier,
+        "points": u.points,
+        "total_spent": u.total_spent,
+        "last_order_at": u.last_order_at,
+        "risk_flag": u.risk_flag,
+        "created_at": u.created_at,
+        "ledger": [
+            {
+                "id": r.id,
+                "change": r.change,
+                "balance_after": r.balance_after,
+                "reason": REASON_TEXT.get(r.reason, str(r.reason)),
+                "frozen": r.frozen,
+                "created_at": r.created_at,
+            }
+            for r in ledger
+        ],
+    }
+
+
+def member_risk(db: Session, admin: User, user_id: int, body: RiskIn) -> dict:
+    u = repo.member_by_id(db, user_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="member not found")
+    u.risk_flag = body.flag
+    log_admin(db, admin, "risk", "member", u.id, {"risk_flag": body.flag})
+    db.commit()
+    db.refresh(u)
+    return {"id": u.id, "risk_flag": u.risk_flag}
+
+
+# ===== 审计日志 =====
+
+
+def admin_logs(db: Session, entity: str | None, page: int, size: int) -> dict:
+    q = repo.admin_logs_query(db, entity)
+    rows, total = repo.page(q, page, size)
+    return {
+        "items": [
+            {
+                "id": a.id,
+                "admin_id": a.admin_id,
+                "action": a.action,
+                "entity": a.entity,
+                "entity_id": a.entity_id,
+                "diff_json": a.diff_json,
+                "created_at": a.created_at,
+            }
+            for a in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+    }

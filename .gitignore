@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node / Vite（workspace：依赖提升至根；构建产物统一 web/dist）
+node_modules/
+web/dist/
+
+# 运行时产物（测试临时库/日志/进程号）
+server/test_*.sqlite*
+server/tests/test_*.sqlite*
+test_*.sqlite*
+server/smoke_*.log
+*.pid
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
+
+# 本地环境与密钥
+.env
+server/.env

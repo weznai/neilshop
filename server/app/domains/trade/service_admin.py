@@ -1,0 +1,459 @@
+"""后台交易/履约服务 —— 订单列表详情/发货/送达/退款、RMA 队列推进、库存调整与流水。
+退款公共路径 apply_refund（admin 全额/部分、RMA 退款、webhook charge.refunded 共用）。"""
+
+import uuid
+from typing import Optional
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from app.core.db import utcnow
+from app.domains.trade import repository as repo
+from app.domains.trade.schemas import (
+    RefundRequest, ShipRequest, ShippingRateIn, ShippingRateUpdateIn,
+    StockAdjustRequest,
+)
+from app.models import Order, Rma, Shipment, ShippingRate, User
+from app.services import points as points_svc
+
+PER_PAGE_ORDERS = 10
+PER_PAGE_MOVEMENTS = 20
+
+
+def _timeline(
+    db: Session, order_id: int, event: str,
+    actor: str = "admin", detail: dict | None = None,
+) -> None:
+    repo.add_timeline(db, order_id, event, actor=actor, detail=detail)
+
+
+def _admin_log(
+    db: Session, admin: User, action: str, entity: str, entity_id: int,
+    diff: dict | None = None,
+) -> None:
+    repo.add_admin_log(
+        db, admin_id=admin.id, action=action, entity=entity,
+        entity_id=entity_id, diff_json=diff or {},
+    )
+
+
+def _get_order(db: Session, order_no: str) -> Order:
+    order = repo.order_by_no(db, order_no.strip().upper())
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    return order
+
+
+def _get_rma(db: Session, rma_no: str) -> Rma:
+    rma = repo.rma_by_no(db, rma_no.strip().upper())
+    if not rma:
+        raise HTTPException(status_code=404, detail="rma_not_found")
+    return rma
+
+
+def _restock_items(db: Session, order: Order, *, ref_type: str) -> None:
+    items = repo.order_items(db, order.id)
+    eligible = [i for i in items if i.qty - i.refunded_qty > 0]
+    for item in eligible:
+        repo.release_stock(db, item.variant_id, item.qty - item.refunded_qty)
+    stocks: dict[int, int] = {}
+    if eligible:
+        vids = list({i.variant_id for i in eligible})
+        stocks = repo.variant_stock_map(db, vids)
+    for item in eligible:
+        repo.add_stock_movement(
+            db, variant_id=item.variant_id, change=item.qty - item.refunded_qty,
+            stock_after=stocks[item.variant_id],
+            type=5, ref_type=ref_type, ref_id=order.id,
+        )
+
+
+def apply_refund(
+    db: Session,
+    order: Order,
+    amount: Optional[int],
+    *,
+    reason: str,
+    actor: str,
+    admin: Optional[User] = None,
+) -> dict:
+    """退款公共路径（admin 全额/部分、RMA 退款、webhook charge.refunded 共用；调用方 commit）"""
+    payment = repo.refundable_payment_of_order(db, order.id)
+    if not payment:
+        raise HTTPException(status_code=409, detail="no_refundable_payment")
+    remaining = payment.amount - payment.refunded_amount
+    if remaining <= 0:
+        raise HTTPException(status_code=409, detail="already_fully_refunded")
+    refund_amount = int(amount) if amount is not None else remaining
+    if refund_amount <= 0 or refund_amount > remaining:
+        raise HTTPException(status_code=409, detail=f"invalid_refund_amount:{remaining}")
+    full = refund_amount == remaining
+
+    payment.refunded_amount += refund_amount
+    payment.status = 3 if full else 4
+
+    if full:
+        _restock_items(db, order, ref_type="order")
+        order.status = 9
+        points_svc.refund_void(db, order)
+        if order.giftcard_discount > 0:
+            ledger_rows = repo.giftcard_debit_ledgers(db, order.id)
+            for row in ledger_rows:
+                gc = repo.get_gift_card(db, row.gift_card_id)
+                if not gc:
+                    continue
+                gc.balance += row.amount
+                if gc.status == 3 and gc.balance > 0:
+                    gc.status = 1
+                repo.add_giftcard_ledger(
+                    db, gift_card_id=gc.id, order_id=order.id, change_type=5,
+                    amount=row.amount, balance_after=gc.balance,
+                )
+        repo.add_outbox_event(
+            db, aggregate_type="order", aggregate_id=order.id,
+            event_type="order.refunded",
+            payload={
+                "order_no": order.order_no, "amount": refund_amount,
+                "full": True, "reason": reason,
+            },
+        )
+
+    _timeline(db, order.id, "refund_issued", actor=actor, detail={
+        "amount": refund_amount, "reason": reason, "full": full,
+    })
+    if admin:
+        _admin_log(db, admin, "refund", "order", order.id, {
+            "amount": refund_amount, "reason": reason, "full": full,
+        })
+    return {"amount": refund_amount, "full": full, "payment_status": payment.status}
+
+
+def list_orders(
+    db: Session, status: Optional[int], q: Optional[str], page: int,
+) -> dict:
+    orders, total = repo.paginate_orders(
+        db, status=status, q=q, page=page, per_page=PER_PAGE_ORDERS,
+    )
+    return {
+        "items": [{
+            "order_no": o.order_no, "email": o.email, "status": o.status,
+            "grand_total": o.grand_total, "shipping_status": o.shipping_status,
+            "placed_at": o.placed_at.isoformat() if o.placed_at else None,
+            "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+        } for o in orders],
+        "page": page, "per_page": PER_PAGE_ORDERS, "total": total,
+        "pages": (total + PER_PAGE_ORDERS - 1) // PER_PAGE_ORDERS,
+    }
+
+
+def order_detail(db: Session, order_no: str) -> dict:
+    order = _get_order(db, order_no)
+    items = repo.order_items(db, order.id)
+    payments = repo.order_payments(db, order.id)
+    shipments = repo.order_shipments(db, order.id)
+    timeline = repo.order_timeline_desc(db, order.id)
+    redemptions = repo.order_redemptions(db, order.id)
+    return {
+        "order_no": order.order_no,
+        "email": order.email,
+        "user_id": order.user_id,
+        "status": order.status,
+        "shipping_status": order.shipping_status,
+        "subtotal": order.subtotal,
+        "discount_total": order.discount_total,
+        "points_discount": order.points_discount,
+        "points_used": order.points_used,
+        "points_earned": order.points_earned,
+        "giftcard_discount": order.giftcard_discount,
+        "shipping_fee": order.shipping_fee,
+        "tax": order.tax,
+        "grand_total": order.grand_total,
+        "shipping_address": order.shipping_address,
+        "tracking_no": order.tracking_no,
+        "placed_at": order.placed_at.isoformat() if order.placed_at else None,
+        "paid_at": order.paid_at.isoformat() if order.paid_at else None,
+        "shipped_at": order.shipped_at.isoformat() if order.shipped_at else None,
+        "delivered_at": order.delivered_at.isoformat() if order.delivered_at else None,
+        "items": [{
+            "id": i.id, "variant_id": i.variant_id, "title": i.title_snapshot,
+            "qty": i.qty, "unit_price": i.unit_price, "subtotal": i.subtotal,
+            "refunded_qty": i.refunded_qty,
+        } for i in items],
+        "payments": [{
+            "id": p.id, "status": p.status, "amount": p.amount,
+            "refunded_amount": p.refunded_amount,
+            "payment_intent": p.stripe_payment_intent,
+        } for p in payments],
+        "shipments": [{
+            "shipment_no": s.shipment_no, "carrier": s.carrier,
+            "tracking_no": s.tracking_no, "status": s.status,
+            "shipped_at": s.shipped_at.isoformat() if s.shipped_at else None,
+            "delivered_at": s.delivered_at.isoformat() if s.delivered_at else None,
+        } for s in shipments],
+        "timeline": [{
+            "event": t.event, "actor": t.actor, "detail": t.detail,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+        } for t in timeline],
+        "redemptions": [{
+            "code_id": r.code_id, "discount_amount": r.discount_amount, "email": r.email,
+        } for r in redemptions],
+    }
+
+
+def ship_order(db: Session, admin: User, order_no: str, body: ShipRequest) -> dict:
+    order = _get_order(db, order_no)
+    if order.status not in (1, 2):
+        raise HTTPException(status_code=409, detail=f"not_shippable:{order.status}")
+    items = repo.order_items(db, order.id)
+    now = utcnow()
+    shipment = Shipment(
+        shipment_no="SP" + now.strftime("%y%m%d") + uuid.uuid4().hex[:4].upper(),
+        order_id=order.id,
+        carrier=body.carrier,
+        tracking_no=body.tracking_no,
+        status=3,
+        item_json=[{"order_item_id": i.id, "qty": i.qty} for i in items],
+        shipped_at=now,
+    )
+    db.add(shipment)
+    prev_status = order.status
+    order.status = 3
+    order.shipped_at = now
+    order.shipping_status = 2
+    order.tracking_no = body.tracking_no
+    _timeline(db, order.id, "shipment_created", actor="admin", detail={
+        "shipment_no": shipment.shipment_no, "carrier": body.carrier,
+        "tracking_no": body.tracking_no,
+    })
+    _timeline(db, order.id, "status_changed", actor="admin", detail={"from": prev_status, "to": 3})
+    _admin_log(db, admin, "ship", "order", order.id, {
+        "shipment_no": shipment.shipment_no, "carrier": body.carrier, "tracking_no": body.tracking_no,
+    })
+    db.commit()
+    return {"shipment_no": shipment.shipment_no, "order_status": order.status}
+
+
+def mark_delivered(db: Session, admin: User, order_no: str) -> dict:
+    order = _get_order(db, order_no)
+    if order.status != 3:
+        raise HTTPException(status_code=409, detail=f"not_in_transit:{order.status}")
+    now = utcnow()
+    order.status = 4
+    order.delivered_at = now
+    shipments = repo.order_shipments(db, order.id)
+    for s in shipments:
+        if s.status == 3:
+            s.status = 4
+            s.delivered_at = now
+    _timeline(db, order.id, "status_changed", actor="admin", detail={"from": 3, "to": 4})
+    _admin_log(db, admin, "mark_delivered", "order", order.id, {})
+    db.commit()
+    return {"order_no": order.order_no, "order_status": order.status}
+
+
+def refund_order(
+    db: Session, admin: User, order_no: str, body: RefundRequest | None,
+) -> dict:
+    order = _get_order(db, order_no)
+    amount = body.amount_cents if body else None
+    reason = (body.reason if body else None) or "admin_refund"
+    result = apply_refund(db, order, amount, reason=reason, actor="admin", admin=admin)
+    db.commit()
+    return {"order_no": order.order_no, "order_status": order.status, **result}
+
+
+def list_rmas(db: Session, status: Optional[int]) -> dict:
+    rows = repo.list_rmas(db, status)
+    return {"items": [{
+        "rma_no": rma.rma_no,
+        "order_no": order.order_no,
+        "email": order.email,
+        "status": rma.status,
+        "qty": rma.qty,
+        "reason": rma.reason,
+        "item_title": item.title_snapshot,
+        "unit_price": item.unit_price,
+        "refund_amount": rma.refund_amount,
+        "created_at": rma.created_at.isoformat() if rma.created_at else None,
+    } for rma, item, order in rows]}
+
+
+def approve_rma(db: Session, admin: User, rma_no: str) -> dict:
+    rma = _get_rma(db, rma_no)
+    if rma.status != 0:
+        raise HTTPException(status_code=409, detail=f"rma_not_approvable:{rma.status}")
+    rma.status = 2
+    rma.label_url = f"https://mock.glowmag.com/label/{rma.rma_no}.pdf"
+    rma.handled_by = admin.id
+    _timeline(db, rma.order_id, "rma_label_sent", actor="admin", detail={"rma_no": rma.rma_no})
+    _admin_log(db, admin, "rma_approve", "return", rma.id, {"rma_no": rma.rma_no, "to": 2})
+    db.commit()
+    return {"rma_no": rma.rma_no, "status": rma.status, "label_url": rma.label_url}
+
+
+def receive_rma(db: Session, admin: User, rma_no: str) -> dict:
+    rma = _get_rma(db, rma_no)
+    if rma.status not in (1, 2, 3):
+        raise HTTPException(status_code=409, detail=f"rma_not_receivable:{rma.status}")
+    item = repo.get_order_item(db, rma.order_item_id)
+    repo.release_stock(db, item.variant_id, rma.qty)
+    repo.add_stock_movement(
+        db, variant_id=item.variant_id, change=rma.qty,
+        stock_after=repo.stock_of(db, item.variant_id),
+        type=5, ref_type="rma", ref_id=rma.order_id,
+    )
+    rma.status = 4
+    rma.restock_qty = rma.qty
+    rma.received_at = utcnow()
+    rma.handled_by = admin.id
+    _timeline(db, rma.order_id, "rma_received", actor="admin", detail={"rma_no": rma.rma_no, "restock_qty": rma.qty})
+    _admin_log(db, admin, "rma_receive", "return", rma.id, {"rma_no": rma.rma_no, "restock_qty": rma.qty})
+    db.commit()
+    return {"rma_no": rma.rma_no, "status": rma.status, "restock_qty": rma.restock_qty}
+
+
+def refund_rma(db: Session, admin: User, rma_no: str) -> dict:
+    rma = _get_rma(db, rma_no)
+    if rma.status != 4:
+        raise HTTPException(status_code=409, detail=f"rma_not_refundable:{rma.status}")
+    order = repo.get_order(db, rma.order_id)
+    item = repo.get_order_item(db, rma.order_item_id)
+    # 按订单实付比例折算（含税/运费/折扣分摊），单件全退时恰为 grand_total，订单可达 REFUNDED
+    base = rma.qty * item.unit_price
+    if order.subtotal > 0:
+        amount = int(base * order.grand_total / order.subtotal + 0.5)
+    else:
+        amount = base
+    refund_shipping = 499 if rma.reason in (2, 4, 5) else 0
+    amount = min(amount + refund_shipping, order.grand_total)
+
+    item.refunded_qty += rma.qty
+    result = apply_refund(
+        db, order, amount, reason=f"rma:{rma.rma_no}", actor="admin", admin=admin,
+    )
+    rma.status = 5
+    rma.refund_amount = amount
+    rma.refund_shipping = refund_shipping
+    rma.refunded_at = utcnow()
+    rma.handled_by = admin.id
+    _admin_log(db, admin, "rma_refund", "return", rma.id, {
+        "rma_no": rma.rma_no, "amount": amount, "refund_shipping": refund_shipping,
+    })
+    db.commit()
+    return {
+        "rma_no": rma.rma_no, "status": rma.status, "refund_amount": amount,
+        "refund_shipping": refund_shipping, **result,
+    }
+
+
+def adjust_stock(db: Session, admin: User, body: StockAdjustRequest) -> dict:
+    variant = repo.get_variant(db, body.variant_id)
+    if not variant:
+        raise HTTPException(status_code=404, detail="variant_not_found")
+    if body.change == 0:
+        raise HTTPException(status_code=400, detail="zero_change")
+    result = repo.adjust_stock_locked(db, body.variant_id, body.change, variant.version)
+    if result == 0:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="stock_adjust_conflict")
+    stock_after = repo.stock_of(db, body.variant_id)
+    repo.add_stock_movement(
+        db, variant_id=body.variant_id, change=body.change,
+        stock_after=stock_after, type=7, ref_type="manual", operator=admin.email,
+    )
+    _admin_log(db, admin, "stock_adjust", "product", body.variant_id, {
+        "change": body.change, "reason": body.reason, "stock_after": stock_after,
+    })
+    db.commit()
+    return {"variant_id": body.variant_id, "change": body.change, "stock": stock_after}
+
+
+def stock_movements(
+    db: Session, variant_id: Optional[int], page: int,
+) -> dict:
+    rows, total = repo.paginate_stock_movements(
+        db, variant_id=variant_id, page=page, per_page=PER_PAGE_MOVEMENTS,
+    )
+    return {
+        "items": [{
+            "id": m.id, "variant_id": m.variant_id, "change": m.change,
+            "stock_after": m.stock_after, "type": m.type,
+            "ref_type": m.ref_type, "ref_id": m.ref_id, "operator": m.operator,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        } for m in rows],
+        "page": page, "per_page": PER_PAGE_MOVEMENTS, "total": total,
+        "pages": (total + PER_PAGE_MOVEMENTS - 1) // PER_PAGE_MOVEMENTS,
+    }
+
+
+def low_stock(db: Session, threshold: int) -> dict:
+    rows = repo.low_stock_variants(db, threshold)
+    return {"threshold": threshold, "items": [{
+        "variant_id": v.id, "sku": v.sku, "product_title": p.title,
+        "stock": v.stock, "safety_stock": v.safety_stock,
+    } for v, p in rows]}
+
+
+# ---------- 运费模板管理（ShippingRate 激活，pricing 实时读取） ----------
+
+def _rate_out(r: ShippingRate) -> dict:
+    return {
+        "id": r.id, "dest_country": r.dest_country, "carrier": r.carrier,
+        "method": r.method, "price": int(r.price), "free_over": r.free_over,
+        "eta_min_days": r.eta_min_days, "eta_max_days": r.eta_max_days,
+        "max_weight_g": r.max_weight_g, "active": bool(r.active),
+    }
+
+
+def list_shipping_rates(db: Session) -> dict:
+    rows = (
+        db.query(ShippingRate)
+        .order_by(ShippingRate.dest_country.asc(), ShippingRate.method.asc(), ShippingRate.id.asc())
+        .all()
+    )
+    return {"items": [_rate_out(r) for r in rows]}
+
+
+def create_shipping_rate(db: Session, admin: User, body: ShippingRateIn) -> dict:
+    r = ShippingRate(
+        dest_country=body.dest_country.strip().upper(),
+        carrier=body.carrier.strip().lower(),
+        method=body.method,
+        max_weight_g=body.max_weight_g,
+        price=body.price,
+        free_over=body.free_over,
+        eta_min_days=body.eta_min_days,
+        eta_max_days=body.eta_max_days,
+        active=1,
+    )
+    if r.eta_max_days < r.eta_min_days:
+        raise HTTPException(status_code=422, detail="eta_max_below_min")
+    db.add(r)
+    db.flush()
+    _admin_log(db, admin, "create", "shipping_rate", r.id, {"price": r.price, "method": r.method})
+    db.commit()
+    db.refresh(r)
+    return _rate_out(r)
+
+
+def update_shipping_rate(
+    db: Session, admin: User, rate_id: int, body: ShippingRateUpdateIn,
+) -> dict:
+    r = db.get(ShippingRate, rate_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="shipping_rate_not_found")
+    diff: dict = {}
+    for field, new in body.model_dump(exclude_unset=True).items():
+        if field == "active":
+            new = int(new)
+        old = getattr(r, field)
+        if old != new:
+            setattr(r, field, new)
+            diff[field] = {"before": old, "after": new}
+    if r.eta_max_days < r.eta_min_days:
+        raise HTTPException(status_code=422, detail="eta_max_below_min")
+    if diff:
+        _admin_log(db, admin, "update", "shipping_rate", r.id, diff)
+        db.commit()
+        db.refresh(r)
+    return _rate_out(r)

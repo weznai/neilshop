@@ -1,0 +1,14 @@
+{
+  "name": "glowmag-web",
+  "private": true,
+  "version": "0.3.0",
+  "workspaces": [
+    "web/client",
+    "web/admin"
+  ],
+  "scripts": {
+    "build": "npm run build -w web/client && npm run build -w web/admin",
+    "dev:client": "npm run dev -w web/client",
+    "dev:admin": "npm run dev -w web/admin"
+  }
+}
