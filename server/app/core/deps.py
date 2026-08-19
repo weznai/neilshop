@@ -41,12 +41,24 @@ def get_current_user_optional(
     if authorization and authorization.startswith("Bearer "):
         return _user_from_token(db, authorization[7:])
     if settings.cookie_auth:
-        for cookie_val in (gm_token, gm_admin_token):
+        # 管理会话优先：前后台双 Cookie 并存时（运营先逛前台再登后台），
+        # admin 身份是前台身份的超集，优先解析避免后台守卫误判为普通会员
+        for cookie_val in (gm_admin_token, gm_token):
             if cookie_val:
                 user = _user_from_token(db, cookie_val)
                 if user:
                     return user
     return None
+
+
+def get_admin_session_user(
+    gm_admin_token: Optional[str] = Cookie(None),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """后台专用会话解析：严格只认 gm_admin_token（与前台会话完全隔离）。"""
+    if not settings.cookie_auth or not gm_admin_token:
+        return None
+    return _user_from_token(db, gm_admin_token)
 
 
 def set_auth_cookie(response: Response, token: str, admin: bool = False) -> None:

@@ -110,16 +110,18 @@ class SPAStaticFiles(StaticFiles):
     /admin* → admin/index.html，其余 → /index.html；/api/* 一律不回落（保 API 404 JSON 语义）。"""
 
     async def get_response(self, path: str, scope):
+        # Starlette get_path() 经 os.path.normpath：Windows 下分隔符为 "\"，统一归一后再做前缀判断
+        p = path.replace("\\", "/").lstrip("/")
         try:
             response = await super().get_response(path, scope)
             if response.status_code != 404:
                 return response
         except StarletteHTTPException as exc:
-            if exc.status_code != 404 or path.startswith("api"):
+            if exc.status_code != 404 or p.startswith("api"):
                 raise
-        if path.startswith("api"):
+        if p.startswith("api"):
             raise StarletteHTTPException(status_code=404)
-        index = "admin/index.html" if path == "admin" or path.startswith("admin/") else "index.html"
+        index = "admin/index.html" if p == "admin" or p.startswith("admin/") else "index.html"
         return await super().get_response(index, scope)
 
 

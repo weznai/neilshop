@@ -25,9 +25,9 @@ export const useSessionStore = defineStore('session', {
       this._cache(null)
       try { await req('POST', '/api/account/admin/logout') } catch (_) { /* 幂等 */ }
     },
-    /* 路由守卫 & 页面校验：会话无效时清缓存抛错 */
+    /* 路由守卫 & 页面校验：走后台专用端点（严格只认 gm_admin_token，与前台会话隔离） */
     async verify() {
-      const u = await req('GET', '/api/account/me')
+      const u = await req('GET', '/api/account/admin/me')
       this._cache(u)
       return u
     },

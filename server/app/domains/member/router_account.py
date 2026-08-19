@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import (
-    clear_auth_cookie, get_current_user, get_current_user_optional, set_auth_cookie,
+    clear_auth_cookie, get_admin_session_user, get_current_user,
+    get_current_user_optional, set_auth_cookie,
 )
 from app.models import User
 
@@ -51,6 +52,12 @@ def admin_login(body: LoginIn, response: Response, db: Session = Depends(get_db)
     data = service_account.login(db, body, admin=True)
     set_auth_cookie(response, data["token"], admin=True)
     return data
+
+
+@router.get("/admin/me")
+def admin_me(user: User = Depends(get_admin_session_user)):
+    """后台会话探测：严格只认 gm_admin_token（与前台 gm_token 隔离，双 Cookie 并存不串台）。"""
+    return service_account.profile(user)
 
 
 @router.post("/admin/logout")

@@ -1,13 +1,15 @@
 <script setup>
-/* 后台外壳：侧栏（admin.css anav）+ 顶栏 + toast 宿主 + 守卫 */
+/* 后台外壳：侧栏（admin.css anav）+ 顶栏 + 守卫（toast 走全局 composable） */
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
+import { toast } from '../composables/toast'
 
 const session = useSessionStore()
 const route = useRoute()
 const router = useRouter()
 const guard = ref(true)
+const guardErr = ref('')
 const collapsed = ref(localStorage.getItem('gm_side_min') === '1')
 
 const P = {
@@ -42,7 +44,7 @@ const ITEMS = [
 
 const toasts = ref([])
 let seq = 0
-function toast(msg, type = '') {
+function toastLocal(msg, type = '') {
   const id = ++seq
   toasts.value.push({ id, msg, type })
   setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id) }, 2400)
@@ -61,11 +63,14 @@ async function logout() {
 onMounted(async () => {
   try {
     const u = await session.verify()
-    if ((u.role | 0) < 2) throw new Error('forbidden')
+    if ((u.role | 0) < 2) throw new Error('该账号无后台权限（role=' + (u.role | 0) + '）')
     guard.value = false
-  } catch (_) {
+  } catch (e) {
+    console.error('[admin] 会话校验失败：', e)
+    guardErr.value = (e && e.status ? 'HTTP ' + e.status + ' · ' : '') + (e.message || '会话无效')
     session._cache(null)
-    router.push('/login')
+    /* 停 1.2s 让用户看到失败原因，再回登录页 */
+    setTimeout(() => router.push('/login'), 1200)
   }
 })
 </script>

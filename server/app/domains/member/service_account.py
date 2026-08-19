@@ -35,6 +35,7 @@ def _user_out(u: User) -> dict:
         "id": u.id,
         "email": u.email,
         "name": u.name,
+        "role": u.role,  # 前端会话判定（后台守卫需 role≥2；role 本身非敏感）
         "points": u.points,
         "tier": u.tier,
         "total_spent": u.total_spent,
