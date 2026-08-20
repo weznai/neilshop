@@ -83,10 +83,12 @@ def reject_review(review_id: int, body: ReasonIn, admin: User = Depends(require_
 @router.get("/api/admin/ops/ugc")
 def admin_ugc(
     status: int | None = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.admin_ugc(db, status)
+    return service.admin_ugc(db, status, page, size)
 
 
 @router.post("/api/admin/ops/ugc/{ugc_id}/approve")

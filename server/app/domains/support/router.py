@@ -13,8 +13,12 @@ router = APIRouter(prefix="/api/support", tags=["support"])
 
 
 @router.post("/tickets")
-def create_ticket(body: TicketCreateIn, db: Session = Depends(get_db)):
-    return service.create_ticket(db, body)
+def create_ticket(
+    body: TicketCreateIn,
+    user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    return service.create_ticket(db, body, user)
 
 
 @router.get("/tickets")

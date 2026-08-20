@@ -3,6 +3,80 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.4] · SEO 基建 + AI 域加固 + 无障碍与数据真实感
+
+### Added（SEO 基建）
+- **前端 SEO 注入**（`web/client/src/composables/seo.js`）：三层接入——路由级兜底（router.afterEach，title/description 查路由表）/ 页面级动态数据（`gm:seo` CustomEvent）/ 直调 `setSeo`；title、description、OG、Twitter card、canonical、JSON-LD 全量注入，路由切换整体重置防上页残留；首页附 Organization + WebSite（SearchAction）结构化数据；SSR/node 安全（document/location 判空）。
+- **PDP/文章动态 SEO**：商品页 Product JSON-LD（price/availability/aggregateRating）与文章页 Article JSON-LD（headline/cover/datePublished）在数据就绪后覆盖路由兜底（失败不影响页面）；详情页 canonical 保留 `?slug=` 唯一化，其余路由去 query。
+- **robots.txt / sitemap.xml**（显式路由先于 SPA mount 注册，命中优先）：robots 指向 sitemap 绝对地址；sitemap = 13 静态路由 + 在架商品 + 已发布文章（含 lastmod、五类 XML 转义，种子口径 35 URL），动态段查询失败兜底只返回静态段不整体 5xx；favicon.ico 307 → favicon.svg（不再被 SPA 回落掩盖缺失）。
+
+### Fixed（AI 域加固）
+- **订单号注入面**：chat `order_no` 归一只认 `NS+大写字母数字` 形态，非法自由文本一律不回显并引导 /track；运单号仅回尾号 4 位（`tracking_no_tail`），完整单号不入 reply。
+- **域内限流**：`/api/ai/chat` 30 次/min/IP 滑动窗（超限 429 + Retry-After + `rate_limited`），桶表上限 10000 防伪造海量 IP 撑内存；全局 RATE_RULES 刻意不含 /api/ai 前缀（避免双重 429）。
+- **输入钳制**：message 超长截断 1000 字符（不拒收老客户端）、空/纯空白走 fallback 兜底话术；recommend `cart_ids` 钳制 ≤20；hot `size` le=20 且过滤下架、best 优先。
+- **主题命中数据驱动**：shipping 回复含免邮门槛 $35.00（settings `free_shipping_threshold` 驱动）、return 含 30 天窗口（`return_days`）+ /contact 工单引导、size 命中 FAQ 尺码语料。
+- **ChatWidget**：会话历史 localStorage 持久化（最近 30 条，重开不丢上下文）、建议 chips（≤3 个可点追问）、失败重试按钮、快捷问题（查单/尺码/退换/人工）。
+
+### Fixed（i18n 与无障碍）
+- **i18n node/SSR 崩溃**：localStorage/document 判空 + 隐私模式 try/catch（node 直接 require 冒烟通过）；t() 缺键回退 EN → key 本身；%s 插值防 `$` 转义；en/zh 字典 282 键完全对称（本轮 4 页 146 处入典）。
+- **a11y 五组件**：ChatWidget（role=dialog / 消息区 role=log aria-live / 输入与按钮逐个标签）、CartDrawer（aria-modal + 数量增减/移除/推荐加购逐项标签）、CookieConsent（role=region + 开关 aria-pressed）、MarketingPopups（welcome/EXIT 弹窗 aria-modal + 邮箱 aria-invalid/aria-describedby + 错误 role=alert）、ToastHost（loading=alert assertive / 其余=status polite + 可关闭）；另 ProductCard 星级 role=img、SearchModal combobox/listbox/aria-activedescendant 键盘联动。
+
+- **移动端深化**：375px 窄屏适配打磨（触控目标/间距/横向溢出治理；上线检查清单 §6 增设五页 375px 冒烟项）。
+
+### 数据真实感
+- 前端兜底目录 `catalog.js` 对齐 seed 全新库 16 款可见商品（睫毛 1-3 / 美甲 4-15 / 胶水 16，价格/库存/id 一致；定时上架款不入兜底）。
+- seed 文案：每款商品 `description_md` 手写（材质/场合/搭配建议）；睫毛专用评价语料（磁吸/无胶水/佩戴体验口径，不与甲片文案串场）。
+
+### 测试与基础设施
+- 新增 test_ai_ext（18：chat 空/超长/注入兜底、运费/退货/尺码命中、订单号脱敏、hot 钳制与下架过滤、recommend 钳制、域内限流 429），run_all 纳入 → **23 py 套件**。
+- 双 SPA vite vendor 拆包（vue/vue-router/pinia 独立 chunk 长效缓存，client/admin 各出 vendor-*.js ~98KB）；N+1 治理回归常绿（test_perf 断言目录页服务端 SQL 条数远低于商品条数、分页 ≤4 条、admin 订单列表 items/users 批量查询）。
+- 全局限流规则补缺（RATE_RULES 5→9：admin/login、newsletter、giftcard/purchase、promo/validate，前缀先命中先生效）；会话 Cookie 属性完善（max_age 与 token 时效对齐、samesite 可配 none 时强制 Secure）。
+- API.md：生成器补 `include_in_schema=False` 过滤（robots/sitemap/legacy 重定向不再计入），重新生成 166→**164** 端点（public 61），`--check` 通过。
+
+### 回归
+- `run_all.ps1 -Fast` 23 条目全绿（22 py + frontend-verify：test_ai_ext 18/18、test_perf 29/29 含 N+1 断言、双 SPA 含 vendor chunk 构建正常）；`gen_api_docs.py --check` 通过。
+
+## [0.3.3] · 前后端契约追平 + 营销合规与资损修复
+
+### Added（后端）
+- **目录筛选**：`GET /api/catalog/products` 新增 `min_price`/`max_price`（美分，与商品价格区间闭集交集语义）/`on_sale`（划线价>售价）查询参数；GM_CACHE=1 下新参数进缓存键不串（test_catalog_ext 验证）。
+- **评分分布**：`GET /api/catalog/reviews/distribution?product_id=`（1-5 星计数，仅 status=1 已过审；商品页直方图联动）。
+- **弹窗曝光转化上报**：`POST /api/promo/popup/{id}/shown` 与 `/{id}/convert`（原子自增 stats_shown/stats_converted；不存在/停用 404，前台失败静默）；后台营销页弹窗管理（CRUD + toggle + 曝光/转化率展示，编辑不清零统计）。
+- **admin 会话探测**：`GET /api/account/admin/me`（严格只认 gm_admin_token，与前台 gm_token 隔离，双 Cookie 并存不串台）。
+- **admin 分页/筛选参数**：orders `per_page`、rmas `page`+`per_page`、exchanges `size`、tickets `status` 组合（单值或逗号分隔如 `3,4`，非法 422 invalid_status）。
+- **发货 outbox 事件**：ship 落 `order.shipped`（承运商/运单号入 payload，worker 消费 → order_shipped 邮件）。
+
+### Fixed
+- **双 RMA 退款超额**：多笔 RMA 按比例折算各摊运费可能累计超支付剩余可退（apply_refund 409 → RMA 永卡 4 态无法结案）；末笔钳到 `payment.amount - refunded_amount` 恰好收尾全额退（test_admin_ext 复现断言）。
+- **welcome 邮件偏好合规**：`user.welcome` 列入营销类事件，consume_outbox 按 EmailPreference（sub_promo=0 或 unsubscribed_at 非空）跳过不发但标记 published 防重投，日志补 compliance_skipped；事务性邮件（order.*/restock）不受限。
+
+### Fixed（前端契约追平）
+- **admin SPA**：订单/退货/换货/工单列表接新分页与组合筛选参数；营销弹窗管理、商品定时上架（naive UTC 两端换算/清空取消定时/列表「定时」徽标）等补齐。
+- **client SPA（40+ 页）**：结算试算分项、礼品卡、工单、博客等契约修复；弹窗曝光/转化上报与频控合规；评分分布直方图；促销页 `on_sale` 来源、目录页价格区间筛选。
+
+### 测试与基础设施
+- 新增 test_catalog_ext（25：价格区间/on_sale/缓存键/评分分布/磁吸睫毛种子幂等）、test_admin_ext（27：组合状态/分页/弹窗上报/重复关单 409/多笔 RMA 退款钳制）、test_worker_ext（20：营销邮件 gating/模板完整性/unfreeze RMA 阻断语义/daily_digest product_slug/outbox 失败重试）。
+- docker-compose YAML 修复、run_all 纳入新套件；API.md 重新生成 162→**166** 端点（public 59→63）。
+
+### 回归
+- 三新套件 72 断言全绿；`gen_api_docs.py --check` 与路由一致。
+## [0.3.2] · 后台 13 视图契约对齐 + 交互完善
+
+### Fixed（按真实 API 契约逐页重写）
+- **看板**：today/last7/last30 切换、14 天 GMV 柱状图、转化漏斗、待办四卡、对账状态、热销 Top5（原字段全部猜错致恒显省略号）。
+- **订单**：placed_at/per_page/pages 分页、发货弹窗（carrier+tracking_no 必填）、CSV；详情页 shipping_address/items(unit_price,subtotal)/timeline、退款弹窗（amount_cents+reason）、mark-delivered 端点。
+- **退货/换货**：按 rma_no/exchange_no 操作（approve→receive→refund；approve→mark-paid→ship→complete）。
+- **工单**：ticket_no 定位、回复 {content}、线程走用户侧接口 omit credentials（匿名路径），消息双气泡+时间戳。
+- **商品**：total_stock/low_stock_count/variant_count 字段、上下架改用专用 publish/unpublish 端点（避免 PUT 全字段覆盖风险）；编辑页变体契约（sku/option1/option2）、图集 ≤8、视频 URL、price_max 自纠正。
+- **库存**：流水 change/stock_after 字段、调整弹窗 {variant_id, change, reason}。
+- **营销**：is_active/min_subtotal/max_discount、toggle 专用端点、新建码（type 1-3 + starts_at 必填）、运费 price/eta_min_days、捆绑折扣逐 key 保存。
+- **内容**：reviews ?status=0（空 status 会 422）、answer_md、articles status/cover/author、UGC caption/points_rewarded。
+- **会员**：risk_flag 字段、风控写 {flag}、画像含积分流水 ledger。
+- **设置**：settings 为 {items:[{key,value}]}、逐 key PUT 保存、邮件模板 {name,subject,html} iframe 沙箱预览。
+- toast 提升全局 composable（登录页可用）；守卫失败显示原因。
+
+### 回归
+- 双 SPA 构建通过；新增后台 13 页全联动冒烟（20+ 端点含写操作往返）ADMIN SMOKE OK；前台旅程 SMOKE OK。
 ## [0.3.1] · 前端 workspace 统一打包发布
 
 ### Changed

@@ -40,6 +40,10 @@ for _r in (admin_ops.router, admin_promo.router, admin_content.router, admin_sup
 admin_ops_all = SimpleNamespace(router=_admin_combined)
 
 
+# API 版本单一事实源：与根 package.json version 保持同步（0.3.0）
+API_VERSION = "0.3.0"
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
@@ -48,7 +52,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="GLOWMAG API",
-    version="0.2.0",
+    version=API_VERSION,
     description="指甲电商独立站 · FastAPI 单体（按域分包，对齐微服务演进蓝图）",
     lifespan=lifespan,
 )
@@ -87,7 +91,7 @@ except ImportError:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "glowmag-api", "version": "0.3.0"}
+    return {"ok": True, "service": "glowmag-api", "version": API_VERSION}
 
 
 # 旧静态站入口重定向（书签/外链兼容 → 后台 SPA）
@@ -97,6 +101,85 @@ from fastapi.responses import RedirectResponse  # noqa: E402
 @app.get("/admin-login.html", include_in_schema=False)
 def legacy_admin_login():
     return RedirectResponse("/admin/")
+
+
+# ---- SEO 基建：robots.txt / sitemap.xml（显式路由先于底部 SPA mount 注册，命中优先） ----
+from urllib.parse import quote  # noqa: E402
+
+from fastapi import Request  # noqa: E402
+from fastapi.responses import PlainTextResponse, Response  # noqa: E402
+from sqlalchemy import or_  # noqa: E402
+
+from app.core.db import SessionLocal, utcnow  # noqa: E402
+from app.models.content import Article  # noqa: E402
+from app.models.product import Product  # noqa: E402
+
+_SITEMAP_STATIC_PATHS = (
+    "/", "/store", "/sale", "/bundles", "/gallery", "/blog",
+    "/faq", "/about", "/how-it-works", "/size-guide", "/contact", "/rewards", "/refer",
+)
+
+
+def _xml_escape(value) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _sitemap_url(base: str, path: str, lastmod=None) -> str:
+    lm = f"<lastmod>{lastmod.isoformat(timespec='seconds')}Z</lastmod>" if lastmod else ""
+    return f"<url><loc>{_xml_escape(base + path)}</loc>{lm}</url>"
+
+
+def _visible_published(column, now):
+    """前台可见性对齐 catalog/content 领域：已发布/上架且 published_at 为空（立即可见）或已到点"""
+    return or_(column.is_(None), column <= now)
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots_txt(request: Request):
+    sitemap_url = str(request.base_url).rstrip("/") + "/sitemap.xml"
+    return PlainTextResponse(f"User-agent: *\nAllow: /\n\nSitemap: {sitemap_url}\n")
+
+
+@app.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml(request: Request):
+    base = str(request.base_url).rstrip("/")
+    urls = [_sitemap_url(base, p) for p in _SITEMAP_STATIC_PATHS]
+    try:
+        db = SessionLocal()
+        try:
+            now = utcnow()
+            products = (
+                db.query(Product.slug, Product.published_at)
+                .filter(Product.status == 1, _visible_published(Product.published_at, now))
+                .order_by(Product.id.asc())
+                .all()
+            )
+            urls += [_sitemap_url(base, f"/product?slug={quote(slug, safe='')}", pub) for slug, pub in products]
+            articles = (
+                db.query(Article.slug, Article.published_at)
+                .filter(Article.status == 1, _visible_published(Article.published_at, now))
+                .order_by(Article.id.asc())
+                .all()
+            )
+            urls += [_sitemap_url(base, f"/blog/post?slug={quote(slug, safe='')}", pub) for slug, pub in articles]
+        finally:
+            db.close()
+    except Exception:
+        pass  # 兜底：动态部分查询失败仅返回静态路由，sitemap 不整体 5xx
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(urls)
+        + "\n</urlset>\n"
+    )
+    return Response(content=xml, media_type="text/xml")
 
 
 # 静态站挂载（放最后，/api 优先匹配）：单一发布目录 web/dist（client 产物在根、admin 在 /admin）
@@ -112,6 +195,10 @@ class SPAStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
         # Starlette get_path() 经 os.path.normpath：Windows 下分隔符为 "\"，统一归一后再做前缀判断
         p = path.replace("\\", "/").lstrip("/")
+        # 常见站点元资源不参与 SPA 回落：favicon.ico 重定向到真实 svg（避免 200 回落 HTML 掩盖缺失）
+        # robots.txt / sitemap.xml 已由上方显式路由提供（先于 mount 注册必先命中），回落逻辑无需再处理
+        if p == "favicon.ico":
+            return RedirectResponse("/favicon.svg", status_code=307)
         try:
             response = await super().get_response(path, scope)
             if response.status_code != 404:

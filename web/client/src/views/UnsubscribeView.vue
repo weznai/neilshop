@@ -1,53 +1,149 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
+import { i18n } from '../i18n'
+import { useAuthStore } from '../stores/auth'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
 
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+/* 退订链接：/unsubscribe?email=xx&token=us_HMAC（token 为 us_ 前缀 HMAC）
+ * 无参数时回退登录会话（Cookie）读取自身偏好 */
 const route = useRoute()
+const auth = useAuthStore()
 const ui = useUiStore()
 const email = ref(String(route.query.email || ''))
 const token = ref(String(route.query.token || ''))
 const prefs = ref(null)
+const err = ref('')
+const loading = ref(true)
+const saving = ref(false)
 const saved = ref(false)
 
-onMounted(async () => {
+const hasToken = computed(() => !!email.value && !!token.value)
+const prefLabels = computed(() => [
+  ['sub_promo', tt('🎁 Promos & offers', '🎁 促销与优惠活动')],
+  ['sub_new_arrival', tt('✨ New-arrival alerts', '✨ 新品上架通知')],
+  ['sub_cart_abandon', tt('🛒 Cart reminders', '🛒 购物车提醒')],
+])
+
+async function load() {
+  err.value = ''
+  loading.value = true
+  const qs = hasToken.value
+    ? '?email=' + encodeURIComponent(email.value) + '&token=' + encodeURIComponent(token.value)
+    : ''
   try {
-    prefs.value = await req('GET', '/api/account/email-preferences?email=' + encodeURIComponent(email.value) + '&token=' + encodeURIComponent(token.value))
-  } catch (_) { /* 无 token 时提示登录 */ }
-})
+    prefs.value = await req('GET', '/api/account/email-preferences' + qs)
+    if (prefs.value && prefs.value.email) email.value = prefs.value.email
+  } catch (e) {
+    err.value = e && (e.status === 400 || e.status === 401)
+      ? '' : tt('Failed to load, please try again', '加载失败，请稍后再试')
+  } finally { loading.value = false }
+}
+onMounted(load)
 
 async function save() {
-  try {
-    await req('PUT', '/api/account/email-preferences?email=' + encodeURIComponent(email.value) + '&token=' + encodeURIComponent(token.value), {
-      newsletter: prefs.value.newsletter ? 1 : 0,
-      order_updates: prefs.value.order_updates ? 1 : 0,
-      marketing: prefs.value.marketing ? 1 : 0,
-    })
-    saved.value = true
-    ui.toast('Preferences saved ✓', 'success')
-  } catch (e) {
-    ui.toast(e.status === 401 ? 'Invalid or expired link — sign in to manage' : 'Save failed', 'error')
+  if (!prefs.value) return
+  saving.value = true
+  saved.value = false
+  const qs = hasToken.value
+    ? '?email=' + encodeURIComponent(email.value) + '&token=' + encodeURIComponent(token.value)
+    : ''
+  /* 部分更新：仅传三个开关（后端：任一开 → 复订；全关 → 等价全退） */
+  const body = {
+    sub_promo: !!prefs.value.sub_promo,
+    sub_new_arrival: !!prefs.value.sub_new_arrival,
+    sub_cart_abandon: !!prefs.value.sub_cart_abandon,
   }
+  try {
+    prefs.value = await req('PUT', '/api/account/email-preferences' + qs, body)
+    saved.value = true
+    ui.toast(tt('Preferences saved ✓', '偏好已保存 ✓'), 'success')
+  } catch (e) {
+    ui.toast(
+      e && (e.status === 400 || e.status === 401)
+        ? tt('This link is invalid or expired', '链接无效或已过期')
+        : tt('Save failed, please try again', '保存失败，请稍后再试'),
+      'error',
+    )
+  } finally { saving.value = false }
+}
+
+/* 一键全部退订：站内二次点击确认（替代 window.confirm），5 秒未确认自动复位 */
+const confirming = ref(false)
+let confirmTimer = null
+onUnmounted(() => clearTimeout(confirmTimer))
+async function unsubAll() {
+  if (!confirming.value) {
+    confirming.value = true
+    clearTimeout(confirmTimer)
+    confirmTimer = setTimeout(() => { confirming.value = false }, 5000)
+    return
+  }
+  confirming.value = false
+  clearTimeout(confirmTimer)
+  saving.value = true
+  try {
+    await req('POST', '/api/account/unsubscribe', {
+      email: email.value,
+      token: hasToken.value ? token.value : null,
+    })
+    ui.toast(tt('Unsubscribed from all emails', '已退订全部邮件'), 'success')
+    await load()
+  } catch (e) {
+    const d = e && e.data && e.data.detail
+    ui.toast(
+      d === 'invalid_token' || d === 'token_required'
+        ? tt('Invalid link — please use the unsubscribe link in your email', '链接无效，请使用邮件中的退订链接')
+        : tt('Unsubscribe failed, please try again', '退订失败，请稍后再试'),
+      'error',
+    )
+  } finally { saving.value = false }
 }
 </script>
 
 <template>
   <section class="section">
     <div class="container" style="max-width:560px">
-      <div class="section-head"><h2 class="section-title">Email Preferences ✉️</h2></div>
-      <div v-if="prefs" class="card" style="padding:22px">
-        <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">Managing preferences for <b>{{ email }}</b>. Turn everything off to unsubscribe from all mail.</p>
-        <label v-for="k in ['newsletter', 'order_updates', 'marketing']" :key="k" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--gray-light);font-size:14px">
-          <span>{{ { newsletter: '📰 Newsletter & drops', order_updates: '📦 Order updates', marketing: '🎁 Offers & campaigns' }[k] }}</span>
-          <input v-model="prefs[k]" type="checkbox" style="width:18px;height:18px">
+      <div class="section-head"><h2 class="section-title">{{ tt('Email Preferences ✉️', '邮件偏好设置 ✉️') }}</h2></div>
+
+      <div v-if="loading" class="skeleton" style="min-height:220px;border-radius:14px" />
+
+      <div v-else-if="prefs" class="card" style="padding:22px">
+        <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">
+          {{ tt('Managing email preferences for', '正在管理') }} <b>{{ prefs.email }}</b>{{ tt('. Turn everything off to unsubscribe — you can re-enable here anytime.', ' 的邮件偏好。关闭全部即退出订阅；之后随时可在此重新开启。') }}
+        </p>
+        <label v-for="[k, label] in prefLabels" :key="k" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--gray-light);font-size:14px">
+          <span>{{ label }}</span>
+          <input v-model="prefs[k]" type="checkbox" style="width:18px;height:18px;accent-color:var(--plum)" :disabled="saving">
         </label>
-        <button class="btn btn-primary btn-block" style="margin-top:16px" @click="save">Save preferences</button>
-        <p v-if="saved" style="font-size:12.5px;color:var(--success);text-align:center;margin-top:10px">Saved — changes apply to future sends immediately.</p>
+        <div v-if="prefs.unsubscribed_at" style="font-size:12.5px;color:var(--warn);margin-top:10px">
+          ⚠️ {{ tt('You are unsubscribed from all emails — turn any option on to re-subscribe.', '你已退订全部邮件 —— 开启任一项即可恢复订阅。') }}
+        </div>
+        <button class="btn btn-primary btn-block" style="margin-top:16px" :class="{ loading: saving }" :disabled="saving" @click="save">{{ tt('Save preferences', '保存偏好') }}</button>
+        <button
+          class="btn btn-ghost btn-block btn-sm" style="margin-top:8px"
+          :style="confirming ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
+          :disabled="saving"
+          @click="unsubAll"
+        >{{ confirming ? tt('Tap again to confirm unsubscribe', '再点一次确认退订全部') : tt('Unsubscribe from all emails', '一键退订全部邮件') }}</button>
+        <p v-if="saved" style="font-size:12.5px;color:var(--success);text-align:center;margin-top:10px">{{ tt('Saved — takes effect on the next send.', '已保存 —— 后续发送立即生效。') }}</p>
       </div>
+
       <div v-else class="card" style="padding:22px;text-align:center;color:var(--gray)">
-        This unsubscribe link is invalid or expired.
-        <br><router-link to="/account/settings" style="color:var(--plum)">Manage from account settings</router-link> instead.
+        <template v-if="auth.isLoggedIn">
+          {{ tt('Could not load your email preferences.', '未能加载邮件偏好，请稍后再试。') }}
+          <div v-if="err" style="margin-top:12px">
+            <button class="btn btn-secondary btn-sm" :class="{ loading }" :disabled="loading" @click="load">{{ tt('Retry', '重试') }}</button>
+          </div>
+        </template>
+        <template v-else>
+          {{ tt('This unsubscribe link is invalid or expired (it needs ?email= and ?token= parameters).', '该退订链接无效或已过期（需要 ?email= 与 ?token= 参数）。') }}
+          <div style="margin-top:12px">
+            <router-link class="btn btn-secondary btn-sm" :to="{ path: '/login', query: { next: '/unsubscribe' } }">{{ tt('Log in to manage', '登录后管理') }}</router-link>
+          </div>
+        </template>
       </div>
     </div>
   </section>

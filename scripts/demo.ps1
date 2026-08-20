@@ -151,6 +151,16 @@ $srch = Invoke-Api -Label '搜索 bare' -Path '/api/catalog/search?q=bare'
 $hits = @($srch.Json.products)
 Write-Host ("搜索 q=bare 命中 {0} 款：{1}" -f $hits.Count, (($hits | ForEach-Object { $_.title }) -join ' / '))
 
+Start-Sleep -Milliseconds 300
+$sale = Invoke-Api -Label '促销筛选' -Path '/api/catalog/products?on_sale=true&size=6'
+Write-Host ("on_sale=true 划线价特惠 {0} 款：{1}" -f $sale.Json.total, (($sale.Json.items | ForEach-Object { $_.title }) -join ' / '))
+
+Start-Sleep -Milliseconds 300
+$bgId = Invoke-Api -Label 'Bare Gems 详情（取 id）' -Path '/api/catalog/products/bare-gems'
+$dist = Invoke-Api -Label '评分分布' -Path ("/api/catalog/reviews/distribution?product_id={0}" -f $bgId.Json.id)
+$distTxt = (($dist.Json.distribution.PSObject.Properties | Sort-Object Name -Descending | ForEach-Object { "{0}星×{1}" -f $_.Name, $_.Value }) -join ' · ')
+Write-Host ("评分分布端点：Bare Gems 均分 {0:N2}（{1} 条评价）—— {2}" -f ($dist.Json.rating_avg / 100), $dist.Json.rating_count, $distTxt)
+
 # ================= STEP 2 · 注册 =================
 Step-Header 2 '注册 · 随机邮箱新顾客 + 地址簿'
 Start-Sleep -Milliseconds 300

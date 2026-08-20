@@ -18,6 +18,8 @@ for _suffix in ("", "-wal", "-shm"):
         os.remove(_p)
 os.environ["GM_DB"] = f"sqlite:///{_DB}"
 os.environ["GM_COOKIE_AUTH"] = "0"  # 纯 Bearer 通道：登录 Cookie 不进 TestClient 会话
+# 本套件对 /api/exchanges 打满 20+ 次功能用例，临时调高该规则阈值避免误触限流
+os.environ["GM_RATE_RULES"] = '{"/api/exchanges": 100}'
 sys.path.insert(0, _ROOT)
 
 from app.core.config import settings as app_settings

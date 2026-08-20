@@ -643,3 +643,100 @@ img { animation: imgIn .3s ease-out; }
 /* 到货预估徽标行（checkout 页收编） */
 .eta-line { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--gray); margin-top: 6px; }
 .eta-line b { color: var(--plum); }
+
+/* ===== v15 全局体验层（只追加，不改既有规则） ===== */
+
+/* 1) 骨架屏补齐：Home/BlogPost/Wishlist/Points/OrderDetail 等 6 处已在使用 .skeleton 但规则此前缺失 */
+.skeleton { position: relative; overflow: hidden; background: var(--gray-light); border-radius: var(--radius-card); }
+.skeleton::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.65), transparent);
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* 2) 顶栏请求进度条（client.js pending 0↔1 事件 → App.vue 切 data-state：run 缓进 80% / done 冲线淡出） */
+.gm-progress { position: fixed; top: 0; left: 0; right: 0; height: 2.5px; z-index: 1000; pointer-events: none; }
+.gm-progress::before {
+  content: ""; display: block; height: 100%; width: 0; opacity: 0;
+  background: linear-gradient(90deg, var(--rose), var(--plum));
+  border-radius: 0 999px 999px 0;
+  transition: width .3s ease-out, opacity .3s;
+}
+.gm-progress[data-state="run"]::before { width: 80%; opacity: 1; transition: width .8s ease-out, opacity .15s; }
+.gm-progress[data-state="done"]::before { width: 100%; opacity: 0; transition: width .15s ease-out, opacity .3s .1s; }
+
+/* 3) toast loading 型：旋转指示（ui.toast(msg,'loading') 常驻，dismiss(id) 收口） */
+.toast.loading { background: var(--ink); }
+.toast-spin { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; flex: none; }
+
+/* 4) 焦点环已有（v12 focus-visible）、细滚动条已有（v12 #5）、图片淡入已有（v12 #7 imgIn）——此处补键盘可达兜底：
+    [tabindex] 可聚焦容器（如 .pcard-quick role=button）也获得焦点环 */
+[tabindex]:focus-visible { outline: 2px solid rgba(109,46,70,.6); outline-offset: 2px; }
+
+/* 5) 断点核查结论：<768（移动）/ <1024（平板）/ <1180（窄桌面 mega）三层齐备，无新增需求 */
+
+/* ===== v16 移动端深化（只追加，既有规则零改动；断点沿用 v12：768/1024） ===== */
+
+/* 1) iOS 触摸基建：去系统点击高亮 —— 全局规则，桌面鼠标无 tap highlight、零回归 */
+body { -webkit-tap-highlight-color: transparent; }
+
+/* 2) 触屏最小 44px 触摸区：伪元素扩热区（不改盒尺寸、零布局破坏；相邻热区允许少量重叠为业界通例）。
+      .btn-sm 排除 .loading —— 其 ::after 被 v1 spinner 占用；.pdp-notify-btn 同理（ProductView） */
+@media (pointer: coarse) {
+  .btn-sm:not(.loading), .icon-btn, .tag, .trend-chip, .pill, .pw-eye, .rec-add, .modal-x, .pdp-notify-btn { position: relative; }
+  .btn-sm:not(.loading)::after, .icon-btn::after, .tag::after, .trend-chip::after, .pill::after,
+  .pw-eye::after, .rec-add::after, .modal-x::after, .pdp-notify-btn:not(.loading)::after {
+    content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 100%; height: 100%; min-width: 44px; min-height: 44px;
+  }
+  /* iOS 聚焦输入不自动放大（Safari 对 <16px 输入框触发页面缩放）；pointer:coarse 限定，桌面 14px 不变 */
+  input, select, textarea { font-size: 16px; }
+  .chat-input input { font-size: 16px; } /* 覆盖上方 13px（同文件后置同特异性覆盖） */
+}
+
+/* 3) 横向溢出规范：grid/flex 子项允许收缩（默认 min-width:auto 遇长词撑破轨道）+ 长词断行。
+      全局规则 —— 桌面无长词内容时 min-width:0/overflow-wrap 无可感知变化（标准收缩复位） */
+.grid > *, .split > *, .split-side > *, .split-wide > *, .acct > *, .led > *, .pdp-grid > * { min-width: 0; }
+h1, h2, h3, h4, .page-title, .section-title, .pcard-title, .pcard-price, .prose, .pdp-desc,
+.crumbs, .chat-msg, .toast { overflow-wrap: break-word; }
+
+/* 4) tabbar 触摸高度 ≥48px（图标 22 + label + padding 现约 49px，此条兜底保证）；tabbar 桌面 display:none 零影响。
+      含 viewport-fit=cover 后横屏左右安全区出血 */
+.tabbar a { min-height: 48px; justify-content: center; }
+.tabbar { padding-left: max(4px, env(safe-area-inset-left, 0px)); padding-right: max(4px, env(safe-area-inset-right, 0px)); }
+
+/* 5) 安全区协调（viewport-fit=cover 生效后 env() 有值）：对既有 768 断点 fixed 元素间距补 safe-area。
+      同特异性后置覆盖，不改原规则行；ChatWidget/CookieConsent 组件未动，仅经全局类协调。
+      body.gm-pdp 由 ProductView 挂载/卸载 —— PDP 粘性加购栏在场时返回顶部再上移一层避让 */
+@media (max-width: 768px) {
+  body { padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); } /* 横屏刘海：文档流避让，竖屏 inset=0 无变化 */
+  body.has-tabbar { padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px)); }
+  .back-top { bottom: calc(78px + env(safe-area-inset-bottom, 0px)); }
+  .chat-fab { bottom: calc(142px + env(safe-area-inset-bottom, 0px)); }
+  .chat-panel { bottom: calc(204px + env(safe-area-inset-bottom, 0px)); }
+  .consent-banner { bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
+  body.gm-pdp .back-top { bottom: calc(146px + env(safe-area-inset-bottom, 0px)); }
+  .pcard-quick { min-height: 44px; } /* 移动端常驻快速加购条（38px→44 触摸区，min-height 覆盖 used height） */
+}
+
+/* 6) StoreView 筛选 chips：桌面保持换行（原 inline flex-wrap:wrap 上收为类规则），移动端横滑全宽出血 */
+.store-chiprow { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 768px) {
+  .store-chiprow {
+    flex-wrap: nowrap; overflow-x: auto;
+    scrollbar-width: none; -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+    margin: 0 -24px; padding: 2px 24px 6px; /* container padding 24px 出血全宽滑动 */
+  }
+  .store-chiprow::-webkit-scrollbar { display: none; }
+  .store-chiprow > * { flex: none; scroll-snap-align: start; }
+  .store-head { flex-direction: column; align-items: stretch; gap: 10px; } /* 标题与排序 chips 上下排，排序行接入横滑 */
+}
+
+/* 7) HomeView hero CTA：移动端按钮换行撑满（≥150px 基准），桌面 inline nowrap 原样 */
+@media (max-width: 768px) {
+  .home-hero-cta { flex-wrap: wrap; }
+  .home-hero-cta .btn { flex: 1 1 150px; }
+}
+

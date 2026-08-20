@@ -70,19 +70,52 @@ def my_referrals(db: Session, user: User) -> dict:
 
 
 def simulate_invite(db: Session, user: User, body: SimulateInviteIn) -> dict:
+    """手动登记邀请（滥用收紧）：
+    - 目标邮箱已是注册用户 → 409（不允许把已注册邮箱直接置 REGISTERED 冒领奖励）；
+    - 已有 (code, email) 行 → 409 already invited（uk_code_email 也不允许重复建行）；
+    - 仅目标邮箱未注册且无既有行时创建，状态为 CLICKED（邀请待注册），
+      待被邀人经 /register?ref= 真实注册后由 bind_referral_on_register 流转为 REGISTERED。"""
     code = derive_code(user.id)
     if repo.find_referral(db, code, body.email):
         raise HTTPException(status_code=409, detail="already invited")
-    invited_user_id = repo.user_id_by_email(db, body.email)
+    if repo.user_id_by_email(db, body.email) is not None:
+        raise HTTPException(status_code=409, detail="email already registered")
     repo.add_referral(db, Referral(
         code=code,
         referrer_user_id=user.id,
         invited_email=body.email,
-        invited_user_id=invited_user_id,
-        status=int(ReferralStatus.REGISTERED),
+        invited_user_id=None,
+        status=int(ReferralStatus.CLICKED),
     ))
     db.commit()
     return {"code": code}
+
+
+def bind_referral_on_register(db: Session, ref_code: str | None, new_user: User) -> None:
+    """/register?ref= 落地承诺的绑定闭环：注册时 ref_code 有效（存在且属于其它用户）则落
+    Referral 记录。复用 invite→REGISTERED 既有流转：已有 CLICKED 行（如 simulate-invite
+    预登记）就升级并回填 invited_user_id；无行则直接建 REGISTERED 行。幂等：状态已
+    >= REGISTERED 的行不动。发放仍在 trade 域 on_order_paid（首单支付时按本记录发分）。"""
+    code = (ref_code or "").strip().upper()
+    if not code:
+        return
+    referrer_id = next(
+        (uid for uid in repo.all_user_ids(db) if derive_code(uid) == code), None
+    )
+    if referrer_id is None or referrer_id == new_user.id:
+        return  # 无效码 / 自邀：静默忽略，不阻断注册
+    row = repo.find_referral(db, code, new_user.email)
+    if row is None:
+        repo.add_referral(db, Referral(
+            code=code,
+            referrer_user_id=referrer_id,
+            invited_email=new_user.email,
+            invited_user_id=new_user.id,
+            status=int(ReferralStatus.REGISTERED),
+        ))
+    elif row.status == int(ReferralStatus.CLICKED):
+        row.status = int(ReferralStatus.REGISTERED)
+        row.invited_user_id = new_user.id
 
 
 # ---------- 支付钩子 ----------

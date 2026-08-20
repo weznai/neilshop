@@ -1,20 +1,54 @@
+<script setup>
+const SECS = [
+  ['rates', 'Rates & speeds'],
+  ['process', 'Processing & tracking'],
+  ['lost', 'Lost or delayed'],
+]
+function go(id) {
+  const el = document.getElementById(id)
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+</script>
+
 <template>
   <section class="section">
-    <div class="container" style="max-width:760px">
-      <h1 style="font-family:var(--font-title);font-size:30px;margin-bottom:18px">Shipping Policy</h1>
-      <div style="display:grid;gap:14px;font-size:14px;line-height:1.8">
-        <table class="card" style="width:100%;border-collapse:collapse;padding:12px;font-size:13.5px">
-          <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Region</th><th>Standard</th><th>Express</th><th>Free over</th></tr></thead>
-          <tbody>
-            <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>3–6 days · $4.99</td><td>1–3 days · $14.99</td><td>$35</td></tr>
-            <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇨🇦 CA</td><td>5–9 days · $9.99</td><td>2–5 days · $19.99</td><td>$60</td></tr>
-            <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇬🇧 UK / 🇦🇺 AU</td><td>7–12 days · $12.99</td><td>3–6 days · $24.99</td><td>$80</td></tr>
-          </tbody>
-        </table>
-        <p>Orders placed before 2pm ET ship same business day. You'll get tracking by email the moment your box moves.</p>
-        <p>Subscription boxes always ship free. Pre-orders and backorders show their ETA on the product page.</p>
-        <p>Lost package? After 7 days past the ETA, <router-link to="/contact" style="color:var(--plum)">contact us</router-link> — we reship first, investigate second.</p>
+    <div class="container" style="max-width:960px">
+      <h1 class="page-title" style="font-family:var(--font-title);font-size:30px;margin-bottom:6px">Shipping Policy</h1>
+      <div class="meta-row">
+        <span>Last updated: Jan 2026</span><span class="meta-dot" /><span>Delivered by USPS / UPS / DHL</span>
+      </div>
+      <div class="policy-grid" style="display:grid;grid-template-columns:200px 1fr;gap:32px">
+        <aside class="policy-side">
+          <div class="toc-card">
+            <span class="toc-title">On this page</span>
+            <a v-for="[id, label] in SECS" :key="id" :href="'#' + id" @click.prevent="go(id)">{{ label }}</a>
+          </div>
+        </aside>
+        <article class="prose">
+          <h2 id="rates" style="scroll-margin-top:90px">Rates &amp; speeds</h2>
+          <table class="card" style="width:100%;border-collapse:collapse;padding:12px;font-size:13.5px">
+            <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Region</th><th>Method</th><th>ETA</th><th>Fee</th></tr></thead>
+            <tbody>
+              <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>USPS Standard</td><td>3–6 business days</td><td>$4.99 — <b>free over $35</b></td></tr>
+              <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>UPS Express</td><td>1–3 business days</td><td>$14.99</td></tr>
+              <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🌍 International</td><td>DHL Standard</td><td>6–12 business days</td><td>$12.99</td></tr>
+            </tbody>
+          </table>
+          <p>Rates above are our standard quotes — the exact fee and free-shipping threshold shown at <b>checkout always apply</b> (they can be updated by our ops team). Duties and taxes for international orders are the recipient's responsibility.</p>
+
+          <h2 id="process" style="scroll-margin-top:90px">Processing &amp; tracking</h2>
+          <p>Orders are packed within <b>24 hours</b> of payment. You'll get tracking by email the moment your box moves — no login needed to follow it on our <router-link to="/track" style="color:var(--plum)">Track Order</router-link> page. Pre-orders and backorders show their ETA on the product page.</p>
+
+          <h2 id="lost" style="scroll-margin-top:90px">Lost or delayed packages</h2>
+          <p>Parcel stuck 7+ days past the ETA? <router-link to="/contact" style="color:var(--plum)">Contact us</router-link> — we reship first and investigate second.</p>
+        </article>
       </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+@media (max-width: 768px) {
+  .policy-grid { grid-template-columns: 1fr !important; gap: 16px; }
+}
+</style>

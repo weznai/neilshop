@@ -1,11 +1,16 @@
 """支付服务 —— intent 创建 / mock-pay 核心事务 / webhook 幂等事件处理。
-支付成功核心事务 mark_order_paid 由 mock-pay 与 webhook 共用（调用方 commit）。
+支付成功核心事务 mark_order_paid 由 mock-pay 与 webhook 共用（调用方 commit），
+内部对 orders/payments 状态推进做 CAS 抢占（UPDATE ... WHERE status=0/!=1 + rowcount），
+抢占失败即并发方已处理 → 幂等返回，不再重复发积分/计数。
 真实 Stripe 模式：GM_STRIPE_KEY / GM_STRIPE_WEBHOOK_SECRET（pip install stripe）自动启用；
-无密钥或缺包回落 MockProvider，行为与 mock 版一致。"""
+无密钥或缺包回落 MockProvider，行为与 mock 版一致。
+环境门禁（GM_ENV，默认 dev）：非 dev 下 mock-pay 404；webhook 在非 dev 且
+未配置 provider 验签密钥时 400 拒绝处理。"""
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.models import Order, Payment
@@ -46,12 +51,20 @@ def _code_discount_of(db: Session, order: Order) -> int:
 
 def mark_order_paid(
     db: Session, order: Order, payment: Payment, *, source: str = "mock",
-) -> None:
-    """支付成功核心事务：订单 PAID + 实扣确认 + 积分发放 + Redemption + outbox（调用方 commit）"""
+) -> bool:
+    """支付成功核心事务：订单 PAID + 实扣确认 + 积分发放 + Redemption + outbox（调用方 commit）。
+    订单状态推进为 CAS 抢占（WHERE status=0）：rowcount=0 说明并发回调已处理或订单已被
+    关单/取消 → 返回 False（幂等，不重复发放积分/ Redemption / 计数）。"""
     now = utcnow()
-    payment.status = 1
+    claimed = repo.claim_order_paid(db, order.id, now)
+    repo.claim_payment_paid(db, payment.id)
+    if claimed == 0:
+        db.expire(order)
+        db.expire(payment)
+        return False
     order.status = 1
     order.paid_at = now
+    payment.status = 1
 
     items = repo.order_items(db, order.id)
     for item in items:
@@ -107,12 +120,24 @@ def mark_order_paid(
         dc = repo.get_discount_code(db, order.discount_code_id)
         if dc:
             dc.used_count += 1
+    return True
 
 
 def create_intent(db: Session, order_no: str) -> dict:
     order = _get_order(db, order_no)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
+    # 幂等：同单已有 PENDING payment 直接复用返回，不堆积新行
+    pending = repo.pending_payment_of_order(db, order.id)
+    if pending:
+        return {
+            "payment_intent": pending.stripe_payment_intent,
+            "client_secret": (
+                pending.stripe_checkout_session
+                or f"{pending.stripe_payment_intent}_secret_mock"
+            ),
+            "amount": pending.amount,
+        }
     try:
         intent = get_provider().create_intent(order, order.grand_total)
     except ProviderUnavailable:
@@ -120,6 +145,7 @@ def create_intent(db: Session, order_no: str) -> dict:
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],
+        stripe_checkout_session=(intent.get("client_secret") or "")[:64],
         amount=order.grand_total,
         status=0,
     )
@@ -133,6 +159,9 @@ def create_intent(db: Session, order_no: str) -> dict:
 
 
 def mock_pay(db: Session, order_no: str, succeed: bool) -> dict:
+    # 环境门禁：mock 支付仅 dev 开放（默认 dev，测试套件不受影响）
+    if settings.env != "dev":
+        raise HTTPException(status_code=404, detail="not_found")
     provider = get_provider()
     order = _get_order(db, order_no)
     payment = _get_payment(db, order.id)
@@ -141,6 +170,7 @@ def mock_pay(db: Session, order_no: str, succeed: bool) -> dict:
     if payment.status == 1:
         raise HTTPException(status_code=409, detail="already_paid")
     if provider.confirm(order, payment, succeed):
+        # CAS 抢占失败（并发回调已处理/订单已取消）→ 直接按现状返回成功响应（幂等）
         mark_order_paid(db, order, payment, source="mock")
     else:
         payment.status = 2
@@ -160,6 +190,14 @@ def mock_pay(db: Session, order_no: str, succeed: bool) -> dict:
 
 def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) -> dict:
     provider = get_provider()
+    # 环境门禁：非 dev 必须配置对应 provider 的验签密钥，否则任何人可伪造回调
+    if settings.env != "dev":
+        secret = (
+            settings.stripe_webhook_secret if provider.name == "stripe"
+            else getattr(settings, "paypal_webhook_id", "")
+        )
+        if not secret:
+            raise HTTPException(status_code=400, detail="webhook_secret_not_configured")
     try:
         raw_event = provider.verify_webhook(payload, stripe_signature)
     except InvalidSignatureError:

@@ -15,6 +15,8 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     name: str = Field(min_length=1, max_length=100)
+    # 推荐码（/register?ref= 落地页透传，可选）：有效则建立推荐绑定（双方首单后各得 1000 积分）
+    ref_code: str | None = Field(default=None, max_length=20)
 
 
 class LoginIn(BaseModel):

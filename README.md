@@ -6,7 +6,7 @@
 
 ```
 web/
-  client/   前台门店 SPA（Vite + Vue 3 + Router + Pinia，38 视图，挂载于 /）
+  client/   前台门店 SPA（Vite + Vue 3 + Router + Pinia，40 视图，挂载于 /）
   admin/    管理控制台 SPA（同栈，13 视图，挂载于 /admin，会话独立）
 server/     FastAPI 单体（按域分包 domains/*，18 域路由 160+ 端点，51 表 MySQL + Alembic）
 ```
@@ -21,11 +21,11 @@ server/     FastAPI 单体（按域分包 domains/*，18 域路由 160+ 端点�
 
 | 路径 | 内容 |
 |---|---|
-| `web/client/` | 前台 SPA（src/views 38 视图 + layouts + components + stores） |
+| `web/client/` | 前台 SPA（src/views 40 视图 + layouts + components + stores） |
 | `web/admin/` | 后台 SPA（src/views 13 视图 + AdminLayout 侧栏） |
 | `server/` | FastAPI 单体（domains 8 域 × router/service/repository，51 表 MySQL + Alembic） |
 | `server/scripts/` | seed 种子 / worker 定时任务 |
-| `server/tests/` | 20 套回归测试（test_a/b/c/e2e/sec/concurrency...，run_all.ps1 一键全量） |
+| `server/tests/` | 26 套回归测试（test_a/b/c/ai_ext/sec_ext/perf_ext/e2e/sec/concurrency/catalog_ext/admin_ext/worker_ext...，run_all.ps1 一键全量） |
 | `docs/deploy.md` + `docker-compose.yml` + `.env.example` | 部署交付（方案零：单机 Compose + 穷人高可用纪律；Dockerfile 多阶段 node 构建 + python 运行） |
 | `scripts/backup.ps1` | MySQL 备份（gzip + 14 天保留 + 异地提醒） |
 | `docs/MVP实现说明-MySQL版.md` | **落地总账**：技术决策/模块映射/API 总表/踩坑实录/各批演进（§1-§12） |
@@ -68,7 +68,7 @@ npm run dev:admin                         # :5174
 ## 回归
 
 ```powershell
-# 一键全量（推荐）：19 套后端 + 前端 verify，汇总表 + 总耗时，任一失败 exit 1
+# 一键全量（推荐）：25 套后端 + 前端 verify，汇总表 + 总耗时，任一失败 exit 1
 powershell -File run_all.ps1            # -Fast 跳过慢速并发套件 / -Suite test_a,test_b 过滤
 
 # 单套细跑
@@ -77,6 +77,7 @@ cd server
 .venv\Scripts\python.exe tests\test_a.py         # 24 · 账户/目录/购物车/商品富字段编辑/批量导入
 .venv\Scripts\python.exe tests\test_b.py         # 64 · 交易/支付/退货/库存/运费模板
 .venv\Scripts\python.exe tests\test_c.py         # 78 · 营销/内容/客服/运营
+.venv\Scripts\python.exe tests\test_ai_ext.py    # 18 · AI 客服加固（兜底/钳制/订单号脱敏/域内限流）
 .venv\Scripts\python.exe tests\test_worker.py    # 37 · 定时任务/对账
 .venv\Scripts\python.exe tests\test_refsub.py    # 38 · 推荐/订阅/礼品卡/改密
 .venv\Scripts\python.exe tests\test_payments.py  # 43 · 支付 Provider 抽象（Stripe/PayPal/Klarna）
@@ -93,11 +94,14 @@ cd server
 .venv\Scripts\python.exe tests\test_hardening.py # 17 · 安全响应头 + 静态缓存
 .venv\Scripts\python.exe tests\test_cache.py     # 20 · 热路径缓存（需 GM_CACHE=1，脚本内自设）
 .venv\Scripts\python.exe tests\test_tplpreview.py # 12 · 邮件模板预览
+.venv\Scripts\python.exe tests\test_catalog_ext.py  # 25 · 目录筛选（价格区间/on_sale/缓存键）+ 评分分布 + 种子幂等
+.venv\Scripts\python.exe tests\test_admin_ext.py    # 27 · admin 分页/组合状态 + 弹窗上报 + RMA 退款钳制
+.venv\Scripts\python.exe tests\test_worker_ext.py   # 20 · 营销邮件 gating/模板/unfreeze 语义/digest/outbox 重试
 ```
 
 可选：`GM_CACHE=1` 开启目录/AI 热路径缓存（TTL 默认 30s，写操作自动失效；默认关闭不影响测试基线）。
 
-另：`scripts/gen_api_docs.py [--check]` 生成/校验 docs/API.md（149 端点鉴权标注）。
+另：`scripts/gen_api_docs.py [--check]` 生成/校验 docs/API.md（164 端点鉴权标注，`include_in_schema=False` 路由不计入）。
 
 备份演练：`scripts\backup.ps1` 备份 → `scripts\restore-drill.ps1 -BackupFile <gz>` 一键恢复核验（见 docs/deploy.md §7）。
 

@@ -1,7 +1,6 @@
 /* GLOWMAG 后台共享样式（10 个 admin*.html 公共布局/组件）
    依赖 assets/style.css 的 Design Tokens，页面引入顺序：style.css → admin.css
-   不重复 style.css 已有的 .btn/.table/.tag/.modal/.toast 等；
-   唯一已知重复：.switch（见下方注释，与 style.css 互为镜像，需两处同步） */
+   不重复 style.css 已有的 .btn/.table/.tag/.modal/.toast 等 */
 body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .main{font-size:13.5px}
 .main .table{font-size:13px}
@@ -30,10 +29,14 @@ body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .delta.down{color:var(--error)}
 .abadge{background:var(--coral);color:#fff;font-size:10px;font-weight:700;border-radius:8px;padding:1px 6px;margin-left:auto}
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-/* 开关：与 assets/style.css 的 .switch 为已知重复（保留两份）——本份在其基础上追加 display:inline-block/vertical-align:middle 行内对齐，其余声明一致；改尺寸/配色需两处同步 */.switch{position:relative;width:42px;height:24px;background:var(--gray-light);border-radius:12px;cursor:pointer;transition:background .2s;flex:none;display:inline-block;vertical-align:middle}
-.switch::after{content:"";position:absolute;width:20px;height:20px;border-radius:50%;background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
-.switch.on{background:var(--success)}
-.switch.on::after{left:20px}
+/* 库存水位条（inventory/product-edit）：track 灰底圆角 7px；fill 渐变按库存着色（<10 红 / <30 橙 / 其余绿） */
+.stock-track{height:7px;background:var(--gray-light);border-radius:4px;overflow:hidden}
+.stock-fill{height:100%;border-radius:4px;transition:width .3s,background .3s}
+.stock-fill.low{background:linear-gradient(90deg,#E5484D,#F0778A)}
+.stock-fill.mid{background:linear-gradient(90deg,#E8862E,#F2B357)}
+.stock-fill.ok{background:linear-gradient(90deg,#2FA463,#5BC48B)}
+/* 设置页行（邮件模板等）：左右两端对齐 */
+.setrow{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .cols{display:grid;grid-template-columns:1.4fr 1fr;gap:20px}
 .mini-bar{display:grid;grid-template-columns:120px 1fr 44px;gap:10px;align-items:center;font-size:13px;padding:6px 0}
 .mini-bar .track{height:8px;background:var(--gray-light);border-radius:4px;overflow:hidden}
@@ -81,6 +84,36 @@ th.sortable:hover{color:var(--plum)}
 .mtab,.ctab,.stab,.ttab{padding:9px 18px;border-radius:999px;border:1.5px solid var(--gray-light);font-size:13.5px;font-weight:600;color:var(--gray);background:#fff}
 .mtab.on,.ctab.on,.stab.on,.ttab.on{border-color:var(--plum);background:var(--plum);color:#fff}
 /* 下划线 tab（orders/returns 两页 .otab/.rtab 同构） */
-.otab,.rtab{display:flex;gap:4px;border-bottom:1px solid var(--gray-light);margin-bottom:14px}
-.otab button,.rtab button{padding:9px 16px;font-size:13.5px;font-weight:600;color:var(--gray);border-bottom:2.5px solid transparent}
+.otab,.rtab{display:flex;gap:4px;border-bottom:1px solid var(--gray-light);margin-bottom:14px;flex-wrap:wrap}
+.otab button,.rtab button{padding:9px 16px;font-size:13.5px;font-weight:600;color:var(--gray);border-bottom:2.5px solid transparent;transition:color .15s}
+.otab button:hover,.rtab button:hover{color:var(--plum)}
 .otab button.on,.rtab button.on{color:var(--plum);border-color:var(--plum)}
+/* pill tab 悬停反馈（marketing/content/settings/tickets） */
+.mtab:hover,.ctab:hover,.stab:hover,.ttab:hover{border-color:var(--rose)}
+.mtab.on,.ctab.on,.stab.on,.ttab.on{border-color:var(--plum);background:var(--plum);color:#fff}
+
+/* ===== 全局体验层（v14）：骨架屏 / 表格 / 弹窗 / 焦点态 / 滚动条 ===== */
+/* 骨架屏：此前 .skeleton 类被多页引用但从未定义 */
+.skeleton{position:relative;overflow:hidden;background:#EDEAEB;border-radius:12px}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
+  animation:gmSk 1.4s infinite}
+@keyframes gmSk{100%{transform:translateX(100%)}}
+/* 表格：行悬停 + 数字列弱化边框 */
+.main table tbody tr{transition:background .12s}
+.main table tbody tr:hover{background:#FBF7F8}
+/* 卡片与统计卡：轻悬浮反馈 */
+.card{transition:box-shadow .2s}
+.stat{transition:transform .18s,box-shadow .2s}
+.stat:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(155,60,95,.10)}
+/* 输入焦点环 */
+.input:focus{outline:none;border-color:var(--rose);box-shadow:0 0 0 3px rgba(214,120,150,.18)}
+/* 按钮过渡 */
+.btn{transition:transform .12s,box-shadow .2s,background .15s,opacity .15s}
+.btn:not(:disabled):hover{transform:translateY(-1px)}
+.btn:not(:disabled):active{transform:none}
+/* 细滚动条（列表/弹窗长内容） */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#D8D2D5;border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#C4BCC0}
+::-webkit-scrollbar-track{background:transparent}

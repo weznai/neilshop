@@ -17,6 +17,9 @@ def list_products(
     category: str | None = None,
     tag: str | None = None,
     q: str | None = None,
+    min_price: int | None = Query(None, ge=0),
+    max_price: int | None = Query(None, ge=0),
+    on_sale: bool = False,
     sort: str = "new",
     locale: str | None = None,
     page: int = Query(1, ge=1),
@@ -25,7 +28,7 @@ def list_products(
 ):
     return service.list_products(
         db, category=category, tag=tag, q=q, sort=sort, page=page, size=size,
-        locale=locale,
+        locale=locale, min_price=min_price, max_price=max_price, on_sale=on_sale,
     )
 
 
@@ -67,6 +70,11 @@ def list_reviews(
     db: Session = Depends(get_db),
 ):
     return service.list_reviews(db, product_id, page, size)
+
+
+@router.get("/reviews/distribution")
+def review_distribution(product_id: int, db: Session = Depends(get_db)):
+    return service.review_distribution(db, product_id)
 
 
 @router.post("/stock-notify")

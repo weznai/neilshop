@@ -4,6 +4,7 @@ import secrets
 import uuid
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -69,6 +70,32 @@ def popup_payload(popup: PopupConfig) -> dict:
         "start_at": popup.start_at,
         "end_at": popup.end_at,
     }
+
+
+# 曝光/转化上报：SET col=col+1 单语句原子自增（并发不丢计数），WHERE active=1 顺带挡掉停用配置。
+# 不存在/已停用统一 404（而非 204）：便于前端排查配置问题；前台对 shown 失败静默即可，不打扰用户
+_POPUP_SHOWN_SQL = text(
+    "UPDATE popup_configs SET stats_shown = stats_shown + 1 "
+    "WHERE id = :id AND active = 1"
+)
+_POPUP_CONVERT_SQL = text(
+    "UPDATE popup_configs SET stats_converted = stats_converted + 1 "
+    "WHERE id = :id AND active = 1"
+)
+
+
+def track_popup_shown(db: Session, popup_id: int) -> dict:
+    if db.execute(_POPUP_SHOWN_SQL, {"id": popup_id}).rowcount == 0:
+        raise HTTPException(status_code=404, detail="popup_not_found")
+    db.commit()
+    return {"ok": True}
+
+
+def track_popup_convert(db: Session, popup_id: int) -> dict:
+    if db.execute(_POPUP_CONVERT_SQL, {"id": popup_id}).rowcount == 0:
+        raise HTTPException(status_code=404, detail="popup_not_found")
+    db.commit()
+    return {"ok": True}
 
 
 def purchase_giftcard(db: Session, body: GiftcardPurchaseIn) -> dict:

@@ -47,12 +47,131 @@ CATALOG = [
 
 SHAPES = [("Short Almond", "SA"), ("Medium Square", "MS")]
 
+# 个性化详情文案（description_md）：材质/场合/搭配建议，每款手写
+DESCRIPTIONS = {
+    "ma-damn": "**Ma Damn** — A true salon red in a glossy creme finish that photographs like a fresh manicure. "
+               "The shade leans cool enough to flatter every skin tone, which is why it is our most-repurchased classic. "
+               "Pair it with a little black dress and skip the drying time entirely.",
+    "winter-storm": "**Winter Storm** — Icy chrome that shifts into a magnetic cat-eye streak, no salon lamp required. "
+                    "The slightly translucent base keeps the shimmer frosty instead of flat. "
+                    "Made for winter knits, cold-weather photos and cool-toned statements.",
+    "bare-gems": "**Bare Gems** — A soft nude base hand-set with crystal accents along the cuticle line, finished with a wet-look top coat. "
+                 "The quiet-luxury pick for office weeks, weddings and close-up photos. "
+                 "Short Almond wears especially natural if this is your first press-on set.",
+    "french-kiss": "**French Kiss** — The timeless french tip with a modern twist: a softer white smile line over a milky base that brightens any skin tone. "
+                   "Interview Monday through bridal-shower Saturday, this set goes with everything. "
+                   "Keep the spares from the 24-piece box in your bag for touch-up emergencies.",
+    "cherry-bomb": "**Cherry Bomb** — A glossy jelly glaze in ripe cherry red, layered for that just-bitten stain effect. "
+                   "Slightly sheerer than a solid creme, it makes short nails look sweet and youthful. "
+                   "The date-night set — no UV lamp, no chips, no effort.",
+    "golden-hour": "**Golden Hour** — Warm gold foil suspended in champagne shimmer, like the last ten minutes of sunset on your nails. "
+                   "The flakes catch light from every angle without ever reading costume-y. "
+                   "Especially beautiful on Medium Square shapes over a summer tan.",
+    "cloud-nine": "**Cloud Nine** — A dreamy lavender milk with the smooth, high-coverage finish of a two-coat salon application. "
+                  "The pastel reads soft and editorial rather than costume purple. "
+                  "Pair with grey knitwear or lilac silk for the full soft-girl moment.",
+    "midnight-muse": "**Midnight Muse** — A deep navy base scattered with silver star dust that glitters like a clear night sky. "
+                     "Dark enough for evening, shimmering enough that it never reads as flat black. "
+                     "Built for cocktail parties, concerts and late city-light photos.",
+    "peachy-keen": "**Peachy Keen** — A soft peach glow with a creamy finish that warms up any skin tone in seconds. "
+                   "Think juiciest-peach manicure without the salon mark-up. "
+                   "Our most-gifted shade for moms, teachers and May birthdays.",
+    "venus": "**Venus** — A pearl chrome masterpiece: opalescent white shot through with pink and gold reflects. "
+             "The layered chrome looks expensive even in flat daylight. "
+             "Wear it to graduations, gallery nights and any day you want hands that look sculpted.",
+    "aurora": "**Aurora** — Holographic northern lights: a sheer lilac base packed with rainbow prism shimmer. "
+              "In direct sunlight the whole nail erupts into color. "
+              "Best on Short Almond for a beam of light down each finger.",
+    "nova": "**Nova** — An electric neon mix of tangerine, hot pink and lime in a bold color-block design. "
+            "This is the festival set: loud, graphic and impossible to miss. "
+            "Style with a plain white tee and let the nails do all the talking.",
+    "magic-glue": "**Magic Glue** — Professional-grade nail glue in a 5 ml precision-nozzle bottle. "
+                  "Holds a full set through dish washing, workouts and up to 2 weeks of wear, yet releases cleanly after a 10-minute warm soak. "
+                  "Keep one at home and one in your purse — a spare tube has saved many sets.",
+    "velvet-nights": "**Velvet Nights** — Deep velvet matte in smoked plum-black, dusted with midnight shimmer that reads matte indoors and glimmers under party lights. "
+                     "The soft-focus finish is the texture salons charge extra for. "
+                     "Made for autumn dinners, velvet blazers and dark-lipstick season.",
+}
+
+# 磁吸睫毛（magnetic-lashes 分类补挂）：(slug, title, subtitle, price, compare, stock, tags, new, best, rating, rating_n, sold, published_days_ago)
+LASHES = [
+    ("venus-lash", "Venus Lash", "Pearl cat-eye with magnetic hold", 1299, 1599, 52,
+     ["cat-eye", "lashes", "natural"], True, True, 491, 58, 240, 6),
+    ("aurora-lash", "Aurora Lash", "Wispy flare, no glue needed", 999, None, 30,
+     ["cat-eye", "lashes", "wispy"], True, False, 486, 33, 120, 9),
+    ("midnight-lash", "Midnight Lash", "Dramatic volume for night looks", 1599, 1999, 18,
+     ["cat-eye", "lashes", "dramatic"], False, True, 488, 47, 190, 12),
+]
+
+LASH_STYLES = [("Natural Cat", "NC"), ("Full Glam", "FG")]
+
+_LASH_SLUG_SET = {row[0] for row in LASHES}
+
+LASH_DESCRIPTIONS = {
+    "venus-lash": "**Venus Lash** — A pearl-black cat-eye lash with magnetic hold: sandwich your natural lashes "
+                  "between the bands and pinch, no glue and no drying time. Dramatic enough for evenings, "
+                  "light enough for all-day wear, and reusable for up to 20 wears.",
+    "aurora-lash": "**Aurora Lash** — A wispy flare lash with alternating lengths for that fluttery, I-woke-up-like-this effect. "
+                   "Magnetic application takes about 60 seconds once the pinch clicks. "
+                   "The natural pick for first-timers, school runs and no-makeup makeup days.",
+    "midnight-lash": "**Midnight Lash** — Maximum-volume lashes on a dense, layered band for night looks and photo flashes. "
+                     "The magnets hold through concerts, weddings and 2 a.m. dancing with no mid-night re-glue. "
+                     "Stack over liner for the fullest effect; reusable for up to 20 wears.",
+}
+
+
+def _seed_lashes(s) -> int:
+    """磁吸睫毛幂等补种：修复 magnetic-lashes 分类空挂（老库可重复执行；任一 lash slug 已存在即跳过）"""
+    slugs = [row[0] for row in LASHES]
+    if s.query(Product).filter(Product.slug.in_(slugs)).first():
+        return 0
+    now = utcnow()
+    cat = s.query(Category).filter(Category.slug == "magnetic-lashes").first()
+    if cat is None:
+        cat = Category(slug="magnetic-lashes", name="Magnetic Lashes", sort_order=2)
+        s.add(cat)
+        s.flush()
+    for i, (slug, title, sub, price, compare, stock, tags,
+            is_new, best, rating, rn, sold, ago) in enumerate(LASHES):
+        bg, fg = PALETTES[(i + 2) % len(PALETTES)]
+        base = title.replace(" ", "+")
+        p = Product(
+            slug=slug, title=title, subtitle=sub,
+            description_md=LASH_DESCRIPTIONS[slug],
+            category_id=cat.id, status=1,
+            compare_at_price=compare, price_min=price, price_max=price + 200,
+            hero_image=IMG.format(bg=bg, fg=fg, label=base),
+            images=[IMG.format(bg=bg, fg=fg, label=base + "+Side"),
+                    IMG.format(bg=bg, fg=fg, label=base + "+Swatch")],
+            tags=tags, is_new=is_new, is_best_seller=best,
+            rating_avg=rating, rating_count=rn, sold_count=sold,
+            published_at=now - timedelta(days=ago),
+        )
+        s.add(p)
+        s.flush()
+        for j, (style, code) in enumerate(LASH_STYLES):
+            s.add(Variant(
+                product_id=p.id, sku=f"{slug[:3].upper()}-{code}-PR",
+                option1_value=style, option2_value="1 pair",
+                price=price if j == 0 else price + 200,
+                stock=stock if j == 0 else max(3, stock // 3),
+                safety_stock=5,
+            ))
+        s.flush()
+    s.commit()
+    return len(LASHES)
+
 
 def seed() -> None:
     init_db()
     s = SessionLocal()
 
-    if s.query(Product).count():
+    # 磁吸睫毛幂等补种（老库空挂修复；新库随主流程一起建，主流程复用已建分类）
+    had_products = s.query(Product).count() > 0
+    if _seed_lashes(s):
+        print("seed: magnetic lashes backfilled")
+
+    if had_products:
         print("seed: products exist, skip")
         s.close()
         return
@@ -61,7 +180,8 @@ def seed() -> None:
 
     # ===== 分类 =====
     cat_nails = Category(slug="press-on-nails", name="Press-on Nails", sort_order=1)
-    cat_lashes = Category(slug="magnetic-lashes", name="Magnetic Lashes", sort_order=2)
+    cat_lashes = s.query(Category).filter(Category.slug == "magnetic-lashes").first() \
+        or Category(slug="magnetic-lashes", name="Magnetic Lashes", sort_order=2)
     cat_acc = Category(slug="accessories", name="Accessories", sort_order=3)
     s.add_all([cat_nails, cat_lashes, cat_acc])
     s.flush()
@@ -70,14 +190,15 @@ def seed() -> None:
     variant_ids = {}
     for i, (slug, title, sub, price, compare, stock, tags, is_new, best, rating, rn, sold) in enumerate(CATALOG):
         bg, fg = PALETTES[i % len(PALETTES)]
+        base = title.replace(" ", "+")
         p = Product(
             slug=slug, title=title, subtitle=sub,
-            description_md=f"**{title}** — {sub}. Salon-grade press-on set, 24 pcs with prep kit. Reusable up to 2 weeks per wear.",
+            description_md=DESCRIPTIONS[slug],
             category_id=cat_nails.id, status=1,
             compare_at_price=compare, price_min=price, price_max=price + 200,
-            hero_image=IMG.format(bg=bg, fg=fg, label=title.replace(" ", "+")),
-            images=[IMG.format(bg=bg, fg=fg, label=title.replace(" ", "+") + "+1"),
-                    IMG.format(bg=bg, fg=fg, label=title.replace(" ", "+") + "+2")],
+            hero_image=IMG.format(bg=bg, fg=fg, label=base),
+            images=[IMG.format(bg=bg, fg=fg, label=base + "+Side"),
+                    IMG.format(bg=bg, fg=fg, label=base + "+Swatch")],
             tags=tags, is_new=is_new, is_best_seller=best,
             rating_avg=rating, rating_count=rn, sold_count=sold,
             published_at=now - timedelta(days=30 - i),
@@ -100,7 +221,7 @@ def seed() -> None:
     # 配件（胶水）
     glue = Product(
         slug="magic-glue", title="Magic Glue", subtitle="Hold-fast nail glue, 5ml",
-        description_md="Professional-grade glue. Lasts up to 2 weeks.",
+        description_md=DESCRIPTIONS["magic-glue"],
         category_id=cat_acc.id, status=1, price_min=1399, price_max=1399,
         hero_image=IMG.format(bg="DDD6E8", fg="552338", label="Magic+Glue"),
         images=[IMG.format(bg="DDD6E8", fg="552338", label="Magic+Glue")],
@@ -118,13 +239,12 @@ def seed() -> None:
     vn_bg, vn_fg = PALETTES[3]
     velvet = Product(
         slug="velvet-nights", title="Velvet Nights", subtitle="Deep velvet matte with midnight shimmer",
-        description_md="**Velvet Nights** — Deep velvet matte with midnight shimmer. "
-                       "Salon-grade press-on set, 24 pcs with prep kit. Reusable up to 2 weeks per wear.",
+        description_md=DESCRIPTIONS["velvet-nights"],
         category_id=cat_nails.id, status=1,
         price_min=1699, price_max=1899,
         hero_image=IMG.format(bg=vn_bg, fg=vn_fg, label="Velvet+Nights"),
-        images=[IMG.format(bg=vn_bg, fg=vn_fg, label="Velvet+Nights+1"),
-                IMG.format(bg=vn_bg, fg=vn_fg, label="Velvet+Nights+2")],
+        images=[IMG.format(bg=vn_bg, fg=vn_fg, label="Velvet+Nights+Side"),
+                IMG.format(bg=vn_bg, fg=vn_fg, label="Velvet+Nights+Swatch")],
         tags=["velvet", "dark"], is_new=1,
         published_at=now + timedelta(days=7),
     )
@@ -283,6 +403,11 @@ def seed() -> None:
     glue_v = (s.query(Variant).filter(Variant.product_id == P["magic-glue"].id)
               .order_by(Variant.id).first())
     variant_ids["magic-glue"] = (glue_v.id, 1399)
+    # 睫毛首变体也入 variant_ids（供历史订单/评价复用既有链路）
+    for _slug in (row[0] for row in LASHES):
+        _v0 = (s.query(Variant).filter(Variant.product_id == P[_slug].id)
+               .order_by(Variant.id).first())
+        variant_ids[_slug] = (_v0.id, P[_slug].price_min)
     dc_map = {c.code: c for c in s.query(DiscountCode).all()}
 
     ADDRS = [
@@ -326,7 +451,10 @@ def seed() -> None:
         ("u1", 2, C, "standard", "WELCOME20", [("bare-gems", 1), ("magic-glue", 1)], None),
         ("u2", 3, S_, "express", None, [("french-kiss", 1), ("peachy-keen", 1), ("magic-glue", 1)], None),
         ("u3", 4, C, "standard", None, [("ma-damn", 2), ("golden-hour", 1), ("cloud-nine", 1)], None),
+        ("u7", 4, C, "standard", None, [("magic-glue", 1), ("venus-lash", 1), ("aurora-lash", 1)], None),
         ("u5", 5, C, "standard", None, [("bare-gems", 2), ("venus", 3), ("magic-glue", 1)], None),
+        ("u9", 5, C, "standard", None, [("aurora-lash", 1), ("midnight-lash", 1)], None),
+        ("u3", 6, S_, "standard", None, [("magic-glue", 1), ("midnight-lash", 1), ("venus-lash", 1)], None),
         ("u10", 7, S_, "standard", "WELCOME20", [("cloud-nine", 1), ("aurora", 1), ("peachy-keen", 1)], None),
         ("u4", 9, X, "standard", None, [("ma-damn", 1)], "user"),
         ("u6", 10, C, "standard", "WELCOME20", [("winter-storm", 1), ("magic-glue", 1)], None),
@@ -396,7 +524,9 @@ def seed() -> None:
         s.flush()
         items_map = {}
         for sl, q in items:
-            shape = "Standard" if sl == "magic-glue" else "Short Almond"
+            shape = ("Standard" if sl == "magic-glue"
+                     else "Natural Cat" if sl in _LASH_SLUG_SET
+                     else "Short Almond")
             it = OrderItem(order_id=o.id, variant_id=variant_ids[sl][0], product_slug=sl,
                            title_snapshot=f"{P[sl].title} · {shape}", image=P[sl].hero_image,
                            qty=q, unit_price=variant_ids[sl][1], subtotal=variant_ids[sl][1] * q)
@@ -475,12 +605,32 @@ def seed() -> None:
             "Two nails in my set had visible bubbles under the surface. They did send a replacement eventually."],
         1: ["Arrived with the wrong size entirely and support was slow to reply. Not for me."],
     }
+    # 睫毛专用评价语料（磁吸/无胶水/佩戴体验口径，避免甲片文案串场）
+    LASH_TEXTS = {
+        5: ["The magnetic hold is no joke — wore mine through a wedding and a gym session, zero sliding. "
+            "Second try and the application just clicked.",
+            "No glue, no raccoon eyes at midnight, and they peel off clean. "
+            "The cat-eye flare opens up my hooded eyes more than any mascara ever did.",
+            "Second pair already. The magnet bands hide perfectly under a thin liner "
+            "and they still look new after 15+ wears."],
+        4: ["Beautiful flare and genuinely comfortable. Took a few tries to get the pinch right — "
+            "watch the 60-second tutorial first.",
+            "Hold lasts my whole workday and they feel lighter than strip lashes. "
+            "I was expecting fuss and got none.",
+            "Gorgeous for nights out and surprisingly natural in daylight. "
+            "One magnet loosened on day one but pinching it back tight fixed it."],
+        3: ["Pretty and easy once you get the hang of it, though the band felt slightly long on my smaller eyes.",
+            "Nice natural look, but I expected a bit more drama for the price. Wears fine for a full workday."],
+        2: ["Magnets didn't line up with my lash line and one slid off at dinner. "
+            "Might work better with the applicator tool."],
+    }
     PENDING_IDX, REJECT_IDX, IMG_IDX = {0, 1, 2}, 7, {2, 6, 11, 17, 23, 31}
     new_reviews = []
     for i, (o, sl, it) in enumerate(lines):
         rating = ratings[i]
         status = 0 if i in PENDING_IDX else (2 if i == REJECT_IDX else 1)
-        content = TEXTS[rating][i % len(TEXTS[rating])]
+        pool = LASH_TEXTS if sl in _LASH_SLUG_SET else TEXTS
+        content = pool[rating][i % len(pool[rating])]
         reject_reason = None
         if i == REJECT_IDX:
             rating, content = 1, ("BEST NAILS EVER!!! Actually buy from my shop instead, link in bio, "
@@ -490,7 +640,8 @@ def seed() -> None:
         if i in IMG_IDX:
             bg, fg = PALETTES[i % len(PALETTES)]
             images = [IMG.format(bg=bg, fg=fg, label="Review+Proof"),
-                      IMG.format(bg=fg, fg=bg, label="Nail+Closeup")]
+                      IMG.format(bg=fg, fg=bg,
+                                 label="Lash+Closeup" if sl in _LASH_SLUG_SET else "Nail+Closeup")]
         kw = dict(product_id=P[sl].id, user_id=o.user_id, order_item_id=it.id,
                   rating=rating, content=content, images=images or None, status=status,
                   reject_reason=reject_reason,
@@ -739,8 +890,14 @@ def seed() -> None:
          "**裸钻** —— 裸色基底缀以水晶点缀，24 片含工具套装，salon 级穿戴甲，单次佩戴可达 2 周。"),
         ("french-kiss", "法式之吻", "永不过时的经典法式白边",
          "**法式之吻** —— 经典法式指尖一贴即得，24 片含工具套装，salon 级穿戴甲，单次佩戴可达 2 周。"),
-        ("venus", "维纳斯猫眼睫毛", "珍珠猫眼质感，磁吸一贴即得",
-         "**维纳斯猫眼睫毛** —— 珍珠铬猫眼质感，磁吸佩戴无需胶水，可重复使用。"),
+        ("venus", "维纳斯", "珍珠铬猫眼甲面，指尖上的雕塑感",
+         "**维纳斯** —— 珍珠铬猫眼甲面流转粉金光泽，日光下也层次分明；24 片含工具套装，单次佩戴可达 2 周。"),
+        ("venus-lash", "维纳斯睫毛", "珍珠黑猫眼款，磁吸一夹即贴",
+         "**维纳斯睫毛** —— 珍珠黑猫眼走向，磁吸设计无需胶水，轻夹即贴；日常到晚宴都撑得住，妥善保养可重复佩戴约 20 次。"),
+        ("aurora-lash", "极光睫毛", "仙子款渐长睫毛，裸感自然",
+         "**极光睫毛** —— 长短交错的仙子款，眨眼自带 flutter 效果；磁吸上手约 60 秒，新手也能一次成功，是日常淡妆的天然搭子。"),
+        ("midnight-lash", "午夜睫毛", "浓密大眼款，夜场拍照必备",
+         "**午夜睫毛** —— 高密度分层 Band，夜场灯光与闪光灯下都是大眼担当；磁吸一整晚不跑位，叠画眼线效果更炸，可重复佩戴约 20 次。"),
     ]:
         s.add(ProductTranslation(product_id=P[slug].id, locale="zh-CN",
                                  title=zh_title, subtitle=zh_sub, description_md=zh_desc))
@@ -767,6 +924,8 @@ def seed() -> None:
     print(f"  reviews={s.query(Review).count()} (approved={stat(Review, Review.status == 1)} "
           f"pending={stat(Review, Review.status == 0)} rejected={stat(Review, Review.status == 2)} "
           f"with_images={stat(Review, Review.images.isnot(None))})")
+    print("  lash reviews(approved): " + ", ".join(
+        f"{sl}={len(rs)}" for sl, rs in sorted(agg.items()) if sl in _LASH_SLUG_SET))
     dist = [stat(Review, Review.rating == r) for r in (5, 4, 3, 2, 1)]
     print(f"  rating dist 5/4/3/2/1 = {dist}")
     print(f"  rmas={s.query(Rma).count()} tickets={s.query(Ticket).count()} "
@@ -782,7 +941,8 @@ def seed() -> None:
     print(f"  stock_movements={s.query(StockMovement).count()} newsletter={s.query(NewsletterSubscriber).count()} "
           f"(klaviyo_synced={stat(NewsletterSubscriber, NewsletterSubscriber.klaviyo_synced == 1)}) "
           f"email_prefs={s.query(EmailPreference).count()} points_ledger={s.query(PointsLedger).count()}")
-    print(f"  translations={s.query(ProductTranslation).count()} (zh-CN: bare-gems/french-kiss/venus)")
+    print(f"  translations={s.query(ProductTranslation).count()} "
+          f"(zh-CN: bare-gems/french-kiss/venus + 3 睫毛)")
     s.close()
 
 

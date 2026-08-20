@@ -34,6 +34,9 @@ from fastapi.testclient import TestClient
 from app.core import observability as obs
 from app.main import app
 
+# 限流用例会整体替换 RATE_RULES，先留底以便 finally 恢复完整规则表
+_ORIG_RATE_RULES = list(obs.RATE_RULES)
+
 PASSED = 0
 FAILED = []
 
@@ -163,13 +166,7 @@ try:
               (r.status_code, rr.status_code))
 finally:
     obs.logger.removeHandler(cap) if "cap" in dir() else None
-    obs.RATE_RULES[:] = [
-        ("/api/account/login", 60),
-        ("/api/account/register", 30),
-        ("/api/account/password-reset", 20),
-        ("/api/payments/mock-pay", 120),
-        ("/api/support/tickets", 30),
-    ]
+    obs.RATE_RULES[:] = _ORIG_RATE_RULES
 
 print(f"\n{PASSED} passed, {len(FAILED)} failed")
 if FAILED:

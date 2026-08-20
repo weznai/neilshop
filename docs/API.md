@@ -3,10 +3,10 @@
 > 本文件由 `scripts/gen_api_docs.py` 自动生成（`from app.main import app` 展平路由），请勿手编；
 > CI 可用 `python scripts/gen_api_docs.py --check` 校验是否陈旧（不一致 exit 1）。
 
-- 生成时间：2026-08-19 18:24:44
-- 端点总数：**162**（展平后路由 168 条，含 6 个尾斜杠双路由已合并；方法×路径去重口径）
-- 分组数：**21**
-- 鉴权分布：🔒 admin 73 · 👤 user 30 · 🌐 public 59
+- 生成时间：2026-08-20 15:15:25
+- 端点总数：**164**（展平后路由 170 条，含 6 个尾斜杠双路由已合并；方法×路径去重口径）
+- 分组数：**19**
+- 鉴权分布：🔒 admin 73 · 👤 user 30 · 🌐 public 61
 
 ## 运行与交互文档
 
@@ -20,13 +20,7 @@ cd server
 - 原型前台：<http://localhost:8000/> · 种子账号见 README（密码 `glowmag123`）
 
 
-## /admin-login.html（1 个端点）
-
-| 方法 | 路径 | 鉴权 | tags | 说明 |
-|---|---|---|---|---|
-| `GET` | `/admin-login.html` | 🌐 public | - | admin-login.html列表 |
-
-## /api/account · 会员账户（24 个端点）
+## /api/account · 会员账户（25 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -36,6 +30,7 @@ cd server
 | `DELETE` | `/api/account/addresses/{address_id}` | 👤 user | account | 删除收货地址 |
 | `POST` | `/api/account/admin/login` | 🌐 public | account | 后台专用登录：role>=2 才放行，签发短时效 gm_admin_token（SameSite=Strict）。 |
 | `POST` | `/api/account/admin/logout` | 🌐 public | account | 创建logout |
+| `GET` | `/api/account/admin/me` | 🌐 public | account | 后台会话探测：严格只认 gm_admin_token（与前台 gm_token 隔离，双 Cookie 并存不串台）。 |
 | `POST` | `/api/account/consent` | 🌐 public | account | Cookie 分区同意落库 |
 | `POST` | `/api/account/delete-request` | 👤 user | account | GDPR 账户删除申请（202 + 7 天宽限） |
 | `DELETE` | `/api/account/delete-request` | 👤 user | account | 撤销账户删除申请 |
@@ -161,7 +156,7 @@ cd server
 | `DELETE` | `/api/cart/items/{variant_id}` | 🌐 public | cart | 移出购物车商品 |
 | `POST` | `/api/cart/merge` | 👤 user | cart | 游客购物车合并至登录账户 |
 
-## /api/catalog · 商品目录（11 个端点）
+## /api/catalog · 商品目录（12 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -172,6 +167,7 @@ cd server
 | `GET` | `/api/catalog/products-by-id/{product_id}` | 🌐 public | catalog | products-by-id详情 |
 | `GET` | `/api/catalog/products/{slug}` | 🌐 public | catalog | 商品详情 |
 | `GET` | `/api/catalog/reviews` | 🌐 public | catalog | 评价列表 |
+| `GET` | `/api/catalog/reviews/distribution` | 🌐 public | catalog | distribution列表 |
 | `GET` | `/api/catalog/search` | 🌐 public | catalog | 商品搜索（LIKE，演进 Meilisearch 单点替换） |
 | `GET` | `/api/catalog/stock-notify` | 🌐 public | catalog | 到货通知订阅状态查询 |
 | `POST` | `/api/catalog/stock-notify` | 🌐 public | catalog | 订阅到货通知（售罄商品，幂等） |
@@ -237,13 +233,15 @@ cd server
 | `GET` | `/api/points/expiring` | 👤 user | points | 即将过期积分汇总 |
 | `GET` | `/api/points/ledger` | 👤 user | points | 积分流水（账务唯一真相） |
 
-## /api/promo · 营销（折扣码/礼品卡/弹窗）（4 个端点）
+## /api/promo · 营销（折扣码/礼品卡/弹窗）（6 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
 | `POST` | `/api/promo/giftcard` | 🌐 public | promo | 礼品卡余额查询（兑换码） |
 | `POST` | `/api/promo/giftcard/purchase` | 🌐 public | promo | 礼品卡购买（$25/50/100，支付成功后激活） |
 | `GET` | `/api/promo/popup` | 🌐 public | promo | 订阅弹窗配置（DB 驱动 + 频控） |
+| `POST` | `/api/promo/popup/{popup_id}/convert` | 🌐 public | promo | 创建convert |
+| `POST` | `/api/promo/popup/{popup_id}/shown` | 🌐 public | promo | 创建shown |
 | `POST` | `/api/promo/validate` | 🌐 public | promo | 折扣码试算校验（唯一闸门 promo_rules） |
 
 ## /api/referrals · 推荐返利（2 个端点）
@@ -280,12 +278,6 @@ cd server
 | `GET` | `/api/support/tickets` | 🌐 public | support | 工单列表（登录仅自查；游客 ticket_no+email 双因子） |
 | `POST` | `/api/support/tickets` | 🌐 public | support | 创建工单（游客可投，可关联订单） |
 | `POST` | `/api/support/tickets/{ticket_no}/messages` | 🌐 public | support | 工单追加留言 |
-
-## /metrics · 可观测性（1 个端点）
-
-| 方法 | 路径 | 鉴权 | tags | 说明 |
-|---|---|---|---|---|
-| `GET` | `/metrics` | 🌐 public | - | Prometheus 指标（requests_total / duration p50·p95） |
 
 ## 常见响应约定（静态说明）
 

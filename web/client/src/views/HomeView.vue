@@ -1,23 +1,62 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { req } from '../api/client'
+import { GM_CATALOG } from '../data/catalog'
+import { i18n } from '../i18n'
 import ProductCard from '../components/ProductCard.vue'
 
 const newProducts = ref([])
 const bestProducts = ref([])
 const loaded = ref(false)
 
+/* 甲型导购卡：icon 为符号非文案，t/d 为 i18n 键 */
+const SHAPES = [
+  { v: 'almond', icon: '♀', t: 'home.shape.almond', d: 'home.shape.almondD' },
+  { v: 'square', icon: '▣', t: 'home.shape.square', d: 'home.shape.squareD' },
+  { v: 'stiletto', icon: '▲', t: 'home.shape.stiletto', d: 'home.shape.stilettoD' },
+  { v: 'coffin', icon: '◭', t: 'home.shape.coffin', d: 'home.shape.coffinD' },
+]
+/* 评价：人名/商品名为数据字段不迁，正文走 i18n */
+const REVIEWS = [
+  { n: 'Maya R.', p: 'Bare Gems', c: 'home.rev.1' },
+  { n: 'Jenna K.', p: 'Winter Storm', c: 'home.rev.2' },
+  { n: 'Priya S.', p: 'Cherry Bomb', c: 'home.rev.3' },
+]
+
+function seedCards() {
+  return GM_CATALOG.map((c) => ({
+    id: c.id, slug: '', title: c.title,
+    price_min: Math.round(c.price * 100), price_max: Math.round(c.price * 100),
+    compare_at_price: null, hero_image: c.img, tags: [],
+    is_new: false, is_best_seller: false, sold_count: 0, rating_count: 0, rating: 0,
+    stock_summary: { total: c.stock, low: 0, out: c.stock <= 0 },
+  }))
+}
+
 onMounted(async () => {
-  try {
-    const d = await req('GET', '/api/catalog/products?sort=new&size=4')
-    newProducts.value = d.items || []
-  } catch (_) { /* 保留空网格 */ }
-  try {
-    const d = await req('GET', '/api/catalog/products?sort=best&size=4')
-    bestProducts.value = d.items || []
-  } catch (_) { /* */ }
+  /* 两组卡片并行拉取（allSettled：单接口失败回落种子数据，不拖住另一组） */
+  const [nr, br] = await Promise.allSettled([
+    req('GET', '/api/catalog/products?sort=new&size=4'),
+    req('GET', '/api/catalog/products?sort=best&size=4'),
+  ])
+  newProducts.value = nr.status === 'fulfilled' && nr.value.items && nr.value.items.length
+    ? nr.value.items : seedCards().slice(0, 4)
+  bestProducts.value = br.status === 'fulfilled' && br.value.items && br.value.items.length
+    ? br.value.items : seedCards().slice(4, 8)
   loaded.value = true
 })
+
+const heroImg = computed(() => (newProducts.value[0] && newProducts.value[0].hero_image) ||
+  'https://placehold.co/600x450/F5D8DA/6D2E46?text=New+Season+Glam')
+
+/* hero 图加载失败：回落 placehold 占位（dataset 防循环） */
+const HERO_FALLBACK = 'https://placehold.co/600x450/E8B4B8/552338?text=GLOWMAG'
+function heroFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = HERO_FALLBACK
+}
 </script>
 
 <template>
@@ -25,38 +64,40 @@ onMounted(async () => {
   <section class="fade-up" style="background:linear-gradient(135deg,var(--rose-pale),var(--white) 60%);padding:72px 0 88px">
     <div class="container grid-m-1" style="display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center">
       <div>
-        <div style="font-size:13px;font-weight:700;letter-spacing:2px;color:var(--coral);text-transform:uppercase;margin-bottom:14px">New Season · 70+ Styles</div>
-        <h1 style="font-family:var(--font-title);font-size:52px;line-height:1.12;margin-bottom:18px">Salon nails,<br>in <em style="color:var(--plum)">5 minutes</em></h1>
-        <p style="color:var(--gray);font-size:16px;margin-bottom:14px;max-width:420px">Best-selling press-on nails & magnetic lashes. Up to 2-week wear, zero damage, endless styles.</p>
+        <div style="font-size:13px;font-weight:700;letter-spacing:2px;color:var(--coral);text-transform:uppercase;margin-bottom:14px">{{ i18n.t('home.hero.kicker') }}</div>
+        <!-- v16: clamp——≥650px 恒为 52px 与桌面一致，375px 收至 30px -->
+        <h1 style="font-family:var(--font-title);font-size:clamp(28px,8vw,52px);line-height:1.12;margin-bottom:18px">{{ i18n.t('home.hero.title') }}<br>{{ i18n.t('home.hero.ready') }} <em style="color:var(--plum)">{{ i18n.t('home.hero.mins') }}</em></h1>
+        <p style="color:var(--gray);font-size:16px;margin-bottom:14px;max-width:420px">{{ i18n.t('home.hero.sub') }}</p>
         <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:12.5px;color:var(--gray);margin-bottom:26px">
-          <span aria-hidden="true" style="font-size:13px">🎵</span> As seen on TikTok
+          <span aria-hidden="true" style="font-size:13px">🎵</span> {{ i18n.t('home.hero.tiktok') }}
           <span style="color:var(--gray-light)">·</span>
           <span class="stars" style="font-size:11.5px;color:var(--gold)" aria-hidden="true">★★★★★</span>
-          23,000+ five-star reviews
+          {{ i18n.t('home.hero.reviews') }}
         </div>
-        <div style="display:flex;gap:14px">
-          <router-link to="/store" class="btn btn-primary btn-lg">Shop Now</router-link>
-          <router-link to="/size-guide" class="btn btn-secondary btn-lg">Find Your Size</router-link>
+        <div class="home-hero-cta" style="display:flex;gap:14px">
+          <router-link to="/store" class="btn btn-primary btn-lg">{{ i18n.t('home.hero.shop') }}</router-link>
+          <router-link to="/size-guide" class="btn btn-secondary btn-lg">{{ i18n.t('home.hero.size') }}</router-link>
         </div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:22px;font-size:13.5px">
           <span class="stars" style="font-size:15px">★★★★★</span>
-          <b>4.8/5</b><span style="color:var(--gray)">average rating</span>
+          <b>4.8/5</b><span style="color:var(--gray)">{{ i18n.t('home.hero.rating') }}</span>
         </div>
         <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12.5px;color:var(--gray)">
-          <span>🚚 Free shipping over $35</span><span>↩️ 30-day returns</span><span>🔒 Secure checkout</span>
+          <span>🚚 {{ i18n.t('home.hero.fship') }}</span><span>↩️ {{ i18n.t('home.hero.ret') }}</span><span>🔒 {{ i18n.t('home.hero.pay') }}</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:16px">
           <span class="pay-pill">VISA</span><span class="pay-pill">MC</span><span class="pay-pill">PAYPAL</span><span class="pay-pill">KLARNA</span><span class="pay-pill">APPLE PAY</span>
         </div>
       </div>
       <div style="position:relative">
-        <img src="https://placehold.co/600x450/F5D8DA/6D2E46?text=New+Season+Glam"
-             alt="GLOWMAG new season press-on nail collection styled with magnetic lashes"
-             style="width:100%;border-radius:24px;aspect-ratio:4/3;object-fit:cover">
+        <img :src="heroImg"
+             :alt="i18n.t('home.hero.alt')"
+             style="width:100%;border-radius:24px;aspect-ratio:4/3;object-fit:cover;background:var(--rose-pale)"
+             @error="heroFallback">
         <div style="position:absolute;top:-14px;left:-10px;width:48px;height:48px;border-radius:50%;background:#fff;box-shadow:var(--shadow-card);display:flex;align-items:center;justify-content:center;font-size:22px">✨</div>
         <div class="card" style="position:absolute;bottom:-24px;right:-10px;padding:14px 18px;display:flex;gap:10px;align-items:center">
           <span style="font-size:26px">🧲</span>
-          <div><b style="font-size:13px">Magnetic Lashes</b><div style="font-size:12px;color:var(--gray)">Snap on in seconds</div></div>
+          <div><b style="font-size:13px">{{ i18n.t('home.hero.lash') }}</b><div style="font-size:12px;color:var(--gray)">{{ i18n.t('home.hero.lashD') }}</div></div>
         </div>
       </div>
     </div>
@@ -65,7 +106,7 @@ onMounted(async () => {
   <!-- ============ 价值条 ============ -->
   <section style="background:var(--ink);color:#fff;padding:22px 0">
     <div class="container grid-m-2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center;font-size:13px">
-      <span>✨ Salon-quality gel finish</span><span>⏱️ 5-min application</span><span>♻️ Reusable up to 60x</span><span>💚 Zero nail damage</span>
+      <span>{{ i18n.t('home.value.1') }}</span><span>{{ i18n.t('home.value.2') }}</span><span>{{ i18n.t('home.value.3') }}</span><span>{{ i18n.t('home.value.4') }}</span>
     </div>
   </section>
 
@@ -73,13 +114,21 @@ onMounted(async () => {
   <section class="section">
     <div class="container">
       <div class="section-head" style="margin-bottom:12px">
-        <h2 class="section-title">New Arrivals</h2>
-        <router-link class="section-link" to="/store?sort=new">View all →</router-link>
+        <h2 class="section-title">{{ i18n.t('home.new.t') }}</h2>
+        <router-link class="section-link" to="/store?sort=new">{{ i18n.t('home.viewAll') }}</router-link>
       </div>
-      <p style="font-size:13px;color:var(--gray);margin:-2px 0 20px">🚚 Free shipping over $35 · 🎁 Bundle &amp; save up to 20% — applied in cart</p>
+      <p style="font-size:13px;color:var(--gray);margin:-2px 0 20px">{{ i18n.t('home.new.note') }}</p>
       <div class="grid grid-4">
-        <ProductCard v-for="p in newProducts" :key="p.id" :p="p" />
-        <div v-if="!loaded" v-for="i in 4" :key="'sk' + i" class="pcard skeleton" style="min-height:280px" />
+        <template v-if="!loaded">
+          <div v-for="i in 4" :key="'sk' + i" class="home-sk-card">
+            <div class="home-sk-img"></div>
+            <div class="home-sk-line" style="width:70%"></div>
+            <div class="home-sk-line" style="width:40%"></div>
+          </div>
+        </template>
+        <template v-else>
+          <ProductCard v-for="p in newProducts" :key="p.id" :p="p" />
+        </template>
       </div>
     </div>
   </section>
@@ -87,18 +136,13 @@ onMounted(async () => {
   <!-- ============ SHOP BY SHAPE ============ -->
   <section class="section" style="background:var(--rose-pale)">
     <div class="container">
-      <div class="section-head"><h2 class="section-title">Shop by Shape</h2></div>
+      <div class="section-head"><h2 class="section-title">{{ i18n.t('home.shape.t') }}</h2></div>
       <div class="grid grid-4">
-        <router-link v-for="s in [
-          ['almond', 'Almond', '♀', 'Soft & flattering'],
-          ['square', 'Square', '▣', 'Classic & bold'],
-          ['stiletto', 'Stiletto', '▲', 'Sharp & fierce'],
-          ['coffin', 'Coffin', '◭', 'Trendy tapered'],
-        ]" :key="s[0]" class="card shape-card" :to="`/store?cat=nails&shape=${s[0]}`">
-          <div style="font-size:44px;padding:28px 0 12px;text-align:center">{{ s[2] }}</div>
+        <router-link v-for="s in SHAPES" :key="s.v" class="card shape-card" :to="`/store?cat=nails&shape=${s.v}`">
+          <div style="font-size:44px;padding:28px 0 12px;text-align:center">{{ s.icon }}</div>
           <div style="padding:0 18px 20px;text-align:center">
-            <b style="font-family:var(--font-title);font-size:18px">{{ s[1] }}</b>
-            <div style="font-size:12.5px;color:var(--gray);margin-top:4px">{{ s[3] }}</div>
+            <b style="font-family:var(--font-title);font-size:18px">{{ i18n.t(s.t) }}</b>
+            <div style="font-size:12.5px;color:var(--gray);margin-top:4px">{{ i18n.t(s.d) }}</div>
           </div>
         </router-link>
       </div>
@@ -109,12 +153,20 @@ onMounted(async () => {
   <section class="section">
     <div class="container">
       <div class="section-head" style="margin-bottom:12px">
-        <h2 class="section-title">Best Sellers</h2>
-        <router-link class="section-link" to="/store?sort=best">View all →</router-link>
+        <h2 class="section-title">{{ i18n.t('home.best.t') }}</h2>
+        <router-link class="section-link" to="/store?sort=best">{{ i18n.t('home.viewAll') }}</router-link>
       </div>
       <div class="grid grid-4">
-        <ProductCard v-for="p in bestProducts" :key="p.id" :p="p" />
-        <div v-if="!loaded" v-for="i in 4" :key="'sk2' + i" class="pcard skeleton" style="min-height:280px" />
+        <template v-if="!loaded">
+          <div v-for="i in 4" :key="'sk2' + i" class="home-sk-card">
+            <div class="home-sk-img"></div>
+            <div class="home-sk-line" style="width:70%"></div>
+            <div class="home-sk-line" style="width:40%"></div>
+          </div>
+        </template>
+        <template v-else>
+          <ProductCard v-for="p in bestProducts" :key="p.id" :p="p" />
+        </template>
       </div>
     </div>
   </section>
@@ -122,44 +174,40 @@ onMounted(async () => {
   <!-- ============ HOW IT WORKS ============ -->
   <section class="section" style="background:var(--rose-pale)">
     <div class="container" style="text-align:center">
-      <h2 class="section-title" style="margin-bottom:8px">Glam in 5 minutes</h2>
-      <p style="color:var(--gray);margin-bottom:36px">No glue mishaps. No salon appointments. No damage.</p>
+      <h2 class="section-title" style="margin-bottom:8px">{{ i18n.t('home.how.t') }}</h2>
+      <p style="color:var(--gray);margin-bottom:36px">{{ i18n.t('home.how.sub') }}</p>
       <div class="grid grid-3" style="text-align:left">
         <div class="card">
           <div class="step-n">1</div>
-          <b style="font-size:15px">Prep &amp; clean</b>
-          <p style="font-size:13px;color:var(--gray);margin-top:6px">Wipe nails with the included alcohol pad. Pick your sizes — 10 nails, 24 sizes.</p>
+          <b style="font-size:15px">{{ i18n.t('home.how.s1t') }}</b>
+          <p style="font-size:13px;color:var(--gray);margin-top:6px">{{ i18n.t('home.how.s1d') }}</p>
         </div>
         <div class="card">
           <div class="step-n">2</div>
-          <b style="font-size:15px">Press on &amp; hold</b>
-          <p style="font-size:13px;color:var(--gray);margin-top:6px">Apply adhesive tabs or a thin layer of glue. Press each nail for 5 seconds.</p>
+          <b style="font-size:15px">{{ i18n.t('home.how.s2t') }}</b>
+          <p style="font-size:13px;color:var(--gray);margin-top:6px">{{ i18n.t('home.how.s2d') }}</p>
         </div>
         <div class="card">
           <div class="step-n">3</div>
-          <b style="font-size:15px">Wear &amp; reuse</b>
-          <p style="font-size:13px;color:var(--gray);margin-top:6px">Up to 2-week wear. Soak to remove — your set is reusable up to 60 times.</p>
+          <b style="font-size:15px">{{ i18n.t('home.how.s3t') }}</b>
+          <p style="font-size:13px;color:var(--gray);margin-top:6px">{{ i18n.t('home.how.s3d') }}</p>
         </div>
       </div>
-      <router-link to="/how-it-works" class="btn btn-secondary" style="margin-top:28px">See the full tutorial</router-link>
+      <router-link to="/how-it-works" class="btn btn-secondary" style="margin-top:28px">{{ i18n.t('home.how.cta') }}</router-link>
     </div>
   </section>
 
   <!-- ============ REVIEWS ============ -->
   <section class="section">
     <div class="container">
-      <div class="section-head"><h2 class="section-title">Loved by 40,000+ glammers</h2></div>
+      <div class="section-head"><h2 class="section-title">{{ i18n.t('home.rev.t') }}</h2></div>
       <div class="grid grid-3">
-        <div v-for="rv in [
-          { n: 'Maya R.', t: 'Bare Gems', c: 'These lasted my full 2-week vacation — pool, beach, everything. Nobody believed they were press-ons.' },
-          { n: 'Jenna K.', t: 'Winter Storm', c: 'The magnetic lashes are LIFE CHANGING. No more glue in my eyeballs. 10/10 would glam again.' },
-          { n: 'Priya S.', t: 'Cherry Bomb', c: 'Got so many compliments at work. The sizing guide made it super easy to get a perfect fit.' },
-        ]" :key="rv.n" class="card">
+        <div v-for="rv in REVIEWS" :key="rv.n" class="card">
           <div class="stars" style="color:var(--gold)">★★★★★</div>
-          <p style="font-size:14px;margin:10px 0 14px">"{{ rv.c }}"</p>
+          <p style="font-size:14px;margin:10px 0 14px">"{{ i18n.t(rv.c) }}"</p>
           <div style="display:flex;align-items:center;gap:10px">
             <span style="width:34px;height:34px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">{{ rv.n.charAt(0) }}</span>
-            <div><b style="font-size:13px">{{ rv.n }}</b><div style="font-size:11.5px;color:var(--gray)">✓ Verified · {{ rv.t }}</div></div>
+            <div><b style="font-size:13px">{{ rv.n }}</b><div style="font-size:11.5px;color:var(--gray)">✓ {{ i18n.t('home.rev.verified') }} · {{ rv.p }}</div></div>
           </div>
         </div>
       </div>
@@ -170,9 +218,9 @@ onMounted(async () => {
   <section class="section" style="padding-top:0">
     <div class="container">
       <div class="ugc-band" style="margin-bottom:18px">
-        <img v-for="i in 6" :key="i" :src="`https://placehold.co/140x140/F5D8DA/6D2E46?text=Glam+${i}`" alt="Customer wearing GLOWMAG nails" loading="lazy">
+        <img v-for="i in 6" :key="i" :src="`https://placehold.co/140x140/F5D8DA/6D2E46?text=Glam+${i}`" :alt="i18n.t('home.ugc.alt')" loading="lazy">
         <router-link class="ugc-cta" to="/gallery">
-          <b>4,800+</b><span>#GLOWMAGGlam looks</span><span style="text-decoration:underline">See them all →</span>
+          <b>4,800+</b><span>{{ i18n.t('home.ugc.looks') }}</span><span style="text-decoration:underline">{{ i18n.t('home.ugc.see') }}</span>
         </router-link>
       </div>
     </div>
@@ -188,4 +236,9 @@ onMounted(async () => {
 .ugc-cta:hover{filter:brightness(1.08)}
 .ugc-cta b{font-size:21px;font-family:var(--font-title)}
 .shape-card{display:block;padding:0;overflow:hidden;color:inherit}
+.home-sk-card{border-radius:12px}
+.home-sk-img{aspect-ratio:1;border-radius:12px}
+.home-sk-img,.home-sk-line{background:linear-gradient(100deg,var(--gray-light) 40%,#f7f3f5 50%,var(--gray-light) 60%);background-size:200% 100%;animation:homeSk 1.2s infinite}
+.home-sk-line{height:14px;border-radius:7px;margin-top:10px}
+@keyframes homeSk{to{background-position:-200% 0}}
 </style>

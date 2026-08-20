@@ -1,7 +1,9 @@
 """轻量可观测性：统一 X-Request-Id / 结构化访问日志 / 进程内 Prometheus 文本指标 / 应用级滑动窗限流。"""
 
+import json
 import logging
 import math
+import os
 import threading
 import time
 import uuid
@@ -24,13 +26,40 @@ _COUNTERS: dict[tuple[str, str, int], int] = {}
 _SAMPLES: deque[tuple[str, float]] = deque(maxlen=10000)
 
 RATE_WINDOW = 60.0
+# 前缀匹配（startswith）且先命中先生效：更具体的前缀必须排在更宽的前缀之前；
+# /api/ai 前缀刻意不加（ai/router.py 域内 30/min 滑动窗自治，避免双重 429）；
+# /api/orders/track 用全路径形式，避免 /api/orders 宽前缀覆盖订单列表/详情端点
 RATE_RULES: list[tuple[str, int]] = [
+    ("/api/account/admin/login", 20),
     ("/api/account/login", 60),
     ("/api/account/register", 30),
     ("/api/account/password-reset", 20),
+    ("/api/account/newsletter", 30),
+    ("/api/account/consent", 10),
+    ("/api/promo/giftcard/purchase", 20),
+    ("/api/promo/giftcard", 20),
+    ("/api/promo/popup", 60),
+    ("/api/promo/validate", 60),
+    ("/api/checkout/place", 10),
     ("/api/payments/mock-pay", 120),
+    ("/api/payments/webhook", 120),
+    ("/api/payments/create-intent", 30),
+    ("/api/returns", 20),
+    ("/api/exchanges", 20),
+    ("/api/orders/track", 30),
+    ("/api/catalog/stock-notify", 10),
     ("/api/support/tickets", 30),
 ]
+
+# 测试/压测可调：GM_RATE_RULES='{"/api/checkout/place": 120}' 覆盖已有规则的阈值
+# （仅允许调整既有前缀的 limit，不新增/删除规则；缺省完全按上表生效）
+_override_raw = os.getenv("GM_RATE_RULES", "").strip()
+if _override_raw:
+    try:
+        _override = {str(k): int(v) for k, v in json.loads(_override_raw).items()}
+        RATE_RULES = [(p, _override.get(p, n)) for p, n in RATE_RULES]
+    except (ValueError, TypeError):
+        logger.warning("GM_RATE_RULES is not a valid {prefix: limit} JSON, ignored")
 _RATE_BUCKETS: dict[tuple[str, str], deque[float]] = {}
 
 

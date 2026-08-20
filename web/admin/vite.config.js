@@ -5,7 +5,16 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [vue()],
   base: '/admin/',
-  build: { outDir: '../dist/admin', emptyOutDir: true },
+  build: {
+    outDir: '../dist/admin',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // vue 家族独立 vendor chunk：与应用代码分离，可被浏览器并行加载与长效缓存
+        manualChunks: { vendor: ['vue', 'vue-router', 'pinia'] },
+      },
+    },
+  },
   server: {
     port: 5174,
     proxy: {

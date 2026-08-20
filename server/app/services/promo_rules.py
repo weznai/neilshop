@@ -41,7 +41,7 @@ def validate_code(
     if dc.first_order_only and email:
         placed = (
             db.query(Order.id)
-            .filter(Order.email == email)
+            .filter(Order.email == email, Order.status != 8)  # 已取消订单不算“已下单”
         )
         if user_id:
             placed = placed.filter(or_(Order.email == email, Order.user_id == user_id))

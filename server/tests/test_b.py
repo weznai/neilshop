@@ -198,6 +198,19 @@ with TestClient(app) as client:
           s.get(Cart, cart_main.id).items == []
           and s.query(OrderTimeline).filter(OrderTimeline.order_id == main.id,
                                             OrderTimeline.event == "checkout_created").count() == 1)
+    check("place 回填 cart.email（弃购召回依赖）",
+          s.get(Cart, cart_main.id).email == "emma@glow.test", s.get(Cart, cart_main.id).email)
+
+    # 90s 内同用户 items 完全相同的 PENDING 单 → 幂等返回原单（不重复建单扣库存）
+    set_cart_items(cart_main.id, [{"variantId": v_bare.id, "qty": 1},
+                                  {"variantId": v_glue.id, "qty": 1}])
+    r = client.post("/api/checkout/place", headers={**guest_main, **emma_auth}, json={
+        "email": "emma@glow.test", "address": addr, "shipping_method": "standard"})
+    s.expire_all()
+    check("place 重复提交幂等 → 返回原单 / 无新单 / 库存不再扣减",
+          r.status_code == 201 and r.json()["order_no"] == main_no
+          and s.query(Order).filter(Order.user_id == emma.id).count() == 1
+          and stock(v_bare.id) == 98 and stock(v_glue.id) == 49, r.text[:200])
 
     set_cart_items(cart_main.id, [{"variantId": v_glue.id, "qty": 5000}])
     r = client.post("/api/checkout/place", headers={**guest_main, **emma_auth}, json={
@@ -208,7 +221,8 @@ with TestClient(app) as client:
           and s.query(Order).filter(Order.user_id == emma.id).count() == 1
           and stock(v_glue.id) == 49, r.text)
 
-    set_cart_items(cart_main.id, [{"variantId": v_bare.id, "qty": 1},
+    # 用分下单：items 与主单不同（cherry+glue），避免命中 90s 幂等防重
+    set_cart_items(cart_main.id, [{"variantId": v_cherry.id, "qty": 1},
                                   {"variantId": v_glue.id, "qty": 1}])
     r = client.post("/api/checkout/place", headers={**guest_main, **emma_auth}, json={
         "email": "emma@glow.test", "address": addr, "points": 300})
@@ -216,18 +230,27 @@ with TestClient(app) as client:
     order3_no = d.get("order_no", "")
     order3 = order_by_no(order3_no)
     s.expire_all()
-    check("place 用分 300 → 总额 3432 / points_used 300 / 余额 500→200",
-          r.status_code == 201 and d["grand_total"] == 3432 and order3.points_used == 300
+    check("place 用分 300 → 总额 3217 / points_used 300 / 余额 500→200",
+          r.status_code == 201 and d["grand_total"] == 3217 and order3.points_used == 300
           and s.get(User, emma.id).points == 200, d)
     check("place SPEND 积分流水落库",
           s.query(PointsLedger).filter(PointsLedger.user_id == emma.id,
                                        PointsLedger.reason == int(PointsReason.SPEND)).count() == 1)
 
     r = client.post(f"/api/orders/{order3_no}/cancel", headers=emma_auth)
-    check("cancel 待付单 → CANCELED + 库存回补 98/49 + RELEASE 流水",
+    s.expire_all()
+    check("cancel 待付单 → CANCELED + 库存回补 cherry 98→99 / glue 48→49 + RELEASE 流水",
           r.status_code == 200 and r.json()["status"] == 8
-          and stock(v_bare.id) == 98 and stock(v_glue.id) == 49
+          and stock(v_cherry.id) == 99 and stock(v_glue.id) == 49
           and s.query(StockMovement).filter(StockMovement.type == 4).count() == 2, r.text)
+    s.expire_all()
+    check("cancel 已用积分返还 300（200→500）+ REFUND_RETURN 流水",
+          s.get(User, emma.id).points == 500
+          and s.query(PointsLedger).filter(
+              PointsLedger.user_id == emma.id,
+              PointsLedger.reason == int(PointsReason.REFUND_RETURN),
+              PointsLedger.ref_id == order3.id).count() == 1,
+          s.get(User, emma.id).points)
     r = client.post(f"/api/orders/{order3_no}/cancel", headers=emma_auth)
     check("cancel 非待付单 → 409", r.status_code == 409, r.text)
 
@@ -261,7 +284,7 @@ with TestClient(app) as client:
           and d["payment_status"] == 1, d)
     check("mock-pay 积分入账 311 分冻结（$31.10×10）",
           main.points_earned == 311 and grant_ledger is not None and grant_ledger.frozen == 1
-          and emma_db.points == 511, main.points_earned)
+          and emma_db.points == 811, main.points_earned)
     check("mock-pay total_spent 3110 + outbox order.paid + Redemption 600 + used_count+1",
           emma_db.total_spent == 3110 and outbox_paid is not None
           and outbox_paid.payload["grand_total"] == 3110
@@ -411,9 +434,10 @@ with TestClient(app) as client:
     s.expire_all()
     main_item = s.query(OrderItem).filter(OrderItem.order_id == main.id,
                                           OrderItem.variant_id == v_bare.id).first()
-    check("RMA refund → 退款 1599×(3110/2998)+499=2158（含税分摊）/ Payment 部分退 / refunded_qty=1 / 订单状态不变",
-          r.status_code == 200 and d["refund_amount"] == 2158 and d["refund_shipping"] == 499
-          and payment.status == 4 and payment.refunded_amount == 2158
+    check("RMA refund → 退款 1599×(3110/2998)=1659 + 运费按件分摊 499×1/2=250 → 1909"
+          "（含税分摊）/ Payment 部分退 / refunded_qty=1 / 订单状态不变",
+          r.status_code == 200 and d["refund_amount"] == 1909 and d["refund_shipping"] == 250
+          and payment.status == 4 and payment.refunded_amount == 1909
           and main_item.refunded_qty == 1 and main.status == 4, d)
 
     r = client.post(f"/api/admin/trade/orders/{main_no}/refund", headers=admin_auth,
@@ -429,11 +453,11 @@ with TestClient(app) as client:
     void_ledger = s.query(PointsLedger).filter(
         PointsLedger.user_id == emma.id,
         PointsLedger.reason == int(PointsReason.REFUND_VOID)).first()
-    check("admin 全额退（补齐剩余 952）→ Payment 全退 3110 / 订单 REFUNDED",
+    check("admin 全额退（补齐剩余 1201）→ Payment 全退 3110 / 订单 REFUNDED",
           r.status_code == 200 and payment.status == 3 and payment.refunded_amount == 3110
           and main.status == 9, d)
-    check("全额退 → 积分作废 311（511→200）+ outbox order.refunded",
-          emma_db.points == 200 and void_ledger is not None and outbox_refunded is not None,
+    check("全额退 → 积分作废 311（811→500）+ outbox order.refunded",
+          emma_db.points == 500 and void_ledger is not None and outbox_refunded is not None,
           emma_db.points)
     check("全额退库存只回补未退部分（bare 不重复回补 98 / glue +1=49）",
           stock(v_bare.id) == 98 and stock(v_glue.id) == 49,

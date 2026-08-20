@@ -1,9 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { i18n } from '../i18n'
 import { useUiStore } from '../stores/ui'
 import { useCartStore } from '../stores/cart'
 import { useAuthStore } from '../stores/auth'
+import { req, errMessage } from '../api/client'
 import GmIcon from '../components/GmIcon.vue'
 import CartDrawer from '../components/CartDrawer.vue'
 import SearchModal from '../components/SearchModal.vue'
@@ -14,6 +16,7 @@ import MarketingPopups from '../components/MarketingPopups.vue'
 const ui = useUiStore()
 const cart = useCartStore()
 const auth = useAuthStore()
+const route = useRoute()
 
 const year = new Date().getFullYear()
 const ANN = ['announce.a', 'announce.b', 'announce.c']
@@ -25,8 +28,8 @@ function startAnn() {
 
 const NAV = [
   ['/store?sort=new', 'nav.new'],
-  ['/store?cat=nails', 'nav.nails'],
-  ['/store?cat=lashes', 'nav.lashes'],
+  ['/store?cat=press-on-nails', 'nav.nails'],
+  ['/store?cat=magnetic-lashes', 'nav.lashes'],
   ['/collabs', 'nav.collabs'],
   ['/bundles', 'nav.bundles'],
   ['/sale', 'nav.sale'],
@@ -34,22 +37,63 @@ const NAV = [
 const zh = computed(() => i18n.lang === 'zh')
 const MEGA_SHAPE = [['almond', 'Short Almond', '短杏仁'], ['square', 'Square', '方形'], ['stiletto', 'Stiletto', '尖头'], ['coffin', 'Coffin', '棺形']]
 const MEGA_STYLE = [['french', 'French', '法式'], ['glitter', 'Glitter', '亮片'], ['solid', 'Solid', '纯色'], ['art', 'Nail Art', '美甲艺术']]
+/* 编辑精选卡链到真实商品（slug 直达 PDP），价格与种子一致 */
 const MEGA_PICKS = [
-  { title: 'Bare Gems', titleZh: '裸钻', price: 15.99, img: 'https://placehold.co/120x120/F5D8DA/6D2E46?text=Bare+Gems' },
-  { title: 'Cherry Bomb', titleZh: '樱桃炸弹', price: 13.99, img: 'https://placehold.co/120x120/E8C5D8/552338?text=Cherry' },
+  { slug: 'bare-gems', title: 'Bare Gems', titleZh: '裸钻', price: 15.99, img: 'https://placehold.co/120x120/F5D8DA/6D2E46?text=Bare+Gems' },
+  { slug: 'french-kiss', title: 'French Kiss', titleZh: '法式之吻', price: 14.99, img: 'https://placehold.co/120x120/E8C5D8/552338?text=French+Kiss' },
 ]
 
+/* 滚动驱动：顶栏收缩 + 返回顶部（单监听器） */
 const showBackTop = ref(false)
-function onScroll() { showBackTop.value = window.scrollY > 400 }
+const headerScrolled = ref(false)
+function onScroll() {
+  const y = window.scrollY
+  showBackTop.value = y > 400
+  headerScrolled.value = y > 8
+}
 function backTop() { window.scrollTo({ top: 0, behavior: 'smooth' }) }
 function openConsent() { window.dispatchEvent(new CustomEvent('gm:open-consent')) }
 
+/* 全局面包屑：由路由 meta.title 链推导（Home / My Account / My Orders…），首页隐藏 */
+const crumbs = computed(() =>
+  route.matched
+    .filter((r) => r.meta && r.meta.title && r.path !== '/')
+    .map((r) => ({ path: r.path, title: r.meta.title })),
+)
+
+/* 心愿单角标：WishlistView 已把数量写入 gm_wl_count，此处路由切换时同步（登录后访问过心愿单页即有值）；
+   ProductView 加入心愿单后广播 gm:wl-changed 即时刷新 */
+const wlCount = ref(0)
+function syncWl() { wlCount.value = parseInt(localStorage.getItem('gm_wl_count') || '0', 10) || 0 }
+watch(() => route.fullPath, syncWl)
+function onWlChanged() { syncWl() }
+
+/* 页脚 newsletter（端点存在且游客可用：POST /api/account/newsletter） */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const newsEmail = ref('')
+const newsBusy = ref(false)
+async function subscribeNews() {
+  const em = newsEmail.value.trim()
+  if (!EMAIL_RE.test(em)) { ui.toast(i18n.t('footer.news.err'), 'error'); return }
+  newsBusy.value = true
+  try {
+    await req('POST', '/api/account/newsletter', { email: em, source: 'footer' })
+    ui.toast(i18n.t('footer.news.ok'), 'success')
+    newsEmail.value = ''
+  } catch (e) {
+    ui.toast(errMessage(e), 'error')
+  } finally { newsBusy.value = false }
+}
+
 onMounted(() => {
   startAnn()
+  syncWl()
+  window.addEventListener('gm:wl-changed', onWlChanged)
   window.addEventListener('scroll', onScroll, { passive: true })
 })
 onUnmounted(() => {
   clearInterval(annTimer)
+  window.removeEventListener('gm:wl-changed', onWlChanged)
   window.removeEventListener('scroll', onScroll)
 })
 </script>
@@ -59,7 +103,7 @@ onUnmounted(() => {
     <span>{{ i18n.t(ANN[annIdx]) }}</span>
   </div>
 
-  <header class="header">
+  <header class="header" :class="{ scrolled: headerScrolled }">
     <div class="container header-inner">
       <button class="icon-btn mobile-only" :aria-label="i18n.t('aria.menu')" style="margin-left:-8px" @click="ui.openMnav()">
         <GmIcon name="menu" />
@@ -72,15 +116,15 @@ onUnmounted(() => {
             <div class="mega">
               <div class="mega-col">
                 <h5>{{ zh ? '按甲型选购' : 'Shop by Shape' }}</h5>
-                <router-link v-for="[v, en, cn] in MEGA_SHAPE" :key="v" :to="`/store?cat=nails&shape=${v}`">{{ zh ? cn : en }}</router-link>
+                <router-link v-for="[v, en, cn] in MEGA_SHAPE" :key="v" :to="`/store?cat=press-on-nails&shape=${v}`">{{ zh ? cn : en }}</router-link>
               </div>
               <div class="mega-col">
                 <h5>{{ zh ? '按风格选购' : 'Shop by Style' }}</h5>
-                <router-link v-for="[v, en, cn] in MEGA_STYLE" :key="v" :to="`/store?cat=nails&style=${v}`">{{ zh ? cn : en }}</router-link>
+                <router-link v-for="[v, en, cn] in MEGA_STYLE" :key="v" :to="`/store?cat=press-on-nails&style=${v}`">{{ zh ? cn : en }}</router-link>
               </div>
               <div class="mega-col">
                 <h5>{{ zh ? '编辑精选' : "Editors' Picks" }}</h5>
-                <router-link v-for="p in MEGA_PICKS" :key="p.title" class="mega-card" to="/store">
+                <router-link v-for="p in MEGA_PICKS" :key="p.title" class="mega-card" :to="`/product?slug=${p.slug}`">
                   <img :src="p.img" :alt="p.title">
                   <span><b>{{ zh ? p.titleZh : p.title }}</b><i>${{ p.price.toFixed(2) }}</i></span>
                 </router-link>
@@ -93,8 +137,8 @@ onUnmounted(() => {
             <div class="mega mega-2">
               <div class="mega-col">
                 <h5>{{ zh ? '选购睫毛' : 'Shop Lashes' }}</h5>
-                <router-link to="/store?cat=lashes">{{ zh ? '全部磁吸睫毛' : 'All Magnetic Lashes' }}</router-link>
-                <router-link to="/store?cat=lashes">{{ zh ? '维纳斯猫眼' : 'Venus Cat-Eye' }}</router-link>
+                <router-link to="/store?cat=magnetic-lashes">{{ zh ? '全部磁吸睫毛' : 'All Magnetic Lashes' }}</router-link>
+                <router-link to="/store?cat=press-on-nails&tag=cat-eye">{{ zh ? '猫眼宝石系列' : 'Cat-Eye Edit' }}</router-link>
                 <router-link to="/how-it-works">{{ zh ? '5 秒佩戴教程' : 'How to apply in 5s' }}</router-link>
               </div>
               <router-link class="mega-promo mega-promo-card" to="/bundles">
@@ -111,6 +155,10 @@ onUnmounted(() => {
           <span :class="{ on: i18n.lang === 'en' }">EN</span><i>/</i><span :class="{ on: i18n.lang === 'zh' }">中</span>
         </button>
         <button class="icon-btn" :aria-label="i18n.t('aria.search')" @click="ui.openSearch()"><GmIcon name="search" /></button>
+        <router-link class="icon-btn" to="/account/wishlist" :aria-label="i18n.t('aria.wishlist')">
+          <GmIcon name="heart" />
+          <span class="cart-badge" :style="{ display: auth.isLoggedIn && wlCount ? 'flex' : 'none' }">{{ wlCount }}</span>
+        </router-link>
         <router-link class="icon-btn" to="/account" :aria-label="i18n.t('aria.account')"><GmIcon name="user" /></router-link>
         <button class="icon-btn" :aria-label="i18n.t('aria.cart')" @click="ui.openCart()">
           <GmIcon name="cart" />
@@ -121,11 +169,34 @@ onUnmounted(() => {
   </header>
 
   <main>
+    <nav v-if="crumbs.length" class="container crumbs" aria-label="Breadcrumb">
+      <router-link to="/">{{ i18n.t('crumb.home') }}</router-link>
+      <template v-for="c in crumbs" :key="c.path">
+        <GmIcon class="crumb-sep" name="chevron-right" :size="13" />
+        <router-link :to="c.path">{{ c.title }}</router-link>
+      </template>
+    </nav>
     <router-view />
   </main>
 
   <footer class="footer">
     <div class="container">
+      <div class="trust-row">
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="truck" :size="20" /></span><b>{{ i18n.t('trust.ship') }}</b></div>
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="refresh" :size="20" /></span><b>{{ i18n.t('trust.ret') }}</b></div>
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="lock" :size="20" /></span><b>{{ i18n.t('trust.pay') }}</b></div>
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="star" :size="20" /></span><b>{{ i18n.t('trust.love') }}</b></div>
+      </div>
+      <div class="footer-news">
+        <div>
+          <h5>{{ i18n.t('footer.news.t') }}</h5>
+          <p>{{ i18n.t('footer.news.d') }}</p>
+        </div>
+        <form class="news-form" @submit.prevent="subscribeNews">
+          <input v-model="newsEmail" type="email" :placeholder="i18n.t('welcome.ph')" aria-label="Email">
+          <button class="btn btn-sm news-btn" type="submit" :disabled="newsBusy">{{ i18n.t('welcome.btn') }}</button>
+        </form>
+      </div>
       <div class="footer-grid">
         <div>
           <div class="logo" style="color:#fff;font-size:24px;margin-bottom:14px">GLOW<span style="color:var(--rose)">MAG</span></div>
@@ -194,8 +265,8 @@ onUnmounted(() => {
     <router-link to="/account"><GmIcon name="user" :size="22" /><span>{{ i18n.t('tab.account') }}</span></router-link>
   </nav>
 
-  <button class="back-top" :class="{ show: showBackTop }" aria-label="Back to top" @click="backTop">
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+  <button class="back-top" :class="{ show: showBackTop }" :aria-label="i18n.t('aria.backTop')" @click="backTop">
+    <GmIcon name="arrow-up" :size="18" />
   </button>
 
   <div class="overlay" :class="{ open: ui.mnavOpen }" @click="ui.closeMnav()"></div>
@@ -209,6 +280,9 @@ onUnmounted(() => {
       <router-link to="/how-it-works" @click="ui.closeMnav()">💅 {{ i18n.t('footer.howto') }}</router-link>
       <router-link to="/track" @click="ui.closeMnav()">🚚 {{ i18n.t('footer.track') }}</router-link>
       <router-link to="/refer" @click="ui.closeMnav()">🎁 {{ i18n.t('footer.refer') }}</router-link>
+      <div class="sep"></div>
+      <router-link to="/account/wishlist" @click="ui.closeMnav()">💜 {{ i18n.t('tab.wishlist') }}</router-link>
+      <router-link to="/account" @click="ui.closeMnav()">👤 {{ i18n.t('tab.account') }}</router-link>
     </nav>
   </aside>
 
@@ -224,4 +298,41 @@ onUnmounted(() => {
 .lang-switch:hover{border-color:var(--rose)}
 .lang-switch .on{color:var(--plum)}
 .lang-switch i{opacity:.4;font-style:normal;margin:0 1px}
+
+/* v15 顶栏滚动收缩 + 毛玻璃（sticky 下内容自底部透过半透明底色） */
+.header-inner{transition:height .25s ease-out}
+.header.scrolled{background:rgba(255,255,255,.86);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 6px 24px rgba(31,27,30,.08)}
+.header.scrolled .header-inner{height:56px}
+
+/* v15 全局面包屑 */
+.crumb-sep{stroke:var(--gray);opacity:.7;margin:-2px 2px 0}
+
+/* v15 页脚信任徽章行 */
+.trust-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:24px 0;border-bottom:1px solid rgba(255,255,255,.12)}
+.trust-item{display:flex;align-items:center;gap:11px;min-width:0}
+.trust-item b{color:rgba(255,255,255,.88);font-size:13px;font-weight:600;line-height:1.35}
+.trust-ico{width:38px;height:38px;border-radius:12px;background:rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;color:var(--rose);flex:none}
+.trust-ico svg{stroke:var(--rose)}
+@media (max-width:768px){
+  .trust-row{grid-template-columns:1fr 1fr;gap:12px}
+  .trust-item b{font-size:12px}
+}
+
+/* v15 页脚 newsletter 订阅条 */
+.footer-news{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:22px 0;border-bottom:1px solid rgba(255,255,255,.12)}
+.footer-news h5{font-family:var(--font-title);font-size:17px;color:#fff;margin-bottom:3px}
+.footer-news p{font-size:12.5px;color:rgba(255,255,255,.62)}
+.news-form{display:flex;gap:8px;flex:none}
+.news-form input{width:250px;height:40px;border-radius:999px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);color:#fff;padding:0 16px;font-size:13px;outline:none;transition:border-color .15s}
+.news-form input::placeholder{color:rgba(255,255,255,.5)}
+.news-form input:focus{border-color:var(--rose)}
+.news-btn{background:var(--rose);color:var(--plum-dark)}
+.news-btn:hover{filter:brightness(1.06)}
+@media (max-width:768px){
+  .footer-news{flex-direction:column;align-items:stretch;text-align:center;gap:14px}
+  .news-form input{width:auto;flex:1}
+  /* v16: iOS 输入聚焦不自动放大（<16px 触发缩放）；高度同步抬到触摸标准 */
+  .news-form input{font-size:16px;height:46px}
+  .news-btn{height:46px}
+}
 </style>

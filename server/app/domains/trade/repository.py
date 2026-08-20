@@ -28,6 +28,23 @@ _ADJUST_SQL = text(
 )
 _STOCK_OF_SQL = text("SELECT stock FROM variants WHERE id = :vid")
 
+# 状态推进 CAS（抢占式 UPDATE + rowcount 判定）：支付回调/取消/关单并发互斥的原子底座
+_CLAIM_PAID_SQL = text(
+    "UPDATE orders SET status = 1, paid_at = :now WHERE id = :oid AND status = 0"
+)
+_CLAIM_PAYMENT_PAID_SQL = text(
+    "UPDATE payments SET status = 1 WHERE id = :pid AND status != 1"
+)
+_CLAIM_CANCELED_SQL = text(
+    "UPDATE orders SET status = 8, canceled_at = :now, cancel_reason = :reason "
+    "WHERE id = :oid AND status = 0"
+)
+# 礼品卡原子扣减：余额守卫进 WHERE，并发双花时 rowcount=0
+_DEBIT_GIFT_CARD_SQL = text(
+    "UPDATE gift_cards SET balance = balance - :amt "
+    "WHERE id = :gid AND status = 1 AND balance >= :amt"
+)
+
 
 # ---------- 库存：乐观锁写 + 现值读 ----------
 def stock_of(db: Session, variant_id: int) -> int:
@@ -45,6 +62,28 @@ def release_stock(db: Session, variant_id: int, qty: int) -> None:
 def adjust_stock_locked(db: Session, variant_id: int, change: int, version: int) -> int:
     return db.execute(_ADJUST_SQL, {
         "vid": variant_id, "chg": change, "version": version,
+    }).rowcount
+
+
+# ---------- 状态推进 CAS（rowcount=1 才算抢占成功，调用方据此决定是否继续派生动作） ----------
+def claim_order_paid(db: Session, order_id: int, now) -> int:
+    return db.execute(_CLAIM_PAID_SQL, {"oid": order_id, "now": now}).rowcount
+
+
+def claim_payment_paid(db: Session, payment_id: int) -> int:
+    return db.execute(_CLAIM_PAYMENT_PAID_SQL, {"pid": payment_id}).rowcount
+
+
+def claim_order_canceled(db: Session, order_id: int, now, reason: str) -> int:
+    return db.execute(_CLAIM_CANCELED_SQL, {
+        "oid": order_id, "now": now, "reason": reason,
+    }).rowcount
+
+
+# ---------- 礼品卡：原子扣减 ----------
+def debit_gift_card(db: Session, gift_card_id: int, amount: int) -> int:
+    return db.execute(_DEBIT_GIFT_CARD_SQL, {
+        "gid": gift_card_id, "amt": amount,
     }).rowcount
 
 
@@ -138,6 +177,22 @@ def order_items(db: Session, order_id: int) -> list[OrderItem]:
     return db.query(OrderItem).filter(OrderItem.order_id == order_id).all()
 
 
+def order_items_map(db: Session, order_ids: list[int]) -> dict[int, list[OrderItem]]:
+    """批量订单条目（多订单装配用，替代逐单 order_items 的 N+1 调用模式）。"""
+    imap: dict[int, list[OrderItem]] = {}
+    if not order_ids:
+        return imap
+    rows = (
+        db.query(OrderItem)
+        .filter(OrderItem.order_id.in_(order_ids))
+        .order_by(OrderItem.id.asc())
+        .all()
+    )
+    for r in rows:
+        imap.setdefault(r.order_id, []).append(r)
+    return imap
+
+
 def order_timeline_desc(db: Session, order_id: int) -> list[OrderTimeline]:
     return (
         db.query(OrderTimeline).filter(OrderTimeline.order_id == order_id)
@@ -149,8 +204,40 @@ def order_shipments(db: Session, order_id: int) -> list[Shipment]:
     return db.query(Shipment).filter(Shipment.order_id == order_id).all()
 
 
+def order_shipments_map(db: Session, order_ids: list[int]) -> dict[int, list[Shipment]]:
+    """批量订单物流（多订单装配用，替代逐单 order_shipments 的 N+1 调用模式）。"""
+    smap: dict[int, list[Shipment]] = {}
+    if not order_ids:
+        return smap
+    rows = (
+        db.query(Shipment)
+        .filter(Shipment.order_id.in_(order_ids))
+        .order_by(Shipment.id.asc())
+        .all()
+    )
+    for r in rows:
+        smap.setdefault(r.order_id, []).append(r)
+    return smap
+
+
 def order_payments(db: Session, order_id: int) -> list[Payment]:
     return db.query(Payment).filter(Payment.order_id == order_id).all()
+
+
+def order_payments_map(db: Session, order_ids: list[int]) -> dict[int, list[Payment]]:
+    """批量订单支付（多订单装配用，替代逐单 order_payments 的 N+1 调用模式）。"""
+    pmap: dict[int, list[Payment]] = {}
+    if not order_ids:
+        return pmap
+    rows = (
+        db.query(Payment)
+        .filter(Payment.order_id.in_(order_ids))
+        .order_by(Payment.id.asc())
+        .all()
+    )
+    for r in rows:
+        pmap.setdefault(r.order_id, []).append(r)
+    return pmap
 
 
 def order_redemptions(db: Session, order_id: int) -> list[DiscountRedemption]:
@@ -169,6 +256,15 @@ def checkout_created_event(db: Session, order_id: int) -> Optional[OrderTimeline
 def latest_payment_of_order(db: Session, order_id: int) -> Optional[Payment]:
     return (
         db.query(Payment).filter(Payment.order_id == order_id)
+        .order_by(Payment.id.desc()).first()
+    )
+
+
+def pending_payment_of_order(db: Session, order_id: int) -> Optional[Payment]:
+    """订单当前 PENDING(0) 的最近一笔支付（create-intent 幂等复用，避免堆积新行）"""
+    return (
+        db.query(Payment)
+        .filter(Payment.order_id == order_id, Payment.status == 0)
         .order_by(Payment.id.desc()).first()
     )
 
@@ -200,7 +296,9 @@ def list_user_rmas(db: Session, user_id: int) -> list[tuple[Rma, OrderItem, Orde
     )
 
 
-def list_rmas(db: Session, status: Optional[int] = None) -> list[tuple[Rma, OrderItem, Order]]:
+def list_rmas(
+    db: Session, status: Optional[int] = None, page: int = 1, per_page: int = 20,
+) -> tuple[list[tuple[Rma, OrderItem, Order]], int]:
     query = (
         db.query(Rma, OrderItem, Order)
         .join(OrderItem, Rma.order_item_id == OrderItem.id)
@@ -208,7 +306,12 @@ def list_rmas(db: Session, status: Optional[int] = None) -> list[tuple[Rma, Orde
     )
     if status is not None:
         query = query.filter(Rma.status == status)
-    return query.order_by(Rma.id.desc()).all()
+    total = query.count()
+    rows = (
+        query.order_by(Rma.id.desc())
+        .offset((page - 1) * per_page).limit(per_page).all()
+    )
+    return rows, total
 
 
 # ---------- 礼品卡 ----------

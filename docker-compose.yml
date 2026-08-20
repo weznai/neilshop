@@ -4,15 +4,28 @@
 name: glowmag
 
 x-glowmag-build: &glowmag-build
-  context: .                        # 构建上下文 = 仓库根（prototype/ 静态站需进镜像）
+  context: .                        # 构建上下文 = 仓库根（web/ 前后台 SPA 由镜像内 node 阶段构建）
   dockerfile: server/Dockerfile
 
 x-glowmag-env: &glowmag-env         # api/worker/migrate 共用运行环境（密钥全部外置 .env，代码零硬编码）
   GM_DB: mysql+pymysql://glowmag:${GM_MYSQL_PASSWORD:?请在 .env 设置 GM_MYSQL_PASSWORD}@mysql:3306/glowmag?charset=utf8mb4
   GM_JWT_SECRET: ${GM_JWT_SECRET:?请在 .env 设置 GM_JWT_SECRET}
   GM_ENV: prod
-      GM_ADMIN_TOKEN_HOURS: ${GM_ADMIN_TOKEN_HOURS:-12}    # 后台会话时效（小时）
-      GM_ALLOWED_ORIGINS: ${GM_ALLOWED_ORIGINS:-}       # CORS 白名单（空=同源不加 CORS）
+  GM_ADMIN_TOKEN_HOURS: ${GM_ADMIN_TOKEN_HOURS:-12}    # 后台会话时效（小时）
+  GM_ALLOWED_ORIGINS: ${GM_ALLOWED_ORIGINS:-}       # CORS 白名单（空=同源不加 CORS）
+  GM_TOKEN_DAYS: ${GM_TOKEN_DAYS:-7}                # 前台会员 token 时效（天）
+  GM_COOKIE_AUTH: ${GM_COOKIE_AUTH:-1}              # Cookie 会话通道（0=仅 Bearer，默认开）
+  GM_COOKIE_SECURE: ${GM_COOKIE_SECURE:-}           # Cookie Secure 标记（空=随 GM_ENV，prod 自动开）
+  # 可选支付（默认 Mock 链）：Stripe 接入还需镜像补装 stripe 包；PayPal 走 httpx（镜像已含）
+  GM_STRIPE_KEY: ${GM_STRIPE_KEY:-}
+  GM_STRIPE_WEBHOOK_SECRET: ${GM_STRIPE_WEBHOOK_SECRET:-}
+  GM_STRIPE_KLARNA: ${GM_STRIPE_KLARNA:-0}
+  GM_PAYPAL_CLIENT_ID: ${GM_PAYPAL_CLIENT_ID:-}
+  GM_PAYPAL_SECRET: ${GM_PAYPAL_SECRET:-}
+  GM_PAYPAL_BASE: ${GM_PAYPAL_BASE:-https://api-m.sandbox.paypal.com}
+  # 可选热路径读缓存（默认关；GM_CACHE=1 开启，TTL 秒，见 app/core/config.py）
+  GM_CACHE: ${GM_CACHE:-}
+  GM_CACHE_TTL: ${GM_CACHE_TTL:-30}
   TZ: ${TZ:-UTC}
 
 services:
@@ -43,13 +56,12 @@ services:
         limits:
           memory: 512m              # §7.0 资源上限纪律：防 mysql OOM 拖死整机；大促可上调 1g（deploy.md §5）
 
-  api:                              # FastAPI 单体（含 prototype 静态站挂载），api/worker/migrate 复用同一镜像
+  api:                              # FastAPI 单体（含 web/dist 前后台 SPA 挂载），api/worker/migrate 复用同一镜像
     build: *glowmag-build
     container_name: glowmag-api
     restart: unless-stopped
     environment:
       <<: *glowmag-env
-      GM_STRIPE_KEY: ${GM_STRIPE_KEY:-}   # 可选：接入 Stripe 时填入（当前 MVP 支付 Mock）
     ports:
       - "127.0.0.1:8000:8000"      # 仅回环！入口交给 Cloudflare/反代（§7.0），绝不直接暴露公网
     depends_on:

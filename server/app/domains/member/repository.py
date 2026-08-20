@@ -184,6 +184,12 @@ def user_id_by_email(db: Session, email: str) -> int | None:
     return row[0] if row else None
 
 
+def all_user_ids(db: Session) -> list[int]:
+    """推荐码反查用：derive_code 为 user_id 确定性派生（无存储列），
+    单查全量 id 后内存匹配（注册低频端点，MVP 规模可接受）。"""
+    return [r[0] for r in db.query(User.id).all()]
+
+
 def add_referral(db: Session, referral: Referral) -> None:
     db.add(referral)
 
@@ -232,7 +238,8 @@ __all__ = [
     "get_email_preference", "add_email_preference", "add_cookie_consent",
     "ledger_page", "expiring_ledger_rows", "referral_points_earned",
     "add_points_ledger", "referrals_by_referrer", "find_referral",
-    "user_id_by_email", "add_referral", "pending_referrals_for_email",
+    "user_id_by_email", "all_user_ids", "add_referral",
+    "pending_referrals_for_email",
     "add_order_timeline", "list_subscriptions", "get_subscription",
     "add_subscription",
 ]

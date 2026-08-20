@@ -28,6 +28,18 @@ def get_popup(scene: str = Query(...), db: Session = Depends(get_db)):
     return service.popup_payload(popup)
 
 
+# 公开上报（无鉴权）：曝光/转化由前台投放页直接调用，频控由前端负责；
+# 不存在/已停用 404，前端静默忽略即可
+@router.post("/popup/{popup_id}/shown")
+def popup_shown(popup_id: int, db: Session = Depends(get_db)):
+    return service.track_popup_shown(db, popup_id)
+
+
+@router.post("/popup/{popup_id}/convert")
+def popup_convert(popup_id: int, db: Session = Depends(get_db)):
+    return service.track_popup_convert(db, popup_id)
+
+
 @router.post("/giftcard/purchase", status_code=201)
 def purchase_giftcard(body: GiftcardPurchaseIn, db: Session = Depends(get_db)):
     return service.purchase_giftcard(db, body)

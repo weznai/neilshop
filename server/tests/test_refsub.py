@@ -110,17 +110,39 @@ with TestClient(app) as client:
 
     r = client.post("/api/referrals/simulate-invite", headers=H_rita,
                     json={"email": "ivy@glowmag.com"})
+    check("simulate-invite 已注册邮箱 → 409（不允许直接置 REGISTERED）",
+          r.status_code == 409, r.text)
+    # ivy 已注册：绑定关系改由注册流/直插建立（等价 bind_referral_on_register 的产物）
+    s.add(Referral(code=expected_code, referrer_user_id=rita.id,
+                   invited_email="ivy@glowmag.com", invited_user_id=ivy.id,
+                   status=int(ReferralStatus.REGISTERED)))
+    s.commit()
     ref1 = s.query(Referral).filter(Referral.referrer_user_id == rita.id).one()
-    check("simulate-invite 建行 status=1 + invited_user_id + code 同派生码",
-          r.status_code == 201 and r.json()["code"] == expected_code
-          and ref1.status == int(ReferralStatus.REGISTERED)
+    check("预置 REGISTERED 绑定行 + code 同派生码",
+          ref1.status == int(ReferralStatus.REGISTERED)
           and ref1.invited_email == "ivy@glowmag.com"
           and ref1.invited_user_id == ivy.id and ref1.code == expected_code,
-          (r.status_code, ref1.status, ref1.invited_user_id))
+          (ref1.status, ref1.invited_user_id))
 
     r = client.post("/api/referrals/simulate-invite", headers=H_rita,
                     json={"email": "ivy@glowmag.com"})
     check("simulate-invite 同 email 重复 → 409", r.status_code == 409, r.text)
+
+    # ===== simulate-invite 收紧后的合法路径：未注册邮箱建 CLICKED 行 =====
+    r = client.post("/api/referrals/simulate-invite", headers=H_tina,
+                    json={"email": "fresh@glowmag.com"})
+    tina_ref = s.query(Referral).filter(Referral.referrer_user_id == tina.id).one()
+    check("simulate-invite 未注册邮箱 → 201 建 CLICKED 行（invited_user_id 空）",
+          r.status_code == 201 and r.json()["code"] == derive_code(tina.id)
+          and tina_ref.status == int(ReferralStatus.CLICKED)
+          and tina_ref.invited_user_id is None,
+          (r.status_code, tina_ref.status))
+    r = client.post("/api/referrals/simulate-invite", headers=H_tina,
+                    json={"email": "fresh@glowmag.com"})
+    check("simulate-invite 未注册但重复 → 409 already invited", r.status_code == 409, r.text)
+    r = client.post("/api/referrals/simulate-invite", headers=H_tina,
+                    json={"email": "ivy@glowmag.com"})
+    check("simulate-invite 已注册邮箱（tina 视角）→ 409", r.status_code == 409, r.text)
 
     r3 = client.get("/api/referrals/me", headers=H_rita).json()
     check("me invited 列表：email 脱敏 + status_text 中文 + stats",
@@ -181,9 +203,11 @@ with TestClient(app) as client:
               PointsLedger.reason == int(PointsReason.REFERRAL)).count() == 0,
           (self_ref.status, s.get(User, sam.id).points))
 
-    # ===== 端到端：simulate-invite → mock-pay → 钩子自动奖励 =====
-    client.post("/api/referrals/simulate-invite", headers=H_rita,
-                json={"email": "nia@glowmag.com"})
+    # ===== 端到端：绑定（等价 /register?ref= 注册流）→ mock-pay → 钩子自动奖励 =====
+    s.add(Referral(code=expected_code, referrer_user_id=rita.id,
+                   invited_email="nia@glowmag.com", invited_user_id=nia.id,
+                   status=int(ReferralStatus.REGISTERED)))
+    s.commit()
     o3 = make_order(s, "NS260816R03", user_id=nia.id, email="nia@glowmag.com")
     s.commit()
     client.post("/api/payments/create-intent", json={"order_no": "NS260816R03"})
@@ -204,6 +228,47 @@ with TestClient(app) as client:
     r4 = client.get("/api/referrals/me", headers=H_rita).json()
     check("me stats 汇总：invited 2 / rewarded 2 / points_earned 2000",
           r4["stats"] == {"invited": 2, "rewarded": 2, "points_earned": 2000}, r4["stats"])
+
+    # ===== /register?ref= 绑定闭环：RegisterIn.ref_code → REGISTERED 绑定行 =====
+    r = client.post("/api/account/register", json={
+        "email": "zoe@glowmag.com", "password": "zoepass123", "name": "Zoe",
+        "ref_code": expected_code})
+    zoe = s.query(User).filter(User.email == "zoe@glowmag.com").one()
+    zoe_ref = s.query(Referral).filter(Referral.invited_email == "zoe@glowmag.com").one()
+    check("注册带 ref_code → 建 REGISTERED 绑定（referrer=rita / invited_user_id 回填）",
+          r.status_code == 201 and zoe_ref.referrer_user_id == rita.id
+          and zoe_ref.status == int(ReferralStatus.REGISTERED)
+          and zoe_ref.invited_user_id == zoe.id and zoe_ref.code == expected_code,
+          (r.status_code, zoe_ref.status, zoe_ref.invited_user_id))
+    # CLICKED 预登记（simulate-invite）+ 注册带码 → 流转为 REGISTERED 并回填
+    client.post("/api/referrals/simulate-invite", headers=H_rita,
+                json={"email": "kai@glowmag.com"})
+    r = client.post("/api/account/register", json={
+        "email": "kai@glowmag.com", "password": "kaipass123", "name": "Kai",
+        "ref_code": expected_code})
+    kai = s.query(User).filter(User.email == "kai@glowmag.com").one()
+    kai_ref = s.query(Referral).filter(Referral.invited_email == "kai@glowmag.com").one()
+    check("CLICKED 预登记 + 注册带码 → 升级 REGISTERED + invited_user_id 回填",
+          r.status_code == 201 and kai_ref.status == int(ReferralStatus.REGISTERED)
+          and kai_ref.invited_user_id == kai.id, (r.status_code, kai_ref.status))
+    # 无效码 / 自身码：注册不受影响，不建行
+    r = client.post("/api/account/register", json={
+        "email": "rex@glowmag.com", "password": "rexpass123", "name": "Rex",
+        "ref_code": "GLOW-DEADBEEF"})
+    check("无效 ref_code → 注册正常 201 且不建绑定行",
+          r.status_code == 201 and s.query(Referral).filter(
+              Referral.invited_email == "rex@glowmag.com").count() == 0, r.status_code)
+    # 被邀人首单支付 → 发放闭环验证（绑定行写对即钩子可用）
+    o4 = make_order(s, "NS260816R04", user_id=zoe.id, email="zoe@glowmag.com")
+    s.commit()
+    on_order_paid(s, o4)
+    s.commit()
+    s.expire_all()
+    check("zoe 首单支付 → 双方各 +1000（绑定闭环真实发放）",
+          s.get(User, rita.id).points == 3000 and s.get(User, zoe.id).points == 1000
+          and s.query(Referral).filter(
+              Referral.invited_email == "zoe@glowmag.com").one().status == 3,
+          (s.get(User, rita.id).points, s.get(User, zoe.id).points))
 
     # ===== subscriptions：计划常量 + 全状态机 =====
     me = client.get("/api/subscriptions/me", headers=H_rita).json()

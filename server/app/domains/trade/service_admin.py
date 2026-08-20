@@ -18,6 +18,7 @@ from app.services import points as points_svc
 
 PER_PAGE_ORDERS = 10
 PER_PAGE_MOVEMENTS = 20
+PER_PAGE_RMAS = 20
 
 
 def _timeline(
@@ -96,6 +97,8 @@ def apply_refund(
         _restock_items(db, order, ref_type="order")
         order.status = 9
         points_svc.refund_void(db, order)
+        # 累计退满：该单已用积分返还（points_used=0 跳过，同单幂等）
+        points_svc.refund_return(db, order, order.user_id, order.points_used)
         if order.giftcard_discount > 0:
             ledger_rows = repo.giftcard_debit_ledgers(db, order.id)
             for row in ledger_rows:
@@ -130,9 +133,12 @@ def apply_refund(
 
 def list_orders(
     db: Session, status: Optional[int], q: Optional[str], page: int,
+    per_page: Optional[int] = None,
 ) -> dict:
+    # 可选每页条数：缺省 10 兼容；显式传值时钳制到 10-100
+    pp = PER_PAGE_ORDERS if per_page is None else min(max(per_page, 10), 100)
     orders, total = repo.paginate_orders(
-        db, status=status, q=q, page=page, per_page=PER_PAGE_ORDERS,
+        db, status=status, q=q, page=page, per_page=pp,
     )
     return {
         "items": [{
@@ -141,8 +147,8 @@ def list_orders(
             "placed_at": o.placed_at.isoformat() if o.placed_at else None,
             "paid_at": o.paid_at.isoformat() if o.paid_at else None,
         } for o in orders],
-        "page": page, "per_page": PER_PAGE_ORDERS, "total": total,
-        "pages": (total + PER_PAGE_ORDERS - 1) // PER_PAGE_ORDERS,
+        "page": page, "per_page": pp, "total": total,
+        "pages": (total + pp - 1) // pp,
     }
 
 
@@ -226,6 +232,14 @@ def ship_order(db: Session, admin: User, order_no: str, body: ShipRequest) -> di
         "tracking_no": body.tracking_no,
     })
     _timeline(db, order.id, "status_changed", actor="admin", detail={"from": prev_status, "to": 3})
+    # 发货通知邮件（worker _EVENT_EMAILS 消费 order.shipped → order_shipped 模板）
+    repo.add_outbox_event(
+        db, aggregate_type="order", aggregate_id=order.id, event_type="order.shipped",
+        payload={
+            "order_no": order.order_no, "email": order.email,
+            "carrier": body.carrier, "tracking_no": body.tracking_no,
+        },
+    )
     _admin_log(db, admin, "ship", "order", order.id, {
         "shipment_no": shipment.shipment_no, "carrier": body.carrier, "tracking_no": body.tracking_no,
     })
@@ -262,20 +276,27 @@ def refund_order(
     return {"order_no": order.order_no, "order_status": order.status, **result}
 
 
-def list_rmas(db: Session, status: Optional[int]) -> dict:
-    rows = repo.list_rmas(db, status)
-    return {"items": [{
-        "rma_no": rma.rma_no,
-        "order_no": order.order_no,
-        "email": order.email,
-        "status": rma.status,
-        "qty": rma.qty,
-        "reason": rma.reason,
-        "item_title": item.title_snapshot,
-        "unit_price": item.unit_price,
-        "refund_amount": rma.refund_amount,
-        "created_at": rma.created_at.isoformat() if rma.created_at else None,
-    } for rma, item, order in rows]}
+def list_rmas(
+    db: Session, status: Optional[int],
+    page: int = 1, per_page: int = PER_PAGE_RMAS,
+) -> dict:
+    rows, total = repo.list_rmas(db, status, page=page, per_page=per_page)
+    return {
+        "items": [{
+            "rma_no": rma.rma_no,
+            "order_no": order.order_no,
+            "email": order.email,
+            "status": rma.status,
+            "qty": rma.qty,
+            "reason": rma.reason,
+            "item_title": item.title_snapshot,
+            "unit_price": item.unit_price,
+            "refund_amount": rma.refund_amount,
+            "created_at": rma.created_at.isoformat() if rma.created_at else None,
+        } for rma, item, order in rows],
+        "page": page, "per_page": per_page, "total": total,
+        "pages": (total + per_page - 1) // per_page,
+    }
 
 
 def approve_rma(db: Session, admin: User, rma_no: str) -> dict:
@@ -324,8 +345,22 @@ def refund_rma(db: Session, admin: User, rma_no: str) -> dict:
         amount = int(base * order.grand_total / order.subtotal + 0.5)
     else:
         amount = base
-    refund_shipping = 499 if rma.reason in (2, 4, 5) else 0
+    # 退运费（reason 2/4/5）：按订单实付 shipping_fee 按件数比例折算（最低 0），
+    # 不再固定补 499 —— 免邮单/多件部分退不应虚增退款
+    refund_shipping = 0
+    if rma.reason in (2, 4, 5) and order.shipping_fee > 0:
+        total_qty = sum(i.qty for i in repo.order_items(db, order.id))
+        if total_qty > 0:
+            refund_shipping = max(0, min(
+                int(order.shipping_fee * rma.qty / total_qty + 0.5),
+                order.shipping_fee,
+            ))
     amount = min(amount + refund_shipping, order.grand_total)
+    payment = repo.refundable_payment_of_order(db, order.id)
+    if payment is not None and amount > payment.amount - payment.refunded_amount:
+        # 多笔 RMA 按比例折算各摊运费可能累计超过剩余可退（apply_refund 会 409 拒绝，
+        # RMA 将永远卡在 4 态无法结案）；钳到剩余可退，恰好收尾为全额退
+        amount = payment.amount - payment.refunded_amount
 
     item.refunded_qty += rma.qty
     result = apply_refund(

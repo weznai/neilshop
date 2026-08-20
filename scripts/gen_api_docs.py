@@ -287,9 +287,16 @@ def collect_endpoints():
     from app.main import app  # noqa: 延迟导入，保证 --help 不依赖环境
 
     flat = flatten(app.routes)
-    raw = sum(len(r.methods - {"HEAD", "OPTIONS"}) for r, *_ in flat)
+    raw = sum(
+        len(r.methods - {"HEAD", "OPTIONS"})
+        for r, *_ in flat
+        if getattr(r, "include_in_schema", True) is not False
+    )
     endpoints = {}
     for route, prefix, inherited_tags, inherited_deps in flat:
+        # include_in_schema=False 的路由（robots.txt/sitemap/legacy 重定向等）不进 API 手册
+        if getattr(route, "include_in_schema", True) is False:
+            continue
         path = prefix + route.path
         if path != "/" and path.endswith("/"):  # 尾斜杠双路由合并（同处理器）
             norm = path.rstrip("/")

@@ -1,5 +1,6 @@
 """运营域服务 —— 看板聚合编排 / 会员管理与风控 / 审计日志"""
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
@@ -9,6 +10,8 @@ from app.core.db import utcnow
 from app.models import AdminLog, User
 from app.domains.ops import repository as repo
 from app.domains.ops.schemas import REASON_TEXT, RiskIn
+
+logger = logging.getLogger("glowmag.ops")
 
 
 def log_admin(db: Session, admin: User, action: str, entity: str, entity_id: int, diff: dict | None = None):
@@ -58,6 +61,7 @@ def dashboard(db: Session) -> dict:
             gmv, cnt = by_day.get(str(day), (0, 0))
             daily.append({"date": day.strftime("%m-%d"), "gmv_cents": gmv, "orders": cnt})
     except Exception:
+        logger.warning("dashboard daily paid aggregation failed", exc_info=True)
         daily = []
     reconcile = None
     try:
@@ -70,12 +74,14 @@ def dashboard(db: Session) -> dict:
                 "status": rec.status,
             }
     except Exception:
+        logger.warning("dashboard latest reconciliation failed", exc_info=True)
         reconcile = None
     low_stock_top: list = []
     try:
         lows = repo.low_stock_top_rows(db, 5)
         low_stock_top = [{"sku": r[0], "title": r[1], "stock": r[2]} for r in lows]
     except Exception:
+        logger.warning("dashboard low stock top failed", exc_info=True)
         low_stock_top = []
     return {
         "today": _win(today_start),

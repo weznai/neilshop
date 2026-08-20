@@ -67,7 +67,7 @@ with TestClient(app) as client:
     check("health 200 ok", r.status_code == 200 and r.json().get("ok") is True, r.text)
 
     r = client.get("/api/catalog/products", params={"size": 100})
-    check("catalog 列表 13 商品", r.status_code == 200 and r.json().get("total") == 13,
+    check("catalog 列表 16 商品", r.status_code == 200 and r.json().get("total") == 16,
           r.json().get("total"))
 
     r = client.get("/api/catalog/search", params={"q": "bare"})

@@ -1,6 +1,6 @@
 <script setup>
 /* 后台外壳：侧栏（admin.css anav）+ 顶栏 + 守卫（toast 走全局 composable） */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -11,6 +11,18 @@ const router = useRouter()
 const guard = ref(true)
 const guardErr = ref('')
 const collapsed = ref(localStorage.getItem('gm_side_min') === '1')
+
+/* 当前登录人角色 badge（UserRole：9=超管 3=仓库 2=运营 1=客服） */
+const ROLE_BADGE = { 9: '超管', 3: '仓库', 2: '运营', 1: '客服' }
+const roleBadge = computed(() => ROLE_BADGE[session.role] || '管理')
+
+/* 导航高亮：详情页别名 + 前缀匹配（/order-detail → 订单管理，/product-edit → 商品管理） */
+const ALIAS = { '/order-detail': '/orders', '/product-edit': '/products' }
+function navOn(p) {
+  const cur = ALIAS[route.path] || route.path
+  if (p === '/') return cur === '/'
+  return cur === p || cur.startsWith(p + '/')
+}
 
 const P = {
   dash: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
@@ -42,15 +54,6 @@ const ITEMS = [
   ['settings', '系统设置', '/settings'],
 ]
 
-const toasts = ref([])
-let seq = 0
-function toastLocal(msg, type = '') {
-  const id = ++seq
-  toasts.value.push({ id, msg, type })
-  setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id) }, 2400)
-}
-window.$gmToast = toast
-
 function toggleSide() {
   collapsed.value = !collapsed.value
   localStorage.setItem('gm_side_min', collapsed.value ? '1' : '0')
@@ -67,10 +70,17 @@ onMounted(async () => {
     guard.value = false
   } catch (e) {
     console.error('[admin] 会话校验失败：', e)
-    guardErr.value = (e && e.status ? 'HTTP ' + e.status + ' · ' : '') + (e.message || '会话无效')
+    /* 常见错误映射中文，未识别再回退原始信息 */
+    const GUARD_ERR = {
+      401: '登录已过期，请重新登录',
+      403: '该账号无后台权限',
+      404: '会话接口不可用，请确认服务端已启动',
+    }
+    const mapped = e.status ? GUARD_ERR[e.status] : ''
+    guardErr.value = mapped || ((e && e.status ? 'HTTP ' + e.status + ' · ' : '') + (e.message || '会话无效'))
     session._cache(null)
-    /* 停 1.2s 让用户看到失败原因，再回登录页 */
-    setTimeout(() => router.push('/login'), 1200)
+    /* 停 1.5s 让用户看到失败原因，再回登录页 */
+    setTimeout(() => router.push('/login'), 1500)
   }
 })
 </script>
@@ -83,15 +93,21 @@ onMounted(async () => {
       <nav class="anav">
         <template v-for="(it, i) in ITEMS" :key="i">
           <div v-if="it === '-'" class="sep"></div>
-          <router-link v-else :to="it[2]" :class="{ on: route.path === it[2] }" :title="it[1]">
+          <router-link v-else :to="it[2]" :class="{ on: navOn(it[2]) }" :title="it[1]">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P[it[0]]" />
             <span>{{ it[1] }}</span>
           </router-link>
         </template>
         <div class="sep"></div>
-        <a href="/" title="查看店铺">
+        <a href="/" title="在新窗口查看店铺" target="_blank" rel="noopener">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P.store" />
           <span>查看店铺</span>
+        </a>
+        <div class="sep"></div>
+        <a href="javascript:void(0)" :title="'当前登录：' + session.name" style="cursor:default">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P.members" />
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ session.name }}</span>
+          <span class="abadge">{{ roleBadge }}</span>
         </a>
         <div class="sep"></div>
         <a href="javascript:void(0)" title="退出登录" @click="logout">
@@ -110,11 +126,15 @@ onMounted(async () => {
   </div>
   <div v-else class="admin" style="align-items:center;justify-content:center">
     <div style="text-align:center;color:var(--gray)">
-      <div style="font-size:34px;margin-bottom:8px">⏳</div>正在验证管理会话…
+      <template v-if="guardErr">
+        <div style="font-size:34px;margin-bottom:8px">⚠️</div>
+        <div style="font-size:14px;color:var(--error);margin-bottom:6px">会话校验失败</div>
+        <div style="font-size:12.5px">{{ guardErr }}</div>
+        <div style="font-size:12px;margin-top:10px">即将返回登录页…</div>
+      </template>
+      <template v-else>
+        <div style="font-size:34px;margin-bottom:8px">⏳</div>正在验证管理会话…
+      </template>
     </div>
-  </div>
-
-  <div class="gm-toast-wrap">
-    <div v-for="t in toasts" :key="t.id" class="gm-toast" :class="t.type">{{ t.msg }}</div>
   </div>
 </template>

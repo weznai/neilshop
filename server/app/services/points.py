@@ -8,11 +8,19 @@
 
 from __future__ import annotations
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.core.enums import PointsReason
 from app.models import Order, PointsLedger, User
+
+# 原子扣减/回补（余额守卫放进 WHERE，rowcount=0 即余额不足，杜绝并发双花）
+_SPEND_SQL = text(
+    "UPDATE users SET points = points - :amt WHERE id = :uid AND points >= :amt"
+)
+_ADD_POINTS_SQL = text("UPDATE users SET points = points + :amt WHERE id = :uid")
+_POINTS_OF_SQL = text("SELECT points FROM users WHERE id = :uid")
 
 
 def _write_ledger(db: Session, user_id: int, change: int, reason: PointsReason,
@@ -62,16 +70,40 @@ def grant_for_order(db: Session, order: Order, points_earned: int) -> PointsLedg
 
 
 def spend(db: Session, user_id: int, points: int, order_id: int | None = None) -> int:
-    """下单用分（先扣，退款走返还）；返回扣减后余额。可用不足时抛 ValueError。"""
+    """下单用分（先扣，退款走返还）；返回扣减后余额。可用不足时抛 ValueError。
+    扣减为原子 UPDATE（points >= :amt 守卫），并发下不会扣成负数/双花。"""
     if points <= 0:
         return get_balance(db, user_id)
     if points > usable_balance(db, user_id):
         raise ValueError("insufficient points")
-    user = db.get(User, user_id)
-    user.points -= points
-    _write_ledger(db, user_id, -points, PointsReason.SPEND, user.points,
+    if db.execute(_SPEND_SQL, {"uid": user_id, "amt": points}).rowcount == 0:
+        raise ValueError("insufficient points")
+    balance = int(db.execute(_POINTS_OF_SQL, {"uid": user_id}).scalar())
+    _write_ledger(db, user_id, -points, PointsReason.SPEND, balance,
                   ref_type="order", ref_id=order_id)
-    return user.points
+    return balance
+
+
+def refund_return(db: Session, order: Order, user_id: int | None, amount: int) -> None:
+    """已用积分返还（REFUND_RETURN=9）：用户取消 / 超时关单 / 全额退款路径共用。
+    同单同 reason 幂等（重复调用只补一次）；amount<=0 或匿名单直接跳过。"""
+    amt = int(amount or 0)
+    if amt <= 0 or not user_id:
+        return
+    dup = (
+        db.query(PointsLedger.id)
+        .filter(PointsLedger.user_id == user_id,
+                PointsLedger.reason == int(PointsReason.REFUND_RETURN),
+                PointsLedger.ref_type == "order",
+                PointsLedger.ref_id == order.id)
+        .first()
+    )
+    if dup:
+        return
+    db.execute(_ADD_POINTS_SQL, {"uid": user_id, "amt": amt})
+    balance = int(db.execute(_POINTS_OF_SQL, {"uid": user_id}).scalar())
+    _write_ledger(db, user_id, amt, PointsReason.REFUND_RETURN, balance,
+                  ref_type="order", ref_id=order.id)
 
 
 def refund_void(db: Session, order: Order) -> None:

@@ -1,4 +1,4 @@
-"""订单服务 —— 用户列表/详情/游客物流查询/待付取消（释放库存 + type=4 流水）"""
+"""订单服务 —— 用户列表/详情/游客物流查询/待付取消（CAS 抢占 + 释放库存 + type=4 流水 + 积分返还）"""
 
 from typing import Optional
 
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.models import Order, User
+from app.services import points as points_svc
 
 PER_PAGE = 10
 
@@ -127,6 +128,15 @@ def cancel_order(db: Session, order_no: str, user: User) -> dict:
         raise HTTPException(status_code=404, detail="order_not_found")
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
+    # CAS 抢占（WHERE status=0）：与支付回调/超时关单并发互斥，防 paid 后被覆盖取消
+    now = utcnow()
+    if repo.claim_order_canceled(db, order.id, now, "user") == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
+    order.status = 8
+    order.cancel_reason = "user"
+    order.canceled_at = now
     items = repo.order_items(db, order.id)
     for item in items:
         repo.release_stock(db, item.variant_id, item.qty)
@@ -135,9 +145,8 @@ def cancel_order(db: Session, order_no: str, user: User) -> dict:
             db, variant_id=item.variant_id, change=item.qty,
             stock_after=stock_after, type=4, ref_type="order", ref_id=order.id,
         )
-    order.status = 8
-    order.cancel_reason = "user"
-    order.canceled_at = utcnow()
+    # 已用积分返还（points_used=0 自动跳过，同单幂等）
+    points_svc.refund_return(db, order, order.user_id, order.points_used)
     repo.add_timeline(db, order.id, "status_changed", actor="user", detail={
         "from": 0, "to": 8, "reason": "user",
     })

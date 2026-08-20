@@ -51,9 +51,9 @@ if ($Fast) { Write-Output '[mode] -Fast : skip test_concurrency' }
 if ($Suite) { Write-Output ("[mode] -Suite filter: {0}" -f ($Suite -join ', ')) }
 
 $Entries = @()
-foreach ($n in @('test_a', 'test_b', 'test_c', 'test_worker', 'test_refsub', 'test_payments',
-'test_obs', 'test_sec', 'test_perf', 'test_p0', 'test_p0b', 'test_exchanges',
-'test_stocknotify', 'test_emailpref', 'test_digest', 'test_hardening', 'test_cache', 'test_tplpreview', 'test_concurrency')) {
+foreach ($n in @('test_a', 'test_b', 'test_admin_ext', 'test_c', 'test_ai_ext', 'test_worker', 'test_worker_ext', 'test_refsub', 'test_payments',
+'test_obs', 'test_sec', 'test_sec_ext', 'test_perf', 'test_perf_ext', 'test_p0', 'test_p0b', 'test_exchanges',
+'test_stocknotify', 'test_emailpref', 'test_digest', 'test_hardening', 'test_cache', 'test_catalog_ext', 'test_tplpreview', 'test_concurrency')) {
     $Entries += [pscustomobject]@{ Name = $n; Slow = ($n -eq 'test_concurrency'); Kind = 'py' }
 }
 $Entries += [pscustomobject]@{ Name = 'frontend-verify'; Slow = $false; Kind = 'verify' }

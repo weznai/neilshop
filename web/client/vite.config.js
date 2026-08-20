@@ -5,7 +5,16 @@ import { defineConfig } from 'vite'
 // 注意：构建顺序必须 client 先于 admin（client 的 emptyOutDir 会清空整个 dist）
 export default defineConfig({
   plugins: [vue()],
-  build: { outDir: '../dist', emptyOutDir: true },
+  build: {
+    outDir: '../dist',
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // vue 家族独立 vendor chunk：与应用代码分离，可被浏览器并行加载与长效缓存
+        manualChunks: { vendor: ['vue', 'vue-router', 'pinia'] },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

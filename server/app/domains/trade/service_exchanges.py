@@ -147,12 +147,14 @@ def _admin_log(db: Session, admin: User, action: str, ex: Exchange, diff: dict |
     )
 
 
-def admin_list_exchanges(db: Session, status: Optional[int], page: int) -> dict:
-    rows, total = repo.paginate_exchanges(db, status=status, page=page, per_page=PER_PAGE)
+def admin_list_exchanges(
+    db: Session, status: Optional[int], page: int, size: int = PER_PAGE,
+) -> dict:
+    rows, total = repo.paginate_exchanges(db, status=status, page=page, per_page=size)
     return {
         "items": _rows_payload(db, rows),
-        "page": page, "per_page": PER_PAGE, "total": total,
-        "pages": (total + PER_PAGE - 1) // PER_PAGE,
+        "page": page, "per_page": size, "total": total,
+        "pages": (total + size - 1) // size,
     }
 
 

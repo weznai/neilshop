@@ -11,9 +11,12 @@ nailshop/（仓库根）
 ├── docs/
 │   └── deploy.md            # 本文档
 ├── scripts/
-│   └── backup.ps1           # Windows 管理机 MySQL 备份（异地纪律 §5.3）
+│   ├── backup.ps1           # Windows 管理机 MySQL 备份（异地纪律 §5.3）
+│   └── restore-drill.ps1    # 季度恢复演练一键流水线（§4.3 / §7 留档）
+├── web/                     # 前后台 Vue SPA（client 前台 + admin 后台，npm workspace）
+│   └── dist/                # 构建产物：前台在根、后台在 admin/（随镜像分发，API 容器挂载）
 └── server/
-    ├── Dockerfile           # api/worker/migrate 共用镜像（python:3.13-slim 单阶段，非 root）
+    ├── Dockerfile           # api/worker/migrate 共用镜像（多阶段：node 构建 SPA + python:3.13-slim 运行，非 root）
     └── .dockerignore        # 构建上下文裁剪（首次部署 cp 到仓库根生效，见 §2）
 ```
 
@@ -69,7 +72,8 @@ docker compose up -d
 
 # 8) 冒烟验证
 curl -s http://127.0.0.1:8000/api/health   # 期望 {"ok":true,"service":"glowmag-api",...}
-curl -sI http://127.0.0.1:8000/            # 期望 200（prototype 静态首页，随镜像分发）
+curl -sI http://127.0.0.1:8000/            # 期望 200（web/dist 前台 SPA 首页，随镜像分发）
+curl -sI http://127.0.0.1:8000/admin/      # 期望 200（web/dist/admin 后台 SPA）
 ```
 
 ### 2.1 Cloudflare 接入（二选一）

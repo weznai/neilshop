@@ -4,12 +4,17 @@ import { i18n } from '../i18n'
 import { useUiStore } from '../stores/ui'
 
 const ui = useUiStore()
+
+function readConsent() {
+  try { return JSON.parse(localStorage.getItem('gm_consent') || '{}') || {} } catch (_) { return {} }
+}
+const saved = readConsent()
 const banner = ref(!localStorage.getItem('gm_consent'))
 const settings = ref(false)
 const model = reactive({
-  ana: !!(JSON.parse(localStorage.getItem('gm_consent') || '{}').ana),
-  mar: !!(JSON.parse(localStorage.getItem('gm_consent') || '{}').mar),
-  per: !!(JSON.parse(localStorage.getItem('gm_consent') || '{}').per),
+  ana: !!saved.ana,
+  mar: !!saved.mar,
+  per: !!saved.per,
 })
 const ROWS = ['ana', 'mar', 'per']
 
@@ -18,13 +23,21 @@ function openSettings() {
   settings.value = true
 }
 function onOpenReq() { openSettings() }
-onMounted(() => window.addEventListener('gm:open-consent', onOpenReq))
-onUnmounted(() => window.removeEventListener('gm:open-consent', onOpenReq))
+function onEsc(e) { if (e.key === 'Escape' && settings.value) settings.value = false }
+onMounted(() => {
+  window.addEventListener('gm:open-consent', onOpenReq)
+  window.addEventListener('keydown', onEsc)
+})
+onUnmounted(() => {
+  window.removeEventListener('gm:open-consent', onOpenReq)
+  window.removeEventListener('keydown', onEsc)
+})
 
 function save(c) {
   localStorage.setItem('gm_consent', JSON.stringify({ ...c, at: Date.now() }))
   banner.value = false
   settings.value = false
+  window.dispatchEvent(new CustomEvent('gm:consent-saved'))
   ui.toast(i18n.t('consent.saved'), 'success')
 }
 function saveFromModal() {
@@ -33,7 +46,7 @@ function saveFromModal() {
 </script>
 
 <template>
-  <div v-if="banner" class="consent-banner">
+  <div v-if="banner" class="consent-banner" role="region" :aria-label="i18n.t('consent.title')">
     <p style="font-size:13px;line-height:1.5;margin:0 0 12px" v-html="i18n.t('consent.text')" />
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" @click="save({ nec: true, ana: true, mar: true, per: true })">
@@ -42,13 +55,13 @@ function saveFromModal() {
       <button class="btn btn-secondary btn-sm" @click="save({ nec: true, ana: false, mar: false, per: false })">
         {{ i18n.t('consent.reject') }}
       </button>
-      <button class="btn btn-ghost btn-sm" @click="settings = true">{{ i18n.t('consent.manage') }}</button>
+      <button class="btn btn-ghost btn-sm" @click="openSettings">{{ i18n.t('consent.manage') }}</button>
     </div>
   </div>
 
-  <div v-if="settings" class="modal open" @click.self="settings = false">
+  <div v-if="settings" class="modal open" role="dialog" :aria-label="i18n.t('consent.title')" @click.self="settings = false">
     <div class="modal-box" style="max-width:520px">
-      <button class="modal-x" style="font-size:22px" @click="settings = false">×</button>
+      <button class="modal-x" style="font-size:22px" :aria-label="'Close'" @click="settings = false">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ i18n.t('consent.title') }}</h3>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--gray-light)">
         <div><b style="font-size:14px">{{ i18n.t('consent.nec') }}</b>
@@ -61,7 +74,7 @@ function saveFromModal() {
       >
         <div><b style="font-size:14px">{{ i18n.t('consent.' + k) }}</b>
           <div style="font-size:12px;color:var(--gray)">{{ i18n.t('consent.' + k + '.d') }}</div></div>
-        <div class="switch" :class="{ on: model[k] }" @click="model[k] = !model[k]"></div>
+        <button class="switch" :class="{ on: model[k] }" :aria-pressed="model[k] ? 'true' : 'false'" @click="model[k] = !model[k]" />
       </div>
       <button class="btn btn-primary btn-block" style="margin-top:18px" @click="saveFromModal">
         {{ i18n.t('consent.save') }}

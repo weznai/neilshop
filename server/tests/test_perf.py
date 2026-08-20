@@ -193,7 +193,7 @@ def expected_cards(db, sorts_order, category_ids=None, tag=None, page=1, size=10
         out.append((p.id, p.slug, {
             "total": sum(v.stock for v in vs),
             "low": sum(1 for v in vs if v.stock <= v.safety_stock),
-            "out": any(v.stock <= 0 for v in vs),
+            "out": sum(v.stock for v in vs) <= 0,
         }))
     return out
 
@@ -287,7 +287,7 @@ def main() -> int:
             detail = client.get("/api/catalog/products/perf-007").json()
             vs = db.query(Variant).filter(Variant.product_id == detail["id"], Variant.is_active == 1).all()
             want = {"total": sum(v.stock for v in vs), "low": sum(1 for v in vs if v.stock <= v.safety_stock),
-                    "out": any(v.stock <= 0 for v in vs)}
+                    "out": sum(v.stock for v in vs) <= 0}
             check("详情 stock_summary 语义一致", detail["stock_summary"] == want,
                   f"{detail['stock_summary']} != {want}")
 

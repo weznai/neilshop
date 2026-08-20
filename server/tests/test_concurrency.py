@@ -18,6 +18,9 @@ BASE_URL = f"http://127.0.0.1:{PORT}"
 DB_NAME = "glowmag_test_cc"
 GM_DB_URL = f"mysql+pymysql://glowmag:glowmag123@127.0.0.1:3306/{DB_NAME}?charset=utf8mb4"
 os.environ["GM_COOKIE_AUTH"] = "0"  # 纯 Bearer 通道
+# 压测需瞬时打满 place（30 并发抢购 + 5 并发同用户幂等），把该规则阈值临时调高；
+# 其余规则（password-reset 20/min 等）保持默认，rate-limit 用例不受影响
+os.environ["GM_RATE_RULES"] = '{"/api/checkout/place": 120}'
 TMP_DIR = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp"))) / "opencode"
 LOG_PATH = TMP_DIR / "uvicorn_8019_cc.log"
 
@@ -328,6 +331,7 @@ def case_same_user(tokens: list[str], vid: int):
     res = barrage(5, fire)
     codes = Counter(r["status"] for r in res)
     n201 = codes.get(201, 0)
+    order_nos = {r["body"].get("order_no") for r in res if r["status"] == 201}
     stock_after = q("SELECT stock FROM variants WHERE id=%s", (vid,))[0][0]
     mv_cnt, mv_sum = q(
         "SELECT COUNT(*), COALESCE(SUM(`change`),0) FROM stock_movements WHERE variant_id=%s AND `type`=2",
@@ -343,23 +347,25 @@ def case_same_user(tokens: list[str], vid: int):
     )[0][0]
 
     errs = []
-    if n201 < 1:
-        errs.append("no order succeeded in 5 concurrent same-user places")
-    if (stock_before - stock_after) != n201 or qty_sum != n201:
+    if n201 != 5:
+        errs.append(f"status dist {dict(codes)} != 5x201 (idempotent replay should all succeed)")
+    if len(order_nos) != 1:
+        errs.append(f"idempotency broken: got {len(order_nos)} distinct order_nos {order_nos}")
+    if (stock_before - stock_after) != 1 or qty_sum != 1:
         errs.append(
             f"inconsistent deduction: stock delta={stock_before - stock_after}, "
-            f"order qty sum={qty_sum}, success orders={n201}"
+            f"order qty sum={qty_sum}, expected exactly 1 (dedup must not double-reserve)"
         )
-    if mv_cnt != n201 or mv_sum != -n201:
-        errs.append(f"RESERVE movements cnt={mv_cnt} sum={mv_sum} != {n201}/-{n201}")
-    if order_cnt != n201:
-        errs.append(f"orders for variant {order_cnt} != successes {n201}")
+    if mv_cnt != 1 or mv_sum != -1:
+        errs.append(f"RESERVE movements cnt={mv_cnt} sum={mv_sum} != 1/-1")
+    if order_cnt != 1:
+        errs.append(f"orders for variant {order_cnt} != 1 (duplicate orders created)")
 
     metrics = {
-        "status_dist": dict(codes), "success_orders": n201,
+        "status_dist": dict(codes), "distinct_orders": len(order_nos),
         "stock": f"{stock_before}->{stock_after}", "qty_sum": qty_sum,
         "reserve_moves": (mv_cnt, int(mv_sum)),
-        "note": "same-user concurrent duplicate orders allowed by design (observation)",
+        "note": "same-user concurrent places dedup to one PENDING order within 90s window",
     }
     return not errs, metrics, errs
 

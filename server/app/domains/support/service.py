@@ -53,9 +53,10 @@ def _ticket_dict(t: Ticket, messages: list[TicketMessage]) -> dict:
 # ===== 用户侧 =====
 
 
-def create_ticket(db: Session, body: TicketCreateIn) -> dict:
+def create_ticket(db: Session, body: TicketCreateIn, user: User | None = None) -> dict:
     ticket = Ticket(
         ticket_no=_ticket_no(),
+        user_id=user.id if user else None,
         email=body.email,
         order_no=body.order_no,
         category=body.category,
@@ -132,14 +133,17 @@ def _get_ticket(db: Session, ticket_no: str) -> Ticket:
     return t
 
 
-def admin_tickets(db: Session, status: int | None, category: int | None, q: str | None, page: int, size: int) -> dict:
-    query = repo.admin_tickets_query(db, status, category, q)
+def admin_tickets(db: Session, statuses: list[int] | None, category: int | None, q: str | None, page: int, size: int) -> dict:
+    query = repo.admin_tickets_query(db, statuses, category, q)
     rows, total = repo.page(query, page, size)
     return {"items": [_ticket_admin_dict(t) for t in rows], "total": total, "page": page, "size": size}
 
 
 def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict:
     t = _get_ticket(db, ticket_no)
+    if t.status == 4:
+        # 已关闭工单不接受追加回复（防审计流被覆盖）；如需继续处理应先重开
+        raise HTTPException(status_code=400, detail="ticket closed")
     db.add(TicketMessage(ticket_id=t.id, sender=2, content=body.content))
     if t.first_reply_at is None:
         t.first_reply_at = utcnow()
@@ -153,6 +157,10 @@ def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict
 
 def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict:
     t = _get_ticket(db, ticket_no)
+    if t.status == 4:
+        # 重复关闭会覆盖 closed_at/close_reason 审计数据 → 409；
+        # 3(已解决待关)→4 是正常确认流，0/1/2 主动关单均保留（前端既有行为不受影响）
+        raise HTTPException(status_code=409, detail="ticket_already_closed")
     t.status = 4
     t.closed_at = utcnow()
     t.close_reason = body.close_reason

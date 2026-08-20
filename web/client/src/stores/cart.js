@@ -2,6 +2,9 @@
  * （localStorage gm_cart 仅作渲染缓存快照，供下次进入前先画一帧） */
 import { defineStore } from 'pinia'
 import { req } from '../api/client'
+import { i18n } from '../i18n'
+
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 function viewToItems(view) {
   return (view && view.items ? view.items : []).map((i) => ({
@@ -12,9 +15,11 @@ function viewToItems(view) {
     title: (i.title || '').split(' · ')[0],
     variant: i.variant_label || (i.title || '').split(' · ')[1] || '',
     price: i.price / 100,
+    priceC: i.price,
     qty: i.qty,
     img: i.image,
     stock: i.stock,
+    stockStatus: i.stock_status || '',
   }))
 }
 
@@ -23,10 +28,13 @@ export const useCartStore = defineStore('cart', {
     items: JSON.parse(localStorage.getItem('gm_cart') || '[]'),
     loaded: false,
     error: null,
+    removed: null, /* {vid,qty,title,at} 最近删除快照，供 UI 撤销 */
   }),
   getters: {
     count: (s) => s.items.reduce((n, i) => n + i.qty, 0),
     subtotal: (s) => s.items.reduce((n, i) => n + i.price * i.qty, 0),
+    /* 美分整数小计（避免浮点误差，与后端一致） */
+    subtotalC: (s) => s.items.reduce((n, i) => n + (i.priceC || Math.round(i.price * 100)) * i.qty, 0),
   },
   actions: {
     _apply(view) {
@@ -37,8 +45,8 @@ export const useCartStore = defineStore('cart', {
     _err(e, ui) {
       this.error = e
       if (ui) {
-        if (e && e.status === 409) ui.toast('Insufficient stock on server', 'error')
-        else if (e && e.status === 404) ui.toast('Item no longer available', 'error')
+        if (e && e.status === 409) ui.toast(tt('Insufficient stock — cart refreshed', '库存不足，购物车已刷新'), 'error')
+        else if (e && e.status === 404) ui.toast(tt('Item no longer available', '商品已下架'), 'error')
       }
       return this.refresh().catch(() => {})
     },
@@ -48,15 +56,17 @@ export const useCartStore = defineStore('cart', {
     async add(variantId, qty, ui) {
       try {
         this._apply(await req('POST', '/api/cart/items', { variant_id: variantId, qty: qty || 1 }))
-        if (ui) { ui.toast('Added to cart ✓', 'success'); ui.openCart() }
+        this.removed = null
+        if (ui) { ui.toast(tt('Added to cart ✓', '已加入购物车 ✓'), 'success'); ui.openCart() }
         return true
       } catch (e) { this._err(e, ui); return false }
     },
     async addByProductId(pid, qty, ui) {
-      /* 按 product id 加购：动态解析首选变体（替代 SLUGS 映射表） */
+      /* 按 product id 加购：动态解析变体（优先选有货变体，避免首选变体售罄即失败） */
       try {
         const d = await req('GET', '/api/catalog/products-by-id/' + pid)
-        const v = d.variants && d.variants[0]
+        const vs = d.variants || []
+        const v = vs.find((x) => (x.stock ?? 0) > 0 && x.stock_status !== 'out') || vs[0]
         if (!v) throw new Error('no variant')
         return this.add(v.id, qty || 1, ui)
       } catch (e) { this._err(e, ui); return false }
@@ -64,14 +74,41 @@ export const useCartStore = defineStore('cart', {
     async setQty(variantId, qty, ui) {
       try {
         if (qty < 1) return this.remove(variantId, ui)
+        /* 前端按库存上限先夹紧（后端 /api/cart/items/{id} 也会 409 拒绝）；
+           OOS 行不允许增量（stock<=0 时上限冻结在当前数量，防止 +1 死循环 409） */
+        const it = this.items.find((x) => x.vid === variantId)
+        if (it && it.stock <= 0 && qty > it.qty) {
+          if (ui) ui.toast(tt('Out of stock', '库存不足'), 'error')
+          return
+        }
+        const max = it && it.stock > 0 ? it.stock : 99
+        if (qty > max) {
+          if (ui) ui.toast(tt(`Only ${max} left in stock`, `库存仅剩 ${max} 件`), 'error')
+          qty = max
+          if (it && it.qty === qty) return
+        }
         this._apply(await req('PUT', '/api/cart/items/' + variantId, { qty }))
+        this.removed = null
       } catch (e) { this._err(e, ui) }
     },
     async remove(variantId, ui) {
+      const snap = this.items.find((x) => x.vid === variantId) || null
       try {
         this._apply(await req('DELETE', '/api/cart/items/' + variantId))
+        if (snap) this.removed = { vid: snap.vid, qty: snap.qty, title: snap.title, variant: snap.variant, at: Date.now() }
       } catch (e) { this._err(e, ui) }
     },
+    /* 撤销最近一次删除（UI 撤销条调用） */
+    async undoRemove(ui) {
+      const r = this.removed
+      if (!r) return
+      this.removed = null
+      try {
+        this._apply(await req('POST', '/api/cart/items', { variant_id: r.vid, qty: r.qty }))
+        if (ui) ui.toast(tt('Item restored ✓', '已恢复商品 ✓'), 'success')
+      } catch (e) { this._err(e, ui) }
+    },
+    dismissRemoved() { this.removed = null },
     /* 登录后合并游客车（登录流程调用） */
     async mergeAfterLogin() {
       try { await req('POST', '/api/cart/merge', { token: localStorage.getItem('gm_cart_token') || '' }) } catch (_) { /* token 无车 */ }

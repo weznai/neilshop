@@ -1,8 +1,12 @@
-"""结算服务 —— preview 试算 / place 下单（乐观锁预扣库存 + 用分 + 礼品卡扣减 + 清车）"""
+"""结算服务 —— preview 试算 / place 下单（乐观锁预扣库存 + 用分 + 礼品卡原子扣减 + 清车）。
+place 含轻量防重：carts 行锁串行化同车并发 + 90 秒内同用户/同邮箱 items 完全相同的
+PENDING 订单幂等返回（不重复建单扣库存）；黑名单（risk_flag=2）用户拒绝下单。"""
 
 import uuid
+from datetime import timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -11,6 +15,11 @@ from app.domains.trade.schemas import PlaceRequest, PreviewRequest
 from app.models import Cart, Order, OrderItem, User
 from app.services import points as points_svc
 from app.services.pricing import price_cart
+
+# 同用户/同邮箱重复下单防重窗口
+DEDUP_WINDOW = timedelta(seconds=90)
+# 防重扫描的最近候选单数上限（status=0 且在窗口内，倒序取最近若干单做 items 精确比对）
+DEDUP_SCAN_LIMIT = 20
 
 
 def cart_items_of(cart: Cart) -> list[dict]:
@@ -44,12 +53,77 @@ def preview(
     )
 
 
+def _place_payload(order: Order) -> dict:
+    return {
+        "order_no": order.order_no,
+        "status": order.status,
+        "email": order.email,
+        "subtotal": order.subtotal,
+        "discount_total": order.discount_total,
+        "points_discount": order.points_discount,
+        "giftcard_discount": order.giftcard_discount,
+        "shipping_fee": order.shipping_fee,
+        "tax": order.tax,
+        "grand_total": order.grand_total,
+    }
+
+
+def _dedup_pending_order(
+    db: Session, *, user: User | None, email: str | None,
+    items: list[dict] | None,
+) -> Order | None:
+    """90 秒内同用户（登录）/同邮箱（游客）的 PENDING 订单防重扫描。
+    items 非空时做 (variant_id, qty) 集合精确比对；items 为空（清车后的重放请求）
+    时直接返回最近一笔 PENDING（即刚下的那单）。"""
+    cutoff = utcnow() - DEDUP_WINDOW
+    query = db.query(Order).filter(Order.status == 0, Order.placed_at >= cutoff)
+    if user is not None:
+        query = query.filter(Order.user_id == user.id)
+    elif email and email.strip():
+        query = query.filter(func.lower(Order.email) == email.strip().lower())
+    else:
+        return None
+    candidates = query.order_by(Order.id.desc()).limit(DEDUP_SCAN_LIMIT).all()
+    if not candidates:
+        return None
+    if items is None:
+        return candidates[0]
+    target = sorted((i["variant_id"], i["qty"]) for i in items)
+    for order in candidates:
+        existing = sorted(
+            (i.variant_id, i.qty) for i in repo.order_items(db, order.id)
+        )
+        if existing == target:
+            return order
+    return None
+
+
 def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dict:
+    # 风控：黑名单用户拒绝下单
+    if user is not None and user.risk_flag == 2:
+        raise HTTPException(status_code=403, detail="account_blocked")
     cart_items = cart_items_of(cart)
     if not cart_items:
+        # 清车后的重复提交（双击重放）：窗口内已有该用户/邮箱的 PENDING 单则幂等返回
+        db.query(Cart.id).filter(Cart.id == cart.id).with_for_update().first()
+        replay = _dedup_pending_order(db, user=user, email=body.email, items=None)
+        if replay is not None:
+            cart.items = []
+            cart.email = body.email or cart.email
+            db.commit()
+            return _place_payload(replay)
         raise HTTPException(status_code=400, detail="empty_cart")
     if body.points and body.points > 0 and not user:
         raise HTTPException(status_code=401, detail="login_required_for_points")
+
+    # carts 行锁串行化同车并发下单（不同车互不阻塞），锁内做防重判定
+    db.query(Cart.id).filter(Cart.id == cart.id).with_for_update().first()
+    existing = _dedup_pending_order(db, user=user, email=body.email, items=cart_items)
+    if existing is not None:
+        cart.items = []
+        cart.email = body.email or cart.email
+        db.commit()
+        return _place_payload(existing)
 
     pricing = price_cart(
         db,
@@ -127,9 +201,12 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
 
     if pricing["gift_card"] and pricing["giftcard_discount"] > 0:
         gc = repo.get_gift_card(db, pricing["gift_card"]["id"])
-        gc.balance -= pricing["giftcard_discount"]
+        # 原子扣减：余额守卫进 WHERE，并发/余额变动时 rowcount=0 → 余额不足
+        if repo.debit_gift_card(db, gc.id, pricing["giftcard_discount"]) == 0:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="gift_card_insufficient")
+        db.refresh(gc)
         if gc.balance <= 0:
-            gc.balance = 0
             gc.status = 3
         repo.add_giftcard_ledger(
             db, gift_card_id=gc.id, order_id=order.id, change_type=3,
@@ -137,6 +214,8 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
         )
 
     cart.items = []
+    # 弃购召回链路依赖：下单 email 回填购物车行（worker scan_abandoned_carts 过滤 email 非空）
+    cart.email = body.email or cart.email
     repo.add_timeline(db, order.id, "checkout_created", actor="user", detail={
         "order_no": order.order_no,
         "code_discount": pricing["code_discount"],
@@ -146,15 +225,4 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
     })
     db.commit()
 
-    return {
-        "order_no": order.order_no,
-        "status": order.status,
-        "email": order.email,
-        "subtotal": order.subtotal,
-        "discount_total": order.discount_total,
-        "points_discount": order.points_discount,
-        "giftcard_discount": order.giftcard_discount,
-        "shipping_fee": order.shipping_fee,
-        "tax": order.tax,
-        "grand_total": order.grand_total,
-    }
+    return _place_payload(order)

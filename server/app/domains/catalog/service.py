@@ -35,7 +35,7 @@ def _stock_summary(variants: list) -> dict:
     return {
         "total": sum(v.stock for v in variants),
         "low": sum(1 for v in variants if v.stock <= v.safety_stock),
-        "out": any(v.stock <= 0 for v in variants),
+        "out": sum(v.stock for v in variants) <= 0,
     }
 
 
@@ -98,6 +98,8 @@ def _mask_name(user: User | None) -> str:
 def list_products(
     db: Session, *, category: str | None, tag: str | None, q: str | None,
     sort: str, page: int, size: int, locale: str | None = None,
+    min_price: int | None = None, max_price: int | None = None,
+    on_sale: bool = False,
 ) -> dict:
     if sort not in _SORTS:
         raise HTTPException(status_code=400, detail="invalid sort")
@@ -107,6 +109,7 @@ def list_products(
     total, prods = repo.list_products(
         db, category_id_list=cat_ids, tag=tag, q=q, sort=sort,
         offset=(page - 1) * size, limit=size,
+        min_price=min_price, max_price=max_price, on_sale=on_sale,
     )
     smap = repo.stock_map(db, [p.id for p in prods])
     tmap = repo.translations_map(db, [p.id for p in prods], locale) if locale else {}
@@ -261,6 +264,23 @@ def list_reviews(db: Session, product_id: int, page: int, size: int) -> dict:
     return {"items": items, "total": total, "page": page, "size": size}
 
 
+def review_distribution(db: Session, product_id: int) -> dict:
+    """评价星级分布（仅 status=1）：rating_avg ×100 口径与 Product.rating_avg 一致；无评价返回全 0（与 list_reviews 不 404 同口径）"""
+    rows = repo.review_rating_distribution(db, product_id)
+    dist = {str(r): 0 for r in range(1, 6)}
+    total = rating_sum = 0
+    for rating, n in rows:
+        dist[str(rating)] = n
+        total += n
+        rating_sum += rating * n
+    return {
+        "product_id": product_id,
+        "rating_avg": round(rating_sum * 100 / total) if total else 0,
+        "rating_count": total,
+        "distribution": dist,
+    }
+
+
 # ---------- 到货通知（stock_notifications 影子表） ----------
 
 def _notify_email(email: str) -> str:
@@ -286,12 +306,12 @@ def stock_notify_subscribe(db: Session, variant_id: int, email: str) -> tuple[in
 
 
 def stock_notify_status(db: Session, variant_id: int, email: str) -> dict:
-    email = (email or "").strip().lower()
+    email = _notify_email(email)
     return {"watching": repo.stock_notification_by(db, variant_id, email) is not None}
 
 
 def stock_notify_cancel(db: Session, variant_id: int, email: str) -> dict:
-    email = (email or "").strip().lower()
+    email = _notify_email(email)
     if repo.delete_stock_notification(db, variant_id, email):
         db.commit()
     return {"watching": False}

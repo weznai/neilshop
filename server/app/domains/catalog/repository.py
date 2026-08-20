@@ -39,6 +39,8 @@ def _visible():
 # ---------- 批量库存聚合（性能红线，勿改） ----------
 
 def stock_map(db: Session, pids: list[int]) -> dict[int, dict]:
+    """out 语义：全部变体售罄（总可售库存 <= 0）才整品 SOLD OUT；
+    任一变体售罄仅该变体不可购，不再连坐整品。"""
     smap: dict[int, dict] = {}
     if not pids:
         return smap
@@ -47,7 +49,7 @@ def stock_map(db: Session, pids: list[int]) -> dict[int, dict]:
             Variant.product_id,
             func.coalesce(func.sum(Variant.stock), 0),
             func.coalesce(func.sum(case((Variant.stock <= Variant.safety_stock, 1), else_=0)), 0),
-            func.coalesce(func.max(case((Variant.stock <= 0, 1), else_=0)), 0),
+            case((func.coalesce(func.sum(Variant.stock), 0) <= 0, 1), else_=0),
         )
         .filter(Variant.product_id.in_(pids), Variant.is_active == 1)
         .group_by(Variant.product_id)
@@ -84,6 +86,8 @@ def category_ids(db: Session, slug: str) -> list[int] | None:
 def list_products(
     db: Session, *, category_id_list: list[int] | None, tag: str | None,
     q: str | None, sort: str, offset: int, limit: int,
+    min_price: int | None = None, max_price: int | None = None,
+    on_sale: bool = False,
 ) -> tuple[int, list[Product]]:
     query = db.query(Product).filter(Product.status == 1, _visible())
     if category_id_list:
@@ -93,6 +97,16 @@ def list_products(
     if q:
         like = f"%{q}%"
         query = query.filter(or_(Product.title.like(like), Product.subtitle.like(like)))
+    # 价格区间交集：[min_price, max_price] 与商品 [price_min, price_max] 有交集即命中（闭区间，单侧给半开）
+    if min_price is not None:
+        query = query.filter(Product.price_max >= min_price)
+    if max_price is not None:
+        query = query.filter(Product.price_min <= max_price)
+    if on_sale:
+        query = query.filter(
+            Product.compare_at_price.isnot(None),
+            Product.compare_at_price > Product.price_min,
+        )
     total = query.count()
     prods = (
         query.order_by(_SORT_ORDERS[sort], Product.id.asc())
@@ -269,6 +283,16 @@ def reviews_page(
     return total, rows
 
 
+def review_rating_distribution(db: Session, product_id: int) -> list[tuple[int, int]]:
+    """评价星级分布（仅已发布 status=1，单条 GROUP BY 聚合）"""
+    return (
+        db.query(Review.rating, func.count())
+        .filter(Review.product_id == product_id, Review.status == 1)
+        .group_by(Review.rating)
+        .all()
+    )
+
+
 def users_by_ids(db: Session, uids: set[int]) -> list[User]:
     return db.query(User).filter(User.id.in_(uids)).all()
 
@@ -363,20 +387,24 @@ def admin_variants(
 
 
 def variant_counts(db: Session, pids: list[int]) -> dict[int, dict]:
+    """后台商品列表聚合（variant_count/total_stock/low_stock_count）：
+    单条 GROUP BY 条件聚合批量求值（与 stock_map 同纪律，不整行载入 Variant）。"""
     agg: dict[int, dict] = {}
     if not pids:
         return agg
-    rows = db.query(Variant).filter(
-        Variant.product_id.in_(pids), Variant.is_active == 1
-    ).all()
-    for v in rows:
-        a = agg.setdefault(
-            v.product_id, {"variant_count": 0, "total_stock": 0, "low_stock_count": 0}
+    rows = (
+        db.query(
+            Variant.product_id,
+            func.count(),
+            func.coalesce(func.sum(Variant.stock), 0),
+            func.coalesce(func.sum(case((Variant.stock <= Variant.safety_stock, 1), else_=0)), 0),
         )
-        a["variant_count"] += 1
-        a["total_stock"] += v.stock
-        if v.stock <= v.safety_stock:
-            a["low_stock_count"] += 1
+        .filter(Variant.product_id.in_(pids), Variant.is_active == 1)
+        .group_by(Variant.product_id)
+        .all()
+    )
+    for pid, cnt, total_stock, low in rows:
+        agg[pid] = {"variant_count": cnt, "total_stock": total_stock, "low_stock_count": low}
     return agg
 
 

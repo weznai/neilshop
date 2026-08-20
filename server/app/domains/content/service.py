@@ -1,5 +1,7 @@
 """内容域服务 —— FAQ/博客/评价/UGC 业务（含后台审核与积分奖励）"""
 
+from urllib.parse import urlparse
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -32,6 +34,19 @@ def _mask_name(name: str | None, email: str) -> str:
     if len(src) <= 1:
         return src + "***"
     return src[0] + "***" + src[-1]
+
+
+MAX_IMAGE_URL_LEN = 500
+MAX_REVIEW_IMAGES = 6
+
+
+def _check_image_url(url: str) -> None:
+    """UGC/评价图片链接校验：仅 http/https 绝对地址且长度受限（防 javascript: 注入与超长垃圾）"""
+    if not url or len(url) > MAX_IMAGE_URL_LEN:
+        raise HTTPException(status_code=400, detail="invalid image_url")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="invalid image_url")
 
 
 # ===== 用户侧：FAQ =====
@@ -106,13 +121,18 @@ def create_review(db: Session, user: User, body: ReviewIn) -> dict:
     product = repo.product_by_slug(db, item.product_slug)
     if not product:
         raise HTTPException(status_code=404, detail="product not found")
+    images = body.images or []
+    if len(images) > MAX_REVIEW_IMAGES:
+        raise HTTPException(status_code=400, detail="too many images")
+    for u in images:
+        _check_image_url(u)
     review = Review(
         product_id=product.id,
         user_id=user.id,
         order_item_id=item.id,
         rating=body.rating,
         content=body.content,
-        images=body.images,
+        images=images,
         status=0,
     )
     db.add(review)
@@ -148,6 +168,7 @@ def list_reviews(db: Session, product_id: int, page: int, size: int) -> dict:
 
 
 def submit_ugc(db: Session, user: User | None, body: UgcIn) -> dict:
+    _check_image_url(body.image_url)
     ugc = UgcSubmission(
         user_id=user.id if user else None,
         instagram_handle=body.instagram_handle,
@@ -249,8 +270,10 @@ def reject_review(db: Session, admin: User, review_id: int, body: ReasonIn) -> d
 # ===== 后台：UGC 审核 =====
 
 
-def admin_ugc(db: Session, status: int | None) -> dict:
-    rows = repo.admin_ugc_desc(db, status).all()
+def admin_ugc(db: Session, status: int | None, page: int = 1, size: int = 20) -> dict:
+    """后台 UGC 队列：与 reviews 分页形态对齐（items/total/page/size）。
+    响应原先即为 {"items": [...]} 对象，新增 total/page/size 键为纯增量，向后兼容。"""
+    rows, total = repo.page(repo.admin_ugc_desc(db, status), page, size)
     return {
         "items": [
             {
@@ -265,7 +288,10 @@ def admin_ugc(db: Session, status: int | None) -> dict:
                 "created_at": u.created_at,
             }
             for u in rows
-        ]
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
     }
 
 

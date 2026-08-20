@@ -7,10 +7,11 @@
 后台拆独立域名后，admin 站点只携带 gm_admin_token，与前台会话天然隔离。
 """
 
-import uuid
+import secrets
 from typing import Optional
 
 from fastapi import Cookie, Depends, Header, HTTPException, Response
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -62,14 +63,27 @@ def get_admin_session_user(
 
 
 def set_auth_cookie(response: Response, token: str, admin: bool = False) -> None:
-    """登录成功后写会话 Cookie（HttpOnly 防 XSS 窃取；后台会话 SameSite=Strict 更严）。"""
+    """登录成功后写会话 Cookie。
+
+    - HttpOnly 防 XSS 窃取；MaxAge 与 token 签发时效对齐（前台 token_days 天 / 后台 admin_token_hours 小时）
+    - 后台会话 SameSite=Strict 更严；前后台拆独立域名（GM_ALLOWED_ORIGINS 非空）时
+      跨站请求 Strict/Lax 均不携带，需 SameSite=None —— None 缺 Secure 会被浏览器丢弃，故强制开
+    """
+    cross_site = bool(settings.allowed_origins.strip())
+    if admin:
+        max_age = settings.admin_token_hours * 3600
+        samesite = "none" if cross_site else "strict"
+    else:
+        max_age = settings.token_days * 86400
+        samesite = "lax"
     response.set_cookie(
         ADMIN_COOKIE if admin else STORE_COOKIE,
         token,
         httponly=True,
-        samesite="strict" if admin else "lax",
-        secure=settings.cookie_secure,
+        samesite=samesite,
+        secure=True if samesite == "none" else settings.cookie_secure,
         path="/",
+        max_age=max_age,
     )
 
 
@@ -90,6 +104,22 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def _create_cart(db: Session, *, user_id: Optional[int]) -> tuple[Cart, str]:
+    """建车：session token 一律服务端 secrets 生成，不信任请求头值
+    （防伪造 X-Cart-Token 撞 carts.session_id 唯一索引导致 500）；
+    极小概率撞唯一索引时换新 token 重试一次。"""
+    for _ in range(2):
+        token = secrets.token_hex(16)
+        cart = Cart(user_id=user_id, session_id=token, items=[])
+        db.add(cart)
+        try:
+            db.commit()
+            return cart, token
+        except IntegrityError:
+            db.rollback()
+    raise HTTPException(status_code=503, detail="cart token conflict, retry")
+
+
 def resolve_cart(
     db: Session,
     user: Optional[User],
@@ -101,21 +131,13 @@ def resolve_cart(
         cart = db.query(Cart).filter(Cart.user_id == user.id).first()
         if cart:
             return cart, token
-        token = token or uuid.uuid4().hex
-        cart = Cart(user_id=user.id, session_id=token, items=[])
-        db.add(cart)
-        db.commit()
-        return cart, token
+        return _create_cart(db, user_id=user.id)
 
     if token:
         cart = db.query(Cart).filter(Cart.session_id == token, Cart.user_id.is_(None)).first()
         if cart:
             return cart, token
-    token = uuid.uuid4().hex
-    cart = Cart(session_id=token, items=[])
-    db.add(cart)
-    db.commit()
-    return cart, token
+    return _create_cart(db, user_id=None)
 
 
 def get_cart(

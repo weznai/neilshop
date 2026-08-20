@@ -14,6 +14,15 @@
           <div class="card" style="padding:18px;text-align:center"><b style="font-size:24px">70+</b><div style="font-size:12.5px;color:var(--gray)">Handcrafted styles</div></div>
         </div>
         <p>We're climate-neutral shipping, cruelty-free always, and our packaging is 100% recyclable — because glam shouldn't cost the earth.</p>
+        <div class="card" style="padding:20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <div style="font-size:30px">💅</div>
+          <div style="flex:1;min-width:220px">
+            <b>New to press-ons?</b>
+            <p style="font-size:13.5px;color:var(--gray);margin:4px 0 0">See how a set goes from box to bombshell in 5 minutes — and how to make it last 2 weeks.</p>
+          </div>
+          <router-link to="/how-it-works" class="btn btn-secondary btn-sm">How it works →</router-link>
+          <router-link to="/blog" class="btn btn-ghost btn-sm">Read the Journal</router-link>
+        </div>
       </div>
     </div>
   </section>

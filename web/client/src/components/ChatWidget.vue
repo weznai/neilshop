@@ -1,14 +1,48 @@
 <script setup>
-import { nextTick, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { i18n } from '../i18n'
 import { req } from '../api/client'
 
+const router = useRouter()
 const open = ref(false)
 const greeted = ref(false)
-const msgs = ref([]) /* {who:'user'|'bot', html, typing} */
+const busy = ref(false)
+const msgs = ref([]) /* {id, who:'user'|'bot', html, typing} */
 const field = ref('')
 const inputEl = ref(null)
+const lastAsk = ref(null) /* {q, key} 失败重试 */
 const QUICKS = ['track', 'size', 'return', 'human']
+const HIST_KEY = 'gm_chat_hist'
+const HIST_MAX = 30 /* 最近 N 条持久化（含问答双方） */
+let msgSeq = 0 /* 稳定 key：避免 v-for 用 idx（历史裁剪/typing 增删导致错位复用） */
+
+const shipQ = () => (i18n.lang === 'zh' ? '🚚 运费与配送时效？' : '🚚 Shipping cost & delivery time?')
+
+onMounted(() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(HIST_KEY) || '[]')
+    if (Array.isArray(saved) && saved.length) {
+      msgs.value = saved
+        .filter((m) => m && m.who && typeof m.html === 'string')
+        .slice(-HIST_MAX)
+        .map((m) => ({ ...m, id: ++msgSeq }))
+      greeted.value = true
+    }
+  } catch (_) { msgs.value = [] }
+})
+
+watch(msgs, () => {
+  const keep = msgs.value.filter((m) => !m.typing).slice(-HIST_MAX)
+  try { localStorage.setItem(HIST_KEY, JSON.stringify(keep)) } catch (_) { /* 隐私模式等写入失败即弃 */ }
+}, { deep: true })
+
+function scrollBottom() {
+  nextTick(() => {
+    const b = document.getElementById('chatMsgs')
+    if (b) b.scrollTop = b.scrollHeight
+  })
+}
 
 async function toggle() {
   open.value = !open.value
@@ -16,11 +50,15 @@ async function toggle() {
     greeted.value = true
     botSay(i18n.t('chat.hello'), 0)
   }
-  if (open.value) setTimeout(() => inputEl.value?.focus(), 250)
+  if (open.value) {
+    scrollBottom()
+    setTimeout(() => inputEl.value?.focus(), 250)
+  }
 }
 
 function match(text) {
   const t = text.toLowerCase()
+  if (/(shipping|运费|配送|邮寄|清关)/i.test(t)) return 'shipping'
   if (/(track|order|where|package|deliver|shipped|订单|物流|快递|包裹|到哪|发货)/i.test(t)) return 'track'
   if (/(size|fit|measure|尺码|尺寸|选码|大小|合适)/i.test(t)) return 'size'
   if (/(return|refund|exchange|退|换|退款)/i.test(t)) return 'return'
@@ -29,63 +67,86 @@ function match(text) {
   if (/(code|coupon|discount|promo|折扣|优惠|码|券)/i.test(t)) return 'code'
   return 'fallback'
 }
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
 function md(s) {
-  return String(s || '')
+  return esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
-    .replace(/[*_`#>]/g, '')
     .replace(/\r/g, '')
     .replace(/\n{2,}/g, '<br><br>')
     .replace(/\n/g, '<br>')
 }
 function push(who, html) {
-  msgs.value.push({ who, html })
-  nextTick(() => {
-    const b = document.getElementById('chatMsgs')
-    if (b) b.scrollTop = b.scrollHeight
-  })
+  msgs.value.push({ id: ++msgSeq, who, html })
+  scrollBottom()
 }
 function botSay(html, delay = 700) {
   if (delay > 0) {
-    msgs.value.push({ who: 'bot', typing: true })
+    msgs.value.push({ id: ++msgSeq, who: 'bot', typing: true })
     setTimeout(() => {
       msgs.value = msgs.value.filter((m) => !m.typing)
       push('bot', html)
     }, delay)
   } else push('bot', html)
 }
+function localReply(key) {
+  const t = i18n.t('chat.r.' + key)
+  return t === 'chat.r.' + key ? i18n.t('chat.r.fallback') : t
+}
 async function botApi(message, localKey) {
+  busy.value = true
   try {
     const d = await req('POST', '/api/ai/chat', { message })
     let html = md(d.reply)
     if (Array.isArray(d.suggestions) && d.suggestions.length) {
       html += `<div class="chat-sugs" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">` +
-        d.suggestions.slice(0, 3).map((s) => `<button class="chat-quick" data-q="${String(s).replace(/"/g, '&quot;')}">${s}</button>`).join('') +
+        d.suggestions.slice(0, 3).map((s) => `<button class="chat-quick" data-q="${esc(s)}">${esc(s)}</button>`).join('') +
         `</div>`
     }
     botSay(html)
   } catch (_) {
-    botSay(i18n.t('chat.r.' + localKey))
+    const lbl = i18n.lang === 'zh' ? '↻ 重试' : '↻ Retry'
+    botSay(localReply(localKey) +
+      `<div style="margin-top:8px"><button class="chat-quick" data-retry="1">${lbl}</button></div>`)
+  } finally {
+    busy.value = false
   }
 }
+function askText(text, key) {
+  if (busy.value) return
+  push('user', esc(text))
+  lastAsk.value = { q: text, key }
+  botApi(text, key)
+}
 function ask(key) {
-  const q = i18n.t('chat.q.' + key)
-  push('user', q)
-  botApi(q, key)
+  askText(i18n.t('chat.q.' + key), key)
+}
+function retryLast() {
+  if (busy.value || !lastAsk.value) return
+  botApi(lastAsk.value.q, lastAsk.value.key)
 }
 function sugClick(e) {
-  const q = e.target && e.target.dataset ? e.target.dataset.q : null
-  if (q) sug(e)
+  const t = e.target
+  if (!t || !t.dataset) return
+  if (t.dataset.retry) { retryLast(); return }
+  if (t.dataset.q && !busy.value) {
+    field.value = t.dataset.q
+    send()
+  }
 }
-function sug(e) {
-  field.value = e.target.dataset.q
-  send()
+function goContact() {
+  open.value = false
+  router.push('/contact')
 }
 function send() {
   const v = field.value.trim()
-  if (!v) return
+  if (!v || busy.value) return
   field.value = ''
-  push('user', v)
-  botApi(v, match(v))
+  push('user', esc(v))
+  lastAsk.value = { q: v, key: match(v) }
+  botApi(v, lastAsk.value.key)
 }
 </script>
 
@@ -103,8 +164,8 @@ function send() {
       </div>
       <button :aria-label="i18n.t('aria.chatClose')" style="color:#fff;font-size:20px;opacity:.8" @click="toggle()">×</button>
     </div>
-    <div class="chat-body" id="chatMsgs">
-      <div v-for="(m, idx) in msgs" :key="idx" class="chat-msg" :class="m.who">
+    <div class="chat-body" id="chatMsgs" role="log" aria-live="polite">
+      <div v-for="m in msgs" :key="m.id" class="chat-msg" :class="m.who">
         <span v-if="m.typing" class="tdots"><i></i><i></i><i></i></span>
         <template v-else><!-- eslint-disable-next-line vue/no-v-html -->
           <span v-html="m.html" @click="sugClick" /></template>
@@ -112,10 +173,12 @@ function send() {
     </div>
     <div class="chat-quicks">
       <button v-for="k in QUICKS" :key="k" class="chat-quick" @click="ask(k)">{{ i18n.t('chat.q.' + k) }}</button>
+      <button class="chat-quick" @click="askText(shipQ(), 'shipping')">{{ i18n.lang === 'zh' ? '🚚 运费/时效' : '🚚 Shipping' }}</button>
+      <button class="chat-quick" @click="goContact">🎫 {{ i18n.lang === 'zh' ? '提交工单' : 'Open a ticket' }}</button>
     </div>
     <form class="chat-input" @submit.prevent="send">
-      <input v-model="field" ref="inputEl" :placeholder="i18n.t('chat.placeholder')" autocomplete="off">
-      <button type="submit" :aria-label="i18n.t('chat.send')">
+      <input v-model="field" ref="inputEl" :placeholder="i18n.t('chat.placeholder')" :aria-label="i18n.t('chat.placeholder')" autocomplete="off">
+      <button type="submit" :aria-label="i18n.t('chat.send')" :disabled="busy">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </form>

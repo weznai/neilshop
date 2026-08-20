@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 from app.core.enums import OrderStatus
 
+MAX_MESSAGE_CHARS = 1000  # 单条消息上限（超长钳制：截断而非拒收，老客户端不受影响）
+
 RULES = [
     ("order", re.compile(r"track|order|package|parcel|shipped|shipment|订单|物流|快递|包裹|到哪|发货|单号", re.I)),
     ("size", re.compile(r"size|sizing|fit|measure|尺码|尺寸|选码|大小|合适", re.I)),
@@ -62,12 +64,19 @@ SUGGESTIONS = {
 
 FALLBACK_REPLY = (
     "这个问题我还在学习 🤖 可以问我订单/尺码/退换/折扣码等问题，"
-    "或到 contact.html 提交工单，人工客服平均 4 小时内回复。",
+    "或到 /contact 提交工单，人工客服平均 4 小时内回复。",
     "I'm still learning that one 🤖 Try asking about orders, sizing, returns or promo codes, "
-    "or open a ticket at contact.html and our team will reply within ~4 hours.",
+    "or open a ticket at /contact and our team will reply within ~4 hours.",
+)
+
+EMPTY_REPLY = (
+    "想问点什么呢？可以直接说，比如「查订单 / 运费 / 退换 / 尺码」，或点下方快捷问题～",
+    "I'm all ears! Try \"where is my order\", shipping, returns or sizing — or tap a quick question below.",
 )
 
 
 class ChatIn(BaseModel):
     message: str
     order_no: str | None = None
+    # 订单查询双因子（与 /track 同口径）：订单号 + 下单邮箱；缺省时仅引导到 /track
+    email: str | None = None

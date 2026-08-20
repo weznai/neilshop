@@ -6,6 +6,7 @@
 
 import hashlib
 import hmac
+import os
 import time
 from datetime import timedelta
 
@@ -24,6 +25,7 @@ from app.models import (
 from app.services.emails import deliver, render
 
 from app.domains.member import repository as repo
+from app.domains.member import service_referrals
 from app.domains.member.schemas import (
     AddressIn, ConsentIn, EmailPreferencesUpdateIn, LoginIn, NewsletterIn,
     PasswordResetConfirmIn, PasswordResetRequestIn, ProfileUpdateIn, RegisterIn,
@@ -48,7 +50,7 @@ def _stock_summary(variants: list) -> dict:
     return {
         "total": sum(v.stock for v in variants),
         "low": sum(1 for v in variants if v.stock <= v.safety_stock),
-        "out": any(v.stock <= 0 for v in variants),
+        "out": sum(v.stock for v in variants) <= 0,
     }
 
 
@@ -87,6 +89,10 @@ def register(db: Session, body: RegisterIn) -> dict:
     user = repo.add_user(
         db, email=body.email, password_hash=hash_password(body.password), name=body.name
     )
+    db.flush()
+    # 推荐绑定闭环：/register?ref= 落地页承诺的双方 1000 积分依赖此绑定记录
+    # （首单支付发放逻辑在 trade 域 on_order_paid，此处只负责把邀请关系写对）
+    service_referrals.bind_referral_on_register(db, body.ref_code, user)
     db.commit()
     db.refresh(user)
     return {"token": create_token(user.id, user.role), "user": _user_out(user)}
@@ -281,6 +287,19 @@ def unsubscribe(db: Session, user: User | None, body: UnsubscribeIn) -> dict:
 
 # ---------- 密码重置 ----------
 
+def _site_url(db: Session) -> str:
+    """站点根地址（重置链接等外链前缀）：ops settings 表 site_url/base_url 优先，
+    其次环境变量 GM_SITE_URL，最后 dev 友好默认 http://localhost:5173。"""
+    for key in ("site_url", "base_url"):
+        row = db.get(Setting, key)
+        if row is not None and row.value:
+            val = str(row.value).strip().rstrip("/")
+            if val.startswith(("http://", "https://")):
+                return val
+    val = (os.getenv("GM_SITE_URL") or "").strip().rstrip("/")
+    return val or "http://localhost:5173"
+
+
 def password_reset_request(db: Session, body: PasswordResetRequestIn) -> dict:
     user = repo.get_user_by_email(db, body.email)
     if user:
@@ -292,7 +311,7 @@ def password_reset_request(db: Session, body: PasswordResetRequestIn) -> dict:
         deliver(
             body.email, "Reset your GLOWMAG password",
             render("password_reset", email=body.email,
-                   reset_link=f"https://glowmag.example/reset-password?token={token}"),
+                   reset_link=f"{_site_url(db)}/reset-password?token={token}"),
         )
     return {"ok": True}
 

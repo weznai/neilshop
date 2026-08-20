@@ -53,6 +53,15 @@ if (-not (Test-Path -LiteralPath $Py)) {
 }
 Write-Output "[env] venv python : OK"
 
+$spaFront = Join-Path $Root 'web\dist\index.html'
+$spaAdmin = Join-Path $Root 'web\dist\admin\index.html'
+if ((Test-Path -LiteralPath $spaFront) -and (Test-Path -LiteralPath $spaAdmin)) {
+    Write-Output '[env] web/dist SPA : OK (front / + admin /admin/)'
+} else {
+    Write-Output '[env] web/dist SPA : MISSING - / and /admin/ will 404 (API still served)'
+    Write-Output '       build first at repo root: npm install; npm run build'
+}
+
 $mysql = Get-Service -Name 'MySQL80' -ErrorAction SilentlyContinue
 if (-not $mysql) {
     Write-Output '[FATAL] service MySQL80 not found (local demo needs MySQL 8, glowmag/glowmag123@127.0.0.1)'

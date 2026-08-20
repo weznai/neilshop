@@ -1,5 +1,7 @@
 import os
 
+JWT_SECRET_DEFAULT = "dev-secret-change-me-0123456789abcdef0123456789"
+
 
 class Settings:
     """全局配置（环境变量外置，代码零硬编码 —— 对应微服务铺路第 6 条）"""
@@ -8,8 +10,9 @@ class Settings:
         "GM_DB",
         "mysql+pymysql://glowmag:glowmag123@127.0.0.1:3306/glowmag?charset=utf8mb4",
     )
-    jwt_secret: str = os.getenv("GM_JWT_SECRET", "dev-secret-change-me-0123456789abcdef0123456789")
-    env: str = os.getenv("GM_ENV", "dev")
+    jwt_secret: str = os.getenv("GM_JWT_SECRET", JWT_SECRET_DEFAULT)
+    # 运行环境：dev（默认，开放 mock 支付/未验签 webhook）/ test / staging / prod
+    env: str = os.getenv("GM_ENV", "dev").strip().lower() or "dev"
     token_days: int = int(os.getenv("GM_TOKEN_DAYS", "7"))
     # 后台会话更短（小时）· 前后台拆域后各自 Cookie 互不串台
     admin_token_hours: int = int(os.getenv("GM_ADMIN_TOKEN_HOURS", "12"))
@@ -38,3 +41,10 @@ class Settings:
 
 
 settings = Settings()
+
+# 非 dev 环境安全闸门：jwt_secret 仍为默认值时拒绝启动（防止生产裸奔默认密钥）
+if settings.env != "dev" and settings.jwt_secret == JWT_SECRET_DEFAULT:
+    raise RuntimeError(
+        "GM_JWT_SECRET is still the default value; set a real secret "
+        "when GM_ENV != 'dev'"
+    )

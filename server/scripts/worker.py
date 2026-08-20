@@ -22,6 +22,7 @@ from app.models import (
     WishlistItem,
 )
 from app.services import emails
+from app.services import points as points_svc
 
 log = logging.getLogger("glowmag.worker")
 
@@ -51,6 +52,12 @@ _EVENT_EMAILS = {
     "stock.restocked": ("restock_notify", "Back in stock: {product_title}"),
 }
 
+# 营销类事件 → EmailPreference 开关（sub_promo=0 或 unsubscribed_at 非空 → 消费侧跳过不发）；
+# 事务性邮件（order.*/stock.restocked）不受限；cart.abandoned 已在 scan_abandoned_carts 侧过滤
+_MARKETING_PREF_KEYS = {
+    "user.welcome": "sub_promo",
+}
+
 _STAGE_ADVANCE_SQL = text(
     "UPDATE carts SET abandoned_mails_sent = :next_stage, recovery_token = :token "
     "WHERE id = :cart_id AND abandoned_mails_sent = :stage"
@@ -60,6 +67,12 @@ _RELEASE_SQL = text(
     "UPDATE variants SET stock = stock + :qty, version = version + 1 WHERE id = :vid"
 )
 _STOCK_SQL = text("SELECT stock FROM variants WHERE id = :vid")
+# 超时关单 CAS 抢占：rowcount=1 才回补库存/写流水，与支付回调（mark_order_paid 的
+# WHERE status=0 抢占）互斥，杜绝 paid+canceled 脏状态与库存双释放
+_CLOSE_CLAIM_SQL = text(
+    "UPDATE orders SET status = 8, canceled_at = :now, cancel_reason = 'timeout' "
+    "WHERE id = :oid AND status = 0"
+)
 _LAST_LEDGER_SQL = text(
     "SELECT COALESCE(SUM(balance_after), 0) FROM ("
     "  SELECT balance_after,"
@@ -92,7 +105,7 @@ def consume_outbox(db: Session) -> None:
         .filter(OutboxEvent.published == 0, OutboxEvent.retry_count < OUTBOX_MAX_RETRY)
         .order_by(OutboxEvent.id).limit(OUTBOX_BATCH).all()
     )
-    emailed = skipped = failed = 0
+    emailed = skipped = failed = compliance_skipped = 0
     for ev in events:
         try:
             payload = dict(ev.payload or {})
@@ -104,6 +117,16 @@ def consume_outbox(db: Session) -> None:
                     payload["email"] = order.email
             mapping = _EVENT_EMAILS.get(ev.event_type)
             if mapping and payload.get("email"):
+                pref_key = _MARKETING_PREF_KEYS.get(ev.event_type)
+                if pref_key:
+                    pref = db.get(EmailPreference, payload["email"])
+                    if pref and (getattr(pref, pref_key) == 0
+                                 or pref.unsubscribed_at is not None):
+                        ev.published = 1
+                        ev.published_at = utcnow()
+                        db.commit()
+                        compliance_skipped += 1
+                        continue
                 template, subject_tpl = mapping
                 subject = (subject_tpl(payload) if callable(subject_tpl)
                            else _fmt_subject(subject_tpl, payload))
@@ -123,8 +146,8 @@ def consume_outbox(db: Session) -> None:
             db.commit()
             failed += 1
             log.exception("outbox event %s (%s) failed", ev.id, ev.event_type)
-    log.info("[outbox] picked=%d emailed=%d no_email=%d failed=%d",
-             len(events), emailed, skipped, failed)
+    log.info("[outbox] picked=%d emailed=%d no_email=%d failed=%d compliance_skipped=%d",
+             len(events), emailed, skipped, failed, compliance_skipped)
 
 
 def cancel_timeout_orders(db: Session) -> None:
@@ -138,6 +161,15 @@ def cancel_timeout_orders(db: Session) -> None:
     canceled = released = 0
     for order in orders:
         try:
+            now = utcnow()
+            # CAS 抢占：仅当订单仍为 PENDING 时置 CANCELED；支付回调已抢先置 PAID
+            # 则 rowcount=0，直接跳过（不回补库存/不写流水），避免互踩
+            if db.execute(_CLOSE_CLAIM_SQL, {"oid": order.id, "now": now}).rowcount != 1:
+                db.rollback()
+                continue
+            order.status = int(OrderStatus.CANCELED)
+            order.canceled_at = now
+            order.cancel_reason = "timeout"
             items = db.query(OrderItem).filter(OrderItem.order_id == order.id).all()
             for item in items:
                 remaining = item.qty - item.refunded_qty
@@ -150,9 +182,8 @@ def cancel_timeout_orders(db: Session) -> None:
                     type=int(StockMovementType.RELEASE), ref_type="order", ref_id=order.id,
                 ))
                 released += remaining
-            order.status = int(OrderStatus.CANCELED)
-            order.canceled_at = utcnow()
-            order.cancel_reason = "timeout"
+            # 超时关单返还该单已用积分（points_used=0 跳过，同单幂等）
+            points_svc.refund_return(db, order, order.user_id, order.points_used)
             db.add(OrderTimeline(
                 order_id=order.id, event="status_changed", actor="system",
                 detail={"from": int(OrderStatus.PENDING), "to": int(OrderStatus.CANCELED),

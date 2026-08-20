@@ -1,58 +1,333 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { req } from '../api/client'
+import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
+import { i18n } from '../i18n'
 
+const route = useRoute()
 const ui = useUiStore()
-const form = ref({ name: '', email: '', topic: 'order', message: '' })
+const auth = useAuthStore()
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+
+/* TicketCategory（server/app/core/enums.py）：1物流 2质量 3退换 4账户 5售前 6其他 */
+const CATEGORIES = [
+  [1, '🚚 Shipping & delivery', '🚚 物流与配送'],
+  [2, '💎 Product quality', '💎 商品质量'],
+  [3, '↩️ Returns & exchanges', '↩️ 退换货'],
+  [4, '👤 Account & points', '👤 账户与积分'],
+  [5, '💬 Pre-sale questions', '💬 售前咨询'],
+  [6, '✨ Other', '✨ 其他'],
+]
+/* TicketStatus：0新建 1已回复 2等待用户回复 3已解决 4已关闭 */
+const STATUS = {
+  0: ['Open', '待处理', 'tag-pending'],
+  1: ['Replied', '已回复', 'tag-paid'],
+  2: ['Awaiting your reply', '等待你回复', 'tag-ship'],
+  3: ['Resolved', '已解决', 'tag-done'],
+  4: ['Closed', '已关闭', 'tag-error'],
+}
+const mode = ref('new')
 const busy = ref(false)
 
-async function submit() {
+const form = ref({ email: '', order_no: '', category: 1, subject: '', content: '' })
+const errors = ref({})
+const created = ref(null)
+const templates = ref([])
+const tplLoading = ref(false)
+
+const lookup = ref({ email: '', ticket_no: '' })
+const tickets = ref(null)
+const lookupBusy = ref(false)
+const lookupErr = ref('')
+const replyBox = ref('')
+const replyBusy = ref(false)
+const activeNo = ref('')
+
+const activeTicket = computed(() => {
+  const list = tickets.value || []
+  if (!list.length) return null
+  return list.find((t) => t.ticket_no === activeNo.value) || list[0]
+})
+function statusLabelOf(t) {
+  const s = STATUS[t.status] || ['In progress', '处理中']
+  return tt(s[0], s[1])
+}
+function statusTagOf(t) { return (STATUS[t.status] || [])[2] || 'tag-ship' }
+function catLabel(c) {
+  const row = CATEGORIES.find((x) => x[0] === c)
+  return row ? tt(row[1], row[2]) : tt('Other', '其他')
+}
+function fmtTime(s) { return (s || '').replace('T', ' ').slice(0, 16) }
+
+async function loadTemplates(cat) {
+  tplLoading.value = true
+  try {
+    templates.value = await req('GET', '/api/support/templates?category=' + cat) || []
+  } catch (_) { templates.value = [] }
+  tplLoading.value = false
+}
+watch(() => form.value.category, (c) => loadTemplates(c), { immediate: true })
+function useTpl(t) {
+  form.value.content = t.content
+  if (!form.value.subject.trim()) form.value.subject = t.title
+}
+
+function validate() {
   const f = form.value
-  if (!f.name || !f.email.includes('@') || !f.message) {
-    ui.toast('Please complete all fields', 'error')
-    return
-  }
+  const e = {}
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) e.email = tt('Enter a valid email — replies land here', '请输入有效邮箱，回复将发送至此')
+  if (!f.subject.trim()) e.subject = tt('A short subject helps us route your ticket', '请填写简短主题，便于快速分派')
+  if (f.content.trim().length < 5) e.content = tt('Tell us a little more (at least 5 characters)', '再多说一点吧（至少 5 个字符）')
+  if (f.order_no && !/^[A-Za-z0-9]{6,20}$/.test(f.order_no.trim())) e.order_no = tt('Order numbers look like NS260728XXXXXX', '订单号形如 NS260728XXXXXX')
+  errors.value = e
+  return !Object.keys(e).length
+}
+
+async function submit() {
+  if (!validate()) return
   busy.value = true
   try {
-    await req('POST', '/api/support/tickets', {
-      subject: `[${f.topic}] ${f.name}`,
-      message: f.message,
-      email: f.email,
+    const f = form.value
+    const d = await req('POST', '/api/support/tickets', {
+      email: f.email.trim(),
+      order_no: f.order_no.trim() || null,
+      category: f.category,
+      subject: f.subject.trim(),
+      content: f.content.trim(),
     })
-    ui.toast('Ticket created — reply within ~4 hours ✓', 'success')
-    f.message = ''
+    created.value = d
+    ui.toast(tt('Ticket created ✓', '工单已创建 ✓'), 'success')
   } catch (e) {
-    ui.toast(e.status === 401 ? 'Sign in to open a ticket' : 'Submit failed', 'error')
+    ui.toast(e.status === 422 ? tt('Please check the highlighted fields', '请检查标红项后重试') : tt('Submit failed — please retry', '提交失败，请稍后再试'), 'error')
   } finally { busy.value = false }
 }
+
+function resetForm() {
+  created.value = null
+  form.value.subject = ''
+  form.value.content = ''
+  errors.value = {}
+}
+
+async function copyNo(no) {
+  try { await navigator.clipboard.writeText(no) } catch (_) {
+    const ta = document.createElement('textarea')
+    ta.value = no; document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy') } catch (__) { /* noop */ }
+    document.body.removeChild(ta)
+  }
+  ui.toast(no + ' ' + tt('copied ✓', '已复制 ✓'), 'success')
+}
+
+function goLookup() {
+  lookup.value.email = created.value ? form.value.email : lookup.value.email
+  if (created.value) lookup.value.ticket_no = created.value.ticket_no
+  mode.value = 'check'
+  query()
+}
+
+async function query() {
+  const l = lookup.value
+  lookupErr.value = ''
+  if (!l.email.trim()) {
+    lookupErr.value = tt('Enter the email used on the ticket.', '请填写创建工单时使用的邮箱')
+    return
+  }
+  if (!auth.isLoggedIn && !l.ticket_no.trim()) {
+    lookupErr.value = tt('Ticket number (TK…) is needed — or sign in to see all your tickets.', '未登录需提供工单号（TK…），或登录后按账户邮箱查看全部工单')
+    return
+  }
+  lookupBusy.value = true
+  tickets.value = null
+  activeNo.value = ''
+  try {
+    /* 登录态：仅凭账户 email 拉取全部工单（后端校验 email 须与账户一致） */
+    let url = '/api/support/tickets?email=' + encodeURIComponent(l.email.trim())
+    if (!auth.isLoggedIn) url += '&ticket_no=' + encodeURIComponent(l.ticket_no.trim())
+    const d = await req('GET', url)
+    tickets.value = d.items || []
+    if (!tickets.value.length) lookupErr.value = tt('No ticket found with that combination.', '未找到符合条件的工单')
+  } catch (e) {
+    const d = e && e.data && e.data.detail
+    if (e && e.status === 403 && d === 'not ticket owner') lookupErr.value = tt('Please use the email that created the ticket.', '请使用创建工单的邮箱查询')
+    else if (e && e.status === 404) lookupErr.value = tt('Ticket not found — check the number (TK…) and the email you used.', '未找到工单——请核对工单号（TK…）与创建邮箱')
+    else lookupErr.value = tt('Could not load the conversation — please retry.', '加载失败，请稍后再试')
+  } finally { lookupBusy.value = false }
+}
+
+async function sendReply() {
+  const t = activeTicket.value
+  const v = replyBox.value.trim()
+  if (!t || !v) return
+  replyBusy.value = true
+  try {
+    await req('POST', `/api/support/tickets/${encodeURIComponent(t.ticket_no)}/messages`, {
+      email: lookup.value.email.trim(),
+      content: v,
+    })
+    replyBox.value = ''
+    await query()
+  } catch (e) {
+    ui.toast(e.status === 409 ? tt('This ticket is closed — please open a new one', '该工单已关闭，请提交新工单') : tt('Could not send — please retry', '发送失败，请稍后再试'), 'error')
+  } finally { replyBusy.value = false }
+}
+
+onMounted(() => {
+  if (route.query.subject) form.value.subject = String(route.query.subject).slice(0, 80)
+  if (route.query.email) form.value.email = String(route.query.email).slice(0, 80)
+  else if (auth.user && auth.user.email) form.value.email = auth.user.email
+  if (auth.user && auth.user.email) lookup.value.email = auth.user.email
+  if (route.query.ticket_no) {
+    lookup.value.ticket_no = String(route.query.ticket_no).slice(0, 20)
+    mode.value = 'check'
+  }
+})
 </script>
 
 <template>
   <section class="section">
-    <div class="container" style="max-width:640px">
-      <div class="section-head"><h2 class="section-title">Contact Us 💬</h2></div>
-      <div class="card" style="padding:24px">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="field"><label>Your name</label><input v-model="form.name" class="input"></div>
-          <div class="field"><label>Email</label><input v-model="form.email" class="input" type="email"></div>
+    <div class="container" style="max-width:680px">
+      <div class="section-head"><h2 class="section-title">{{ tt('Contact Us 💬', '联系我们 💬') }}</h2></div>
+
+      <div style="display:flex;gap:8px;margin-bottom:18px">
+        <button class="trend-chip" :aria-pressed="mode === 'new'" :style="mode === 'new' ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''" @click="mode = 'new'">✍️ {{ tt('New ticket', '新建工单') }}</button>
+        <button class="trend-chip" :aria-pressed="mode === 'check'" :style="mode === 'check' ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''" @click="mode = 'check'">💬 {{ tt('Check my ticket', '查询我的工单') }}</button>
+      </div>
+
+      <div v-if="mode === 'new'">
+        <div v-if="created" class="card" style="padding:28px;text-align:center">
+          <div style="width:56px;height:56px;border-radius:50%;background:var(--rose-pale);color:var(--plum);font-size:26px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:12px">✓</div>
+          <h3 style="font-family:var(--font-title);font-size:20px;margin-bottom:6px">{{ tt('Ticket received!', '工单已收到！') }}</h3>
+          <p style="font-size:13.5px;color:var(--gray);margin-bottom:14px">
+            {{ tt('Average first reply: under 4 hours (Mon–Sat). Save your ticket number:', '平均 4 小时内首次回复（周一至周六）。请保存工单号：') }}
+          </p>
+          <div style="display:inline-flex;align-items:center;gap:10px;background:var(--rose-pale);border-radius:10px;padding:10px 16px;margin-bottom:18px">
+            <b style="font-size:18px;letter-spacing:1px;color:var(--plum)">{{ created.ticket_no }}</b>
+            <button class="btn btn-secondary btn-sm" style="height:30px;padding:0 12px" @click="copyNo(created.ticket_no)">{{ tt('Copy', '复制') }}</button>
+          </div>
+          <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" @click="goLookup">{{ tt('View conversation', '查看对话') }}</button>
+            <button class="btn btn-ghost btn-sm" @click="resetForm">{{ tt('Open another ticket', '再提一个工单') }}</button>
+          </div>
         </div>
-        <div class="field">
-          <label>Topic</label>
-          <select v-model="form.topic" class="input">
-            <option value="order">Order / shipping</option>
-            <option value="return">Returns &amp; exchanges</option>
-            <option value="product">Product question</option>
-            <option value="collab">Collab / press</option>
-            <option value="other">Something else</option>
-          </select>
+
+        <div v-else class="card" style="padding:24px">
+          <div class="field" :class="{ error: errors.email }">
+            <label>{{ tt('Email', '邮箱') }} *</label>
+            <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" placeholder="you@example.com">
+            <div class="field-msg">{{ errors.email }}</div>
+          </div>
+          <div class="field" :class="{ error: errors.order_no }">
+            <label>{{ tt('Order number', '订单号') }} <span style="color:var(--gray);font-weight:400">({{ tt('optional — speeds things up', '选填，可加快处理') }})</span></label>
+            <input v-model="form.order_no" class="input" :class="{ error: errors.order_no }" placeholder="NS260728XXXXXX">
+            <div class="field-msg">{{ errors.order_no }}</div>
+          </div>
+          <div class="field">
+            <label>{{ tt('Category', '工单类目') }} *</label>
+            <select v-model="form.category" class="input">
+              <option v-for="[v, en, zh] in CATEGORIES" :key="v" :value="v">{{ tt(en, zh) }}</option>
+            </select>
+          </div>
+          <div class="field" :class="{ error: errors.subject }">
+            <label>{{ tt('Subject', '主题') }} *</label>
+            <input v-model="form.subject" class="input" :class="{ error: errors.subject }" maxlength="80" :placeholder="tt('Short summary, e.g. Wrong size in my set', '简短概述，例如：套装尺码不对')">
+            <div class="field-msg">{{ errors.subject }}</div>
+          </div>
+          <div v-if="templates.length" style="margin-bottom:14px">
+            <div style="font-size:12px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">{{ tt('Quick starters', '快捷模板') }}</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button v-for="t in templates" :key="t.id" class="trend-chip" @click="useTpl(t)">{{ t.title }}</button>
+            </div>
+          </div>
+          <div class="field" :class="{ error: errors.content }">
+            <label>{{ tt('Message', '留言内容') }} *</label>
+            <textarea v-model="form.content" class="input" :class="{ error: errors.content }" rows="5" style="height:auto;padding-top:10px" :placeholder="tt('How can we help? Include sizes, order details or anything handy.', '我们能帮你什么？可附上尺码、订单信息等细节。')"></textarea>
+            <div class="field-msg">{{ errors.content }}</div>
+          </div>
+          <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="submit">{{ tt('Send message', '发送留言') }}</button>
+          <p style="font-size:12.5px;color:var(--gray);margin-top:12px">
+            {{ tt('No account needed — follow the whole conversation with your email + ticket number.', '无需注册账号——用邮箱 + 工单号即可跟进整个对话。') }}
+          </p>
         </div>
-        <div class="field"><label>Message</label><textarea v-model="form.message" class="input" rows="5" placeholder="How can we help?"></textarea></div>
-        <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="submit">Send message</button>
-        <p style="font-size:12.5px;color:var(--gray);margin-top:12px">
-          Average first reply: under 4 hours (Mon–Sat). For order issues, include your NS… order number.
+      </div>
+
+      <div v-else class="card" style="padding:24px">
+        <div class="lk-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="lookup.email" class="input" type="email" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')"></div>
+          <div v-if="!auth.isLoggedIn" class="field"><label>{{ tt('Ticket number', '工单号') }}</label><input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX"></div>
+        </div>
+        <p v-if="auth.isLoggedIn" style="font-size:12.5px;color:var(--gray);margin:6px 0 0">
+          {{ tt('Signed in — all tickets created with this account email are listed.', '已登录——将显示用该账户邮箱创建的全部工单，无需工单号。') }}
         </p>
+        <button class="btn btn-primary" :class="{ loading: lookupBusy }" :disabled="lookupBusy" style="margin-top:12px" @click="query">{{ tt('Find my ticket', '查询工单') }}</button>
+        <div v-if="lookupErr" style="font-size:13px;color:var(--error);margin-top:10px">{{ lookupErr }}</div>
+
+        <div v-if="lookupBusy" class="skeleton" style="min-height:180px;margin-top:16px" />
+
+        <template v-else-if="activeTicket">
+          <div v-if="tickets.length > 1" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:16px">
+            <button
+              v-for="t in tickets" :key="t.ticket_no" class="trend-chip" :aria-pressed="activeTicket.ticket_no === t.ticket_no"
+              :style="activeTicket.ticket_no === t.ticket_no ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''"
+              @click="activeNo = t.ticket_no"
+            >{{ t.ticket_no }}</button>
+          </div>
+
+          <div style="border-top:1px solid var(--gray-light);margin-top:20px;padding-top:18px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+              <b style="font-size:15px">{{ activeTicket.subject }}</b>
+              <span class="tag" :class="statusTagOf(activeTicket)">{{ statusLabelOf(activeTicket) }}</span>
+            </div>
+            <div style="font-size:12.5px;color:var(--gray);margin-bottom:16px">
+              {{ activeTicket.ticket_no }} · {{ catLabel(activeTicket.category) }}
+              <template v-if="activeTicket.order_no"> · {{ tt('Order', '订单') }} {{ activeTicket.order_no }}</template>
+              · {{ tt('Opened', '创建于') }} {{ fmtTime(activeTicket.created_at) }}
+            </div>
+
+            <div style="display:grid;gap:10px">
+              <div
+                v-for="m in activeTicket.messages" :key="m.id"
+                style="max-width:85%;padding:10px 14px;border-radius:14px;font-size:13.5px;line-height:1.6"
+                :style="m.sender === 1
+                  ? 'justify-self:end;background:var(--plum);color:#fff;border-bottom-right-radius:4px'
+                  : 'justify-self:start;background:var(--rose-pale);color:var(--ink);border-bottom-left-radius:4px'"
+              >
+                <div style="font-size:10.5px;opacity:.75;margin-bottom:3px;font-weight:700">
+                  {{ m.sender === 1 ? tt('You', '我') : 'GLOWMAG ' + tt('Support', '客服') }} · {{ fmtTime(m.created_at) }}
+                </div>
+                {{ m.content }}
+              </div>
+            </div>
+
+            <div v-if="activeTicket.status === 4" style="margin-top:16px;font-size:13px;color:var(--gray);background:var(--gray-light);border-radius:10px;padding:12px 14px">
+              🔒 {{ tt('This ticket is closed. Need more help?', '该工单已关闭。还需要帮助？') }}
+              <a style="color:var(--plum);font-weight:600;cursor:pointer" @click.prevent="mode = 'new'; created = null">{{ tt('Open a new ticket', '提交新工单') }}</a>.
+            </div>
+            <div v-else-if="activeTicket.status === 2" style="margin-top:14px;font-size:12.5px;color:var(--warn)">
+              ⏳ {{ tt('Our team is waiting for your reply below.', '客服正在等待你的回复，请在下方继续对话。') }}
+            </div>
+            <div v-else style="margin-top:16px">
+              <textarea v-model="replyBox" class="input" rows="3" style="height:auto;padding-top:10px" :placeholder="tt('Add a reply — it goes straight to our team', '追加回复——直达客服团队')"></textarea>
+              <button class="btn btn-primary btn-sm" :class="{ loading: replyBusy }" :disabled="replyBusy || !replyBox.trim()" style="margin-top:10px" @click="sendReply">{{ tt('Send reply', '发送回复') }}</button>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+.skeleton {
+  background: linear-gradient(90deg, var(--gray-light) 25%, #fff 50%, var(--gray-light) 75%);
+  background-size: 200% 100%;
+  animation: gmSk 1.2s ease-in-out infinite;
+  border-radius: 12px;
+}
+@keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+@media (max-width: 640px) {
+  .lk-grid { grid-template-columns: 1fr !important; }
+}
+</style>

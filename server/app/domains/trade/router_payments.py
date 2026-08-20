@@ -54,13 +54,29 @@ def _resolve_provider(provider: str) -> payment_provider.PaymentProvider:
 def _create_intent_via(
     db: Session, order_no: str, provider: payment_provider.PaymentProvider,
 ) -> dict:
+    from app.domains.trade import repository as repo
+    from app.domains.trade import service_payments
+
     order = service_payments._get_order(db, order_no)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
+    # 幂等：同单已有 PENDING payment 直接复用返回，不堆积新行
+    pending = repo.pending_payment_of_order(db, order.id)
+    if pending:
+        return {
+            "payment_intent": pending.stripe_payment_intent,
+            "client_secret": (
+                pending.stripe_checkout_session
+                or f"{pending.stripe_payment_intent}_secret_mock"
+            ),
+            "amount": pending.amount,
+            "provider": provider.name,
+        }
     intent = provider.create_intent(order, order.grand_total)
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],
+        stripe_checkout_session=(intent.get("client_secret") or "")[:64],
         amount=order.grand_total,
         status=0,
     )

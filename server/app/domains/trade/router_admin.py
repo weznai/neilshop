@@ -23,10 +23,11 @@ def list_orders(
     status: Optional[int] = None,
     q: Optional[str] = None,
     page: int = Query(default=1, ge=1),
+    per_page: Optional[int] = Query(default=None, ge=1),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_orders(db, status, q, page)
+    return service_admin.list_orders(db, status, q, page, per_page)
 
 
 @router.get("/orders/{order_no}")
@@ -57,10 +58,12 @@ def refund_order(
 @router.get("/rmas")
 def list_rmas(
     status: Optional[int] = None,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_rmas(db, status)
+    return service_admin.list_rmas(db, status, page, per_page)
 
 
 @router.post("/rmas/{rma_no}/approve")
@@ -106,10 +109,11 @@ def low_stock(
 def list_exchanges(
     status: Optional[int] = None,
     page: int = Query(default=1, ge=1),
+    size: int = Query(default=10, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_exchanges.admin_list_exchanges(db, status, page)
+    return service_exchanges.admin_list_exchanges(db, status, page, size)
 
 
 @router.post("/exchanges/{exchange_no}/approve")

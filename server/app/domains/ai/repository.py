@@ -1,9 +1,20 @@
-"""AI 域仓储 —— 纯查询（商品推荐来源/FAQ/订单物流/折扣码）"""
+"""AI 域仓储 —— 纯查询（商品推荐来源/FAQ/订单物流/折扣码/settings 运营参数）"""
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Query, Session
 
-from app.models import DiscountCode, Faq, Order, Product, Shipment
+from app.models import DiscountCode, Faq, Order, Product, Setting, Shipment
+
+
+def setting_value(db: Session, key: str, default):
+    """settings 读值（客服话术用）：查不到/类型不符/DB 异常一律回默认值，不断供"""
+    try:
+        row = db.get(Setting, key)
+        if row is None or row.value is None:
+            return default
+        return type(default)(row.value)
+    except Exception:
+        return default
 
 
 def active_products(db: Session) -> Query:

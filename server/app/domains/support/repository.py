@@ -34,10 +34,10 @@ def messages_asc(db: Session, ticket_id: int) -> list[TicketMessage]:
     )
 
 
-def admin_tickets_query(db: Session, status: int | None, category: int | None, q: str | None) -> Query:
+def admin_tickets_query(db: Session, statuses: list[int] | None, category: int | None, q: str | None) -> Query:
     query = db.query(Ticket)
-    if status is not None:
-        query = query.filter(Ticket.status == status)
+    if statuses:
+        query = query.filter(Ticket.status.in_(statuses))
     if category is not None:
         query = query.filter(Ticket.category == category)
     if q:

@@ -1,29 +1,105 @@
 <script setup>
-import { ref } from 'vue'
-import { useCartStore } from '../stores/cart'
+import { computed, onMounted, ref } from 'vue'
+import { i18n } from '../i18n'
+import { errMessage, req } from '../api/client'
+import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 
-const cart = useCartStore()
+const auth = useAuthStore()
 const ui = useUiStore()
-const amount = ref(25)
-const AMOUNTS = [25, 50, 75, 100]
-const to = ref('')
-const from = ref('')
-const msg = ref('')
 
-async function add() {
-  await req0()
-}
-async function req0() {
-  /* 礼品卡为演示 SKU（id 305），走本地演示加购通道 */
-  const { req } = await import('../api/client')
+const zh = computed(() => i18n.lang === 'zh')
+const t = (en, cn) => (zh.value ? cn : en)
+const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
+
+/* 后端 GiftcardPurchaseIn.amount_cents 枚举：2500 / 5000 / 10000 */
+const AMOUNTS = [2500, 5000, 10000]
+const amountC = ref(5000)
+const purchaser = ref('')
+const recipient = ref('')
+const msg = ref('')
+const busy = ref(false)
+const paying = ref(false)
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/* 购买结果：{code, order_no, amount_cents, status}，status 0=待支付激活 1=已激活 */
+const result = ref(null)
+const paid = ref(false)
+const copied = ref(false)
+
+onMounted(() => {
+  if (auth.user && auth.user.email) purchaser.value = auth.user.email
+})
+
+const purchaserBad = computed(() => !!purchaser.value && !EMAIL_RE.test(purchaser.value))
+const recipientBad = computed(() => !!recipient.value && !EMAIL_RE.test(recipient.value))
+
+async function buy() {
+  if (busy.value) return
+  if (!EMAIL_RE.test(purchaser.value.trim())) { ui.toast(t('Enter your email (we send the code there)', '请填写你的邮箱（礼品卡码将发送至此）'), 'error'); return }
+  if (recipientBad.value) { ui.toast(t('Recipient email looks invalid', '收件人邮箱格式不正确'), 'error'); return }
+  busy.value = true
   try {
-    const d = await req('GET', '/api/catalog/products-by-id/3')
-    const v = d.variants && d.variants[0]
-    if (v) return cart.add(v.id, 1, ui)
-  } catch (_) { /* */ }
-  ui.toast(`Gift card $${amount} added (demo) 🎁`, 'success')
+    result.value = await req('POST', '/api/promo/giftcard/purchase', {
+      amount_cents: amountC.value,
+      purchaser_email: purchaser.value.trim(),
+      recipient_email: recipient.value.trim() || null,
+      message: msg.value.trim() || null,
+    })
+    paid.value = false
+    ui.toast(t('Gift card created 🎁', '礼品卡已生成 🎁'), 'success')
+  } catch (e) {
+    const m = e && e.data && e.data.detail ? errMessage(e) : ''
+    if (m === 'code collision') ui.toast(t('Please retry — code generation conflict', '生成冲突，请重试'), 'error')
+    else if (m) ui.toast(m, 'error')
+    else if (e && e.status === 0) ui.toast(t('Network unreachable — check your connection', '网络连接失败，请检查网络'), 'error')
+    else ui.toast(t('Purchase failed — please retry', '购买失败，请稍后再试'), 'error')
+  } finally { busy.value = false }
 }
+
+/* 礼品卡订单为待支付订单：mock 支付演示通道（支付成功后后端自动激活 status 0→1） */
+async function payAndActivate() {
+  if (paying.value || !result.value) return
+  paying.value = true
+  try {
+    await req('POST', '/api/payments/create-intent', { order_no: result.value.order_no })
+    try {
+      await req('POST', '/api/payments/mock-pay', { order_no: result.value.order_no, succeed: true })
+      paid.value = true
+      ui.toast(t('Paid — gift card activated ✓', '支付成功 · 礼品卡已激活 ✓'), 'success')
+    } catch (e) {
+      const m = (e.data && e.data.detail) || ''
+      if (m === 'already_paid') { paid.value = true; ui.toast(t('Already paid ✓', '已支付 ✓'), 'success') }
+      else ui.toast(m === 'use_webhook' ? t('Complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || 'Pay failed', 'error')
+    }
+  } catch (e) {
+    ui.toast((e.data && e.data.detail) || 'Pay failed', 'error')
+  } finally { paying.value = false }
+}
+
+async function copyCode() {
+  if (!result.value) return
+  try {
+    await navigator.clipboard.writeText(result.value.code)
+  } catch (_) {
+    const ta = document.createElement('textarea')
+    ta.value = result.value.code; document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy') } catch (_) { /* older browsers */ }
+    document.body.removeChild(ta)
+  }
+  copied.value = true
+  setTimeout(() => { copied.value = false }, 2000)
+}
+
+const mailto = computed(() => {
+  if (!result.value) return '#'
+  const subject = encodeURIComponent(`A GLOWMAG gift card for you 💅`)
+  const body = encodeURIComponent(
+    `Here's your GLOWMAG gift card!\n\nCode: ${result.value.code}\nAmount: ${money(result.value.amount_cents)}\n${msg.value.trim() ? '\n' + msg.value.trim() + '\n' : ''}Redeem at checkout — no expiry. Enjoy the glam! 💅`,
+  )
+  return `mailto:${recipient.value.trim()}?subject=${subject}&body=${body}`
+})
 </script>
 
 <template>
@@ -31,27 +107,78 @@ async function req0() {
     <div class="container" style="max-width:760px">
       <div style="text-align:center;margin-bottom:30px">
         <div style="font-size:46px">💳</div>
-        <h1 style="font-family:var(--font-title);font-size:34px;margin-bottom:8px">Gift Cards</h1>
-        <p style="color:var(--gray)">The glam that always fits. Delivered instantly by email.</p>
+        <h1 style="font-family:var(--font-title);font-size:34px;margin-bottom:8px">{{ t('Gift Cards', '礼品卡') }}</h1>
+        <p style="color:var(--gray)">{{ t('The glam that always fits. Delivered instantly by email.', '最不会出错的礼物，即时发送到邮箱。') }}</p>
       </div>
-      <div class="grid-m-1" style="display:grid;grid-template-columns:1fr 1fr;gap:22px">
+
+      <!-- 购买结果卡 -->
+      <div v-if="result" class="card" style="padding:26px;margin-bottom:22px;text-align:center">
+        <div style="font-size:15px;font-weight:700;margin-bottom:14px">
+          {{ paid || result.status === 1 ? '🎉 ' + t('Gift card activated!', '礼品卡已激活！') : '🎁 ' + t('Gift card created — pay to activate', '礼品卡已生成 · 支付后激活') }}
+        </div>
+        <div class="gc-code">{{ result.code }}</div>
+        <div style="font-size:13.5px;color:var(--gray);margin:10px 0 4px">
+          {{ t('Amount', '面额') }} <b style="color:var(--plum)">{{ money(result.amount_cents) }}</b> ·
+          {{ t('Order', '订单') }} <b>{{ result.order_no }}</b>
+        </div>
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:16px">
+          <template v-if="paid || result.status === 1">
+            {{ t("We've emailed this code to", '礼品卡码已发送至') }} <b>{{ purchaser }}</b><template v-if="recipient.trim()"> → {{ recipient.trim() }}</template>.
+          </template>
+          <template v-else>
+            {{ t('The code will be emailed to', '支付完成后，卡码将发送至') }} <b>{{ purchaser }}</b><template v-if="recipient.trim()"> → {{ recipient.trim() }}</template>
+            {{ t('once payment is completed.', '（当前订单待支付）。') }}
+          </template>
+          {{ t('Use it at checkout (gift card field). No expiry.', '结算时在礼品卡栏输入即可，永久有效。') }}
+        </p>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <button v-if="!paid && result.status !== 1" class="btn btn-primary" :class="{ loading: paying }" :disabled="paying" @click="payAndActivate">
+            {{ t(`Pay & activate · ${money(result.amount_cents)}`, `支付并激活 · ${money(result.amount_cents)}`) }}
+          </button>
+          <button class="btn btn-secondary" @click="copyCode">{{ copied ? '✓ ' + t('Copied', '已复制') : t('Copy code', '复制卡码') }}</button>
+          <a v-if="recipient.trim()" :href="mailto" class="btn btn-secondary">✉️ {{ t('Send to friend', '发送给好友') }}</a>
+          <button class="btn btn-ghost" @click="result = null; paid = false">{{ t('Buy another', '再买一张') }}</button>
+        </div>
+      </div>
+
+      <div v-else class="grid-m-1" style="display:grid;grid-template-columns:1fr 1fr;gap:22px">
         <div class="card" style="padding:26px;background:linear-gradient(135deg,var(--rose),var(--plum));color:#fff">
           <div style="font-family:var(--font-title);font-size:24px">GLOW<span style="opacity:.75">MAG</span></div>
-          <div style="font-size:38px;font-weight:800;margin:26px 0 6px">${{ amount }}.00</div>
+          <div style="font-size:38px;font-weight:800;margin:26px 0 6px">{{ money(amountC) }}</div>
           <div style="font-size:12.5px;opacity:.8">GIFT CARD · NO EXPIRY</div>
         </div>
         <div class="card" style="padding:22px">
-          <div class="field"><label>Amount</label>
+          <div class="field"><label>{{ t('Amount', '面额') }}</label>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button v-for="a in AMOUNTS" :key="a" class="btn btn-sm" :class="amount === a ? 'btn-primary' : 'btn-secondary'" @click="amount = a">${{ a }}</button>
+              <button v-for="a in AMOUNTS" :key="a" class="btn btn-sm" :class="amountC === a ? 'btn-primary' : 'btn-secondary'" @click="amountC = a">{{ money(a) }}</button>
             </div>
           </div>
-          <div class="field"><label>To (email)</label><input v-model="to" class="input" type="email" placeholder="friend@example.com"></div>
-          <div class="field"><label>From</label><input v-model="from" class="input" placeholder="Your name"></div>
-          <div class="field"><label>Message</label><textarea v-model="msg" class="input" rows="2" placeholder="Happy glam birthday! 💅"></textarea></div>
-          <button class="btn btn-primary btn-block" @click="add">Add to cart</button>
+          <div class="field" :class="{ error: purchaserBad }">
+            <label>{{ t('Your email (purchaser)', '你的邮箱（购买人）') }} *</label>
+            <input v-model="purchaser" class="input" :class="{ error: purchaserBad }" type="email" placeholder="you@example.com">
+            <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
+          </div>
+          <div class="field" :class="{ error: recipientBad }">
+            <label>{{ t('Recipient email (optional)', '收件人邮箱（选填）') }}</label>
+            <input v-model="recipient" class="input" :class="{ error: recipientBad }" type="email" placeholder="friend@example.com">
+            <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
+          </div>
+          <div class="field">
+            <label>{{ t('Message', '留言') }} ({{ msg.length }}/255)</label>
+            <textarea v-model="msg" class="input" rows="2" maxlength="255" :placeholder="t('Happy glam birthday! 💅', '生日快乐！💅')"></textarea>
+          </div>
+          <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy" @click="buy">
+            {{ t(`Buy gift card · ${money(amountC)}`, `购买礼品卡 · ${money(amountC)}`) }}
+          </button>
+          <p style="font-size:11.5px;color:var(--gray);margin-top:10px;text-align:center">
+            {{ t('Instant email delivery · no expiry · stackable with points', '即时发送 · 永久有效 · 可与积分同享') }}
+          </p>
         </div>
       </div>
     </div>
   </section>
 </template>
+
+<style scoped>
+.gc-code { font-family: monospace; font-size: 22px; font-weight: 700; letter-spacing: 1.5px; background: var(--rose-pale); border: 1.5px dashed var(--plum); color: var(--plum); border-radius: 12px; padding: 14px 18px; display: inline-block; user-select: all; }
+</style>
