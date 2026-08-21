@@ -4,21 +4,26 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useCartStore } from '../../stores/cart'
+import { i18n } from '../../i18n'
 
 const auth = useAuthStore()
 const cart = useCartStore()
 const route = useRoute()
 const router = useRouter()
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const ready = ref(false)
+/* [href, [en, zh], icon] */
 const NAV = [
-  ['/account', 'Overview', '👤'],
-  ['/account/orders', 'Orders', '📦'],
-  ['/account/returns', 'Returns & Exchanges', '↩️'],
-  ['/account/points', 'Glow Points', '⭐'],
-  ['/account/address', 'Address Book', '📍'],
-  ['/account/wishlist', 'Wishlist', '💜'],
-  ['/account/settings', 'Settings', '⚙️'],
+  ['/account', ['Overview', '总览'], '👤'],
+  ['/account/orders', ['Orders', '订单'], '📦'],
+  ['/account/returns', ['Returns & Exchanges', '退换货'], '↩️'],
+  ['/account/points', ['Glow Points', '积分'], '⭐'],
+  ['/account/address', ['Address Book', '地址簿'], '📍'],
+  ['/account/wishlist', ['Wishlist', '心愿单'], '💜'],
+  ['/account/settings', ['Settings', '设置'], '⚙️'],
 ]
+/* User.tier：0普通 1银 2金 → 等级色点 */
+const TIER_DOT = { 0: 'var(--plum)', 1: 'var(--gray-light)', 2: 'var(--gold)' }
 
 /* 激活态：精确匹配，或子路径（如 /account/orders/detail 高亮 Orders） */
 function isActive(href) {
@@ -47,26 +52,25 @@ async function signOut() {
     <div class="container">
       <div v-if="ready && !auth.isLoggedIn" style="text-align:center;padding:60px 0;color:var(--gray)">
         <div style="font-size:44px;margin-bottom:10px">🔐</div>
-        <p style="margin-bottom:16px">Sign in to view your account</p>
-        <router-link class="btn btn-primary" :to="{ path: '/login', query: { next: route.fullPath } }">Sign In</router-link>
+        <p style="margin-bottom:16px">{{ tt('Sign in to view your account', '登录后查看你的账户') }}</p>
+        <router-link class="btn btn-primary" :to="{ path: '/login', query: { next: route.fullPath } }">{{ tt('Sign In', '登录') }}</router-link>
       </div>
 
-      <div v-else class="grid-m-1" style="display:grid;grid-template-columns:220px 1fr;gap:28px;align-items:start">
-        <aside class="card" style="padding:16px">
-          <div style="padding:4px 8px 12px;border-bottom:1px solid var(--gray-light);margin-bottom:10px">
-            <b style="font-size:14px">{{ auth.user?.name || auth.user?.email || 'Account' }}</b>
-            <div style="font-size:12px;color:var(--gray)">{{ auth.user?.email }}</div>
+      <div v-else class="grid-m-1 acct-grid">
+        <aside class="card acct-side">
+          <div class="acct-user">
+            <b class="acct-user-name">{{ auth.user?.name || auth.user?.email || tt('Account', '账户') }}</b>
+            <div class="acct-user-meta">
+              <span class="tier-dot" :style="{ background: TIER_DOT[auth.user?.tier || 0] || 'var(--plum)' }" :title="tt('Membership tier', '会员等级')" />
+              <span class="acct-user-email">{{ auth.user?.email }}</span>
+            </div>
           </div>
-          <nav style="display:grid;gap:2px">
+          <nav class="acct-nav">
             <router-link
-              v-for="[href, label, ico] in NAV" :key="href" :to="href"
-              style="display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:9px;font-size:13.5px;color:var(--ink);text-decoration:none"
-              :style="{ background: isActive(href) ? 'var(--rose-pale)' : '', fontWeight: isActive(href) ? '700' : '' }"
-            >{{ ico }} {{ label }}</router-link>
-            <button
-              style="display:flex;gap:10px;align-items:center;padding:9px 10px;border-radius:9px;font-size:13.5px;color:var(--error);background:none;border:none;cursor:pointer;text-align:left"
-              @click="signOut"
-            >🚪 Sign out</button>
+              v-for="[href, label, ico] in NAV" :key="href" :to="href" :class="{ on: isActive(href) }"
+            >{{ ico }} {{ tt(label[0], label[1]) }}</router-link>
+            <div class="sep" />
+            <button class="acct-out" @click="signOut">🚪 {{ tt('Sign out', '退出登录') }}</button>
           </nav>
         </aside>
         <div><router-view /></div>
@@ -74,3 +78,20 @@ async function signOut() {
     </div>
   </section>
 </template>
+
+<style scoped>
+.acct-grid { display: grid; grid-template-columns: 220px 1fr; gap: 28px; align-items: start; }
+.acct-side { padding: 16px; position: sticky; top: 84px; }
+.acct-user { padding: 4px 8px 12px; border-bottom: 1px solid var(--gray-light); margin-bottom: 10px; }
+.acct-user-name { font-size: 14px; }
+.acct-user-meta { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--gray); margin-top: 2px; }
+.tier-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2.5px var(--rose-pale); }
+.acct-user-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-nav { display: grid; gap: 2px; }
+.acct-out { display: flex; gap: 10px; align-items: center; padding: 11px 14px; border-radius: 10px; font-size: 14px; font-weight: 500; color: var(--error); background: none; border: none; cursor: pointer; text-align: left; }
+.acct-out:hover { background: var(--pale-error); }
+@media (max-width: 768px) {
+  .acct-grid { grid-template-columns: 1fr; }
+  .acct-side { position: static; }
+}
+</style>

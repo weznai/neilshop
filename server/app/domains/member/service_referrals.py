@@ -71,10 +71,13 @@ def my_referrals(db: Session, user: User) -> dict:
 
 def simulate_invite(db: Session, user: User, body: SimulateInviteIn) -> dict:
     """手动登记邀请（滥用收紧）：
+    - 环境门禁：仅 dev 开放（与 trade 域 mock-pay 同款，非 dev 一律 404）；
     - 目标邮箱已是注册用户 → 409（不允许把已注册邮箱直接置 REGISTERED 冒领奖励）；
     - 已有 (code, email) 行 → 409 already invited（uk_code_email 也不允许重复建行）；
     - 仅目标邮箱未注册且无既有行时创建，状态为 CLICKED（邀请待注册），
       待被邀人经 /register?ref= 真实注册后由 bind_referral_on_register 流转为 REGISTERED。"""
+    if settings.env != "dev":
+        raise HTTPException(status_code=404, detail="not_found")
     code = derive_code(user.id)
     if repo.find_referral(db, code, body.email):
         raise HTTPException(status_code=409, detail="already invited")

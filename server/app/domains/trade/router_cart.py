@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import get_cart, get_current_user
 from app.domains.trade import service_cart
-from app.schemas.cart import CartItemIn, CartMergeIn, CartQtyIn
+from app.schemas.cart import CartBatchIn, CartItemIn, CartMergeIn, CartQtyIn
 
 router = APIRouter(prefix="/api/cart", tags=["cart"])
 
@@ -32,6 +32,19 @@ def add_item(
 ):
     cart, token = cart_token
     view = service_cart.add_item(db, cart, token, body.variant_id, body.qty)
+    response.headers["X-Cart-Token"] = service_cart.token_of(cart, token)
+    return view
+
+
+@router.post("/items-batch", status_code=201)
+def add_items_batch(
+    body: CartBatchIn,
+    response: Response,
+    cart_token=Depends(get_cart),
+    db: Session = Depends(get_db),
+):
+    cart, token = cart_token
+    view = service_cart.add_batch(db, cart, token, body.items)
     response.headers["X-Cart-Token"] = service_cart.token_of(cart, token)
     return view
 

@@ -14,6 +14,14 @@ const trending = [
   ['french', '法式'], ['glitter', '亮片'], ['cat-eye', '猫眼'], ['short almond', '短杏仁'],
   ['natural', '自然款'], ['gift', '送礼'],
 ]
+/* 联想行图兜底：回落 placehold + dataset 守卫防循环 */
+const IMG_FALLBACK = 'https://placehold.co/72x72/E8B4B8/552338?text=GLOWMAG'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
 /* 最近浏览/最近搜索：localStorage 非响应式，改为 ref + 打开时重读 */
 const recent = ref([])
 const RECENT_KEY = 'gm_recent_searches'
@@ -87,8 +95,11 @@ function go(val) {
   ui.closeSearch()
   router.push(val)
 }
-function runTerm(term) {
-  q.value = term
+/* 最近搜索 chip：直接跳 /search?q=（不经弹窗内联想流程） */
+function goTerm(term) {
+  saveRecentSearch(term)
+  ui.closeSearch()
+  router.push({ path: '/search', query: { q: term } })
 }
 
 /* ===== a11y：焦点管理 / 简易 focus trap / 联想键盘导航（combobox 模式） ===== */
@@ -179,7 +190,7 @@ function cardTitle(p) {
               {{ i18n.lang === 'zh' ? '最近搜索' : 'Recent searches' }}
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-              <button v-for="r in recentTerms.slice(0, 6)" :key="r" class="trend-chip" style="margin:0" @click="runTerm(r)">{{ r }}</button>
+              <button v-for="r in recentTerms.slice(0, 6)" :key="r" class="trend-chip" style="margin:0" @click="goTerm(r)">{{ r }}</button>
             </div>
           </template>
           <template v-if="recent.length">
@@ -205,7 +216,7 @@ function cardTitle(p) {
               role="option" :aria-selected="activeIdx === idx"
               @click.prevent="go('/product?id=' + p.id)"
             >
-              <img :src="p.hero_image" :alt="cardTitle(p)" loading="lazy">
+              <img :src="p.hero_image" :alt="cardTitle(p)" loading="lazy" @error="imgFallback">
               <span class="sug-title">{{ cardTitle(p) }}</span>
               <span class="sug-price">${{ (p.price_min / 100).toFixed(2) }}</span>
             </a>

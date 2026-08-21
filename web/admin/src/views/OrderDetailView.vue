@@ -1,10 +1,16 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 
 const route = useRoute()
+const router = useRouter()
+/* 返回列表：优先回退历史（保留列表筛选 query），直链进入无历史时兜底 /orders */
+function backToList() {
+  if (window.history.state && window.history.state.back) router.back()
+  else router.push('/orders')
+}
 const o = ref(null)
 const err = ref('')
 /* OrderStatus 真值：0待付 1已付 2履约中 3已发货 4已送达 5已完成 8已取消 9已退款(全额) */
@@ -175,7 +181,7 @@ async function refundConfirm() {
       <h1 style="font-size:22px">订单详情</h1>
       <span style="font-size:12.5px;color:var(--gray)">{{ route.query.no }}</span>
     </div>
-    <router-link to="/orders" class="btn btn-secondary btn-sm">← 返回列表</router-link>
+    <button class="btn btn-secondary btn-sm" @click="backToList">← 返回列表</button>
   </div>
 
   <div v-if="err" class="card" style="padding:32px;text-align:center;color:var(--gray)">{{ err }}</div>
@@ -237,6 +243,11 @@ async function refundConfirm() {
           <div v-if="o.delivered_at" style="display:flex;justify-content:space-between"><span>送达</span><span style="color:var(--gray)">{{ dt(o.delivered_at) }}</span></div>
           <div style="display:flex;justify-content:space-between"><span>物流单号</span><span>{{ o.tracking_no || '—' }}</span></div>
           <div style="display:flex;justify-content:space-between"><span>积分</span><span>+{{ o.points_earned ?? 0 }} 得 / −{{ o.points_used ?? 0 }} 用</span></div>
+        </div>
+        <!-- 客户留言（下单时提交，浅底强调） -->
+        <div v-if="o.note" style="margin-top:12px;background:var(--rose-pale);border-left:3px solid var(--rose);border-radius:8px;padding:10px 12px">
+          <div style="font-size:11px;color:var(--gray);letter-spacing:1px;margin-bottom:3px">💬 客户留言</div>
+          <div style="font-size:13px;color:var(--plum);line-height:1.6;white-space:pre-wrap">{{ o.note }}</div>
         </div>
       </div>
 

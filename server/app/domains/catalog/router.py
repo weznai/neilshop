@@ -20,6 +20,11 @@ def list_products(
     min_price: int | None = Query(None, ge=0),
     max_price: int | None = Query(None, ge=0),
     on_sale: bool = False,
+    shape: str | None = Query(
+        None, min_length=1, max_length=50,
+        description="甲型筛选：常用词 almond/square/stiletto/coffin；"
+                    "其他任意词按变体 option1_value 模糊匹配（ilike，未知词空集不报错）",
+    ),
     sort: str = "new",
     locale: str | None = None,
     page: int = Query(1, ge=1),
@@ -29,6 +34,7 @@ def list_products(
     return service.list_products(
         db, category=category, tag=tag, q=q, sort=sort, page=page, size=size,
         locale=locale, min_price=min_price, max_price=max_price, on_sale=on_sale,
+        shape=shape,
     )
 
 
@@ -65,11 +71,17 @@ def search(q: str, db: Session = Depends(get_db)):
 @router.get("/reviews")
 def list_reviews(
     product_id: int,
+    rating: int | None = Query(None, ge=1, le=5),
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
 ):
-    return service.list_reviews(db, product_id, page, size)
+    return service.list_reviews(db, product_id, page, size, rating=rating)
+
+
+@router.get("/variants/{variant_id}/siblings")
+def variant_siblings(variant_id: int, db: Session = Depends(get_db)):
+    return service.variant_siblings(db, variant_id=variant_id)
 
 
 @router.get("/reviews/distribution")

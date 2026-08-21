@@ -300,10 +300,12 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .mnav-links .sep { border-top: 1px solid var(--gray-light); margin: 10px 6px; }
 
 .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 150; background: #fff; border-top: 1px solid var(--gray-light); display: none; justify-content: space-around; padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px)); }
-.tabbar a { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600; color: var(--gray); flex: 1; position: relative; }
-.tabbar a svg { width: 22px; height: 22px; stroke: var(--gray); }
-.tabbar a.on, .tabbar a:hover { color: var(--plum); }
-.tabbar a.on svg, .tabbar a:hover svg { stroke: var(--plum); }
+/* v18：搜索/购物车 tab 原为伪链接，已 button 化——选择器同步扩展 */
+.tabbar a, .tabbar button { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600; color: var(--gray); flex: 1; position: relative; }
+.tabbar button { background: none; border: none; padding: 0; cursor: pointer; font-family: inherit; }
+.tabbar a svg, .tabbar button svg { width: 22px; height: 22px; stroke: var(--gray); }
+.tabbar a.on, .tabbar a:hover, .tabbar button.on, .tabbar button:hover { color: var(--plum); }
+.tabbar a.on svg, .tabbar a:hover svg, .tabbar button.on svg, .tabbar button:hover svg { stroke: var(--plum); }
 
 /* ===== 响应式 ===== */
 @media (max-width: 1024px) {
@@ -351,9 +353,8 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .trend-chip { display: inline-block; padding: 5px 14px; margin: 6px 6px 0 0; border: 1px solid var(--gray-light); border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--plum); background: #fff; transition: all .15s; }
 .trend-chip:hover { border-color: var(--rose); background: var(--rose-pale); }
 
-/* 满赠进度（复用 .ship-track/.ship-fill，高度 4px） */
-.gwp-bar .ship-track { height: 4px; margin-top: 5px; }
-.gwp-bar.gwp-unlocked { color: var(--success); font-weight: 700; }
+/* 满赠进度规则已删：CartDrawer/CartView 中 .ship-track 均为 .gwp-bar 的兄弟节点，
+   后代选择器 .gwp-bar .ship-track 从未命中（死规则，v18 清理） */
 
 /* 抽屉搭配推荐横滑行 */
 .rec-wrap { margin: 12px 0 14px; }
@@ -376,9 +377,8 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .welcome-btn:hover { filter: brightness(1.08); }
 
 /* ===== v6 全局导航/最近浏览 ===== */
-/* 公告栏轮播（#annText opacity 过渡：先隐→换文案→再现） */
+/* 公告栏轮播切换过渡已上收 StoreLayout（Transition name="ann"）；旧 #annText 规则随元素移除（死规则，v18 清理） */
 .announce { overflow: hidden; }
-#annText { display: inline-block; transition: opacity .26s ease; }
 
 /* 桌面 Mega Menu（hover 展开 · .nav-item 包裹原 <a>，.nav a 选择器天然兼容平铺与嵌套） */
 .nav-item { position: relative; }
@@ -703,7 +703,7 @@ h1, h2, h3, h4, .page-title, .section-title, .pcard-title, .pcard-price, .prose,
 
 /* 4) tabbar 触摸高度 ≥48px（图标 22 + label + padding 现约 49px，此条兜底保证）；tabbar 桌面 display:none 零影响。
       含 viewport-fit=cover 后横屏左右安全区出血 */
-.tabbar a { min-height: 48px; justify-content: center; }
+.tabbar a, .tabbar button { min-height: 48px; justify-content: center; }
 .tabbar { padding-left: max(4px, env(safe-area-inset-left, 0px)); padding-right: max(4px, env(safe-area-inset-right, 0px)); }
 
 /* 5) 安全区协调（viewport-fit=cover 生效后 env() 有值）：对既有 768 断点 fixed 元素间距补 safe-area。
@@ -738,5 +738,42 @@ h1, h2, h3, h4, .page-title, .section-title, .pcard-title, .pcard-price, .prose,
 @media (max-width: 768px) {
   .home-hero-cta { flex-wrap: wrap; }
   .home-hero-cta .btn { flex: 1 1 150px; }
+}
+
+/* ===== v17 全局体验补充（只追加，既有规则零改动） ===== */
+
+/* 1) 全局骨架 shimmer 类：StoreView/HomeView/SearchView/ProductView 骨架共用（各页仅保留布局类） */
+.sk-shimmer {
+  background: linear-gradient(100deg, var(--gray-light) 40%, #f7f3f5 50%, var(--gray-light) 60%);
+  background-size: 200% 100%;
+  animation: skShimmerMove 1.2s infinite;
+}
+@keyframes skShimmerMove { to { background-position: -200% 0; } }
+
+/* 2) 商品卡标题两行截断（grid 内卡片高度趋于一致） */
+.pcard-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* 3) mega 菜单键盘可达：焦点落在 nav-item 内任一链接时展开（补 hover 之外的路径） */
+.nav-item:focus-within .mega { display: grid; }
+
+/* 4) 弹层滚动穿透锁：StoreLayout watch ui.anyOverlay 切换 */
+.gm-locked { overflow: hidden; }
+
+/* 5) tabbar Cart 角标脉冲（有货品时；复用既有 pulse 关键帧） */
+.tabbar a.tab-pulse .cart-badge, .tabbar button.tab-pulse .cart-badge { animation: pulse 1.6s infinite; }
+
+/* 6) 路由过渡：轻量 fade + translateY（200ms；reduced-motion 全站兜底已禁用过渡） */
+.page-enter-active, .page-leave-active { transition: opacity .2s ease-out, transform .2s ease-out; }
+.page-enter-from { opacity: 0; transform: translateY(8px); }
+.page-leave-to { opacity: 0; transform: translateY(-6px); }
+@media (prefers-reduced-motion: reduce) {
+  .page-enter-active, .page-leave-active { transition: opacity .2s; }
+  .page-enter-from, .page-leave-to { transform: none; }
 }
 

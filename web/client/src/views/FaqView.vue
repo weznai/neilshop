@@ -2,13 +2,14 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
+import { i18n } from '../i18n'
 
 const route = useRoute()
 const router = useRouter()
 
 const CATS = [
-  [0, 'All', '✨'], [1, 'Sizing', '📐'], [2, 'Wearing', '💅'],
-  [3, 'Shipping', '🚚'], [4, 'Returns', '↩️'], [5, 'Care', '🫧'], [6, 'Account', '👤'],
+  [0, 'all', '✨'], [1, 'sizing', '📐'], [2, 'wearing', '💅'],
+  [3, 'shipping', '🚚'], [4, 'returns', '↩️'], [5, 'care', '🫧'], [6, 'account', '👤'],
 ]
 const faqs = ref([])
 const cat = ref(parseInt(route.query.cat, 10) >= 1 && parseInt(route.query.cat, 10) <= 6 ? parseInt(route.query.cat, 10) : 0)
@@ -22,7 +23,18 @@ const shown = computed(() => {
     .filter((f) => cat.value === 0 || f.category === cat.value)
     .filter((f) => !kw || f.question.toLowerCase().includes(kw) || (f.answer_md || '').toLowerCase().includes(kw))
 })
-function catName(c) { return (CATS.find((x) => x[0] === c) || ['', 'Other'])[1] }
+function catName(c) { return i18n.t('faq.cat.' + ((CATS.find((x) => x[0] === c) || [0, 'all'])[1])) }
+
+/* 空态热门问题：优先取选码/物流/退换三类首条，无数据时回落列表前 3 条 */
+const hotQs = computed(() => {
+  const out = []
+  for (const c of [1, 3, 4]) {
+    const f = faqs.value.find((x) => x.category === c)
+    if (f) out.push(f.question)
+  }
+  return out.length ? out.slice(0, 3) : faqs.value.slice(0, 3).map((f) => f.question)
+})
+function askHot(hq) { q.value = hq }
 
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -75,7 +87,7 @@ watch(q, () => {
   qTimer = setTimeout(syncUrl, 400)
 })
 
-/* FAQPage 结构化数据（gm:seo 事件通道） */
+/* FAQPage 结构化数据（gm:seo 事件通道）：加载失败/空列表不注入（mainEntity 为空时跳过） */
 function stripMd(s) {
   return String(s || '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
@@ -85,6 +97,7 @@ function stripMd(s) {
     .trim()
 }
 function pushJsonLd() {
+  if (!faqs.value.length) return
   try {
     window.dispatchEvent(new CustomEvent('gm:seo', { detail: { jsonLd: {
       '@context': 'https://schema.org',
@@ -108,21 +121,26 @@ onMounted(async () => {
 <template>
   <section class="section">
     <div class="container" style="max-width:760px">
-      <div class="section-head"><h2 class="section-title">FAQ ❓</h2></div>
+      <div class="section-head"><h2 class="section-title">{{ i18n.t('faq.title') }}</h2></div>
 
-      <div style="position:relative;margin-bottom:16px">
-        <input v-model="q" class="input" placeholder="Search answers — try “size”, “shipping”, “points”…" style="padding-left:40px">
+      <div style="position:relative;margin-bottom:10px">
+        <input v-model="q" class="input" :placeholder="i18n.t('faq.searchPh')" style="padding-left:40px;padding-right:40px">
         <span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--gray);font-size:15px">🔍</span>
+        <button v-if="q" class="faq-clear" :aria-label="i18n.t('faq.clear')" @click="q = ''">✕</button>
       </div>
 
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">
+      <div class="faq-cats">
         <button
-          v-for="[c, label, icon] in CATS" :key="c"
+          v-for="[c, key, icon] in CATS" :key="c"
           class="trend-chip"
           :style="cat === c ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''"
           @click="pickCat(c)"
-        >{{ icon }} {{ label }}</button>
+        >{{ icon }} {{ i18n.t('faq.cat.' + key) }}</button>
       </div>
+
+      <p v-if="!loading && faqs.length" class="faq-count">
+        {{ i18n.t('faq.count', shown.length) }}
+      </p>
 
       <div v-if="loading" style="display:grid;gap:10px">
         <div v-for="i in 5" :key="i" class="skeleton" style="height:58px;border-radius:12px" />
@@ -130,15 +148,18 @@ onMounted(async () => {
 
       <div v-else-if="!shown.length" class="card" style="padding:40px;text-align:center">
         <div style="font-size:34px;margin-bottom:6px">🤔</div>
-        <b>No matching answers</b>
+        <b>{{ i18n.t('faq.emptyT') }}</b>
         <p style="font-size:13.5px;color:var(--gray);margin:6px 0 14px">
-          Try another keyword — or ask our glam team directly.
+          {{ i18n.t('faq.emptyD') }}
         </p>
-        <router-link to="/contact" class="btn btn-primary btn-sm">Contact us</router-link>
+        <div v-if="hotQs.length" class="faq-hot">
+          <button v-for="hq in hotQs" :key="hq" class="trend-chip" @click="askHot(hq)">{{ hq }}</button>
+        </div>
+        <router-link to="/contact" class="btn btn-primary btn-sm">{{ i18n.t('footer.contact') }}</router-link>
       </div>
 
       <div v-else style="display:grid;gap:10px">
-        <div v-for="(f, i) in shown" :key="f.id" class="card" style="padding:0;overflow:hidden">
+        <div v-for="(f, i) in shown" :key="f.id" class="card faq-card" :class="{ 'faq-open': open === i }" style="padding:0;overflow:hidden">
           <button
             style="width:100%;display:flex;justify-content:space-between;gap:12px;align-items:center;padding:16px 18px;background:none;border:none;cursor:pointer;font:inherit;font-weight:600;font-size:14.5px;text-align:left"
             @click="toggle(i)"
@@ -149,13 +170,13 @@ onMounted(async () => {
             </span>
             <span style="font-size:18px;color:var(--plum);transition:transform .2s;flex:none" :style="{ transform: open === i ? 'rotate(45deg)' : '' }">+</span>
           </button>
-          <div v-show="open === i" style="padding:0 18px 16px;font-size:13.5px;color:var(--gray);line-height:1.7" v-html="mdHtml(f.answer_md)" />
+          <div class="faq-a" :class="{ open: open === i }">
+            <div class="faq-a-in" v-html="mdHtml(f.answer_md)" />
+          </div>
         </div>
       </div>
 
-      <p style="text-align:center;margin-top:20px;font-size:13.5px;color:var(--gray)">
-        Still stuck? <router-link to="/contact" style="color:var(--plum)">Contact our glam team</router-link> — replies under 4h.
-      </p>
+      <p class="faq-still" v-html="i18n.t('faq.still')" />
     </div>
   </section>
 </template>
@@ -167,8 +188,35 @@ onMounted(async () => {
   animation: gmSk 1.2s ease-in-out infinite;
 }
 @keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+
+/* 搜索框清空钮 */
+.faq-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; border-radius: 50%; color: var(--gray); font-size: 14px; display: flex; align-items: center; justify-content: center; }
+.faq-clear:hover { background: var(--rose-pale); color: var(--plum); }
+
+/* 结果计数 */
+.faq-count { font-size: 12.5px; color: var(--gray); margin: 0 0 14px; }
+
+/* 分类 chips 吸顶（避开 56px 吸顶头部，cream 底防透） */
+.faq-cats { position: sticky; top: 56px; z-index: 90; background: var(--cream); padding: 8px 0 10px; margin-bottom: 6px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* 空态热门问题 chips（单条超长省略，点击填入搜索框） */
+.faq-hot { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 0 0 16px; }
+.faq-hot .trend-chip { margin: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 底部联系入口（v-html 注入的 <a>） */
+.faq-still { text-align: center; margin-top: 20px; font-size: 13.5px; color: var(--gray); }
+.faq-still :deep(a) { color: var(--plum); }
+
+/* 打开态卡片：rose 边框 + 浅渐变底 */
+.faq-card.faq-open { border-color: var(--rose); background: linear-gradient(180deg, #fff 40%, var(--rose-pale)); }
+
+/* 答案展开动画：grid-template-rows 0fr→1fr 过渡 */
+.faq-a { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .28s ease-out; }
+.faq-a.open { grid-template-rows: 1fr; }
+.faq-a-in { overflow: hidden; min-height: 0; padding: 0 18px; font-size: 13.5px; color: var(--gray); line-height: 1.7; transition: padding-bottom .28s ease-out; }
+.faq-a.open .faq-a-in { padding-bottom: 16px; }
 </style>
 
 <style>
-.gm-hl { background: #F3E1F0; color: inherit; padding: 0 2px; border-radius: 3px; }
+.gm-hl { background: var(--rose-pale); color: inherit; font-weight: 700; padding: 0 2px; border-radius: 3px; }
 </style>

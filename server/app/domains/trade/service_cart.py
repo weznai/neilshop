@@ -62,6 +62,10 @@ def _entries(cart: Cart) -> list[dict]:
 
 
 def _save(db: Session, cart: Cart, entries: list[dict]) -> None:
+    # 弃购周期重置：回访改车（items 发生变化 = 新弃购周期开始）时清零已发计数，
+    # 使三封阶梯从第 1 封重新起算（place 清车后用户再加购即命中）
+    if cart.abandoned_mails_sent > 0 and (cart.items or []) != entries:
+        cart.abandoned_mails_sent = 0
     cart.items = entries
     db.commit()
 
@@ -83,6 +87,37 @@ def add_item(db: Session, cart: Cart, token: str | None, variant_id: int, qty: i
         entries.append({"variantId": variant_id, "qty": qty})
     _save(db, cart, entries)
     return get_view(db, cart, token)
+
+
+def add_batch(db: Session, cart: Cart, token: str | None, items: list) -> dict:
+    """批量加购：复用 add_item 内部判定（变体存在/激活 + 累计数量不超库存），
+    单件失败不回滚整体 —— 收集 failed:[{variant_id,reason}]，成功件一次性落库。
+    同请求重复 variant_id 合并计数（逐条累计进 entries），added 去重只报一次。"""
+    entries = _entries(cart)
+    added: list[int] = []
+    failed: list[dict] = []
+    for it in items:
+        variant = repo.get_variant(db, it.variant_id)
+        if not variant or not variant.is_active:
+            failed.append({"variant_id": it.variant_id, "reason": "variant_not_found"})
+            continue
+        current = next(
+            (e for e in entries if e.get("variantId") == it.variant_id), None
+        )
+        new_qty = it.qty + (int(current["qty"]) if current else 0)
+        if new_qty > variant.stock:
+            failed.append({"variant_id": it.variant_id, "reason": "insufficient_stock"})
+            continue
+        if current:
+            current["qty"] = new_qty
+        else:
+            entries.append({"variantId": it.variant_id, "qty": it.qty})
+        if it.variant_id not in added:
+            added.append(it.variant_id)
+    if added:
+        _save(db, cart, entries)
+    view = get_view(db, cart, token)
+    return {**view, "added": added, "failed": failed}
 
 
 def update_item(db: Session, cart: Cart, token: str | None, variant_id: int, qty: int) -> dict:

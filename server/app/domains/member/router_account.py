@@ -5,7 +5,7 @@
 为前后台拆独立域名铺路 —— 拆分后 admin 站点只携带 gm_admin_token。
 """
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -18,8 +18,8 @@ from app.models import User
 from app.domains.member import service_account
 from app.domains.member.schemas import (
     AddressIn, ConsentIn, EmailPreferencesUpdateIn, LoginIn, NewsletterIn,
-    PasswordResetConfirmIn, PasswordResetRequestIn, ProfileUpdateIn, RegisterIn,
-    UnsubscribeIn,
+    PasswordChangeIn, PasswordResetConfirmIn, PasswordResetRequestIn,
+    ProfileUpdateIn, RegisterIn, UnsubscribeIn,
 )
 
 router = APIRouter(prefix="/api/account", tags=["account"])
@@ -124,6 +124,16 @@ def wishlist(
     return service_account.wishlist(db, user)
 
 
+@router.get("/wishlist/has")
+def wishlist_has(
+    product_id: int = Query(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """心愿单是否已含某商品（详情页心形状态轻查询，登录态低频不扩限流）"""
+    return service_account.wishlist_has(db, user, product_id)
+
+
 @router.post("/wishlist/{product_id}")
 def add_wishlist(
     product_id: int,
@@ -178,6 +188,15 @@ def password_reset_request(body: PasswordResetRequestIn, db: Session = Depends(g
 @router.post("/password-reset/confirm")
 def password_reset_confirm(body: PasswordResetConfirmIn, db: Session = Depends(get_db)):
     return service_account.password_reset_confirm(db, body)
+
+
+@router.put("/password")
+def change_password(
+    body: PasswordChangeIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return service_account.change_password(db, user, body)
 
 
 @router.get("/export")

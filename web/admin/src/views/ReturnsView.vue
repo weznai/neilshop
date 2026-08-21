@@ -1,8 +1,11 @@
 <script setup>
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
 
+const route = useRoute()
 const rmas = ref([])
 const exch = ref([])
 const tab = ref('rma')
@@ -25,7 +28,8 @@ const ESTATUS = {
 }
 
 /* RMA 状态筛选 + 服务端分页（page/per_page=20，响应含 total/pages）
- * 后端 status 仍仅支持单值：「待收货」= 标签已发(2)+在途(3) 拆两次请求各拉前 100 合并，前端分页 */
+ * 后端 status 仅支持单值（router_admin list_rmas 为 Optional[int]，已核对不支持逗号）：
+ * 「待收货」= 标签已发(2)+在途(3) 拆两次请求各拉前 100 合并，前端分页；>100 截断时 toast 提示 */
 const rmaFilter = ref(null) /* null=全部，否则为状态数组 */
 const RMA_PER_PAGE = 20
 const rmaPage = ref(1)
@@ -46,11 +50,16 @@ async function loadRmas() {
       rmaTotal.value = d.total ?? 0
       rmaPages.value = d.pages ?? 1
     } else {
-      const all = (await Promise.all(
+      const res = await Promise.all(
         f.map((s) => req('GET', '/api/admin/trade/rmas?status=' + s + '&per_page=100')),
-      ))
+      )
+      const all = res
         .flatMap((d) => d.items || [])
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+      /* 任意一状态超过 100 条被截断 → 提示改用单状态筛选 */
+      if (res.some((d) => (d.total ?? 0) > (d.items || []).length)) {
+        toast('「待收货」某状态超过 100 条，仅显示最近 100 条；建议按状态细分筛选查看', 'error')
+      }
       rmaTotal.value = all.length
       rmaPages.value = Math.max(1, Math.ceil(all.length / RMA_PER_PAGE))
       rmas.value = all.slice((rmaPage.value - 1) * RMA_PER_PAGE, rmaPage.value * RMA_PER_PAGE)
@@ -84,7 +93,12 @@ async function loadExch() {
 function exTab(sv) { exFilter.value = sv; exPage.value = 1; loadExch() }
 
 async function load() { await Promise.all([loadRmas(), loadExch()]) }
-onMounted(async () => { await load(); loaded.value = true })
+/* 深链支持：/returns?tab=rma|exch（dashboard 待审退货入口用） */
+onMounted(async () => {
+  if (route.query.tab === 'rma' || route.query.tab === 'exch') tab.value = route.query.tab
+  await load()
+  loaded.value = true
+})
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const time = (iso) => {
@@ -228,9 +242,7 @@ async function exShipConfirm() {
         </tbody>
       </table>
 
-      <div v-if="tab === 'rma' ? !rmas.length : !exch.length" style="text-align:center;color:var(--gray);padding:32px 0">
-        <div style="font-size:28px;margin-bottom:6px">📭</div>暂无{{ tab === 'rma' ? '退货' : '换货' }}申请
-      </div>
+      <EmptyState v-if="tab === 'rma' ? !rmas.length : !exch.length" icon="📭" :title="'暂无' + (tab === 'rma' ? '退货' : '换货') + '申请'" />
     </div>
 
     <div v-if="tab === 'rma' && rmaPages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:16px;align-items:center">
@@ -252,7 +264,7 @@ async function exShipConfirm() {
       <button class="modal-x" @click="shipDlg = null">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">📦 重发 {{ shipDlg.exchange_no }}</h3>
       <p style="font-size:13px;color:var(--gray);margin-bottom:14px">
-        发出新变体并扣库存：{{ shipDlg.new_variant?.title || ('#' + (shipDlg.new_variant?.id ?? shipDlg.new_variant_id)) }}
+        发出新变体并扣库存：{{ shipDlg.new_variant?.title || (shipDlg.new_variant ? '#' + shipDlg.new_variant.id : '（变体已删除）') }}
       </p>
       <div class="field">
         <label>承运商</label>

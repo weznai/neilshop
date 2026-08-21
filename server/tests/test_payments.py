@@ -34,7 +34,7 @@ from fastapi.testclient import TestClient
 
 from app.core.db import SessionLocal
 from app.core.enums import PointsReason
-from app.core.security import hash_password
+from app.core.security import create_token, hash_password
 from app.main import app
 from app.models import (
     Category, DiscountCode, DiscountRedemption, Order, OrderItem, OrderTimeline,
@@ -95,12 +95,22 @@ def build_fake_stripe():
                 raise SignatureVerificationError("bad signature")
             return state["event"]
 
+    class FakeCheckoutSession:
+        @classmethod
+        def create(cls, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                id="cs_fake_1",
+                url="https://checkout.stripe.com/c/pay/cs_fake_1",
+            )
+
     stripe = types.ModuleType("stripe")
     err = types.ModuleType("stripe.error")
     err.SignatureVerificationError = SignatureVerificationError
     stripe.error = err
     stripe.PaymentIntent = FakePaymentIntent
     stripe.Webhook = FakeWebhook
+    stripe.checkout = SimpleNamespace(Session=FakeCheckoutSession)
     stripe.api_key = ""
     return stripe, calls, state
 
@@ -153,6 +163,47 @@ try:
         r = client.post("/api/payments/create-intent", json={"order_no": "NS9999"})
         check("create-intent 订单不存在 → 404", r.status_code == 404, r.text)
 
+        # ===== create-intent 幂等复用：二次调用返回同一 PENDING payment，不堆新行 =====
+        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        pi_reuse_a = r.json()["payment_intent"]
+        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        pi_reuse_b = r.json()["payment_intent"]
+        s.expire_all()
+        check("create-intent 二次调用复用同一 PENDING payment",
+              r.status_code == 200 and pi_reuse_a == pi_reuse_b
+              and pi_reuse_a.startswith("PI_")
+              and s.query(Payment).filter(Payment.order_id == o2.id).count() == 1,
+              (pi_reuse_a, pi_reuse_b))
+
+        # ===== GM_ENV 门禁：非 dev 下 mock-pay 404 / webhook 未配密钥 400 / mock intent 409 =====
+        app_settings.env = "prod"
+        r = client.post("/api/payments/mock-pay",
+                        json={"order_no": "NS260815PAY01", "succeed": True})
+        check("GM_ENV=prod → mock-pay 404 not_found", r.status_code == 404, r.text)
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_env_1", "type": "payment_intent.succeeded",
+            "data": {"payment_intent": "PI_whatever"}})
+        check("GM_ENV=prod 未配验签密钥 → webhook 400 webhook_secret_not_configured",
+              r.status_code == 400 and r.json()["detail"] == "webhook_secret_not_configured",
+              r.text)
+        r = client.get("/api/payments/methods")
+        d = r.json()
+        check("GM_ENV=prod 无真实凭据 → methods providers=[] / default=none",
+              r.status_code == 200
+              and d == {"providers": [], "default": "none"}, d)
+        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        check("GM_ENV=prod 默认链 mock → create-intent 409 mock_provider_disabled",
+              r.status_code == 409 and r.json()["detail"] == "mock_provider_disabled", r.text)
+        r = client.post("/api/payments/create-intent",
+                        json={"order_no": "NS260815PAY02", "provider": "stripe"})
+        check("GM_ENV=prod 显式 provider 回落 mock 分支 → 409 mock_provider_disabled",
+              r.status_code == 409 and r.json()["detail"] == "mock_provider_disabled", r.text)
+        app_settings.env = "dev"
+        check("GM_ENV 还原 dev 后门禁放行（404 order_not_found 而非 not_found）",
+              client.post("/api/payments/mock-pay",
+                          json={"order_no": "NS_NOPE", "succeed": True}).json().get("detail")
+              == "order_not_found")
+
         r = client.post("/api/payments/mock-pay",
                         json={"order_no": "NS260815PAY01", "succeed": False})
         d = r.json()
@@ -203,6 +254,29 @@ try:
                         json={"order_no": "NS260815PAY01", "succeed": True})
         check("mock-pay 已付 → 409 already_paid", r.status_code == 409, r.text)
 
+        # ===== 赢者语义：已取消订单的迟到回调不把 payment 置 SUCCESS =====
+        o9 = make_order(s, "NS260815PAY09", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
+        s.commit()
+        emma_auth = {"Authorization": f"Bearer {create_token(emma.id, emma.role)}"}
+        pi9 = client.post("/api/payments/create-intent",
+                          json={"order_no": "NS260815PAY09"}).json()["payment_intent"]
+        r = client.post("/api/orders/NS260815PAY09/cancel", headers=emma_auth)
+        check("迟到回调前置：待付单取消 → 200 CANCELED", r.status_code == 200, r.text)
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_late_1", "type": "payment_intent.succeeded",
+            "data": {"payment_intent": pi9}})
+        o9 = order_by_no("NS260815PAY09")
+        s.expire_all()
+        pay9 = (s.query(Payment).filter(Payment.order_id == o9.id)
+                .order_by(Payment.id.desc()).first())
+        check("已取消订单的迟到 webhook → 订单仍 8 / payment 保持 PENDING（防假支付）",
+              r.status_code == 200 and o9.status == 8 and pay9.status == 0
+              and pay9.refunded_amount == 0
+              and s.query(PointsLedger).filter(
+                  PointsLedger.ref_id == o9.id,
+                  PointsLedger.reason == int(PointsReason.ORDER_EARN_FROZEN)).count() == 0,
+              (o9.status, pay9.status))
+
         # ===== mock 默认模式：webhook 回归 =====
         r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
         pi2 = r.json()["payment_intent"]
@@ -225,8 +299,51 @@ try:
         r = client.post("/api/payments/webhook", json={
             "id": "evt_p_2", "type": "payment_intent.succeeded",
             "data": {"payment_intent": "PI_nope"}})
-        check("webhook 未知 payment_intent → 404 payment_intent_not_found",
-              r.status_code == 404 and "payment_intent_not_found" in r.text, r.text)
+        d = r.json()
+        s.expire_all()
+        evt_p2 = s.get(WebhookEvent, "evt_p_2")
+        check("webhook 未知 payment_intent → 200 skipped + WebhookEvent status=2（不可恢复不重试）",
+              r.status_code == 200 and d.get("ok") is True
+              and d.get("skipped") == "payment_intent_not_found"
+              and evt_p2 is not None and evt_p2.status == 2
+              and evt_p2.processed_at is not None, (d, evt_p2 and evt_p2.status))
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_p_2", "type": "payment_intent.succeeded",
+            "data": {"payment_intent": "PI_nope"}})
+        check("status=2 事件重发 → 200 幂等 skipped（不再处理）",
+              r.status_code == 200 and r.json().get("skipped") is True, r.text)
+
+        # ===== webhook 不可恢复：全额退款后重发 charge.refunded → 200 skipped + status=2 =====
+        o10 = make_order(s, "NS260815PAY10", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
+        s.commit()
+        pi10 = client.post("/api/payments/create-intent",
+                           json={"order_no": "NS260815PAY10"}).json()["payment_intent"]
+        assert client.post("/api/payments/mock-pay",
+                           json={"order_no": "NS260815PAY10", "succeed": True}).status_code == 200
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_ref_1", "type": "charge.refunded",
+            "data": {"payment_intent": pi10, "amount": 1000}})
+        check("charge.refunded 全额退款首推 → 200 ok（payment → 3 全退）",
+              r.status_code == 200 and r.json().get("ok") is True, r.text)
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_ref_2", "type": "charge.refunded",
+            "data": {"payment_intent": pi10, "amount": 100}})
+        d = r.json()
+        s.expire_all()
+        evt_ref2 = s.get(WebhookEvent, "evt_ref_2")
+        pay10 = (s.query(Payment).filter(Payment.stripe_payment_intent == pi10)
+                 .first())
+        check("全退后重发 charge.refunded → 200 skipped（不可恢复码）+ evt status=2",
+              r.status_code == 200
+              and d.get("skipped") in ("already_fully_refunded", "no_refundable_payment")
+              and evt_ref2 is not None and evt_ref2.status == 2
+              and pay10.refunded_amount == 1000,
+              (d, evt_ref2 and evt_ref2.status))
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_ref_2", "type": "charge.refunded",
+            "data": {"payment_intent": pi10, "amount": 100}})
+        check("已标 status=2 的退款事件重发 → 幂等 skipped",
+              r.status_code == 200 and r.json().get("skipped") is True, r.text)
 
         # ===== provider 选择 =====
         logs = []
@@ -428,9 +545,10 @@ try:
               and pu["custom_id"] == "NS260815PAY04"
               and pu["metadata"] == {"order_no": "NS260815PAY04"}, order_kw)
 
-        check("B PayPal create_intent 返回: 订单 id + approve 链接作 client_secret",
+        check("B PayPal create_intent 返回: 订单 id + approve 链接作 client_secret + redirect_url",
               pp_res == {"payment_intent": "PAYID-B-0001",
-                         "client_secret": "https://pp.example/approve"}, pp_res)
+                         "client_secret": "https://pp.example/approve",
+                         "redirect_url": "https://pp.example/approve"}, pp_res)
 
         try:
             pay_provider.verify_webhook(b"{}", None)
@@ -522,6 +640,45 @@ try:
               r.status_code == 200 and d["payment_intent"].startswith("PI_")
               and d["client_secret"].endswith("_secret_mock") and d["provider"] == "mock", d)
 
+        # ===== create-intent 幂等复用区分 provider：mock PENDING 在 → paypal 不复用建新；同 provider 二次复用 =====
+        o7 = make_order(s, "NS260815PAY07", 1500, [(v1.id, 1, 1500)], user_id=emma.id)
+        s.commit()
+        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY07"})
+        d = r.json()
+        check("mock intent 响应含 redirect_url 空串（前端无 pay-mock 页，不跳转维持现状）",
+              r.status_code == 200 and d["redirect_url"] == ""
+              and d["payment_intent"].startswith("PI_"), d)
+        app_settings.paypal_client_id = "pid_test"
+        app_settings.paypal_secret = "psecret_test"
+        pp._provider = None
+        fake_http3 = _FakeHTTP()
+        _orig_client3 = pp.PayPalProvider._client
+        pp.PayPalProvider._client = lambda self: fake_http3
+        try:
+            r = client.post("/api/payments/create-intent",
+                            json={"order_no": "NS260815PAY07", "provider": "paypal"})
+            d = r.json()
+            s.expire_all()
+            check("跨 provider 不复用：单上已有 mock PENDING → paypal 建新行 PAYID + redirect_url=approve",
+                  r.status_code == 200 and d["payment_intent"] == "PAYID-B-0001"
+                  and d["provider"] == "paypal"
+                  and d["redirect_url"] == "https://pp.example/approve"
+                  and s.query(Payment).filter(Payment.order_id == o7.id).count() == 2
+                  and len(fake_http3.calls) == 2, d)
+            r = client.post("/api/payments/create-intent",
+                            json={"order_no": "NS260815PAY07", "provider": "paypal"})
+            d = r.json()
+            s.expire_all()
+            check("同 provider 二次调用 → 复用 PENDING（不建新行 / 无新外呼）",
+                  r.status_code == 200 and d["payment_intent"] == "PAYID-B-0001"
+                  and s.query(Payment).filter(Payment.order_id == o7.id).count() == 2
+                  and len(fake_http3.calls) == 2, d)
+        finally:
+            pp.PayPalProvider._client = _orig_client3
+            app_settings.paypal_client_id = ""
+            app_settings.paypal_secret = ""
+            pp._provider = None
+
         app_settings.stripe_key = "sk_test_fake"
         sys.modules["stripe"] = fake_stripe
         pp._provider = None
@@ -548,6 +705,7 @@ try:
               r.status_code == 200 and d["payment_intent"] == "PAYID-B-0001"
               and d["provider"] == "paypal" and len(fake_http2.calls) == 2
               and s.query(Payment).filter(
+                  Payment.order_id == o4.id,
                   Payment.stripe_payment_intent == "PAYID-B-0001").count() == 1, d)
 
         app_settings.stripe_key = "sk_test_fake"
@@ -565,6 +723,31 @@ try:
               and klarna_call["amount"] == 1000
               and "payment_method_types" not in plain_call, (klarna_call, plain_call))
 
+        # ===== StripeProvider.create_checkout（hosted checkout 会话）=====
+        res_ck = p_stripe_b.create_checkout("NS260815PAY05", 1000, "https://shop.example.com/")
+        kw_ck = calls[-1]
+        check("create_checkout: success/cancel 回跳 + client_reference_id + line_items 单价",
+              kw_ck["mode"] == "payment"
+              and kw_ck["success_url"] == (
+                  "https://shop.example.com/success?no=NS260815PAY05"
+                  "&session_id={CHECKOUT_SESSION_ID}")
+              and kw_ck["cancel_url"] == "https://shop.example.com/checkout?canceled=1"
+              and kw_ck["client_reference_id"] == "NS260815PAY05"
+              and kw_ck["metadata"] == {"order_no": "NS260815PAY05"}
+              and kw_ck["line_items"][0]["price_data"]["unit_amount"] == 1000
+              and kw_ck["line_items"][0]["quantity"] == 1
+              and res_ck == {"checkout_session_id": "cs_fake_1",
+                             "redirect_url": "https://checkout.stripe.com/c/pay/cs_fake_1"},
+              (kw_ck, res_ck))
+        app_settings.stripe_key = ""
+        p_nokey = pp.StripeProvider()
+        try:
+            p_nokey.create_checkout("X1", 100, "https://s.example.com/")
+            ck_raised = False
+        except pp.ProviderUnavailable:
+            ck_raised = True
+        check("create_checkout 无 key → ProviderUnavailable", ck_raised)
+
         s.close()
 finally:
     app_settings.stripe_key = ""
@@ -572,8 +755,8 @@ finally:
     app_settings.stripe_klarna = 0
     app_settings.paypal_client_id = ""
     app_settings.paypal_secret = ""
-    if hasattr(app_settings, "paypal_webhook_id"):
-        del app_settings.paypal_webhook_id
+    app_settings.paypal_webhook_id = ""
+    app_settings.env = "dev"
     sys.modules.pop("stripe", None)
     pp._provider = None
     pp._mock_warned = False

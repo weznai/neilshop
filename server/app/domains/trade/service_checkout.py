@@ -6,7 +6,6 @@ import uuid
 from datetime import timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -73,14 +72,16 @@ def _dedup_pending_order(
     items: list[dict] | None,
 ) -> Order | None:
     """90 秒内同用户（登录）/同邮箱（游客）的 PENDING 订单防重扫描。
-    items 非空时做 (variant_id, qty) 集合精确比对；items 为空（清车后的重放请求）
-    时直接返回最近一笔 PENDING（即刚下的那单）。"""
+    items 非空时做 (variant_id, qty) 集合精确比对（候选单条目 1 条 IN 批量取回，避免逐单 N+1）；
+    items 为空（清车后的重放请求）时直接返回最近一笔 PENDING（即刚下的那单）。
+    游客按 email 等值匹配：下单 email 已归一 strip().lower() 落库，MySQL ci collation
+    下等值即不区分大小写且可走索引（SQLite 侧因写入同归一亦等价）。"""
     cutoff = utcnow() - DEDUP_WINDOW
     query = db.query(Order).filter(Order.status == 0, Order.placed_at >= cutoff)
     if user is not None:
         query = query.filter(Order.user_id == user.id)
     elif email and email.strip():
-        query = query.filter(func.lower(Order.email) == email.strip().lower())
+        query = query.filter(Order.email == email.strip().lower())
     else:
         return None
     candidates = query.order_by(Order.id.desc()).limit(DEDUP_SCAN_LIMIT).all()
@@ -89,9 +90,10 @@ def _dedup_pending_order(
     if items is None:
         return candidates[0]
     target = sorted((i["variant_id"], i["qty"]) for i in items)
+    items_map = repo.order_items_map(db, [o.id for o in candidates])
     for order in candidates:
         existing = sorted(
-            (i.variant_id, i.qty) for i in repo.order_items(db, order.id)
+            (i.variant_id, i.qty) for i in items_map.get(order.id, [])
         )
         if existing == target:
             return order
@@ -102,14 +104,16 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
     # 风控：黑名单用户拒绝下单
     if user is not None and user.risk_flag == 2:
         raise HTTPException(status_code=403, detail="account_blocked")
+    # 下单 email 归一（strip+lower）落库：游客防重/弃购召回/ Redemption 查询统一大小写口径
+    email_norm = body.email.strip().lower()
     cart_items = cart_items_of(cart)
     if not cart_items:
         # 清车后的重复提交（双击重放）：窗口内已有该用户/邮箱的 PENDING 单则幂等返回
         db.query(Cart.id).filter(Cart.id == cart.id).with_for_update().first()
-        replay = _dedup_pending_order(db, user=user, email=body.email, items=None)
+        replay = _dedup_pending_order(db, user=user, email=email_norm, items=None)
         if replay is not None:
             cart.items = []
-            cart.email = body.email or cart.email
+            cart.email = email_norm or cart.email
             db.commit()
             return _place_payload(replay)
         raise HTTPException(status_code=400, detail="empty_cart")
@@ -118,10 +122,10 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
 
     # carts 行锁串行化同车并发下单（不同车互不阻塞），锁内做防重判定
     db.query(Cart.id).filter(Cart.id == cart.id).with_for_update().first()
-    existing = _dedup_pending_order(db, user=user, email=body.email, items=cart_items)
+    existing = _dedup_pending_order(db, user=user, email=email_norm, items=cart_items)
     if existing is not None:
         cart.items = []
-        cart.email = body.email or cart.email
+        cart.email = email_norm or cart.email
         db.commit()
         return _place_payload(existing)
 
@@ -133,7 +137,7 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
         code=body.code,
         points=body.points,
         gift_card_code=body.gift_card_code,
-        email=body.email,
+        email=email_norm,
         user_id=user.id if user else None,
         shipping_method=body.shipping_method,
     )
@@ -146,7 +150,7 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
     order = Order(
         order_no="NS" + now.strftime("%y%m%d") + uuid.uuid4().hex[:6].upper(),
         user_id=user.id if user else None,
-        email=body.email,
+        email=email_norm,
         status=0,
         currency="USD",
         subtotal=pricing["subtotal"],
@@ -215,7 +219,7 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
 
     cart.items = []
     # 弃购召回链路依赖：下单 email 回填购物车行（worker scan_abandoned_carts 过滤 email 非空）
-    cart.email = body.email or cart.email
+    cart.email = email_norm or cart.email
     repo.add_timeline(db, order.id, "checkout_created", actor="user", detail={
         "order_no": order.order_no,
         "code_discount": pricing["code_discount"],

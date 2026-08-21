@@ -11,16 +11,17 @@ from sqlalchemy import func
 from app.core.db import Base, SessionLocal, engine, init_db, utcnow
 from app.core.enums import (
     DiscountType, OrderStatus, PaymentProvider, PaymentStatus,
-    PointsReason, RmaReason, RmaStatus, ShipmentStatus, ShippingStatus,
-    StockMovementType, TicketCategory, TicketStatus, UserRole,
+    PointsReason, ReferralStatus, RmaReason, RmaStatus, ShipmentStatus,
+    ShippingStatus, StockMovementType, TicketCategory, TicketStatus, UserRole,
 )
 from app.core.security import hash_password
+from app.services.referrals import derive_code
 from app.models import (
     Article, Category, DiscountCode, DiscountRedemption, EmailPreference, Faq,
     GiftCard, NewsletterSubscriber, Order, OrderItem, OrderTimeline, Payment,
-    PointsLedger, PopupConfig, Product, ReplyTemplate, Review, Rma, Setting,
-    Shipment, ShippingRate, StockMovement, Ticket, TicketMessage, UgcSubmission,
-    User, Variant, VariantImage,
+    PointsLedger, PopupConfig, Product, Referral, ReplyTemplate, Review, Rma,
+    Setting, Shipment, ShippingRate, StockMovement, Ticket, TicketMessage,
+    UgcSubmission, User, Variant, VariantImage,
 )
 
 IMG = "https://placehold.co/600x600/{bg}/{fg}.png?text={label}"
@@ -45,7 +46,10 @@ CATALOG = [
     ("nova", "Nova", "Electric neon mix", 1599, None, 0, ["art", "neon"], False, False, 478, 39, 150),
 ]
 
-SHAPES = [("Short Almond", "SA"), ("Medium Square", "MS")]
+SHAPES = [
+    ("Short Almond", "SA"), ("Medium Square", "MS"),
+    ("Stiletto", "ST"), ("Coffin", "CF"),
+]
 
 # 个性化详情文案（description_md）：材质/场合/搭配建议，每款手写
 DESCRIPTIONS = {
@@ -164,6 +168,11 @@ def _seed_lashes(s) -> int:
 
 def seed() -> None:
     init_db()
+    # 存量库幂等 DDL 守卫（create_all 不改旧表；缺列/窄列在此补齐，重复执行零副作用）
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from ensure_schema import ensure_schema
+
+    ensure_schema()
     s = SessionLocal()
 
     # 磁吸睫毛幂等补种（老库空挂修复；新库随主流程一起建，主流程复用已建分类）
@@ -280,6 +289,7 @@ def seed() -> None:
         ("shipping_express", 1499, "快递运费"),
         ("return_days", 30, "退货窗口（天）"),
         ("points_per_dollar_earn", 10, "消费 $1 赚积分"),
+        ("site_url", "http://localhost:5173", "前台站点根地址（重置链接等邮件外链前缀）"),
     ]:
         s.add(Setting(key=k, value=v, description=desc))
 
@@ -847,6 +857,16 @@ def seed() -> None:
                        balance_after=emma.points + 311, ref_type="order", ref_id=demo.id,
                        frozen=0, created_at=now - timedelta(days=3)))
 
+    # ===== 推荐 1 条（emma → u1，REGISTERED）：/refer stats 有数；幂等（uk code+email）=====
+    emma_code = derive_code(emma.id)
+    if s.query(Referral).filter(Referral.code == emma_code,
+                                Referral.invited_email == hist["u1"][0].email).first() is None:
+        s.add(Referral(code=emma_code, referrer_user_id=emma.id,
+                       invited_email=hist["u1"][0].email,
+                       invited_user_id=hist["u1"][0].id,
+                       status=int(ReferralStatus.REGISTERED),
+                       created_at=now - timedelta(days=20)))
+
     # 折扣码 used_count 同步核销历史
     dc_map["WELCOME20"].used_count = s.query(DiscountRedemption).filter(
         DiscountRedemption.code_id == dc_map["WELCOME20"].id).count()
@@ -943,6 +963,7 @@ def seed() -> None:
           f"email_prefs={s.query(EmailPreference).count()} points_ledger={s.query(PointsLedger).count()}")
     print(f"  translations={s.query(ProductTranslation).count()} "
           f"(zh-CN: bare-gems/french-kiss/venus + 3 睫毛)")
+    print(f"  referrals={s.query(Referral).count()} (emma→u1 REGISTERED)")
     s.close()
 
 

@@ -9,7 +9,7 @@ from app.models import User
 
 from app.domains.catalog import service
 from app.domains.catalog.schemas import (
-    CategoryCreateIn, CollectionCreateIn, CollectionProductsIn,
+    CategoryCreateIn, CollectionCreateIn, CollectionProductsIn, CollectionUpdateIn,
     ProductBulkIn, ProductCreateIn, ProductUpdateIn, TranslationUpsertIn,
     VariantCreateIn, VariantUpdateIn,
 )
@@ -152,6 +152,25 @@ def admin_create_collection(
     return service.admin_create_collection(db, admin, body)
 
 
+@router.put("/collections/{collection_id}")
+def admin_update_collection(
+    collection_id: int,
+    body: CollectionUpdateIn,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.admin_update_collection(db, admin, collection_id, body)
+
+
+@router.delete("/collections/{collection_id}")
+def admin_delete_collection(
+    collection_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.admin_delete_collection(db, admin, collection_id)
+
+
 @router.put("/collections/{collection_id}/products")
 def admin_set_collection_products(
     collection_id: int,
@@ -160,6 +179,15 @@ def admin_set_collection_products(
     db: Session = Depends(get_db),
 ):
     return service.admin_set_collection_products(db, admin, collection_id, body)
+
+
+@router.get("/collections/{collection_id}/products")
+def admin_collection_products(
+    collection_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.admin_collection_products(db, collection_id)
 
 
 @router.get("/products/{product_id}/translations")

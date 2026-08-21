@@ -3,10 +3,10 @@
 > 本文件由 `scripts/gen_api_docs.py` 自动生成（`from app.main import app` 展平路由），请勿手编；
 > CI 可用 `python scripts/gen_api_docs.py --check` 校验是否陈旧（不一致 exit 1）。
 
-- 生成时间：2026-08-20 15:15:25
-- 端点总数：**164**（展平后路由 170 条，含 6 个尾斜杠双路由已合并；方法×路径去重口径）
+- 生成时间：2026-08-21 15:21:20
+- 端点总数：**172**（展平后路由 178 条，含 6 个尾斜杠双路由已合并；方法×路径去重口径）
 - 分组数：**19**
-- 鉴权分布：🔒 admin 73 · 👤 user 30 · 🌐 public 61
+- 鉴权分布：🔒 admin 76 · 👤 user 33 · 🌐 public 63
 
 ## 运行与交互文档
 
@@ -20,7 +20,7 @@ cd server
 - 原型前台：<http://localhost:8000/> · 种子账号见 README（密码 `glowmag123`）
 
 
-## /api/account · 会员账户（25 个端点）
+## /api/account · 会员账户（27 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -42,15 +42,17 @@ cd server
 | `GET` | `/api/account/me` | 👤 user | account | 个人信息（登录态） |
 | `PUT` | `/api/account/me` | 👤 user | account | 更新个人信息 |
 | `POST` | `/api/account/newsletter` | 🌐 public | account | 邮件订阅 |
+| `PUT` | `/api/account/password` | 👤 user | account | 登录态修改密码（旧密校验） |
 | `POST` | `/api/account/password-reset/confirm` | 🌐 public | account | 确认密码重置（purpose=pwreset JWT 15min） |
 | `POST` | `/api/account/password-reset/request` | 🌐 public | account | 发起密码重置（防账号枚举，恒 200） |
 | `POST` | `/api/account/register` | 🌐 public | account | 注册（欢迎券触发） |
 | `POST` | `/api/account/unsubscribe` | 🌐 public | account | 一键退订（HMAC token 或登录本人） |
 | `GET` | `/api/account/wishlist` | 👤 user | account | 愿望单列表 |
+| `GET` | `/api/account/wishlist/has` | 👤 user | account | 心愿单是否已含某商品（详情页心形状态轻查询，登录态低频不扩限流） |
 | `POST` | `/api/account/wishlist/{product_id}` | 👤 user | account | 加入愿望单 |
 | `DELETE` | `/api/account/wishlist/{product_id}` | 👤 user | account | 移出愿望单 |
 
-## /api/admin/catalog · 后台 · 商品目录（18 个端点）
+## /api/admin/catalog · 后台 · 商品目录（21 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -58,6 +60,9 @@ cd server
 | `POST` | `/api/admin/catalog/categories` | 🔒 admin | admin-catalog | 创建分类 |
 | `GET` | `/api/admin/catalog/collections` | 🔒 admin | admin-catalog | 合集列表 |
 | `POST` | `/api/admin/catalog/collections` | 🔒 admin | admin-catalog | 创建合集 |
+| `PUT` | `/api/admin/catalog/collections/{collection_id}` | 🔒 admin | admin-catalog | 集合更新（部分字段，含 banner） |
+| `DELETE` | `/api/admin/catalog/collections/{collection_id}` | 🔒 admin | admin-catalog | 集合删除（级联清商品关联） |
+| `GET` | `/api/admin/catalog/collections/{collection_id}/products` | 🔒 admin | admin-catalog | 集合商品清单 |
 | `PUT` | `/api/admin/catalog/collections/{collection_id}/products` | 🔒 admin | admin-catalog | 设置合集商品清单（整表替换） |
 | `GET` | `/api/admin/catalog/products` | 🔒 admin | admin-catalog | 商品列表 |
 | `POST` | `/api/admin/catalog/products` | 🔒 admin | admin-catalog | 创建商品 |
@@ -146,17 +151,18 @@ cd server
 | `GET` | `/api/ai/hot` | 🌐 public | ai | 热销榜（猜你喜欢兜底） |
 | `GET` | `/api/ai/recommend` | 🌐 public | ai | 个性化推荐（同类→标签→热销→新上架四级降级） |
 
-## /api/cart · 购物车（5 个端点）
+## /api/cart · 购物车（6 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
 | `GET` | `/api/cart`（`/api/cart/` 双路由） | 🌐 public | cart | 购物车视图（token/登录解析，响应头回写 X-Cart-Token） |
 | `POST` | `/api/cart/items` | 🌐 public | cart | 加购变体（游客可用的 X-Cart-Token） |
+| `POST` | `/api/cart/items-batch` | 🌐 public | cart | 批量加购（逐项校验，部分成功） |
 | `PUT` | `/api/cart/items/{variant_id}` | 🌐 public | cart | 修改购物车数量 |
 | `DELETE` | `/api/cart/items/{variant_id}` | 🌐 public | cart | 移出购物车商品 |
 | `POST` | `/api/cart/merge` | 👤 user | cart | 游客购物车合并至登录账户 |
 
-## /api/catalog · 商品目录（12 个端点）
+## /api/catalog · 商品目录（13 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -172,6 +178,7 @@ cd server
 | `GET` | `/api/catalog/stock-notify` | 🌐 public | catalog | 到货通知订阅状态查询 |
 | `POST` | `/api/catalog/stock-notify` | 🌐 public | catalog | 订阅到货通知（售罄商品，幂等） |
 | `DELETE` | `/api/catalog/stock-notify` | 🌐 public | catalog | 取消到货通知订阅 |
+| `GET` | `/api/catalog/variants/{variant_id}/siblings` | 🌐 public | catalog | 同商品变体兄弟列表 |
 
 ## /api/checkout · 结账（3 个端点）
 
@@ -251,13 +258,14 @@ cd server
 | `GET` | `/api/referrals/me` | 👤 user | referrals | 我的推荐（码/邀请脱敏列表/stats） |
 | `POST` | `/api/referrals/simulate-invite` | 👤 user | referrals | 模拟受邀下单（演示归因发奖） |
 
-## /api/returns · 退货 RMA（3 个端点）
+## /api/returns · 退货 RMA（4 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
 | `GET` | `/api/returns`（`/api/returns/` 双路由） | 👤 user | returns | 我的退货申请列表 |
 | `POST` | `/api/returns`（`/api/returns/` 双路由） | 👤 user | returns | 提交 RMA 退货申请（30 天窗口/数量校验） |
 | `GET` | `/api/returns/{rma_no}` | 👤 user | returns | 退货单详情 + 时间线 |
+| `POST` | `/api/returns/{rma_no}/cancel` | 👤 user | returns | 撤销退货申请 |
 
 ## /api/subscriptions · 订阅盒（6 个端点）
 

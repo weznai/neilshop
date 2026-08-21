@@ -27,3 +27,8 @@ def list_rmas(user: User = Depends(get_current_user), db: Session = Depends(get_
 @router.get("/{rma_no}")
 def rma_detail(rma_no: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return service_returns.rma_detail(db, user, rma_no)
+
+
+@router.post("/{rma_no}/cancel")
+def cancel_rma(rma_no: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return service_returns.cancel_rma(db, user, rma_no)

@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.services import emails
 from app.services import points as points_svc
+from app.domains.trade.service_admin import _refund_giftcard_debit
 
 log = logging.getLogger("glowmag.worker")
 
@@ -48,7 +49,7 @@ _EVENT_EMAILS = {
     "cart.abandoned": ("abandoned_cart",
                        lambda p: _ABANDON_SUBJECTS.get(p.get("stage"),
                                                        "Your GLOWMAG picks are still waiting")),
-    "user.welcome": ("welcome_coupon", "Welcome to GLOWMAG - 10% off inside"),
+    "user.welcome": ("welcome_coupon", "Welcome to GLOWMAG - your discount inside"),
     "stock.restocked": ("restock_notify", "Back in stock: {product_title}"),
 }
 
@@ -92,6 +93,20 @@ def _setting_int(db: Session, key: str, default: int) -> int:
     return default
 
 
+def _site_url(db: Session) -> str:
+    """站点根地址（召回链接等外链前缀）：ops settings 表 site_url/base_url 优先，
+    其次环境变量 GM_SITE_URL，最后默认站（对齐 member 域 _site_url 的读取方式，
+    但不 import member 域避免耦合）。"""
+    for key in ("site_url", "base_url"):
+        row = db.get(Setting, key)
+        if row is not None and row.value:
+            val = str(row.value).strip().rstrip("/")
+            if val.startswith(("http://", "https://")):
+                return val
+    val = (os.getenv("GM_SITE_URL") or "").strip().rstrip("/")
+    return val or "https://glowmag.com"
+
+
 def _fmt_subject(tpl: str, payload: dict) -> str:
     try:
         return tpl.format(**payload)
@@ -105,6 +120,16 @@ def consume_outbox(db: Session) -> None:
         .filter(OutboxEvent.published == 0, OutboxEvent.retry_count < OUTBOX_MAX_RETRY)
         .order_by(OutboxEvent.id).limit(OUTBOX_BATCH).all()
     )
+    # 死信汇总：OutboxEvent 仅 published 0/1 语义（无 status 字段），retry 打满的事件
+    # 不再置位，每轮 logger.error 汇总一条待人工介入
+    dead = (
+        db.query(OutboxEvent)
+        .filter(OutboxEvent.published == 0, OutboxEvent.retry_count >= OUTBOX_MAX_RETRY)
+        .count()
+    )
+    if dead:
+        log.error("[outbox] %d dead events (retry_count>=%d) need manual inspection",
+                  dead, OUTBOX_MAX_RETRY)
     emailed = skipped = failed = compliance_skipped = 0
     for ev in events:
         try:
@@ -146,8 +171,8 @@ def consume_outbox(db: Session) -> None:
             db.commit()
             failed += 1
             log.exception("outbox event %s (%s) failed", ev.id, ev.event_type)
-    log.info("[outbox] picked=%d emailed=%d no_email=%d failed=%d compliance_skipped=%d",
-             len(events), emailed, skipped, failed, compliance_skipped)
+    log.info("[outbox] picked=%d emailed=%d no_email=%d failed=%d compliance_skipped=%d dead=%d",
+             len(events), emailed, skipped, failed, compliance_skipped, dead)
 
 
 def cancel_timeout_orders(db: Session) -> None:
@@ -184,6 +209,8 @@ def cancel_timeout_orders(db: Session) -> None:
                 released += remaining
             # 超时关单返还该单已用积分（points_used=0 跳过，同单幂等）
             points_svc.refund_return(db, order, order.user_id, order.points_used)
+            # 礼品卡扣款回补（MVP 下单即扣；无 change_type=3 流水时为空操作）
+            _refund_giftcard_debit(db, order)
             db.add(OrderTimeline(
                 order_id=order.id, event="status_changed", actor="system",
                 detail={"from": int(OrderStatus.PENDING), "to": int(OrderStatus.CANCELED),
@@ -251,7 +278,7 @@ def scan_abandoned_carts(db: Session) -> None:
         db.add(OutboxEvent(
             aggregate_type="cart", aggregate_id=cart.id, event_type="cart.abandoned",
             payload={"email": cart.email, "recovery_token": token,
-                     "recovery_link": f"https://glowmag.com/cart?rc={token}",
+                     "recovery_link": f"{_site_url(db)}/cart?rc={token}",
                      "stage": stage + 1, "coupon_code": coupon, "items": summary},
         ))
         db.commit()

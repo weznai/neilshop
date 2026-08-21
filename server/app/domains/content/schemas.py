@@ -17,8 +17,9 @@ class ReviewIn(BaseModel):
 
 class UgcIn(BaseModel):
     image_url: str
-    caption: str | None = None
-    instagram_handle: str | None = None
+    # DB 列 500/100，收安全值（超长垃圾入库前拦截）
+    caption: str | None = Field(default=None, max_length=200)
+    instagram_handle: str | None = Field(default=None, max_length=60)
     related_product_id: int | None = None
 
 

@@ -5,7 +5,7 @@
 
 from typing import Optional
 
-from sqlalchemy import func, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -38,6 +38,11 @@ _CLAIM_PAYMENT_PAID_SQL = text(
 _CLAIM_CANCELED_SQL = text(
     "UPDATE orders SET status = 8, canceled_at = :now, cancel_reason = :reason "
     "WHERE id = :oid AND status = 0"
+)
+# 已支付未发货取消 CAS：与发货（ship 只允许 status 1/2 且会推 shipping_status）并发互斥
+_CLAIM_PAID_CANCEL_SQL = text(
+    "UPDATE orders SET status = 8, canceled_at = :now, cancel_reason = :reason "
+    "WHERE id = :oid AND status = 1 AND shipping_status = 0"
 )
 # 礼品卡原子扣减：余额守卫进 WHERE，并发双花时 rowcount=0
 _DEBIT_GIFT_CARD_SQL = text(
@@ -76,6 +81,12 @@ def claim_payment_paid(db: Session, payment_id: int) -> int:
 
 def claim_order_canceled(db: Session, order_id: int, now, reason: str) -> int:
     return db.execute(_CLAIM_CANCELED_SQL, {
+        "oid": order_id, "now": now, "reason": reason,
+    }).rowcount
+
+
+def claim_order_paid_canceled(db: Session, order_id: int, now, reason: str) -> int:
+    return db.execute(_CLAIM_PAID_CANCEL_SQL, {
         "oid": order_id, "now": now, "reason": reason,
     }).rowcount
 
@@ -260,13 +271,26 @@ def latest_payment_of_order(db: Session, order_id: int) -> Optional[Payment]:
     )
 
 
-def pending_payment_of_order(db: Session, order_id: int) -> Optional[Payment]:
-    """订单当前 PENDING(0) 的最近一笔支付（create-intent 幂等复用，避免堆积新行）"""
-    return (
+# create-intent 幂等复用的 provider → PI id 前缀映射（跨 provider 不复用，建新行）
+_PI_PREFIXES = {"mock": "PI_", "stripe": "pi_", "paypal": "PAYID-"}
+
+
+def pending_payment_of_order(
+    db: Session, order_id: int, provider: Optional[str] = None,
+) -> Optional[Payment]:
+    """订单当前 PENDING(0) 的最近一笔支付（create-intent 幂等复用，避免堆积新行）；
+    指定 provider 时仅复用同 provider 创建的行（按 PI id 前缀判定），跨 provider 返回 None。"""
+    query = (
         db.query(Payment)
         .filter(Payment.order_id == order_id, Payment.status == 0)
-        .order_by(Payment.id.desc()).first()
     )
+    if provider:
+        prefix = _PI_PREFIXES.get(provider)
+        if prefix:
+            query = query.filter(
+                Payment.stripe_payment_intent.like(prefix + "%")
+            )
+    return query.order_by(Payment.id.desc()).first()
 
 
 def refundable_payment_of_order(db: Session, order_id: int) -> Optional[Payment]:
@@ -444,7 +468,7 @@ def list_exchanges_by_email(db: Session, email: str) -> list[tuple[Exchange, Ord
         db.query(Exchange, OrderItem, Order)
         .join(OrderItem, Exchange.order_item_id == OrderItem.id)
         .join(Order, Exchange.order_id == Order.id)
-        .filter(func.lower(Order.email) == email.strip().lower())
+        .filter(Order.email == email.strip().lower())
         .order_by(Exchange.id.desc())
         .all()
     )

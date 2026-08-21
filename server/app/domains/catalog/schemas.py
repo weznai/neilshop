@@ -1,6 +1,7 @@
 """商品域请求模型（Pydantic v2，含后台管理）。原 app/schemas/catalog.py。"""
 
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -88,6 +89,25 @@ class CollectionCreateIn(BaseModel):
     slug: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=150)
     rule_json: dict
+    banner_image: str | None = Field(default=None, max_length=500)
+
+    @field_validator("banner_image")
+    @classmethod
+    def _check_banner_image(cls, v):
+        if v is None or not v.strip():
+            return v
+        parsed = urlparse(v.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("banner_image must be an http(s) URL")
+        return v
+
+
+class CollectionUpdateIn(BaseModel):
+    """集合部分更新：仅传需要改的字段（未传保持原值）"""
+    title: str | None = Field(default=None, min_length=1, max_length=150)
+    banner_image: str | None = Field(default=None, max_length=500)
+    sort_order: int | None = None
+    is_active: bool | None = None
 
 
 class CollectionProductIn(BaseModel):

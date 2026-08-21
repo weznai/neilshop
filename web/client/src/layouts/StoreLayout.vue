@@ -51,7 +51,8 @@ function onScroll() {
   showBackTop.value = y > 400
   headerScrolled.value = y > 8
 }
-function backTop() { window.scrollTo({ top: 0, behavior: 'smooth' }) }
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+function backTop() { window.scrollTo({ top: 0, behavior: reduceMotion() ? 'auto' : 'smooth' }) }
 function openConsent() { window.dispatchEvent(new CustomEvent('gm:open-consent')) }
 
 /* 全局面包屑：由路由 meta.title 链推导（Home / My Account / My Orders…），首页隐藏 */
@@ -85,6 +86,15 @@ async function subscribeNews() {
   } finally { newsBusy.value = false }
 }
 
+/* 弹层滚动穿透：任一浮层打开时锁 body 滚动（style.css .gm-locked） */
+watch(() => ui.anyOverlay, (v) => document.body.classList.toggle('gm-locked', !!v))
+
+/* tabbar 当前页高亮（.on 复用 style.css 既有规则；Cart 为角标脉冲） */
+const tabShop = computed(() => route.path === '/' || route.path === '/store')
+const tabSearch = computed(() => route.path === '/search')
+const tabWish = computed(() => route.path === '/account/wishlist')
+const tabMe = computed(() => route.path.startsWith('/account') && route.path !== '/account/wishlist')
+
 onMounted(() => {
   startAnn()
   syncWl()
@@ -99,8 +109,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="announce">
-    <span>{{ i18n.t(ANN[annIdx]) }}</span>
+  <div class="announce" aria-live="off">
+    <Transition name="ann" mode="out-in"><span :key="annIdx">{{ i18n.t(ANN[annIdx]) }}</span></Transition>
   </div>
 
   <header class="header" :class="{ scrolled: headerScrolled }">
@@ -162,7 +172,7 @@ onUnmounted(() => {
         <router-link class="icon-btn" to="/account" :aria-label="i18n.t('aria.account')"><GmIcon name="user" /></router-link>
         <button class="icon-btn" :aria-label="i18n.t('aria.cart')" @click="ui.openCart()">
           <GmIcon name="cart" />
-          <span class="cart-badge" :style="{ display: cart.count ? 'flex' : 'none' }">{{ cart.count }}</span>
+          <span class="cart-badge" :style="{ display: cart.count ? 'flex' : 'none' }">{{ cart.count > 99 ? '99+' : cart.count }}</span>
         </button>
       </div>
     </div>
@@ -176,7 +186,13 @@ onUnmounted(() => {
         <router-link :to="c.path">{{ c.title }}</router-link>
       </template>
     </nav>
-    <router-view />
+    <router-view v-slot="{ Component }">
+      <Transition name="page" mode="out-in">
+        <div :key="route.path" class="page-wrap">
+          <component :is="Component" />
+        </div>
+      </Transition>
+    </router-view>
   </main>
 
   <footer class="footer">
@@ -202,10 +218,13 @@ onUnmounted(() => {
           <div class="logo" style="color:#fff;font-size:24px;margin-bottom:14px">GLOW<span style="color:var(--rose)">MAG</span></div>
           <p style="font-size:13px;color:rgba(255,255,255,.7);max-width:280px">{{ i18n.t('footer.tag') }}</p>
           <div style="display:flex;gap:16px;margin-top:18px">
-            <a v-for="s in ['tiktok', 'instagram', 'youtube', 'pinterest']" :key="s" href="javascript:void(0)"
-               :aria-label="i18n.t('aria.' + s)" style="color:rgba(255,255,255,.75)" @click.prevent="ui.toast('Social link (demo) 💅')">
+            <button
+              v-for="s in ['tiktok', 'instagram', 'youtube', 'pinterest']" :key="s"
+              type="button" class="social-btn" :aria-label="i18n.t('aria.' + s)"
+              @click="ui.toast('Social link (demo) 💅')"
+            >
               <GmIcon :name="s" :size="22" />
-            </a>
+            </button>
           </div>
         </div>
         <div>
@@ -246,7 +265,7 @@ onUnmounted(() => {
           <div style="margin-top:6px;display:flex;gap:14px;font-size:12px">
             <router-link to="/privacy#ccpa" style="font-size:12px">{{ i18n.t('footer.dns') }}</router-link>
             <router-link to="/unsubscribe" style="font-size:12px">{{ i18n.t('footer.unsub') }}</router-link>
-            <a href="javascript:void(0)" style="font-size:12px" @click.prevent="openConsent">{{ i18n.t('footer.cookie') }}</a>
+            <button type="button" class="foot-link-mini" @click="openConsent">{{ i18n.t('footer.cookie') }}</button>
           </div>
         </div>
         <div class="pay-icons"><span>VISA</span><span>MC</span><span>AMEX</span><span>PAYPAL</span><span>KLARNA</span><span>APPLE PAY</span></div>
@@ -255,14 +274,14 @@ onUnmounted(() => {
   </footer>
 
   <nav class="tabbar" :aria-label="i18n.t('aria.mobile')">
-    <router-link to="/store"><GmIcon name="bag" :size="22" /><span>{{ i18n.t('tab.shop') }}</span></router-link>
-    <a href="javascript:void(0)" @click.prevent="ui.openSearch()"><GmIcon name="search" :size="22" /><span>{{ i18n.t('tab.search') }}</span></a>
-    <router-link to="/account/wishlist"><GmIcon name="heart" :size="22" /><span>{{ i18n.t('tab.wishlist') }}</span></router-link>
-    <a href="javascript:void(0)" @click.prevent="ui.openCart()">
-      <GmIcon name="cart" :size="22" /><span class="cart-badge" :style="{ display: cart.count ? 'flex' : 'none' }">{{ cart.count }}</span>
+    <router-link to="/store" :class="{ on: tabShop }"><GmIcon name="bag" :size="22" /><span>{{ i18n.t('tab.shop') }}</span></router-link>
+    <button type="button" :class="{ on: tabSearch }" @click="ui.openSearch()"><GmIcon name="search" :size="22" /><span>{{ i18n.t('tab.search') }}</span></button>
+    <router-link to="/account/wishlist" :class="{ on: tabWish }"><GmIcon name="heart" :size="22" /><span>{{ i18n.t('tab.wishlist') }}</span></router-link>
+    <button type="button" :class="{ 'tab-pulse': cart.count > 0 }" @click="ui.openCart()">
+      <GmIcon name="cart" :size="22" /><span class="cart-badge" :style="{ display: cart.count ? 'flex' : 'none' }">{{ cart.count > 99 ? '99+' : cart.count }}</span>
       <span>{{ i18n.t('tab.cart') }}</span>
-    </a>
-    <router-link to="/account"><GmIcon name="user" :size="22" /><span>{{ i18n.t('tab.account') }}</span></router-link>
+    </button>
+    <router-link to="/account" :class="{ on: tabMe }"><GmIcon name="user" :size="22" /><span>{{ i18n.t('tab.account') }}</span></router-link>
   </nav>
 
   <button class="back-top" :class="{ show: showBackTop }" :aria-label="i18n.t('aria.backTop')" @click="backTop">
@@ -298,6 +317,17 @@ onUnmounted(() => {
 .lang-switch:hover{border-color:var(--rose)}
 .lang-switch .on{color:var(--plum)}
 .lang-switch i{opacity:.4;font-style:normal;margin:0 1px}
+
+/* 公告栏轮播淡入淡出（key 切换 Transition；reduced-motion 下全站兜底禁过渡，仅瞬切） */
+.ann-enter-active,.ann-leave-active{transition:opacity .2s ease,transform .2s ease}
+.ann-enter-from{opacity:0;transform:translateY(6px)}
+.ann-leave-to{opacity:0;transform:translateY(-6px)}
+
+/* 页脚社交按钮（原 javascript:void(0) 伪链接 button 化；保留 demo toast） */
+.social-btn{display:inline-flex;align-items:center;justify-content:center;background:none;border:none;padding:0;cursor:pointer;color:rgba(255,255,255,.75);transition:color .15s,transform .15s ease-out}
+.social-btn:hover{color:var(--rose);transform:translateY(-2px)}
+.foot-link-mini{background:none;border:none;padding:0;cursor:pointer;font-size:12px;color:inherit;font-family:inherit}
+.foot-link-mini:hover{color:var(--rose)}
 
 /* v15 顶栏滚动收缩 + 毛玻璃（sticky 下内容自底部透过半透明底色） */
 .header-inner{transition:height .25s ease-out}

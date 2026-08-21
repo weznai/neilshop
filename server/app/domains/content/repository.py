@@ -47,6 +47,11 @@ def article_by_slug(db: Session, slug: str) -> Article | None:
     return db.query(Article).filter(Article.slug == slug, Article.status == 1).first()
 
 
+def published_article_tags(db: Session) -> list:
+    """已发布文章全量 tags 列（JSON 列表），供前台标签云 Counter 聚合"""
+    return [r[0] for r in db.query(Article.tags).filter(Article.status == 1).all()]
+
+
 def admin_articles_desc(db: Session) -> Query:
     return db.query(Article).order_by(Article.id.desc())
 

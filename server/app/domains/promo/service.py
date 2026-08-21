@@ -2,6 +2,7 @@
 
 import secrets
 import uuid
+from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -30,6 +31,11 @@ def log_admin(db: Session, admin: User, action: str, entity: str, entity_id: int
         entity_id=int(entity_id or 0),
         diff_json=diff,
     ))
+
+
+def _json_safe_diff(data: dict) -> dict:
+    """AdminLog.diff_json 为 JSON 列：datetime → isoformat 字符串（否则 commit 序列化 500）"""
+    return {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in data.items()}
 
 
 # ===== 用户侧 =====
@@ -207,7 +213,7 @@ def update_discount(db: Session, admin: User, discount_id: int, body: DiscountUp
             raise HTTPException(status_code=409, detail="code exists")
     for k, v in data.items():
         setattr(dc, k, v)
-    log_admin(db, admin, "update", "discount", dc.id, data)
+    log_admin(db, admin, "update", "discount", dc.id, _json_safe_diff(data))
     db.commit()
     db.refresh(dc)
     return _discount_dict(dc)
@@ -274,7 +280,7 @@ def update_popup(db: Session, admin: User, popup_id: int, body: PopupUpdateIn) -
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(p, k, v)
-    log_admin(db, admin, "update", "popup", p.id, data)
+    log_admin(db, admin, "update", "popup", p.id, _json_safe_diff(data))
     db.commit()
     db.refresh(p)
     return _popup_dict(p)

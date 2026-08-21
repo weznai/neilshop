@@ -127,6 +127,14 @@ OVERRIDES = {
     ("PUT", "/api/admin/catalog/products/{product_id}/translations"): "翻译 upsert（locale 维度）",
     ("DELETE", "/api/admin/catalog/products/{product_id}/translations/{locale}"): "删除翻译（按 locale）",
     ("POST", "/api/admin/catalog/products/{product_id}/variants"): "创建变体（支持变体图片 ≤6 张）",
+    ("POST", "/api/cart/items-batch"): "批量加购（逐项校验，部分成功）",
+    ("PUT", "/api/account/password"): "登录态修改密码（旧密校验）",
+    ("GET", "/api/catalog/variants/{variant_id}/siblings"): "同商品变体兄弟列表",
+    ("POST", "/api/returns/{rma_no}/cancel"): "撤销退货申请",
+    ("PUT", "/api/admin/catalog/collections/{collection_id}"): "集合更新（部分字段，含 banner）",
+    ("DELETE", "/api/admin/catalog/collections/{collection_id}"): "集合删除（级联清商品关联）",
+    ("GET", "/api/admin/catalog/collections/{collection_id}/products"): "集合商品清单",
+    ("GET", "/api/account/wishlist/has"): "愿望单是否已含商品（?product_id=）",
 }
 
 # 动作词 → 短语模板（{res} 为资源名词，取自前一段或默认）

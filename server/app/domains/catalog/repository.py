@@ -6,7 +6,7 @@
 - category_ids：分类表单查询 + 内存 BFS 求子树。
 """
 
-from sqlalchemy import String, case, cast, func, or_
+from sqlalchemy import String, case, cast, exists, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -87,7 +87,7 @@ def list_products(
     db: Session, *, category_id_list: list[int] | None, tag: str | None,
     q: str | None, sort: str, offset: int, limit: int,
     min_price: int | None = None, max_price: int | None = None,
-    on_sale: bool = False,
+    on_sale: bool = False, shape: str | None = None,
 ) -> tuple[int, list[Product]]:
     query = db.query(Product).filter(Product.status == 1, _visible())
     if category_id_list:
@@ -97,6 +97,14 @@ def list_products(
     if q:
         like = f"%{q}%"
         query = query.filter(or_(Product.title.like(like), Product.subtitle.like(like)))
+    # 甲型筛选：任一启用变体 option1_value 包含 shape 词即命中（ilike 大小写不敏感，
+    # 前端传 almond/square 等短词可匹配 "Short Almond"/"Medium Square" 复合值；未知词自然空集）
+    if shape:
+        query = query.filter(exists().where(
+            Variant.product_id == Product.id,
+            Variant.is_active == 1,
+            Variant.option1_value.ilike(f"%{shape}%"),
+        ))
     # 价格区间交集：[min_price, max_price] 与商品 [price_min, price_max] 有交集即命中（闭区间，单侧给半开）
     if min_price is not None:
         query = query.filter(Product.price_max >= min_price)
@@ -269,10 +277,13 @@ def search_categories(db: Session, like: str) -> list[Category]:
 
 def reviews_page(
     db: Session, product_id: int, offset: int, limit: int,
+    rating: int | None = None,
 ) -> tuple[int, list[Review]]:
     base = db.query(Review).filter(
         Review.product_id == product_id, Review.status == 1
     )
+    if rating is not None:
+        base = base.filter(Review.rating == rating)
     total = base.count()
     rows = (
         base.order_by(Review.created_at.desc(), Review.id.desc())
@@ -507,6 +518,29 @@ def replace_collection_products(
     ).delete(synchronize_session=False)
     for cp in products:
         db.add(cp)
+
+
+def delete_collection_products(db: Session, collection_id: int) -> None:
+    """删除集合时级联清掉物化商品行（collection_products 无 ORM 级联配置）"""
+    db.query(CollectionProduct).filter(
+        CollectionProduct.collection_id == collection_id
+    ).delete(synchronize_session=False)
+
+
+def collection_product_pairs(
+    db: Session, collection_id: int,
+) -> list[tuple[CollectionProduct, Product]]:
+    """后台集合商品清单：保留 sort_order 的 (关联行, 商品) 对（admin 视角不过滤上架状态）"""
+    return (
+        db.query(CollectionProduct, Product)
+        .join(Product, Product.id == CollectionProduct.product_id)
+        .filter(CollectionProduct.collection_id == collection_id)
+        .order_by(
+            CollectionProduct.sort_order.asc(),
+            CollectionProduct.product_id.asc(),
+        )
+        .all()
+    )
 
 
 def add_admin_log(

@@ -78,6 +78,20 @@ db.flush()
 for p, price in ((p_low, 999), (p_mid, 1399), (p_high, 1999)):
     db.add(Variant(product_id=p.id, sku=f"{p.slug.upper()}-SA", option1_value="Short Almond",
                    option2_value="24 pcs", price=price, stock=40))
+# p_mid 补 Medium Square 变体（+200，siblings/shape=short 词测试用）
+db.add(Variant(product_id=p_mid.id, sku=f"{p_mid.slug.upper()}-MS", option1_value="Medium Square",
+               option2_value="24 pcs", price=1599, stock=25))
+# p_low 补停用变体 Stiletto（is_active=0：shape 筛选与 siblings 均不应命中）
+db.add(Variant(product_id=p_low.id, sku=f"{p_low.slug.upper()}-ST", option1_value="Stiletto",
+               option2_value="24 pcs", price=1199, stock=10, is_active=0))
+# 下架商品（status=2）：variants siblings → 404；列表/shape 均不可见
+p_off = Product(slug="price-off", title="Price Off", category_id=cat_nails.id, status=2,
+                price_min=1099, price_max=1299, hero_image="/img/off.jpg",
+                published_at=now - timedelta(days=1))
+db.add(p_off)
+db.flush()
+db.add(Variant(product_id=p_off.id, sku="PRICE-OFF-SA", option1_value="Short Almond",
+               option2_value="24 pcs", price=1099, stock=30))
 
 # 评价（mid 商品）：2×5★ + 1×4★ 已发布；3★ 待审（status=0）/ 1★ 拒绝（status=2）不计入
 for i, (rating, status) in enumerate([(5, 1), (5, 1), (4, 1), (3, 0), (1, 2)]):
@@ -181,6 +195,72 @@ with TestClient(app) as client:
     check("前台卡片 is_new/best 有分布", {i["is_new"] for i in d["items"]} <= {True, False}
           and any(i["is_best_seller"] for i in d["items"]))
 
+    print("\n== shape 筛选（变体 EXISTS ilike，短词命中复合值）==")
+    d = listing({"shape": "almond", "size": 50})
+    check("shape=almond 命中 Short Almond 三价位款",
+          d["total"] == 3 and {i["slug"] for i in d["items"]} ==
+          {"price-low", "price-mid", "price-high"}, [i["slug"] for i in d["items"]])
+    d = listing({"shape": "SQUARE", "size": 50})
+    check("shape 大小写不敏感（SQUARE → price-mid）",
+          d["total"] == 1 and d["items"][0]["slug"] == "price-mid", d.get("total"))
+    d = listing({"shape": "cat", "size": 50})
+    check("shape 短词部分匹配（cat → Natural Cat 睫毛 3 款）",
+          d["total"] == 3 and {i["slug"] for i in d["items"]} == set(lash_slugs),
+          [i["slug"] for i in d["items"]])
+    d = listing({"shape": "stiletto", "size": 50})
+    check("shape 命中停用变体不算（is_active=0 排除）且下架商品不可见", d["total"] == 0,
+          d.get("total"))
+    d = listing({"shape": "unknown-shape-xyz", "size": 50})
+    check("未知 shape → 空集不 400", d["total"] == 0 and d["items"] == [], d.get("total"))
+    d = listing({"shape": "almond", "tag": "cat-eye", "size": 50})
+    check("shape AND tag 组合（交集空）", d["total"] == 0, d.get("total"))
+    check("shape 空串 422（min_length=1）",
+          client.get("/api/catalog/products", params={"shape": ""}).status_code == 422)
+    check("shape 超长 422（max_length=50）",
+          client.get("/api/catalog/products", params={"shape": "x" * 51}).status_code == 422)
+    check("不带 shape 默认行为不变（total=6）", listing({"size": 50})["total"] == 6)
+
+    print("\n== reviews rating 筛选（仅已发布）==")
+    r = client.get("/api/catalog/reviews", params={"product_id": p_mid.id, "rating": 5})
+    check("rating=5 → 仅已发布 5★（2 条）",
+          r.status_code == 200 and r.json()["total"] == 2
+          and all(i["rating"] == 5 for i in r.json()["items"]), r.json()["total"])
+    r = client.get("/api/catalog/reviews", params={"product_id": p_mid.id, "rating": 4})
+    check("rating=4 → 1 条", r.json()["total"] == 1, r.json()["total"])
+    r = client.get("/api/catalog/reviews", params={"product_id": p_mid.id, "rating": 3})
+    check("rating=3 → 0（待审 3★ 不计）", r.json()["total"] == 0, r.json()["total"])
+    r = client.get("/api/catalog/reviews", params={"product_id": p_mid.id, "rating": 1})
+    check("rating=1 → 0（拒绝 1★ 不计）", r.json()["total"] == 0, r.json()["total"])
+    check("rating=0 / 6 → 422",
+          client.get("/api/catalog/reviews",
+                     params={"product_id": p_mid.id, "rating": 0}).status_code == 422
+          and client.get("/api/catalog/reviews",
+                         params={"product_id": p_mid.id, "rating": 6}).status_code == 422)
+    check("不带 rating 原行为（total=3）",
+          client.get("/api/catalog/reviews", params={"product_id": p_mid.id}).json()["total"] == 3)
+
+    print("\n== 变体兄弟端点 GET /variants/{id}/siblings ==")
+    v_mid = (db.query(Variant)
+             .filter(Variant.product_id == p_mid.id,
+                     Variant.option1_value == "Short Almond").first())
+    v_off = db.query(Variant).filter(Variant.product_id == p_off.id).first()
+    r = client.get(f"/api/catalog/variants/{v_mid.id}/siblings")
+    d = r.json()
+    check("200 且锚定信息齐全（variant_id/product_id/slug/title）",
+          r.status_code == 200 and d["variant_id"] == v_mid.id
+          and d["product_id"] == p_mid.id and d["slug"] == "price-mid"
+          and d["title"] == "Price Mid", d)
+    check("兄弟列表=同商品启用变体（SA+MS，停用 Stiletto 排除）且 _variant_out 结构",
+          len(d["variants"]) == 2
+          and {v["option1_value"] for v in d["variants"]} == {"Short Almond", "Medium Square"}
+          and {"id", "sku", "price", "stock", "safety_stock", "option1_value",
+               "option2_value", "stock_status", "images"} <= set(d["variants"][0]),
+          [v["option1_value"] for v in d["variants"]])
+    r = client.get("/api/catalog/variants/999999/siblings")
+    check("变体不存在 → 404", r.status_code == 404, r.status_code)
+    r = client.get(f"/api/catalog/variants/{v_off.id}/siblings")
+    check("商品下架（status=2）→ 404", r.status_code == 404, r.status_code)
+
 db.close()
 
 print("\n== 全量 seed 幂等（子进程，独立 sqlite 两轮） ==")
@@ -209,27 +289,34 @@ def run_seed(tag: str):
         "import seed",
         "seed.seed()",
         "from app.core.db import SessionLocal",
-        "from app.models import Product, Variant",
+        "from app.models import Product, Variant, Referral, Setting",
         "s = SessionLocal()",
         f"lash = s.query(Product).filter(Product.slug.in_([{lash_list}])).count()",
         "prods = s.query(Product).count()",
         "vars_ = s.query(Variant).count()",
-        f"print('{tag} lash=%d products=%d variants=%d' % (lash, prods, vars_))",
+        "stile = s.query(Variant).filter(Variant.option1_value == 'Stiletto').count()",
+        "coffin = s.query(Variant).filter(Variant.option1_value == 'Coffin').count()",
+        "refs = s.query(Referral).count()",
+        "site = s.get(Setting, 'site_url').value",
+        f"print('{tag} lash=%d products=%d variants=%d stiletto=%d coffin=%d referrals=%d site=%s' "
+        "% (lash, prods, vars_, stile, coffin, refs, site))",
         "s.close()",
     ])
     return subprocess.run([sys.executable, "-c", probe], env=env, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", cwd=str(ROOT))
 
 
+EXPECT_SEED = ("lash=3 products=17 variants=59 stiletto=13 coffin=13 "
+               "referrals=1 site=http://localhost:5173")
 r1 = run_seed("SEED-FRESH")
-check("空库首跑 seed done 且含 3 款睫毛（products=17 variants=33）",
+check("空库首跑 seed done 且四型甲片/推荐/site_url 齐（" + EXPECT_SEED + "）",
       r1.returncode == 0 and "seed done" in r1.stdout
-      and "SEED-FRESH lash=3 products=17 variants=33" in r1.stdout,
+      and f"SEED-FRESH {EXPECT_SEED}" in r1.stdout,
       (r1.stdout[-400:] + r1.stderr[-400:]))
 r2 = run_seed("SEED-RERUN")
-check("重复执行总防重跳过（products exist, skip）且不重复建（仍 17/33）",
+check("重复执行总防重跳过（products exist, skip）且不重复建",
       r2.returncode == 0 and "products exist, skip" in r2.stdout
-      and "SEED-RERUN lash=3 products=17 variants=33" in r2.stdout,
+      and f"SEED-RERUN {EXPECT_SEED}" in r2.stdout,
       (r2.stdout[-400:] + r2.stderr[-400:]))
 
 print(f"\nALL PASS: {PASSED}/{PASSED + len(FAILED)}")

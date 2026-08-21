@@ -40,8 +40,9 @@ from app.core.enums import PointsReason, ReferralStatus
 from app.core.security import create_token, hash_password
 from app.main import app
 from app.models import (
-    EmailPreference, GiftCard, GiftCardLedger, Order, OrderTimeline, Payment,
-    PointsLedger, Referral, Subscription, User,
+    DiscountCode, EmailPreference, GiftCard, GiftCardLedger, Order,
+    OrderTimeline, OutboxEvent, Payment, PointsLedger, Product, Referral,
+    Subscription, User,
 )
 from app.services import emails
 from app.services.referrals import derive_code, on_order_paid
@@ -143,6 +144,19 @@ with TestClient(app) as client:
     r = client.post("/api/referrals/simulate-invite", headers=H_tina,
                     json={"email": "ivy@glowmag.com"})
     check("simulate-invite 已注册邮箱（tina 视角）→ 409", r.status_code == 409, r.text)
+
+    # ===== simulate-invite 环境门禁（非 dev 404，与 trade mock-pay 同款）=====
+    app_settings.env = "test"
+    try:
+        r = client.post("/api/referrals/simulate-invite", headers=H_tina,
+                        json={"email": "gate@glowmag.com"})
+        check("simulate-invite 非 dev → 404 not_found（门禁先于业务校验）",
+              r.status_code == 404 and r.json()["detail"] == "not_found", r.text)
+    finally:
+        app_settings.env = "dev"  # 还原，避免影响后续 dev 依赖
+    r = client.post("/api/referrals/simulate-invite", headers=H_tina,
+                    json={"email": "gate@glowmag.com"})
+    check("还原 dev 后恢复 201", r.status_code == 201, r.text)
 
     r3 = client.get("/api/referrals/me", headers=H_rita).json()
     check("me invited 列表：email 脱敏 + status_text 中文 + stats",
@@ -258,6 +272,55 @@ with TestClient(app) as client:
     check("无效 ref_code → 注册正常 201 且不建绑定行",
           r.status_code == 201 and s.query(Referral).filter(
               Referral.invited_email == "rex@glowmag.com").count() == 0, r.status_code)
+
+    # ===== user.welcome outbox payload 补齐（discount/code 取折扣码表 WELCOME20）=====
+    s.add(DiscountCode(code="WELCOME20", name="新客 85 折", type=1, value=15,
+                       is_active=1, starts_at=utcnow() - timedelta(days=1)))
+    s.commit()
+    r = client.post("/api/account/register", json={
+        "email": "mia@glowmag.com", "password": "miapass123", "name": "Mia"})
+    mia = s.query(User).filter(User.email == "mia@glowmag.com").one()
+    wel = (s.query(OutboxEvent)
+           .filter(OutboxEvent.event_type == "user.welcome",
+                   OutboxEvent.aggregate_type == "user",
+                   OutboxEvent.aggregate_id == mia.id).one())
+    check("register → user.welcome outbox 行存在 + payload 含 discount/code（DB WELCOME20=15%）",
+          r.status_code == 201 and wel.payload["discount"] == 15
+          and wel.payload["code"] == "WELCOME20"
+          and wel.payload["email"] == "mia@glowmag.com"
+          and wel.payload["user_id"] == mia.id, wel.payload)
+    # 折扣码表无 WELCOME20（回落常量 20/WELCOME20）：用独立邮箱验证（先删码）
+    s.query(DiscountCode).filter(DiscountCode.code == "WELCOME20").delete()
+    s.commit()
+    r = client.post("/api/account/register", json={
+        "email": "noah@glowmag.com", "password": "noahpass123", "name": "Noah"})
+    noah = s.query(User).filter(User.email == "noah@glowmag.com").one()
+    wel2 = (s.query(OutboxEvent)
+            .filter(OutboxEvent.event_type == "user.welcome",
+                    OutboxEvent.aggregate_id == noah.id).one())
+    check("折扣码表查不到 WELCOME20 → payload 回落常量 discount=20/code=WELCOME20",
+          r.status_code == 201 and wel2.payload["discount"] == 20
+          and wel2.payload["code"] == "WELCOME20", wel2.payload)
+
+    # ===== wishlist/has 轻查询端点（有/无/未登录）=====
+    wp = Product(slug="wish-pro", title="Wish Pro", category_id=1, status=1,
+                 price_min=1000, price_max=1000)
+    s.add(wp)
+    s.commit()
+    check("wishlist/has 未登录 → 401",
+          client.get("/api/account/wishlist/has",
+                     params={"product_id": wp.id}).status_code == 401)
+    r = client.get("/api/account/wishlist/has", headers=H_rita, params={"product_id": wp.id})
+    check("wishlist/has 未加入 → {in_wishlist:false}",
+          r.status_code == 200 and r.json() == {"in_wishlist": False}, r.text)
+    client.post(f"/api/account/wishlist/{wp.id}", headers=H_rita)
+    r = client.get("/api/account/wishlist/has", headers=H_rita, params={"product_id": wp.id})
+    check("wishlist/has 已加入 → {in_wishlist:true}（他人视角仍 false）",
+          r.status_code == 200 and r.json() == {"in_wishlist": True}
+          and client.get("/api/account/wishlist/has", headers=H_tina,
+                         params={"product_id": wp.id}).json() == {"in_wishlist": False},
+          r.text)
+
     # 被邀人首单支付 → 发放闭环验证（绑定行写对即钩子可用）
     o4 = make_order(s, "NS260816R04", user_id=zoe.id, email="zoe@glowmag.com")
     s.commit()
@@ -439,6 +502,59 @@ with TestClient(app) as client:
           r.status_code == 200 and login_old.status_code == 401
           and login_new.status_code == 200, (r.status_code, login_old.status_code,
                                              login_new.status_code))
+
+    # ===== 登录态改密 PUT /api/account/password =====
+    H_pwu = {"Authorization": f"Bearer {create_token(pwu.id, 0)}"}
+    r = client.put("/api/account/password", headers=H_pwu,
+                   json={"old_password": "wrongpassword9", "new_password": "freshpass99"})
+    check("改密旧密错误 → 401 invalid credentials",
+          r.status_code == 401 and r.json()["detail"] == "invalid credentials", r.text)
+    r = client.put("/api/account/password", headers=H_pwu,
+                   json={"old_password": "newpassword9", "new_password": "short"})
+    check("改密新密码 <8 位 → 422", r.status_code == 422, r.status_code)
+    check("未登录改密 → 401",
+          client.put("/api/account/password",
+                     json={"old_password": "newpassword9",
+                           "new_password": "freshpass99"}).status_code == 401)
+    anon = User(email="anon@glowmag.com", name="Anon")
+    s.add(anon)
+    s.commit()
+    r = client.put("/api/account/password",
+                   headers={"Authorization": f"Bearer {create_token(anon.id, 0)}"},
+                   json={"old_password": "whatever123", "new_password": "freshpass99"})
+    check("GDPR 匿名用户（password_hash=None）改密 → 401",
+          r.status_code == 401 and r.json()["detail"] == "invalid credentials", r.text)
+    r = client.put("/api/account/password", headers=H_pwu,
+                   json={"old_password": "newpassword9", "new_password": "freshpass99"})
+    check("改密成功 → {ok:true}（不做 token_version，与邮件重置同口径）",
+          r.status_code == 200 and r.json() == {"ok": True}, r.text)
+    check("改密后旧密 401 / 新密可登录",
+          client.post("/api/account/login",
+                      json={"email": "pw@glowmag.com",
+                            "password": "newpassword9"}).status_code == 401
+          and client.post("/api/account/login",
+                          json={"email": "pw@glowmag.com",
+                                "password": "freshpass99"}).status_code == 200)
+
+    # ===== 地址唯一默认防线（撤唯一默认 → 422 last_default_required）=====
+    ADDR_DEF = {**ADDR, "is_default": True}
+    r = client.post("/api/account/addresses", headers=H_pwu, json=ADDR_DEF)
+    addr1 = r.json()["id"]
+    check("建默认地址 201", r.status_code == 201 and r.json()["is_default"] is True, r.text)
+    r = client.put(f"/api/account/addresses/{addr1}", headers=H_pwu,
+                   json={**ADDR_DEF, "is_default": False})
+    check("唯一默认地址撤默认 → 422 last_default_required",
+          r.status_code == 422 and r.json()["detail"] == "last_default_required", r.text)
+    r = client.post("/api/account/addresses", headers=H_pwu, json=ADDR_DEF)
+    addr2 = r.json()["id"]
+    check("再建默认地址 201（清旧默认）",
+          r.status_code == 201 and r.json()["is_default"] is True
+          and [a for a in client.get("/api/account/addresses", headers=H_pwu).json()
+               if a["id"] == addr1][0]["is_default"] is False, r.text[:120])
+    r = client.put(f"/api/account/addresses/{addr1}", headers=H_pwu,
+                   json={**ADDR_DEF, "is_default": False})
+    check("存在其它默认后可撤默认 → 200",
+          r.status_code == 200 and r.json()["is_default"] is False, r.text[:120])
 
     # ===== giftcard purchase =====
     check("giftcard 非法面额 3000 → 422",

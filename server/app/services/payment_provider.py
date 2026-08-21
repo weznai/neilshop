@@ -51,7 +51,9 @@ class MockProvider(PaymentProvider):
 
     def create_intent(self, order, amount_cents: int) -> dict:
         pi = "PI_" + uuid.uuid4().hex
-        return {"payment_intent": pi, "client_secret": f"{pi}_secret_mock"}
+        # redirect_url：前端暂无 /pay-mock 假跳转页 → 返回空串维持现状（不跳转）
+        return {"payment_intent": pi, "client_secret": f"{pi}_secret_mock",
+                "redirect_url": ""}
 
     def confirm(self, order, payment, succeed: bool) -> bool:
         return succeed
@@ -87,6 +89,31 @@ class StripeProvider(PaymentProvider):
             kwargs["payment_method_types"] = ["card", "klarna"]
         intent = stripe.PaymentIntent.create(**kwargs)
         return {"payment_intent": intent.id, "client_secret": intent.client_secret}
+
+    def create_checkout(self, order_no: str, amount_cents: int, site_url: str) -> dict:
+        """Hosted Checkout 会话（stripe.checkout.Session.create）：
+        成功回跳 {site_url}/success?no=订单号&session_id={CHECKOUT_SESSION_ID}，
+        取消回跳 {site_url}/checkout?canceled=1；无 key 抛 ProviderUnavailable。"""
+        stripe = self._sdk()
+        if not self.key:
+            raise ProviderUnavailable("stripe key absent")
+        base = site_url.rstrip("/")
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            success_url=f"{base}/success?no={order_no}&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{base}/checkout?canceled=1",
+            client_reference_id=order_no,
+            metadata={"order_no": order_no},
+            line_items=[{
+                "quantity": 1,
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": amount_cents,
+                    "product_data": {"name": f"GLOWMAG order {order_no}"},
+                },
+            }],
+        )
+        return {"checkout_session_id": session.id, "redirect_url": session.url}
 
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("stripe payments are driven by webhook events")
@@ -161,7 +188,8 @@ class PayPalProvider(PaymentProvider):
             "",
         )
         pid = data.get("id") or ""
-        return {"payment_intent": pid, "client_secret": approve or f"{pid}_paypal"}
+        return {"payment_intent": pid, "client_secret": approve or f"{pid}_paypal",
+                "redirect_url": approve}
 
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("paypal payments are driven by webhook events")
@@ -179,7 +207,7 @@ class PayPalProvider(PaymentProvider):
             raise WebhookVerificationError("invalid_payload") from exc
         if not isinstance(event, dict) or not event.get("id") or not event.get("type"):
             raise WebhookVerificationError("invalid_event")
-        expected = getattr(settings, "paypal_webhook_id", "")
+        expected = settings.paypal_webhook_id
         if expected and event.get("webhook_id") != expected:
             raise InvalidSignatureError("webhook_id_mismatch")
         return event
@@ -252,4 +280,5 @@ def available_providers() -> list[str]:
             names.append("paypal")
         except ImportError:
             pass
-    return names or ["mock"]
+    # mock 仅 dev 环境可见：非 dev 无真实 provider 凭据时返回空（前端隐藏支付入口）
+    return names or (["mock"] if settings.env == "dev" else [])

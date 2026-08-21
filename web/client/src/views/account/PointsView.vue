@@ -2,9 +2,31 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../../api/client'
+import { i18n } from '../../i18n'
 
 const route = useRoute()
 const router = useRouter()
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+
+/* 积分流水原因 → [en, zh]（文案对齐 server member/service_points.py REASON_TEXT；未知 code 回落后端原文） */
+const REASON = {
+  1: ['Order earned (frozen)', '下单获得（冻结中）'],
+  2: ['Unfrozen', '解冻'],
+  3: ['Review reward', '评价奖励'],
+  4: ['Check-in', '签到'],
+  5: ['Referral reward', '推荐奖励'],
+  6: ['Birthday gift', '生日礼'],
+  7: ['Redeemed at checkout', '消费扣除'],
+  8: ['Voided on refund', '退款作废'],
+  9: ['Returned from refund', '退款返还'],
+  10: ['Expired', '过期'],
+  11: ['Admin adjustment', '管理员调整'],
+  12: ['Gallery look reward', '买家秀奖励'],
+}
+function reasonText(h) {
+  const row = REASON[h.reason_code]
+  return row ? tt(row[0], row[1]) : (h.reason || String(h.reason_code ?? ''))
+}
 
 const pts = ref(null)
 const ledger = ref([])
@@ -71,82 +93,93 @@ watch(() => route.query, (q) => {
 
 /* 规则口径与后端一致：$1=10 分（下单冻结）；100 分=$1；评价 +100；推荐 +1000 */
 const RULES = [
-  ['下单消费', '每 $1 +10 分（确认收货后解冻）'],
-  ['写商品评价', '+100 分'],
-  ['推荐好友注册并下单', '+1000 分'],
-  ['生日月福利', '积分小礼物'],
+  [['Order spend', '下单消费'], ['+10 pts per $1 (unfreezes after delivery)', '每 $1 +10 分（确认收货后解冻）']],
+  [['Write a review', '写商品评价'], ['+100 pts', '+100 分']],
+  [['Refer a friend who orders', '推荐好友注册并下单'], ['+1000 pts', '+1000 分']],
+  [['Birthday month', '生日月福利'], ['points gift', '积分小礼物']],
 ]
 </script>
 
 <template>
   <div style="display:grid;gap:16px">
-    <div class="card" style="padding:24px;background:linear-gradient(135deg,#2E1430,var(--ink));color:#fff">
+    <div class="card" style="padding:24px;background:linear-gradient(135deg,var(--plum-dark),var(--ink));color:#fff">
       <div style="font-size:12.5px;opacity:.75;letter-spacing:1px">GLOW POINTS</div>
       <div style="display:flex;gap:26px;flex-wrap:wrap;align-items:flex-end">
         <div>
           <div style="font-family:var(--font-title);font-size:44px;margin:6px 0">
             {{ pts ? (pts.usable || 0).toLocaleString() : '—' }}
           </div>
-          <div style="font-size:13px;opacity:.85">可用 · 100 分 = $1，结账时可抵 {{ pts ? money(pts.usable) : '—' }}</div>
+          <div style="font-size:13px;opacity:.85">{{ tt('Usable · 100 pts = $1, worth', '可用 · 100 分 = $1，结账时可抵') }} {{ pts ? money(pts.usable) : '—' }}</div>
         </div>
         <div style="text-align:left;padding-bottom:6px">
           <div style="font-size:22px;font-weight:700">{{ pts ? (pts.balance || 0).toLocaleString() : '—' }}</div>
-          <div style="font-size:12px;opacity:.75">总积分</div>
+          <div style="font-size:12px;opacity:.75">{{ tt('Total', '总积分') }}</div>
         </div>
         <div style="text-align:left;padding-bottom:6px">
-          <div style="font-size:22px;font-weight:700;color:#F2C4CE">{{ pts ? (pts.frozen || 0).toLocaleString() : '—' }}</div>
-          <div style="font-size:12px;opacity:.75">冻结中</div>
+          <div style="font-size:22px;font-weight:700;color:var(--rose-light)">{{ pts ? (pts.frozen || 0).toLocaleString() : '—' }}</div>
+          <div style="font-size:12px;opacity:.75">{{ tt('Frozen', '冻结中') }}</div>
         </div>
       </div>
     </div>
 
-    <!-- 即将过期提醒 -->
+    <!-- 即将过期提醒（日期 chip 化） -->
     <div v-if="expiring.length" class="card" style="padding:16px 18px;border-left:4px solid var(--warn);display:flex;gap:12px;align-items:flex-start">
       <span style="font-size:18px">⏳</span>
       <div style="font-size:13px;line-height:1.8">
-        <b>积分即将过期</b>
-        <div v-for="(r, i) in expiring.slice(0, 3)" :key="i" style="color:var(--gray)">
-          +{{ r.change }} 分将于 <b style="color:var(--warn)">{{ fmtDate(r.expires_at) }}</b> 过期（{{ r.reason }}）
+        <b>{{ tt('Points expiring soon', '积分即将过期') }}</b>
+        <div v-for="(r, i) in expiring.slice(0, 3)" :key="i" class="exp-row">
+          +{{ r.change }} {{ tt('pts ·', '分 ·') }} <span class="exp-chip">{{ fmtDate(r.expires_at) }}</span> {{ tt('expires', '过期') }}（{{ reasonText(r) }}）
         </div>
       </div>
     </div>
 
     <div class="grid grid-2">
       <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">积分规则</h3>
-        <div v-for="[a, b] in RULES" :key="a" style="display:flex;justify-content:space-between;gap:10px;font-size:13.5px;padding:8px 0;border-bottom:1px solid var(--gray-light)">
-          <span>{{ a }}</span><b style="color:var(--plum);text-align:right">{{ b }}</b>
+        <h3 style="font-size:15px;margin-bottom:12px">{{ tt('How points work', '积分规则') }}</h3>
+        <div v-for="[a, b] in RULES" :key="a[1]" style="display:flex;justify-content:space-between;gap:10px;font-size:13.5px;padding:8px 0;border-bottom:1px solid var(--gray-light)">
+          <span>{{ tt(a[0], a[1]) }}</span><b style="color:var(--plum);text-align:right">{{ tt(b[0], b[1]) }}</b>
         </div>
-        <div style="font-size:12px;color:var(--gray);margin-top:10px">下单获得的积分先冻结，订单完成/过退货期后自动解冻可用。</div>
+        <div style="font-size:12px;color:var(--gray);margin-top:10px">{{ tt('Points from orders are frozen first, and unfreeze automatically once the order completes / the return window passes.', '下单获得的积分先冻结，订单完成/过退货期后自动解冻可用。') }}</div>
       </div>
 
       <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">积分流水</h3>
+        <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Points history', '积分流水') }}</h3>
         <div v-if="!loaded" class="skeleton" style="min-height:120px" />
-        <div v-else-if="failed" style="font-size:13.5px;color:var(--gray)">加载失败，请刷新重试</div>
+        <div v-else-if="failed" style="font-size:13.5px;color:var(--gray)">{{ tt('Load failed — please refresh and retry', '加载失败，请刷新重试') }}</div>
         <template v-else>
           <div v-if="ledger.length" style="display:grid;gap:2px;max-height:300px;overflow-y:auto">
             <div v-for="h in ledger" :key="h.id" style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:6px 0;border-bottom:1px dashed var(--gray-light)">
               <span style="min-width:0">
-                <span style="color:var(--gray)">{{ fmt(h.created_at) }}</span> · {{ h.reason }}
-                <span v-if="h.frozen === 1 && h.change > 0" class="tag tag-pending" style="margin-left:4px">冻结中</span>
+                <span style="color:var(--gray)">{{ fmt(h.created_at) }}</span> · {{ reasonText(h) }}
+                <span v-if="h.frozen === 1 && h.change > 0" class="tag tag-pending" style="margin-left:4px">{{ tt('Frozen', '冻结中') }}</span>
               </span>
               <span style="text-align:right;flex:none">
-                <b :style="{ color: (h.change || 0) >= 0 ? 'var(--success)' : 'var(--error)' }">
+                <b class="pl-amount" :class="(h.change || 0) >= 0 ? 'in' : 'out'">
                   {{ (h.change || 0) >= 0 ? '+' : '' }}{{ h.change }}
                 </b>
-                <div style="font-size:11px;color:var(--gray)">余额 {{ h.balance_after }}</div>
+                <div class="pl-bal">{{ tt('Balance', '余额') }} {{ h.balance_after }}</div>
               </span>
             </div>
             <div v-if="pages() > 1" style="display:flex;gap:8px;align-items:center;justify-content:center;padding-top:10px">
               <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="go(page - 1)">←</button>
-              <span style="font-size:12.5px;color:var(--gray)">第 {{ page }} / {{ pages() }} 页</span>
+              <span style="font-size:12.5px;color:var(--gray)">{{ tt(`Page ${page} / ${pages()}`, `第 ${page} / ${pages()} 页`) }}</span>
               <button class="btn btn-secondary btn-sm" :disabled="page >= pages()" @click="go(page + 1)">→</button>
             </div>
           </div>
-          <div v-else style="font-size:13.5px;color:var(--gray)">暂无积分记录，下单即可开始攒分 ✨</div>
+          <div v-else style="font-size:13.5px;color:var(--gray)">{{ tt('No points yet — place an order to start earning ✨', '暂无积分记录，下单即可开始攒分 ✨') }}</div>
         </template>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 流水金额：+绿/−红 右对齐等宽数字 */
+.pl-amount { font-variant-numeric: tabular-nums; font-size: 14px; }
+.pl-amount.in { color: var(--success); }
+.pl-amount.out { color: var(--error); }
+.pl-bal { font-size: 11px; color: var(--gray); font-variant-numeric: tabular-nums; }
+/* 过期日期 chip */
+.exp-row { color: var(--gray); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.exp-chip { display: inline-block; background: var(--pale-warn); color: var(--warn); font-weight: 700; font-size: 12px; border-radius: 999px; padding: 1px 10px; font-variant-numeric: tabular-nums; }
+</style>

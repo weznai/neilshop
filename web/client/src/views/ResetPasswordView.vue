@@ -16,6 +16,8 @@ const token = ref(String(route.query.token || ''))
 const email = ref(String(route.query.email || ''))
 const password = ref('')
 const password2 = ref('')
+const showPw = ref(false)
+const showPw2 = ref(false)
 const busy = ref(false)
 const err = ref('')
 const done = ref(false)
@@ -95,14 +97,24 @@ async function submit() {
             </div>
             <div class="field">
               <label>{{ tt('New password', '新密码') }}（≥8）</label>
-              <input v-model="password" class="input" type="password" autocomplete="new-password" placeholder="••••••••">
+              <div class="pw-wrap">
+                <input v-model="password" class="input" :type="showPw ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
+                <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showPw = !showPw">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+                </button>
+              </div>
               <div v-if="password && password.length < 8" class="field-msg" style="display:block">
                 {{ tt('At least 8 characters', '至少 8 位') }}
               </div>
             </div>
             <div class="field">
               <label>{{ tt('Confirm password', '确认新密码') }}</label>
-              <input v-model="password2" class="input" type="password" autocomplete="new-password" placeholder="••••••••">
+              <div class="pw-wrap">
+                <input v-model="password2" class="input" :type="showPw2 ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
+                <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showPw2 = !showPw2">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+                </button>
+              </div>
               <div v-if="password && password2 && password !== password2" class="field-msg" style="display:block;color:var(--error)">
                 {{ tt('Passwords do not match', '两次输入的密码不一致') }}
               </div>

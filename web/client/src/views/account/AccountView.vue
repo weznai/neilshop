@@ -1,20 +1,31 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
+import { i18n } from '../../i18n'
 
 const auth = useAuthStore()
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const orders = ref([])
 const orderTotal = ref(0)
 const wlCount = ref(null)
 const pts = ref(null)
+const expiringSum = ref(0)
 const loaded = ref(false)
 const failed = ref(false)
 
+/* 心愿单计数：读 localStorage gm_wl_count（WishlistView/ProductView 维护）+ 监听 gm:wl-changed，不再拉全量 */
+function syncWl() {
+  const v = parseInt((localStorage.getItem('gm_wl_count') || '').trim(), 10)
+  wlCount.value = isNaN(v) ? null : v
+}
+function onWlChanged() { syncWl() }
+
 /* OrderStatus 共享映射（composables/orderStatus.js） */
-/* User.tier：0普通 1银 2金 */
+/* User.tier：0普通 1银 2金；门槛：$100 / $300（美分） */
 const TIER = { 0: 'Glow', 1: 'Shimmer', 2: 'Diva' }
+const TIER_NEXT = { 0: 10000, 1: 30000 }
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 function fmt(iso) {
@@ -26,17 +37,23 @@ function fmt(iso) {
 }
 
 onMounted(async () => {
+  syncWl()
+  window.addEventListener('gm:wl-changed', onWlChanged)
   const jobs = [
     req('GET', '/api/orders').then((d) => {
       orders.value = d.items || []
       orderTotal.value = d.total || 0
     }).catch(() => { failed.value = true }),
-    req('GET', '/api/account/wishlist').then((l) => { wlCount.value = (l || []).length }).catch(() => {}),
     req('GET', '/api/points').then((d) => { pts.value = d }).catch(() => {}),
+    /* 即将过期积分（>0 时黄色警示）：汇总正向流水 change 之和 */
+    req('GET', '/api/points/expiring').then((d) => {
+      expiringSum.value = (d.items || []).reduce((n, r) => n + Math.max(0, r.change || 0), 0)
+    }).catch(() => {}),
   ]
   await Promise.allSettled(jobs)
   loaded.value = true
 })
+onUnmounted(() => window.removeEventListener('gm:wl-changed', onWlChanged))
 
 async function reload() {
   failed.value = false
@@ -52,6 +69,19 @@ async function reload() {
 const u = computed(() => auth.user || {})
 const recent = computed(() => orders.value.slice(0, 3))
 const pointsShow = computed(() => (pts.value ? pts.value.usable : u.value.points) || 0)
+/* 等级晋升进度：下一档门槛 $100/$300（美分），已到顶显示满格 */
+const tierNext = computed(() => {
+  const t = u.value.tier || 0
+  const goal = TIER_NEXT[t]
+  if (goal === undefined) return null
+  const spent = u.value.total_spent || 0
+  return {
+    goal,
+    pct: Math.min(100, Math.round((spent / goal) * 100)),
+    left: Math.max(0, goal - spent),
+    next: TIER[t + 1],
+  }
+})
 </script>
 
 <template>
@@ -61,39 +91,54 @@ const pointsShow = computed(() => (pts.value ? pts.value.usable : u.value.points
         <span style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--plum));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:22px;font-weight:700">
           {{ (u.name || u.email || 'G').charAt(0).toUpperCase() }}
         </span>
-        <div>
-          <h2 style="font-family:var(--font-title);font-size:22px">Hi, {{ u.name || 'glam queen' }} 👑</h2>
+        <div style="flex:1;min-width:220px">
+          <h2 style="font-family:var(--font-title);font-size:22px">{{ tt('Hi', '嗨') }}, {{ u.name || tt('glam queen', '宝贝') }} 👑</h2>
           <div style="font-size:13px;color:var(--gray);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <span class="tag tag-paid">{{ TIER[u.tier] || 'Glow' }} 会员</span>
-            <span>{{ pointsShow.toLocaleString() }} 积分 · 累计消费 {{ money(u.total_spent) }}</span>
+            <span class="tag tag-paid">{{ TIER[u.tier] || 'Glow' }} {{ tt('member', '会员') }}</span>
+            <span>{{ tt(`${pointsShow.toLocaleString()} pts · lifetime spend ${money(u.total_spent)}`, `${pointsShow.toLocaleString()} 积分 · 累计消费 ${money(u.total_spent)}`) }}</span>
+          </div>
+          <!-- 等级晋升进度条：下一档 $100/$300 差额 -->
+          <div v-if="tierNext" class="tier-prog">
+            <div class="ship-track"><div class="ship-fill" :style="{ width: tierNext.pct + '%' }" /></div>
+            <div class="tier-prog-text">
+              {{ money(u.total_spent) }} / {{ money(tierNext.goal) }} ·
+              {{ tierNext.left > 0
+                ? tt(`spend ${money(tierNext.left)} more to reach ${tierNext.next}`, `再消费 ${money(tierNext.left)} 升级 ${tierNext.next}`)
+                : tt(`${tierNext.next} unlock imminent ✓`, `即将升级 ${tierNext.next} ✓`) }}
+            </div>
           </div>
         </div>
+      </div>
+      <!-- 即将过期积分警示条（>0 显示） -->
+      <div v-if="expiringSum > 0" class="expiring-bar">
+        ⏳ <b>{{ tt(`${expiringSum.toLocaleString()} pts expiring soon`, `${expiringSum.toLocaleString()} 积分即将过期`) }}</b> · {{ tt('use them at checkout', '结账时记得先用掉哦') }}
+        <router-link to="/account/points" style="color:var(--warn);font-weight:700;text-decoration:underline">{{ tt('View details →', '查看明细 →') }}</router-link>
       </div>
     </div>
 
     <div class="grid grid-3">
-      <div class="card" style="padding:18px">
-        <div style="font-size:12.5px;color:var(--gray)">📦 订单</div>
+      <div class="card stat-card" style="padding:18px">
+        <div style="font-size:12.5px;color:var(--gray)">📦 {{ tt('Orders', '订单') }}</div>
         <b style="font-size:26px">{{ failed ? '—' : orderTotal }}</b>
-        <div style="font-size:12.5px"><router-link to="/account/orders" style="color:var(--plum)">全部订单 →</router-link></div>
+        <div style="font-size:12.5px"><router-link to="/account/orders" style="color:var(--plum)">{{ tt('All orders →', '全部订单 →') }}</router-link></div>
       </div>
-      <div class="card" style="padding:18px">
-        <div style="font-size:12.5px;color:var(--gray)">⭐ 可用积分</div>
+      <div class="card stat-card" style="padding:18px">
+        <div style="font-size:12.5px;color:var(--gray)">⭐ {{ tt('Usable points', '可用积分') }}</div>
         <b style="font-size:26px;color:var(--plum)">{{ pointsShow.toLocaleString() }}</b>
         <div style="font-size:12.5px">
-          <template v-if="pts && pts.frozen > 0">冻结 {{ pts.frozen.toLocaleString() }} 分 · </template>
-          <router-link to="/account/points" style="color:var(--plum)">明细 →</router-link>
+          <template v-if="pts && pts.frozen > 0">{{ tt(`${pts.frozen.toLocaleString()} frozen ·`, `冻结 ${pts.frozen.toLocaleString()} 分 ·`) }} </template>
+          <router-link to="/account/points" style="color:var(--plum)">{{ tt('Details →', '明细 →') }}</router-link>
         </div>
       </div>
-      <div class="card" style="padding:18px">
-        <div style="font-size:12.5px;color:var(--gray)">💜 心愿单</div>
+      <div class="card stat-card" style="padding:18px">
+        <div style="font-size:12.5px;color:var(--gray)">💜 {{ tt('Wishlist', '心愿单') }}</div>
         <b style="font-size:26px">{{ wlCount === null ? '…' : wlCount }}</b>
-        <div style="font-size:12.5px"><router-link to="/account/wishlist" style="color:var(--plum)">去管理 →</router-link></div>
+        <div style="font-size:12.5px"><router-link to="/account/wishlist" style="color:var(--plum)">{{ tt('Manage →', '去管理 →') }}</router-link></div>
       </div>
     </div>
 
     <div class="card" style="padding:20px">
-      <h3 style="font-size:16px;margin-bottom:12px">最近订单</h3>
+      <h3 style="font-size:16px;margin-bottom:12px">{{ tt('Recent orders', '最近订单') }}</h3>
       <div v-if="!loaded" style="display:grid;gap:10px">
         <div v-for="i in 3" :key="i" class="skeleton" style="height:52px;border-radius:10px" />
       </div>
@@ -103,16 +148,25 @@ const pointsShow = computed(() => (pts.value ? pts.value.usable : u.value.points
           <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
           <div style="display:flex;gap:10px;align-items:center">
             <b style="color:var(--plum)">{{ money(o.grand_total) }}</b>
-            <router-link class="btn btn-secondary btn-sm" :to="{ path: '/account/orders/detail', query: { no: o.order_no } }">详情</router-link>
+            <router-link class="btn btn-secondary btn-sm" :to="{ path: '/account/orders/detail', query: { no: o.order_no } }">{{ tt('Details', '详情') }}</router-link>
           </div>
         </div>
       </div>
       <div v-else-if="failed" style="color:var(--gray);font-size:14px;padding:14px 0">
-        订单加载失败 —— <a href="javascript:void(0)" style="color:var(--plum)" @click="reload">刷新重试</a>
+        {{ tt('Could not load orders —', '订单加载失败 ——') }} <a href="javascript:void(0)" style="color:var(--plum)" @click="reload">{{ tt('refresh', '刷新重试') }}</a>
       </div>
       <div v-else style="color:var(--gray);font-size:14px;padding:14px 0">
-        还没有订单 —— <router-link to="/store" style="color:var(--plum)">去逛逛</router-link> 💅
+        {{ tt('No orders yet —', '还没有订单 ——') }} <router-link to="/store" style="color:var(--plum)">{{ tt('start shopping', '去逛逛') }}</router-link> 💅
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.tier-prog { margin-top: 8px; max-width: 420px; }
+.tier-prog-text { font-size: 11.5px; color: var(--gray); margin-top: 5px; }
+.expiring-bar { margin-top: 14px; padding: 10px 14px; border-radius: 10px; background: var(--pale-warn); color: var(--warn); font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* 统计卡 hover 上浮 */
+.stat-card { transition: transform .18s ease-out, box-shadow .18s ease-out; }
+.stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
+</style>

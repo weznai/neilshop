@@ -8,10 +8,11 @@ from datetime import timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.enums import DiscountType
 from app.models import (
-    CookieConsent, EmailPreference, NewsletterSubscriber, OrderTimeline,
-    PointsLedger, Product, Referral, Subscription, User, UserAddress, Variant,
-    WishlistItem,
+    CookieConsent, DiscountCode, EmailPreference, NewsletterSubscriber,
+    OrderTimeline, PointsLedger, Product, Referral, Subscription, User,
+    UserAddress, Variant, WishlistItem,
 )
 
 
@@ -58,6 +59,20 @@ def clear_other_default_addresses(db: Session, user_id: int, keep_id: int) -> No
     ).update({"is_default": 0})
 
 
+def has_other_default_address(db: Session, user_id: int, exclude_id: int) -> bool:
+    """唯一默认防线：除 exclude_id 外是否还有默认地址（service 层撤默认前判定）"""
+    return (
+        db.query(UserAddress.id)
+        .filter(
+            UserAddress.user_id == user_id,
+            UserAddress.is_default == 1,
+            UserAddress.id != exclude_id,
+        )
+        .first()
+        is not None
+    )
+
+
 # ---------- 心愿单 ----------
 
 def get_product(db: Session, product_id: int) -> Product | None:
@@ -91,6 +106,15 @@ def get_wishlist_item(db: Session, user_id: int, product_id: int) -> WishlistIte
 
 def add_wishlist_item(db: Session, user_id: int, product_id: int) -> None:
     db.add(WishlistItem(user_id=user_id, product_id=product_id))
+
+
+def welcome_coupon(db: Session) -> tuple[str, int] | None:
+    """欢迎券唯一真相：折扣码表 WELCOME20（仅 PERCENT 型可换算百分比文本）；
+    FIXED/FREE_SHIPPING 或不存在 → None（service 回落常量）。"""
+    row = db.query(DiscountCode).filter(DiscountCode.code == "WELCOME20").first()
+    if row is not None and int(row.type) == int(DiscountType.PERCENT) and row.value:
+        return row.code, int(row.value)
+    return None
 
 
 # ---------- 邮件订阅 / 隐私 ----------
@@ -232,6 +256,7 @@ def add_subscription(db: Session, sub: Subscription) -> None:
 __all__ = [
     "user_email_taken", "get_user_by_email", "add_user",
     "list_addresses", "get_address", "clear_other_default_addresses",
+    "has_other_default_address",
     "get_product", "wishlist_products", "active_variants_by_product",
     "get_wishlist_item", "add_wishlist_item",
     "get_newsletter_subscriber", "add_newsletter_subscriber",

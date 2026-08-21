@@ -5,7 +5,7 @@ const ui = useUiStore()
 </script>
 
 <template>
-  <div class="toast-wrap">
+  <TransitionGroup name="toast" tag="div" class="toast-wrap">
     <div
       v-for="t in ui.toasts" :key="t.id" class="toast" :class="t.type"
       :role="t.type === 'loading' ? 'alert' : 'status'"
@@ -22,12 +22,18 @@ const ui = useUiStore()
         @click="ui.dismiss(t.id)"
       >×</button>
     </div>
-  </div>
+  </TransitionGroup>
 </template>
 
 <style scoped>
 /* .toast-wrap 全局 pointer-events:none —— 开启本条可点，供关闭钮使用 */
 .toast { pointer-events: auto; }
+/* 进出场 + 位移补间 */
+.toast-enter-active { transition: opacity .25s ease-out, transform .25s ease-out; }
+.toast-leave-active { transition: opacity .2s ease-out, transform .2s ease-out; }
+.toast-enter-from { opacity: 0; transform: translateY(-10px) scale(.96); }
+.toast-leave-to { opacity: 0; transform: translateY(-6px); }
+.toast-move { transition: transform .25s ease-out; }
 .toast-x {
   border: none; background: none; color: #fff; opacity: .65;
   font-size: 16px; line-height: 1; padding: 2px 4px; margin: -2px -4px -2px 2px;
@@ -39,5 +45,6 @@ const ui = useUiStore()
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
   .toast-spin { animation: none; }
+  .toast-enter-active, .toast-leave-active, .toast-move { transition: none; }
 }
 </style>

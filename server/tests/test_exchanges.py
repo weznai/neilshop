@@ -443,6 +443,92 @@ try:
               labels[ex_pending_no] == "申请" and labels[ex_lo_no] == "已发货"
               and labels[ex_eq_no] == "已发货" and labels[ex_hi_no] == "完成", labels)
 
+        print("== qty=2 全链路（多件换货）==")
+        o_q2, items_q2 = make_order(s, "EX260816QTY001", [(v_old.id, 3, 1000)],
+                                    user_id=emma.id, email="emma@glow.test")
+        s.commit()
+        r = client.post("/api/exchanges", headers=H_EMMA, json={
+            "order_no": "EX260816QTY001", "order_item_id": items_q2[0].id,
+            "new_variant_id": v_hi.id, "qty": 2, "reason": "two sizes off"})
+        d = r.json()
+        check("qty=2 创建 → qty=2 / price_diff=500×2=1000 / 响应含 qty",
+              r.status_code == 201 and d["qty"] == 2 and d["price_diff"] == 1000, d)
+        ex_q2_no = d["exchange_no"]
+        tl_q2 = (s.query(OrderTimeline)
+                 .filter(OrderTimeline.order_id == o_q2.id,
+                         OrderTimeline.event == "exchange_created").first())
+        check("qty=2 timeline exchange_created detail 含 qty=2",
+              tl_q2 is not None and tl_q2.detail.get("qty") == 2
+              and tl_q2.detail.get("price_diff") == 1000,
+              tl_q2 and tl_q2.detail)
+
+        r = client.post("/api/exchanges", headers=H_EMMA, json={
+            "order_no": "EX260816QTY001", "order_item_id": items_q2[0].id,
+            "new_variant_id": v_hi.id, "qty": 4})
+        check("qty=4 超可换量 3 → 409 qty_exceeds_available:3",
+              r.status_code == 409 and "qty_exceeds_available:3" in r.text, r.text)
+
+        r = client.post("/api/exchanges", headers=H_EMMA, json={
+            "order_no": "EX260816QTY001", "order_item_id": items_q2[0].id,
+            "new_variant_id": v_same.id})
+        d = r.json()
+        check("不传 qty → 默认 1 兼容（diff 0×1）",
+              r.status_code == 201 and d["qty"] == 1 and d["price_diff"] == 0, d)
+        ex_q2_d1_no = d["exchange_no"]
+
+        r = client.post(f"/api/admin/trade/exchanges/{ex_q2_no}/approve", headers=H_OPS)
+        check("qty=2 diff>0 → approve 到 2 待差价",
+              r.status_code == 200 and r.json()["status"] == 2, r.text[:120])
+        r = client.post(f"/api/admin/trade/exchanges/{ex_q2_no}/mark-paid", headers=H_OPS)
+        check("qty=2 mark-paid → 1（补差 1000）",
+              r.status_code == 200 and r.json()["status"] == 1
+              and r.json()["price_diff"] == 1000, r.text[:120])
+
+        s.expire_all()
+        stock_hi_q2_before = s.get(Variant, v_hi.id).stock
+        r = client.post(f"/api/admin/trade/exchanges/{ex_q2_no}/ship", headers=H_OPS,
+                        json={"carrier": "usps", "tracking_no": "9400111QTY002"})
+        d = r.json()
+        s.expire_all()
+        ship_q2_mv = (s.query(StockMovement)
+                      .filter(StockMovement.variant_id == v_hi.id,
+                              StockMovement.type == 3,
+                              StockMovement.ref_type == "exchange",
+                              StockMovement.ref_id == s.query(Exchange)
+                              .filter(Exchange.exchange_no == ex_q2_no).first().id)
+                      .all())
+        ship_q2_ex = s.query(Exchange).filter(Exchange.exchange_no == ex_q2_no).first()
+        shipment_q2 = s.query(Shipment).filter(Shipment.id == ship_q2_ex.shipment_id).first()
+        check("qty=2 ship → 新变体库存 -2 + type=3 流水 change=-2",
+              r.status_code == 200 and d["status"] == 3
+              and s.get(Variant, v_hi.id).stock == stock_hi_q2_before - 2
+              and len(ship_q2_mv) == 1 and ship_q2_mv[0].change == -2, d)
+        check("qty=2 shipment item_json=[{orderItemId,qty:2}]",
+              shipment_q2 is not None
+              and shipment_q2.item_json == [{"orderItemId": items_q2[0].id, "qty": 2}],
+              shipment_q2 and shipment_q2.item_json)
+
+        s.expire_all()
+        stock_old_q2_before = s.get(Variant, v_old.id).stock
+        r = client.post(f"/api/admin/trade/exchanges/{ex_q2_no}/complete", headers=H_OPS)
+        d = r.json()
+        s.expire_all()
+        item_q2_after = s.get(OrderItem, items_q2[0].id)
+        check("qty=2 complete → exchanged_qty+2 / 旧变体回补 +2（type=5 change=2）",
+              r.status_code == 200 and d["status"] == 4 and d["exchanged_qty"] == 2
+              and item_q2_after.exchanged_qty == 2
+              and s.get(Variant, v_old.id).stock == stock_old_q2_before + 2
+              and (s.query(StockMovement)
+                   .filter(StockMovement.variant_id == v_old.id,
+                           StockMovement.type == 5,
+                           StockMovement.ref_type == "exchange",
+                           StockMovement.change == 2).count() == 1), d)
+
+        r = client.post(f"/api/admin/trade/exchanges/{ex_q2_d1_no}/reject",
+                        headers=H_OPS, json={"reason": "cleanup"})
+        check("qty=2 单上的默认 qty=1 同件换货可独立拒绝（互不影响）",
+              r.status_code == 200 and r.json()["status"] == 5, r.text[:120])
+
         s.close()
 finally:
     pass

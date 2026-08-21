@@ -17,7 +17,7 @@ from app.services.cache import _cache, cached
 
 from app.domains.catalog import repository as repo
 from app.domains.catalog.schemas import (
-    CategoryCreateIn, CollectionCreateIn, CollectionProductsIn,
+    CategoryCreateIn, CollectionCreateIn, CollectionProductsIn, CollectionUpdateIn,
     ProductBulkIn, ProductCreateIn, ProductUpdateIn, TranslationUpsertIn,
     VariantCreateIn, VariantUpdateIn,
 )
@@ -99,17 +99,18 @@ def list_products(
     db: Session, *, category: str | None, tag: str | None, q: str | None,
     sort: str, page: int, size: int, locale: str | None = None,
     min_price: int | None = None, max_price: int | None = None,
-    on_sale: bool = False,
+    on_sale: bool = False, shape: str | None = None,
 ) -> dict:
     if sort not in _SORTS:
         raise HTTPException(status_code=400, detail="invalid sort")
+    shape = (shape or "").strip() or None
     cat_ids = repo.category_ids(db, category) if category else None
     if category and not cat_ids:
         return {"items": [], "total": 0, "page": page, "size": size}
     total, prods = repo.list_products(
         db, category_id_list=cat_ids, tag=tag, q=q, sort=sort,
         offset=(page - 1) * size, limit=size,
-        min_price=min_price, max_price=max_price, on_sale=on_sale,
+        min_price=min_price, max_price=max_price, on_sale=on_sale, shape=shape,
     )
     smap = repo.stock_map(db, [p.id for p in prods])
     tmap = repo.translations_map(db, [p.id for p in prods], locale) if locale else {}
@@ -244,8 +245,13 @@ def search(db: Session, *, q: str) -> dict:
     }
 
 
-def list_reviews(db: Session, product_id: int, page: int, size: int) -> dict:
-    total, rows = repo.reviews_page(db, product_id, (page - 1) * size, size)
+def list_reviews(
+    db: Session, product_id: int, page: int, size: int,
+    rating: int | None = None,
+) -> dict:
+    total, rows = repo.reviews_page(
+        db, product_id, (page - 1) * size, size, rating=rating
+    )
     users = {}
     uids = {r.user_id for r in rows}
     if uids:
@@ -278,6 +284,26 @@ def review_distribution(db: Session, product_id: int) -> dict:
         "rating_avg": round(rating_sum * 100 / total) if total else 0,
         "rating_count": total,
         "distribution": dist,
+    }
+
+
+def variant_siblings(db: Session, *, variant_id: int) -> dict:
+    """变体兄弟（同商品全部启用变体，公开）：换甲型/换规格选择器数据源。
+    复用详情页 active_variants + variant_images_map 组装（_variant_out 同口径）。"""
+    v = repo.get_variant(db, variant_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="variant not found")
+    p = repo.get_product(db, v.product_id)
+    if not p or p.status != 1:
+        raise HTTPException(status_code=404, detail="product not found")
+    variants = repo.active_variants(db, p.id)
+    vimgs = repo.variant_images_map(db, [x.id for x in variants])
+    return {
+        "variant_id": v.id,
+        "product_id": p.id,
+        "slug": p.slug,
+        "title": p.title,
+        "variants": [_variant_out(x, vimgs.get(x.id)) for x in variants],
     }
 
 
@@ -667,7 +693,8 @@ def admin_list_collections(db: Session) -> dict:
 def admin_create_collection(db: Session, admin: User, body: CollectionCreateIn) -> dict:
     if repo.collection_slug_taken(db, body.slug):
         raise HTTPException(status_code=409, detail="slug already exists")
-    c = Collection(slug=body.slug, title=body.title, rule_json=body.rule_json)
+    c = Collection(slug=body.slug, title=body.title, rule_json=body.rule_json,
+                   banner_image=body.banner_image)
     repo.add_collection(db, c)
     db.commit()
     _invalidate_cache()
@@ -677,6 +704,7 @@ def admin_create_collection(db: Session, admin: User, body: CollectionCreateIn) 
         "slug": c.slug,
         "title": c.title,
         "rule_json": c.rule_json,
+        "banner_image": c.banner_image,
         "is_active": c.is_active,
     }
 
@@ -706,6 +734,65 @@ def admin_set_collection_products(
     db.commit()
     _invalidate_cache()
     return {"ok": True, "count": len(body.products)}
+
+
+def admin_update_collection(
+    db: Session, admin: User, collection_id: int, body: CollectionUpdateIn,
+) -> dict:
+    c = repo.get_collection(db, collection_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="collection not found")
+    data = body.model_dump(exclude_unset=True)
+    if data.get("is_active") is not None:
+        data["is_active"] = int(data["is_active"])
+    diff: dict = {}
+    for field, new in data.items():
+        old = getattr(c, field)
+        if old != new:
+            setattr(c, field, new)
+            diff[field] = {"before": old, "after": new}
+    if diff:
+        _log(db, admin, "update", "collection", c.id, diff)
+        db.commit()
+        _invalidate_cache()
+        db.refresh(c)
+    return {
+        "id": c.id,
+        "slug": c.slug,
+        "title": c.title,
+        "rule_json": c.rule_json or {},
+        "banner_image": c.banner_image,
+        "sort_order": c.sort_order,
+        "is_active": c.is_active,
+    }
+
+
+def admin_delete_collection(db: Session, admin: User, collection_id: int) -> dict:
+    c = repo.get_collection(db, collection_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="collection not found")
+    repo.delete_collection_products(db, collection_id)
+    _log(db, admin, "delete", "collection", c.id, {"slug": c.slug, "title": c.title})
+    db.delete(c)
+    db.commit()
+    _invalidate_cache()
+    return {"ok": True}
+
+
+def admin_collection_products(db: Session, collection_id: int) -> dict:
+    if not repo.get_collection(db, collection_id):
+        raise HTTPException(status_code=404, detail="collection not found")
+    rows = repo.collection_product_pairs(db, collection_id)
+    return {
+        "items": [
+            {
+                "product_id": cp.product_id,
+                "sort_order": cp.sort_order,
+                "product": {"id": p.id, "title": p.title, "slug": p.slug},
+            }
+            for cp, p in rows
+        ]
+    }
 
 
 # ---------- 后台：商品多语言（product_translations 影子表） ----------

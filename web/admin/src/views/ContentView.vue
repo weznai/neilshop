@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
 
 const tab = ref('reviews')
 const reviews = ref([])
@@ -12,6 +13,9 @@ const loaded = ref(false)
 const pendingOnly = ref(true)
 const FAQ_CATS = { 1: '尺码', 2: '佩戴', 3: '物流', 4: '退换', 5: '保养', 6: '账户' }
 const UGC_STATUS = { 0: ['待审', 'tag-pending'], 1: ['已上架', 'tag-done'], 2: ['已拒绝', 'tag-error'] }
+
+/* 四列表错误态：失败 toast + 卡内错误 EmptyState（重试入口） */
+const errs = reactive({ reviews: false, faqs: false, articles: false, ugc: false })
 
 /* 评价分页：后端支持 page/size（size ≤100），响应含 total */
 const REV_SIZE = 100
@@ -25,11 +29,35 @@ const artPage = ref(1)
 const artTotal = ref(0)
 const artPages = computed(() => Math.max(1, Math.ceil(artTotal.value / ART_SIZE)))
 
-/* UGC：一次拉全量（admin_ugc 无分页），前端按状态筛选 + 统计待审数做 tab 角标 */
-const ugcStatus = ref(0)
-const ugcList = computed(() => ugc.value.filter((u) => ugcStatus.value === null || u.status === ugcStatus.value))
-const ugcPending = computed(() => ugc.value.filter((u) => u.status === 0).length)
-const ugcCount = (s) => ugc.value.filter((u) => u.status === s).length
+/* UGC：服务端 status + page/size 分页（对齐评价模式，后端 admin_ugc 已支持）
+ * 「待审 N」角标取响应 total；当前 tab 计数也用 total（后端缺 total 时回退当前页条数） */
+const UGC_SIZE = 100
+const ugcStatus = ref(0)          /* 0 待审 / 1 已上架 / 2 已拒绝 / null 全部 */
+const ugcPage = ref(1)
+const ugcTotal = ref(0)
+const ugcPages = computed(() => Math.max(1, Math.ceil(ugcTotal.value / UGC_SIZE)))
+const ugcPending = ref(0)         /* tab 角标：status=0 的 total */
+
+async function loadUgc() {
+  const qs = new URLSearchParams({ page: ugcPage.value, size: UGC_SIZE })
+  if (ugcStatus.value !== null) qs.set('status', ugcStatus.value)
+  const d = await req('GET', '/api/admin/ops/ugc?' + qs)
+  ugc.value = d.items || []
+  ugcTotal.value = d.total ?? ugc.value.length
+  if (ugcStatus.value === 0) ugcPending.value = ugcTotal.value
+}
+/* 待审角标刷新（操作后/切到其它 tab 时补一发 status=0 探测） */
+async function refreshUgcPending() {
+  try {
+    const d = await req('GET', '/api/admin/ops/ugc?status=0&page=1&size=1')
+    if (d.total != null) ugcPending.value = d.total
+  } catch (_) { /* 探测失败保留旧值 */ }
+}
+function ugcTab(sv) { ugcStatus.value = sv; ugcPage.value = 1; loadUgc().catch(() => toast('UGC 列表加载失败', 'error')) }
+function ugcGo(d) {
+  const n = ugcPage.value + d
+  if (n >= 1 && n <= ugcPages.value) { ugcPage.value = n; loadUgc().catch(() => toast('UGC 列表加载失败', 'error')) }
+}
 
 /* FAQ 分类筛选（后台 list 无 category 参数，前端过滤） */
 const faqCat = ref(0)
@@ -57,17 +85,19 @@ async function loadArticles() {
   articles.value = d.items || []
   artTotal.value = d.total ?? articles.value.length
 }
+async function loadFaqs() { faqs.value = (await req('GET', '/api/admin/ops/faqs')).items || [] }
 
 async function load() {
   loaded.value = false
-  try { await loadReviews() } catch (_) { reviews.value = [] }
-  try { faqs.value = (await req('GET', '/api/admin/ops/faqs')).items || [] } catch (_) { /* */ }
-  try { await loadArticles() } catch (_) { /* */ }
-  try { ugc.value = (await req('GET', '/api/admin/ops/ugc')).items || [] } catch (_) { /* */ }
+  errs.reviews = errs.faqs = errs.articles = errs.ugc = false
+  try { await loadReviews() } catch (_) { errs.reviews = true; reviews.value = []; toast('评价列表加载失败', 'error') }
+  try { await loadFaqs() } catch (_) { errs.faqs = true; faqs.value = []; toast('FAQ 加载失败', 'error') }
+  try { await loadArticles() } catch (_) { errs.articles = true; articles.value = []; toast('文章列表加载失败', 'error') }
+  try { await loadUgc() } catch (_) { errs.ugc = true; ugc.value = []; toast('UGC 列表加载失败', 'error') }
   try {
     const rows = (await req('GET', '/api/admin/catalog/products?page=1&size=100')).items || []
     for (const p of rows) productTitles[p.id] = p.title
-  } catch (_) { /* */ }
+  } catch (_) { /* 标题映射缺失只影响展示名 */ }
   loaded.value = true
 }
 onMounted(load)
@@ -81,6 +111,11 @@ function artGo(d) {
   const n = artPage.value + d
   if (n >= 1 && n <= artPages.value) { artPage.value = n; loadArticles().catch(() => toast('文章列表加载失败', 'error')) }
 }
+/* 错误态重试：清 flag → 重拉（失败再置回） */
+async function retryReviews() { errs.reviews = false; try { await loadReviews() } catch (_) { errs.reviews = true; toast('评价列表加载失败', 'error') } }
+async function retryFaqs() { errs.faqs = false; try { await loadFaqs() } catch (_) { errs.faqs = true; toast('FAQ 加载失败', 'error') } }
+async function retryArticles() { errs.articles = false; try { await loadArticles() } catch (_) { errs.articles = true; toast('文章列表加载失败', 'error') } }
+async function retryUgc() { errs.ugc = false; try { await loadUgc() } catch (_) { errs.ugc = true; toast('UGC 列表加载失败', 'error') } }
 
 /* 驳回原因：自定义小弹层（ReasonIn 必填，原生 prompt 已弃用） */
 const rejectDlg = ref(null) /* { review } */
@@ -99,6 +134,8 @@ async function confirmReject() {
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
 }
 async function approveReview(r) {
+  /* 危险确认：与 UGC 上架对称（通过即公开展示） */
+  if (!confirm(`通过评价 #${r.id}？将通过并公开展示在前台商品页。`)) return
   try {
     await req('POST', `/api/admin/ops/reviews/${r.id}/approve`)
     toast('已通过 ✓', 'success')
@@ -112,7 +149,8 @@ async function ugcAct(u, approve) {
   try {
     await req('POST', `/api/admin/ops/ugc/${u.id}/${approve ? 'approve' : 'reject'}`)
     toast('操作成功 ✓', 'success')
-    load()
+    await loadUgc()
+    if (ugcStatus.value !== 0) refreshUgcPending()
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
 }
 
@@ -265,9 +303,19 @@ async function saveArticle() {
         <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="askReject(r)">驳回</button>
       </template>
     </div>
-    <div v-if="loaded && !reviews.length" style="text-align:center;color:var(--gray);padding:28px 0">
-      {{ pendingOnly ? '🎉 没有待审评价，都处理完了' : '📭 暂无评价' }}
-    </div>
+    <EmptyState
+      v-if="loaded && errs.reviews" icon="⚠️" title="评价列表加载失败"
+      :sub="'点击重试，或稍后再来'"
+    >
+      <template #action>
+        <button class="btn btn-secondary btn-sm" @click="retryReviews">重试</button>
+      </template>
+    </EmptyState>
+    <EmptyState
+      v-else-if="loaded && !reviews.length"
+      :icon="pendingOnly ? '🎉' : '📭'"
+      :title="pendingOnly ? '没有待审评价，都处理完了' : '暂无评价'"
+    />
     <div v-if="revPages > 1" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;font-size:12.5px;color:var(--gray)">
       <span>第 {{ revPage }} / {{ revPages }} 页 · 共 {{ revTotal }} 条</span>
       <div style="display:flex;gap:8px">
@@ -284,10 +332,10 @@ async function saveArticle() {
       <button
         v-for="[sv, sl] in [[0, '待审'], [1, '已上架'], [2, '已拒绝'], [null, '全部']]" :key="String(sv)"
         class="btn btn-sm" :class="ugcStatus === sv ? 'btn-primary' : 'btn-ghost'"
-        @click="ugcStatus = sv"
-      >{{ sl }}（{{ sv === null ? ugc.length : ugcCount(sv) }}）</button>
+        @click="ugcTab(sv)"
+      >{{ sl }}<template v-if="ugcStatus === sv">（{{ ugcTotal }}）</template></button>
     </div>
-    <div v-for="u in ugcList" :key="u.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
+    <div v-for="u in ugc" :key="u.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
       <img v-if="!u.img_broken" :src="u.image_url" alt="UGC" title="点击查看大图" style="width:52px;height:52px;border-radius:9px;object-fit:cover;cursor:zoom-in;flex:none" @error="imgFail(u)" @click="lightbox = u.image_url">
       <div v-else title="图片加载失败" style="width:52px;height:52px;border-radius:9px;background:var(--gray-light);color:var(--gray);display:flex;align-items:center;justify-content:center;font-size:20px;flex:none;cursor:zoom-in" @click="lightbox = u.image_url">🖼️</div>
       <div style="flex:1;min-width:0">
@@ -302,8 +350,25 @@ async function saveArticle() {
         <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="ugcAct(u, false)">拒绝</button>
       </template>
     </div>
-    <div v-if="loaded && !ugcList.length" style="text-align:center;color:var(--gray);padding:28px 0">
-      {{ ugcStatus === 0 ? '🎉 没有待审 UGC，都处理完了' : ugcStatus === 1 ? '📭 暂无已上架 UGC' : ugcStatus === 2 ? '📭 暂无已拒绝 UGC' : '📭 暂无 UGC 投稿' }}
+    <EmptyState
+      v-if="loaded && errs.ugc" icon="⚠️" title="UGC 列表加载失败"
+      sub="点击重试，或稍后再来"
+    >
+      <template #action>
+        <button class="btn btn-secondary btn-sm" @click="ugcPage = 1; retryUgc()">重试</button>
+      </template>
+    </EmptyState>
+    <EmptyState
+      v-else-if="loaded && !ugc.length"
+      :icon="ugcStatus === 0 ? '🎉' : '📭'"
+      :title="ugcStatus === 0 ? '没有待审 UGC，都处理完了' : ugcStatus === 1 ? '暂无已上架 UGC' : ugcStatus === 2 ? '暂无已拒绝 UGC' : '暂无 UGC 投稿'"
+    />
+    <div v-if="ugcPages > 1" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;font-size:12.5px;color:var(--gray)">
+      <span>第 {{ ugcPage }} / {{ ugcPages }} 页 · 共 {{ ugcTotal }} 条</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" :disabled="ugcPage <= 1" @click="ugcGo(-1)">上一页</button>
+        <button class="btn btn-secondary btn-sm" :disabled="ugcPage >= ugcPages" @click="ugcGo(1)">下一页</button>
+      </div>
     </div>
   </div>
 
@@ -330,9 +395,15 @@ async function saveArticle() {
       <button class="btn btn-secondary btn-sm" @click="editFaq(f)">编辑</button>
       <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delFaq(f)">删除</button>
     </div>
-    <div v-if="loaded && !faqList.length" style="text-align:center;color:var(--gray);padding:28px 0">
-      {{ faqCat ? `📭 该分类暂无 FAQ` : '📭 暂无 FAQ，点击右上角「新增 FAQ」创建' }}
-    </div>
+    <EmptyState v-if="loaded && errs.faqs" icon="⚠️" title="FAQ 加载失败" sub="点击重试，或稍后再来">
+      <template #action><button class="btn btn-secondary btn-sm" @click="retryFaqs">重试</button></template>
+    </EmptyState>
+    <EmptyState
+      v-else-if="loaded && !faqList.length"
+      :icon="faqCat ? '📭' : '📖'"
+      :title="faqCat ? '该分类暂无 FAQ' : '暂无 FAQ'"
+      :sub="faqCat ? '换个分类看看' : '点击右上角「新增 FAQ」创建'"
+    />
   </div>
 
   <!-- 博客 -->
@@ -350,7 +421,10 @@ async function saveArticle() {
       <button class="btn btn-ghost btn-sm" @click="toggleArticle(a)">{{ a.status === 1 ? '转草稿' : '发布' }}</button>
       <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delArticle(a)">删除</button>
     </div>
-    <div v-if="loaded && !articles.length" style="text-align:center;color:var(--gray);padding:28px 0">📝 暂无文章，点击右上角「新文章」开始创作</div>
+    <EmptyState v-if="loaded && errs.articles" icon="⚠️" title="文章列表加载失败" sub="点击重试，或稍后再来">
+      <template #action><button class="btn btn-secondary btn-sm" @click="artPage = 1; retryArticles()">重试</button></template>
+    </EmptyState>
+    <EmptyState v-else-if="loaded && !articles.length" icon="📝" title="暂无文章" sub="点击右上角「新文章」开始创作" />
     <div v-if="artPages > 1" style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;font-size:12.5px;color:var(--gray)">
       <span>第 {{ artPage }} / {{ artPages }} 页 · 共 {{ artTotal }} 篇</span>
       <div style="display:flex;gap:8px">

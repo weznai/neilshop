@@ -12,6 +12,7 @@ const showWelcome = ref(false)
 const showExit = ref(false)
 const email = ref('')
 const emailErr = ref(false)
+const wBusy = ref(false) /* 订阅提交中（防双击） */
 
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches }
 function today() { return new Date().toISOString().slice(0, 10) }
@@ -96,10 +97,14 @@ watch(showExit, async (v) => {
   await nextTick()
   if (exitCloseBtn.value) exitCloseBtn.value.focus({ preventScroll: true })
 })
+/* 弹窗开合上报 ui store：body 滚动锁由 StoreLayout 统一 watch anyOverlay 处理 */
+watch([showWelcome, showExit], ([w, x]) => { ui.popupsOpen = !!(w || x) })
 async function welcomeSubmit() {
+  if (wBusy.value) return
   const v = email.value.trim()
   if (!v || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { emailErr.value = true; return }
   emailErr.value = false
+  wBusy.value = true
   try {
     await req('POST', '/api/account/newsletter', { email: v, source: 'welcome_popup' })
     /* 转化上报仅在订阅成功后发 */
@@ -108,7 +113,7 @@ async function welcomeSubmit() {
     closeWelcome()
   } catch (_) {
     ui.toast(zh() ? '订阅失败，请稍后再试' : 'Subscribe failed — please try again', 'error')
-  }
+  } finally { wBusy.value = false }
 }
 
 async function copyCode(code, popupId) {
@@ -144,8 +149,8 @@ function onExitOut(e) {
 
 onMounted(async () => {
   document.addEventListener('keydown', onEscKey)
-  const w = await fetchPopup('welcome')
-  const e = await fetchPopup('exit_intent')
+  /* 两个弹窗配置并行拉取（互不阻塞） */
+  const [w, e] = await Promise.all([fetchPopup('welcome'), fetchPopup('exit_intent')])
 
   if (e) {
     const r = e.trigger_rules || {}
@@ -170,6 +175,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('mouseout', onExitOut)
   document.removeEventListener('keydown', onEscKey)
+  ui.popupsOpen = false
 })
 </script>
 
@@ -205,7 +211,7 @@ onUnmounted(() => {
           :aria-describedby="emailErr ? 'gm-welcome-err' : undefined"
         >
         <div v-if="emailErr" id="gm-welcome-err" class="field-msg" style="display:block" role="alert">{{ i18n.t('welcome.err') }}</div>
-        <button class="btn btn-block welcome-btn" style="margin-top:12px" @click="welcomeSubmit">{{ i18n.t('welcome.btn') }}</button>
+        <button class="btn btn-block welcome-btn" style="margin-top:12px" :disabled="wBusy" @click="welcomeSubmit">{{ wBusy ? '…' : i18n.t('welcome.btn') }}</button>
         <div style="text-align:center;margin-top:10px">
           <button
             type="button"

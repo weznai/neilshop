@@ -17,7 +17,7 @@ const SITE = {
   baseTitle: 'GLOWMAG · Press-On Nails & Magnetic Lashes',
   titleSuffix: ' · GLOWMAG',
   description: 'Shop handmade press-on nails & magnetic lashes. Salon-quality glam in 5 minutes, 2-week wear. Free US shipping over $35.',
-  image: '/favicon.svg',
+  image: '/og-cover.png',
   type: 'website',
 }
 

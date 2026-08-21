@@ -45,6 +45,7 @@ def _rows_payload(db: Session, rows: list[tuple[Exchange, OrderItem, Order]]) ->
             "email": order.email,
             "status": ex.status,
             "status_label": STATUS_LABELS.get(ex.status, str(ex.status)),
+            "qty": ex.qty,
             "price_diff": ex.price_diff,
             "shipment_id": ex.shipment_id,
             "created_at": ex.created_at.isoformat() if ex.created_at else None,
@@ -80,13 +81,13 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
     if not item or item.order_id != order.id:
         raise HTTPException(status_code=404, detail="order_item_not_found")
     available = item.qty - item.refunded_qty - item.exchanged_qty
-    if available <= 0:
+    if body.qty > available:
         raise HTTPException(status_code=409, detail=f"qty_exceeds_available:{available}")
 
     new_v = repo.get_variant(db, body.new_variant_id)
     if not new_v or not new_v.is_active:
         raise HTTPException(status_code=404, detail="variant_not_found")
-    if new_v.stock < 1:
+    if new_v.stock < body.qty:
         raise HTTPException(status_code=409, detail="variant_out_of_stock")
 
     ex = Exchange(
@@ -95,7 +96,8 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
         order_item_id=item.id,
         old_variant_id=item.variant_id,
         new_variant_id=new_v.id,
-        price_diff=new_v.price - item.unit_price,
+        qty=body.qty,
+        price_diff=(new_v.price - item.unit_price) * body.qty,
         status=0,
     )
     db.add(ex)
@@ -103,6 +105,7 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
     repo.add_timeline(db, order.id, "exchange_created", actor="user", detail={
         "exchange_no": ex.exchange_no, "order_item_id": item.id,
         "old_variant_id": item.variant_id, "new_variant_id": new_v.id,
+        "qty": ex.qty,
         "price_diff": ex.price_diff, "reason": body.reason,
     })
     db.commit()
@@ -203,11 +206,11 @@ def ship_exchange(db: Session, admin: User, exchange_no: str, body: ShipRequest)
     ex = _get_exchange(db, exchange_no)
     if ex.status != 1:
         raise HTTPException(status_code=409, detail=f"exchange_not_shippable:{ex.status}")
-    if repo.reserve_stock(db, ex.new_variant_id, 1) == 0:
+    if repo.reserve_stock(db, ex.new_variant_id, ex.qty) == 0:
         db.rollback()
         raise HTTPException(status_code=409, detail="variant_out_of_stock")
     repo.add_stock_movement(
-        db, variant_id=ex.new_variant_id, change=-1,
+        db, variant_id=ex.new_variant_id, change=-ex.qty,
         stock_after=repo.stock_of(db, ex.new_variant_id),
         type=3, ref_type="exchange", ref_id=ex.id,
     )
@@ -218,7 +221,7 @@ def ship_exchange(db: Session, admin: User, exchange_no: str, body: ShipRequest)
         carrier=body.carrier,
         tracking_no=body.tracking_no,
         status=3,
-        item_json=[{"orderItemId": ex.order_item_id, "qty": 1}],
+        item_json=[{"orderItemId": ex.order_item_id, "qty": ex.qty}],
         shipped_at=now,
     )
     db.add(shipment)
@@ -246,10 +249,10 @@ def complete_exchange(db: Session, admin: User, exchange_no: str) -> dict:
     if ex.status != 3:
         raise HTTPException(status_code=409, detail=f"exchange_not_completable:{ex.status}")
     item = repo.get_order_item(db, ex.order_item_id)
-    item.exchanged_qty += 1
-    repo.release_stock(db, ex.old_variant_id, 1)
+    item.exchanged_qty += ex.qty
+    repo.release_stock(db, ex.old_variant_id, ex.qty)
     repo.add_stock_movement(
-        db, variant_id=ex.old_variant_id, change=1,
+        db, variant_id=ex.old_variant_id, change=ex.qty,
         stock_after=repo.stock_of(db, ex.old_variant_id),
         type=5, ref_type="exchange", ref_id=ex.id,
     )

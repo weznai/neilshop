@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { API_BASE, req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
+import Pagination from '../components/Pagination.vue'
 
 const session = useSessionStore()
 const tickets = ref([])
@@ -47,7 +49,7 @@ function buildUrl(status, p) {
 }
 
 async function load(p = 1) {
-  loaded.value = false
+  /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
   try {
     /* 已关 tab 由后端组合状态 status=3,4 单请求返回 */
@@ -67,7 +69,6 @@ onMounted(() => load(1))
 function setTab(k) { if (tab.value !== k) { tab.value = k; load(1) } }
 function setCat(v) { cat.value = v; load(1) }
 function search() { load(1) }
-function go(d) { const n = page.value + d; if (n >= 1 && n <= pages.value) load(n) }
 
 /* 快捷回复模板：GET /api/support/templates（公开端点，返回 [{id,category,title,content}]） */
 const templates = ref([])
@@ -119,7 +120,8 @@ async function send() {
   finally { busy.value = false }
 }
 async function close() {
-  if (!confirm('关闭工单 ' + active.value.ticket_no + '？')) return
+  /* 危险确认：补后果说明（关闭后不可回复/不可重开） */
+  if (!confirm(`关闭工单 ${active.value.ticket_no}？\n关闭后客户将无法继续回复，工单不可重新打开；如问题未解决请改用回复。`)) return
   try {
     const t = await req('POST', `/api/admin/ops/tickets/${active.value.ticket_no}/close`, { close_reason: 0 })
     toast('工单已关闭 ✓', 'success')
@@ -130,6 +132,10 @@ async function close() {
     toast('关闭失败：' + (d === 'ticket_already_closed' ? '工单已是关闭状态，请刷新列表' : (d || e.message)), 'error')
   }
 }
+/* 指派展示：优先 admin_name（若响应带），否则「已指派 #id」 */
+const assigneeText = (t) => t.assignee_admin_id
+  ? (t.assignee_name || t.admin_name || `已指派 #${t.assignee_admin_id}`)
+  : '未指派'
 /* 指派给我：AssignIn 需 admin_id（取当前登录管理员 id） */
 async function assignMe() {
   const adminId = session.user?.id
@@ -163,10 +169,12 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
     <button class="btn btn-secondary btn-sm" style="height:36px" @click="search()">搜索</button>
   </div>
 
-  <div class="grid-2" style="align-items:start">
+  <div v-if="!loaded" class="card skeleton" style="min-height:280px;margin-bottom:14px" />
+
+  <div v-else class="grid-2" style="align-items:start">
     <div class="card tbl-wrap">
-      <table style="width:100%;min-width:560px;border-collapse:collapse;font-size:13px">
-        <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">工单号</th><th>主题</th><th>客户</th><th>首次回复</th><th>状态</th></tr></thead>
+      <table style="width:100%;min-width:620px;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">工单号</th><th>主题</th><th>客户</th><th>首次回复</th><th>指派</th><th>状态</th></tr></thead>
         <tbody>
           <tr
             v-for="t in tickets" :key="t.ticket_no"
@@ -186,27 +194,23 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
               <span v-if="t.first_reply_at" class="tag tag-done">✓</span>
               <span v-else class="tag tag-pending">待回复</span>
             </td>
+            <td>
+              <span v-if="t.assignee_admin_id" class="tag tag-paid" :title="'assignee_admin_id: ' + t.assignee_admin_id">{{ t.assignee_name || t.admin_name || ('已指派 #' + t.assignee_admin_id) }}</span>
+              <span v-else class="tag tag-pending">未指派</span>
+            </td>
             <td><span class="tag" :class="SSTATUS[t.status]?.[1]">{{ SSTATUS[t.status]?.[0] }}</span></td>
           </tr>
         </tbody>
       </table>
-      <div v-if="loadErr" style="text-align:center;padding:28px 18px">
-        <div style="font-size:24px;margin-bottom:6px">⚠️</div>
-        <div style="color:var(--error);font-size:13px;margin-bottom:10px">工单列表加载失败</div>
-        <button class="btn btn-secondary btn-sm" @click="load(1)">重试</button>
-      </div>
-      <div v-else-if="loaded && !tickets.length" style="text-align:center;color:var(--gray);padding:28px 0">暂无工单</div>
-      <div v-if="pages > 1" style="display:flex;justify-content:space-between;align-items:center;padding:12px 10px;font-size:12.5px;color:var(--gray);border-top:1px solid var(--gray-light)">
-        <span>第 {{ page }} / {{ pages }} 页 · 共 {{ total }} 张</span>
-        <div style="display:flex;gap:8px">
-          <button class="btn btn-secondary btn-sm" :disabled="page <= 1" :style="{ opacity: page <= 1 ? 0.45 : 1 }" @click="go(-1)">上一页</button>
-          <button class="btn btn-secondary btn-sm" :disabled="page >= pages" :style="{ opacity: page >= pages ? 0.45 : 1 }" @click="go(1)">下一页</button>
-        </div>
-      </div>
+      <EmptyState v-if="loadErr" icon="⚠️" title="工单列表加载失败" sub="服务端可能未启动或会话已过期">
+        <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
+      </EmptyState>
+      <EmptyState v-else-if="loaded && !tickets.length" icon="💬" title="暂无工单" sub="当前筛选下没有匹配的工单" />
+      <Pagination embed :page="page" :pages="pages" :total="total" unit="张" @go="load" />
     </div>
 
     <div class="card" style="padding:20px;position:sticky;top:16px">
-      <div v-if="!active" style="text-align:center;color:var(--gray);padding:40px 0">← 选择一个工单查看对话</div>
+      <EmptyState v-if="!active" icon="👈" title="选择一个工单查看对话" sub="点击左侧列表中的工单号或主题" />
       <template v-else>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
           <b style="font-size:14.5px">{{ active.ticket_no }}</b>
@@ -214,6 +218,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
         </div>
         <div style="font-size:12.5px;color:var(--gray);margin-bottom:12px">
           {{ active.subject }} · {{ active.email }}<span v-if="active.order_no"> · 订单 {{ active.order_no }}</span> · 创建 {{ fmtTime(active.created_at) }}
+          <span v-if="active.assignee_admin_id"> · {{ assigneeText(active) }}</span>
         </div>
 
         <div style="display:grid;gap:10px;max-height:320px;overflow-y:auto;margin-bottom:14px">
@@ -245,7 +250,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
             </select>
             <button class="btn btn-secondary btn-sm" style="height:34px" title="指派给当前登录管理员" @click="assignMe">指派给我</button>
           </div>
-          <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…" style="margin-bottom:10px"></textarea>
+          <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…（Ctrl+Enter 发送）" style="margin-bottom:10px" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send"></textarea>
           <div style="display:flex;gap:8px">
             <button class="btn btn-primary" style="flex:1" :class="{ loading: busy }" :disabled="busy" @click="send">发送回复</button>
             <button v-if="isResolved" class="btn btn-secondary" title="已解决 → 确认关闭（3→4）" @click="close">确认关闭</button>

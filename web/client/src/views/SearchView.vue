@@ -13,11 +13,28 @@ const q = ref(String(route.query.q || ''))
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
-const size = 12
-const pages = ref(1)
 const loaded = ref(false)
+const pages = ref(1)
 const cats = ref([])
 const recent = ref([])
+
+/* 排序白名单（对齐 StoreView）：缺省 best，非法值回落 best */
+const SORTS = [
+  ['new', 'store.sort.new'], ['best', 'store.sort.best'],
+  ['price_asc', 'store.sort.priceAsc'], ['price_desc', 'store.sort.priceDesc'],
+]
+const SORT_KEYS = ['new', 'best', 'price_asc', 'price_desc']
+const curSort = () => {
+  const s = route.query.sort
+  if (!s) return 'best'
+  return SORT_KEYS.includes(s) ? s : 'best'
+}
+/* 每页条数白名单：12（缺省）/24/48 */
+const SIZES = [12, 24, 48]
+const curSize = () => {
+  const n = parseInt(route.query.size, 10)
+  return SIZES.includes(n) ? n : 12
+}
 
 const RECENT_KEY = 'gm_recent_searches'
 function loadRecent() {
@@ -46,7 +63,8 @@ async function search() {
     loaded.value = true
     return
   }
-  const params = new URLSearchParams({ q: term, page: page.value, size, sort: 'best' })
+  const sz = curSize()
+  const params = new URLSearchParams({ q: term, page: page.value, size: sz, sort: curSort() })
   try {
     const [d, s] = await Promise.all([
       req('GET', '/api/catalog/products?' + params.toString()),
@@ -55,7 +73,7 @@ async function search() {
     if (seq !== sSeq) return
     items.value = d.items || []
     total.value = d.total ?? items.value.length
-    pages.value = Math.max(1, Math.ceil(total.value / size))
+    pages.value = Math.max(1, Math.ceil(total.value / sz))
     cats.value = (s && s.categories) || []
   } catch (_) {
     if (seq !== sSeq) return
@@ -64,17 +82,29 @@ async function search() {
   loaded.value = true
 }
 
+/* sort/size 走 URL query（replace 同步，不产生历史）；切换即回第 1 页 */
+function setSort(v) {
+  if (curSort() === v) return
+  page.value = 1
+  router.replace({ query: { ...route.query, sort: v === 'best' ? undefined : v, page: undefined } })
+}
+function setSize(n) {
+  if (curSize() === n) return
+  page.value = 1
+  router.replace({ query: { ...route.query, size: n === 12 ? undefined : String(n), page: undefined } })
+}
+
 function submit() {
   saveRecent(q.value)
   page.value = 1
-  router.push({ path: '/search', query: q.value.trim() ? { q: q.value.trim() } : {} })
+  router.push({ path: '/search', query: q.value.trim() ? { ...route.query, q: q.value.trim(), page: undefined } : {} })
   manualAt = Date.now()
   search()
 }
 function pickTerm(term) {
   q.value = term
   page.value = 1
-  router.push({ path: '/search', query: { q: term } })
+  router.push({ path: '/search', query: { ...route.query, q: term, page: undefined } })
   manualAt = Date.now()
   search()
 }
@@ -102,16 +132,19 @@ watch(() => route.query.q, (v) => {
   }
 })
 
-/* page 双向同步 URL（replace 不产生历史）：goPage 写 query，query 变化回读驱动 search */
-watch(() => route.query.page, (v) => {
-  const p = parseInt(v, 10) || 1
-  if (p !== page.value) { page.value = p; search() }
+/* page/sort/size 全部双向同步 URL（replace 不产生历史）：query 变化回读驱动 search
+   （浏览器前进/后退亦覆盖；q 的变化由上方独立 watcher 处理） */
+watch(() => [route.query.page, route.query.sort, route.query.size].join('|'), () => {
+  const p = parseInt(route.query.page, 10) || 1
+  const changed = p !== page.value
+  if (changed) page.value = p
+  if (changed || q.value.trim()) search()
 })
 function goPage(p) {
   if (p < 1 || p > pages.value || p === page.value) return
   page.value = p
   router.replace({ query: { ...route.query, page: p > 1 ? String(p) : undefined } })
-  search()
+  /* search 由 page/sort/size watcher 统一驱动（避免双请求） */
 }
 const pageWindow = () => {
   const w = []
@@ -126,7 +159,24 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
 <template>
   <section class="section">
     <div class="container">
-      <div class="section-head"><h2 class="section-title">{{ zh() ? '搜索' : 'Search' }}</h2></div>
+      <div class="section-head search-head">
+        <h2 class="section-title">{{ zh() ? '搜索' : 'Search' }}</h2>
+        <div class="search-ctrl">
+          <div class="seg" :aria-label="zh() ? '排序' : 'Sort by'">
+            <button
+              v-for="[v, label] in SORTS" :key="v" type="button"
+              class="seg-btn" :class="{ on: curSort() === v }"
+              @click="setSort(v)"
+            >{{ i18n.t(label) }}</button>
+          </div>
+          <select
+            class="input search-size" :aria-label="zh() ? '每页' : 'Per page'"
+            :value="curSize()" @change="setSize(parseInt($event.target.value, 10))"
+          >
+            <option v-for="n in SIZES" :key="n" :value="n">{{ n }} / {{ zh() ? '页' : 'page' }}</option>
+          </select>
+        </div>
+      </div>
       <form @submit.prevent="submit" style="display:flex;gap:10px;margin-bottom:14px">
         <input v-model="q" class="input" :placeholder="zh() ? '试试「french」「glitter」「short almond」…' : `Try 'french', 'glitter', 'short almond'...`" autocomplete="off">
         <button class="btn btn-primary" style="flex:none">{{ zh() ? '搜索' : 'Search' }}</button>
@@ -147,16 +197,17 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
         <router-link v-for="c in cats" :key="c.slug" class="trend-chip" style="margin:0" :to="'/store?cat=' + c.slug">{{ c.name }} →</router-link>
       </div>
 
-      <p v-if="q && loaded" style="font-size:13.5px;color:var(--gray);margin-bottom:18px">
-        {{ total }} {{ zh() ? '条结果' : (total === 1 ? 'result' : 'results') }} for "<b>{{ q }}</b>"
+      <p v-if="q && loaded" class="search-count">
+        <span class="cnt-pill">{{ total }} {{ zh() ? '条结果' : (total === 1 ? 'result' : 'results') }}</span>
+        {{ zh() ? '匹配' : 'for' }} "<mark class="cnt-mark">{{ q }}</mark>"
       </p>
 
       <div class="grid grid-4">
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="sk-card">
-            <div class="sk-img"></div>
-            <div class="sk-line" style="width:70%;height:14px;margin-top:10px"></div>
-            <div class="sk-line" style="width:40%;height:14px;margin-top:8px"></div>
+            <div class="sk-img sk-shimmer"></div>
+            <div class="sk-line sk-shimmer" style="width:70%;height:14px;margin-top:10px"></div>
+            <div class="sk-line sk-shimmer" style="width:40%;height:14px;margin-top:8px"></div>
           </div>
         </template>
         <ProductCard v-for="p in items" :key="p.id" :p="p" />
@@ -170,6 +221,10 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
         <div style="font-size:44px;margin-bottom:10px">🔍</div>
         {{ zh() ? '没有匹配商品 — 换个关键词试试' : 'No matches — try a different keyword' }} ·
         <router-link to="/store" style="color:var(--plum)">{{ zh() ? '浏览全部' : 'browse all' }}</router-link>
+        <div class="nores-chips">
+          <span style="font-size:12px;color:var(--gray);font-weight:700">{{ zh() ? '试试热词' : 'Trending' }}</span>
+          <button v-for="h in HOT" :key="h" class="trend-chip" style="margin:0" @click="pickTerm(h)">🔥 {{ h }}</button>
+        </div>
       </div>
 
       <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:32px">
@@ -189,6 +244,22 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
 <style scoped>
 .sk-card { border-radius: 12px; }
 .sk-img { aspect-ratio: 1; border-radius: 12px; }
-.sk-img, .sk-line { background: linear-gradient(100deg, var(--gray-light) 40%, #f7f3f5 50%, var(--gray-light) 60%); background-size: 200% 100%; animation: skShimmer 1.2s infinite; }
-@keyframes skShimmer { to { background-position: -200% 0; } }
+.sk-line { border-radius: 8px; }
+/* 排序分段控件（复用 StoreView 样式）+ 每页 select */
+.search-ctrl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.search-size { height: 38px; padding: 0 10px; font-size: 12.5px; font-weight: 600; color: var(--plum); flex: none; }
+.seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1.5px solid var(--gray-light); border-radius: 999px; background: #fff; }
+.seg-btn { padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--gray); transition: all .15s; }
+.seg-btn:hover { color: var(--plum); background: var(--rose-pale); }
+.seg-btn.on { background: var(--plum); color: #fff; }
+/* 计数 pill 化（rose-pale 底 plum 字）+ 关键词品牌色高亮 */
+.search-count { font-size: 13.5px; color: var(--gray); margin-bottom: 18px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cnt-pill { display: inline-flex; align-items: center; background: var(--rose-pale); color: var(--plum); font-size: 12.5px; font-weight: 700; padding: 3px 12px; border-radius: 999px; }
+.cnt-mark { background: var(--rose-pale); color: var(--plum); font-weight: 700; padding: 0 4px; border-radius: 4px; }
+/* 无结果态热词 chips */
+.nores-chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: center; margin-top: 18px; }
+@media (max-width: 768px) {
+  .search-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .search-ctrl { justify-content: space-between; }
+}
 </style>

@@ -1,8 +1,10 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
+import Pagination from '../components/Pagination.vue'
 
 const router = useRouter()
 const items = ref([])
@@ -21,8 +23,16 @@ const SMeta = { 0: ['草稿', 'tag-pending'], 1: ['在售', 'tag-paid'], 2: ['�
 const BULK_ERR = { 'slug already exists': 'slug 已存在', 'category not found': '分类不存在' }
 const failures = computed(() => (bulkResult.value?.results || []).filter((r) => !r.ok))
 
+/* 分类白名单：onMounted 拉分类列表，批量导入的 category_id 校验以此为准（动态） */
+const categories = ref([])
+const catIdSet = computed(() => new Set(categories.value.map((c) => c.id)))
+async function loadCategories() {
+  try { categories.value = (await req('GET', '/api/admin/catalog/categories')).items || [] }
+  catch (_) { /* 拉取失败时导入校验回退为「任意正整数」，后端仍会兜底 */ }
+}
+
 async function load() {
-  loaded.value = false
+  /* 刷新保留旧数据，骨架只在首载出现 */
   try {
     const qs = { page: page.value, size: 50, q: q.value.trim() }
     if (status.value !== null) qs.status = status.value
@@ -30,13 +40,34 @@ async function load() {
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(total.value / 50))
-  } catch (e) { items.value = []; toast('加载失败', 'error') }
+  } catch (e) { if (!loaded.value) items.value = []; toast('加载失败', 'error') }
   loaded.value = true
 }
-onMounted(load)
+onMounted(() => { loadCategories(); load() })
 
 function search() { page.value = 1; load() }
 function tab(sv) { status.value = sv; page.value = 1; load() }
+
+/* 当前页前端排序（价格/销量）：三态切换，空值恒沉底 */
+const sort = reactive({ key: '', dir: 1 })
+function sortBy(k) {
+  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
+  else if (sort.dir === 1) { sort.dir = -1 }
+  else { sort.key = ''; sort.dir = 1 }
+}
+const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
+const sortedItems = computed(() => {
+  if (!sort.key) return items.value
+  const k = sort.key
+  return [...items.value].sort((a, b) => {
+    const av = a[k], bv = b[k]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av === bv) return 0
+    return (av > bv ? 1 : -1) * sort.dir
+  })
+})
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 
@@ -52,6 +83,10 @@ async function toggle(p) {
 }
 async function bulkImport() {
   try {
+    /* 分类白名单：动态分类集合（拉取失败回退任意正整数，后端兜底校验） */
+    const catHint = categories.value.length
+      ? '可用分类 id：' + categories.value.map((c) => `${c.id}（${c.name}）`).join('、')
+      : '分类列表加载失败，暂仅校验为正整数（后端会再校验一次）'
     const lines = bulkText.value.trim().split(/\n+/).filter(Boolean)
     const bad = []
     const rows = lines.map((l, i) => {
@@ -61,7 +96,8 @@ async function bulkImport() {
       const price = Math.round(parseFloat(c[2]) * 100)
       const cat = Number(c[3])
       if (!c[0] || !c[1] || !Number.isFinite(price) || price < 0) { bad.push(`第 ${i + 1} 行：slug/标题缺失或价格无效`); return null }
-      if (!Number.isInteger(cat) || cat < 1 || cat > 4) { bad.push(`第 ${i + 1} 行：category_id 需为 1-4 整数（当前 ${c[3]}）`); return null }
+      const catOk = catIdSet.value.size ? catIdSet.value.has(cat) : (Number.isInteger(cat) && cat >= 1)
+      if (!catOk) { bad.push(`第 ${i + 1} 行：category_id 无效（当前 ${c[3]}）。${catHint}`); return null }
       return { slug: c[0], title: c[1], price_min: price, price_max: price, category_id: cat }
     }).filter(Boolean)
     if (bad.length) { toast('存在格式错误的行，未导入：' + bad[0] + (bad.length > 1 ? ` 等 ${bad.length} 处` : ''), 'error'); return }
@@ -95,13 +131,19 @@ async function bulkImport() {
             @click="tab(sv)">{{ label }}</button>
   </div>
 
-  <div class="card tbl-wrap">
+  <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
+
+  <div v-else class="card tbl-wrap">
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="padding:10px">商品</th><th>价格</th><th>库存</th><th>销量</th><th>评分</th><th>状态</th><th style="text-align:right">操作</th>
+        <th style="padding:10px">商品</th>
+        <th class="sortable" title="点击排序（当前页）" @click="sortBy('price_min')">价格<span v-if="sortInd('price_min')" class="sort-ind">{{ sortInd('price_min') }}</span></th>
+        <th>库存</th>
+        <th class="sortable" title="点击排序（当前页）" @click="sortBy('sold_count')">销量<span v-if="sortInd('sold_count')" class="sort-ind">{{ sortInd('sold_count') }}</span></th>
+        <th>评分</th><th>状态</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
-        <tr v-for="p in items" :key="p.id" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="p in sortedItems" :key="p.id" style="border-top:1px solid var(--gray-light)">
           <td style="padding:10px">
             <div style="display:flex;gap:10px;align-items:center">
               <img v-if="p.hero_image && !p.broken" :src="p.hero_image" :alt="p.title" style="width:42px;height:42px;border-radius:8px;object-fit:cover" @error="p.broken = true">
@@ -135,14 +177,11 @@ async function bulkImport() {
         </tr>
       </tbody>
     </table>
-    <div v-if="loaded && !items.length" style="text-align:center;color:var(--gray);padding:28px 0">没有匹配商品</div>
+    <EmptyState v-if="loaded && !items.length" icon="🔍" title="没有匹配商品" sub="试试其他关键词或状态筛选" />
   </div>
 
-  <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:16px;align-items:center">
-    <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="page--; load()">←</button>
-    <span style="font-size:13px;color:var(--gray)">第 {{ page }} / {{ pages }} 页</span>
-    <button class="btn btn-secondary btn-sm" :disabled="page >= pages" @click="page++; load()">→</button>
-  </div>
+  <Pagination v-if="loaded" :page="page" :pages="pages" :total="total" unit="款" @go="page = $event; load()" />
+  <div v-if="sort.key" style="margin-top:6px;text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
 
   <!-- 批量导入弹窗 -->
   <div v-if="bulk" class="modal open" @click.self="bulk = false">

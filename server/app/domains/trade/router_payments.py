@@ -33,6 +33,9 @@ _PROVIDER_LABELS = {
 def _resolve_provider(provider: str) -> payment_provider.PaymentProvider:
     default = payment_provider.get_provider()
     if default.name == "mock" or provider == default.name:
+        # 回落分支：默认链是 mock（无真实凭据/缺包降级）——非 dev 直接拒绝而非静默降级
+        if default.name == "mock" and settings.env != "dev":
+            raise HTTPException(status_code=409, detail="mock_provider_disabled")
         return default
     if provider == "stripe":
         try:
@@ -55,13 +58,14 @@ def _create_intent_via(
     db: Session, order_no: str, provider: payment_provider.PaymentProvider,
 ) -> dict:
     from app.domains.trade import repository as repo
-    from app.domains.trade import service_payments
 
+    if provider.name == "mock" and settings.env != "dev":
+        raise HTTPException(status_code=409, detail="mock_provider_disabled")
     order = service_payments._get_order(db, order_no)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
-    # 幂等：同单已有 PENDING payment 直接复用返回，不堆积新行
-    pending = repo.pending_payment_of_order(db, order.id)
+    # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
+    pending = repo.pending_payment_of_order(db, order.id, provider=provider.name)
     if pending:
         return {
             "payment_intent": pending.stripe_payment_intent,
@@ -71,12 +75,13 @@ def _create_intent_via(
             ),
             "amount": pending.amount,
             "provider": provider.name,
+            "redirect_url": "",
         }
     intent = provider.create_intent(order, order.grand_total)
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],
-        stripe_checkout_session=(intent.get("client_secret") or "")[:64],
+        stripe_checkout_session=(intent.get("client_secret") or "")[:255],
         amount=order.grand_total,
         status=0,
     )
@@ -87,6 +92,7 @@ def _create_intent_via(
         "client_secret": intent["client_secret"],
         "amount": payment.amount,
         "provider": provider.name,
+        "redirect_url": intent.get("redirect_url", ""),
     }
 
 
@@ -112,7 +118,9 @@ def payment_methods():
             "name": _PROVIDER_LABELS.get(pid, pid),
             "klarna": pid == "stripe" and bool(settings.stripe_klarna),
         })
-    return {"providers": providers, "default": payment_provider.get_provider().name}
+    # 非 dev 无可用真实 provider → 空列表 + default=none（前端隐藏支付入口）
+    default = payment_provider.get_provider().name if providers else "none"
+    return {"providers": providers, "default": default}
 
 
 @router.post("/mock-pay")

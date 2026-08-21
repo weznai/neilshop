@@ -103,6 +103,7 @@ class ExchangeCreateRequest(BaseModel):
     order_no: str
     order_item_id: int
     new_variant_id: int
+    qty: int = Field(default=1, ge=1)
     reason: Optional[str] = None
     email: Optional[str] = None
 

@@ -35,6 +35,7 @@ from app.services import promo_rules
 
 promo_rules.utcnow = lambda: utcnow().replace(tzinfo=None)
 from app.models import (
+    AdminLog,
     Article,
     Cart,
     CookieConsent,
@@ -188,6 +189,9 @@ with TestClient(app) as client:
     data = r.json()
     check("articles 已发布+摘要120", data["total"] == 1 and len(data["items"][0]["summary"]) <= 120
           and data["items"][0]["tags"] == ["care", "howto"])
+    check("articles 摘要剥首行标题（不含 '# Heading'，以正文开头）",
+          data["items"][0]["summary"].startswith("glow tips")
+          and "# Heading" not in data["items"][0]["summary"])
     r = client.get("/api/content/articles", params={"tag": "care"})
     check("articles tag 过滤命中", r.json()["total"] == 1)
     r = client.get("/api/content/articles", params={"tag": "nope"})
@@ -323,6 +327,14 @@ with TestClient(app) as client:
     check("新码即时可校验", r.json()["valid"] is True and r.json()["discount_cents"] == 1000)
     r = client.put(f"/api/admin/ops/discounts/{dc_id}", headers=ADMIN_H, json={"value": 500})
     check("折扣码更新", r.status_code == 200 and r.json()["value"] == 500)
+    r = client.put(f"/api/admin/ops/discounts/{dc_id}", headers=ADMIN_H,
+                   json={"starts_at": "2026-02-02T08:00:00Z"})
+    db.expire_all()
+    lg = (db.query(AdminLog).filter(AdminLog.entity == "discount")
+          .order_by(AdminLog.id.desc()).first())
+    check("折扣码更新 starts_at（datetime diff 序列化不再 500）+ diff_json 已字符串化",
+          r.status_code == 200 and r.json()["starts_at"].startswith("2026-02-02T08:00:00")
+          and isinstance(lg.diff_json.get("starts_at"), str))
     r = client.post("/api/promo/validate", json={"code": "SAVE10", "subtotal_cents": 5000})
     check("更新后校验生效", r.json()["discount_cents"] == 500)
     r = client.post(f"/api/admin/ops/discounts/{dc_id}/toggle", headers=ADMIN_H)
@@ -337,8 +349,11 @@ with TestClient(app) as client:
         "scene": "exit_intent", "title": "Wait!", "coupon_code": "BYE2025", "active": 1})
     check("弹窗创建", r.status_code == 200 and r.json()["active"] == 1)
     popup_id = r.json()["id"]
-    r = client.put(f"/api/admin/ops/popups/{popup_id}", headers=ADMIN_H, json={"title": "Wait!!"})
-    check("弹窗更新", r.status_code == 200 and r.json()["title"] == "Wait!!")
+    r = client.put(f"/api/admin/ops/popups/{popup_id}", headers=ADMIN_H,
+                   json={"title": "Wait!!", "start_at": "2026-01-15T00:00:00Z"})
+    check("弹窗更新（含 start_at datetime diff 不再 500）",
+          r.status_code == 200 and r.json()["title"] == "Wait!!"
+          and r.json()["start_at"].startswith("2026-01-15T00:00:00"))
     db.expire_all()
     pp = db.get(PopupConfig, popup_id)
     pp.stats_shown = 5

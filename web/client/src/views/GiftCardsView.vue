@@ -155,12 +155,12 @@ const mailto = computed(() => {
           </div>
           <div class="field" :class="{ error: purchaserBad }">
             <label>{{ t('Your email (purchaser)', '你的邮箱（购买人）') }} *</label>
-            <input v-model="purchaser" class="input" :class="{ error: purchaserBad }" type="email" placeholder="you@example.com">
+            <input v-model="purchaser" class="input" :class="{ error: purchaserBad }" type="email" autocomplete="email" placeholder="you@example.com">
             <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
           </div>
           <div class="field" :class="{ error: recipientBad }">
             <label>{{ t('Recipient email (optional)', '收件人邮箱（选填）') }}</label>
-            <input v-model="recipient" class="input" :class="{ error: recipientBad }" type="email" placeholder="friend@example.com">
+            <input v-model="recipient" class="input" :class="{ error: recipientBad }" type="email" autocomplete="off" placeholder="friend@example.com">
             <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
           </div>
           <div class="field">

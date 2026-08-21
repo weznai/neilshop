@@ -23,8 +23,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from app.core.db import SessionLocal, init_db, utcnow
 from app.core.enums import PointsReason
 from app.models import (
-    Cart, Category, EmailPreference, Order, OrderItem, OrderTimeline, OutboxEvent,
-    Payment, PointsLedger, Product, ReconciliationDaily, StockMovement, User, Variant,
+    Cart, Category, EmailPreference, GiftCard, GiftCardLedger, Order, OrderItem,
+    OrderTimeline, OutboxEvent, Payment, PointsLedger, Product, ReconciliationDaily,
+    StockMovement, User, Variant,
 )
 from app.services import emails
 import worker
@@ -120,6 +121,16 @@ s.add_all([
 ])
 s.add(Payment(order_id=pay1.id, amount=3110, status=1, stripe_payment_intent="PI_W1", created_at=now))
 s.add(Payment(order_id=pay2.id, amount=1599, status=1, stripe_payment_intent="PI_W2", created_at=now))
+
+# 超时关单回补回归：stale 单曾用礼品卡（MVP 下单即扣 + change_type=3 流水）
+gc_stale = GiftCard(code="GC-W-STALE", initial_amount=1000, balance=0, status=3,
+                    purchaser_email="emma@glow.test")
+s.add(gc_stale)
+s.flush()
+stale.giftcard_discount = 1000
+s.add(GiftCardLedger(gift_card_id=gc_stale.id, order_id=stale.id, change_type=3,
+                     amount=1000, balance_after=0))
+
 s.add(OutboxEvent(aggregate_type="order", aggregate_id=pay1.id, event_type="order.paid",
                   payload={"order_no": pay1.order_no, "grand_total": 3110,
                            "email": "emma@glow.test"}))
@@ -193,6 +204,13 @@ check("outbox 追加 order.canceled 事件（不发邮件）",
       s.query(OutboxEvent).filter(OutboxEvent.event_type == "order.canceled",
                                   OutboxEvent.aggregate_id == stale.id).count() == 1)
 s.expire_all()
+gc_w = s.query(GiftCard).filter(GiftCard.code == "GC-W-STALE").first()
+check("超时关单：礼品卡余额回补 1000（用尽→有效）+ change_type=5 流水",
+      gc_w.balance == 1000 and gc_w.status == 1
+      and s.query(GiftCardLedger).filter(GiftCardLedger.gift_card_id == gc_w.id,
+                                         GiftCardLedger.change_type == 5).count() == 1,
+      (gc_w.balance, gc_w.status))
+s.expire_all()
 oli = s.get(Cart, cart_oli.id)
 mia = s.get(Cart, cart_mia.id)
 ab_ev = s.query(OutboxEvent).filter(OutboxEvent.event_type == "cart.abandoned").all()
@@ -263,6 +281,23 @@ check("幂等：弃购标记防重复（mia 永不发送、olivia 不再发）",
       and sum(1 for m in email_logs() if "to=olivia@glow.test" in m) == 1
       and not any("to=mia@glow.test" in m and "picks" in m for m in email_logs()))
 
+# ===== 死信告警：retry 打满的事件不拾取不置位，每轮汇总一条 error =====
+s.add(OutboxEvent(aggregate_type="order", aggregate_id=pay1.id, event_type="order.paid",
+                  retry_count=worker.OUTBOX_MAX_RETRY,
+                  payload={"email": "dead@glow.test", "order_no": pay1.order_no}))
+s.commit()
+dead_logs_before = sum(1 for m in cap.msgs if "dead events" in m)
+worker.consume_outbox(s)
+s.expire_all()
+dead_ev = s.query(OutboxEvent).filter(
+    OutboxEvent.retry_count >= worker.OUTBOX_MAX_RETRY).all()
+check("死信事件不拾取不置位（published 仍 0 / 不发邮件）",
+      len(dead_ev) == 1 and dead_ev[0].published == 0
+      and not any("to=dead@glow.test" in m for m in email_logs()))
+check("死信每轮汇总一条 error「N dead events」",
+      sum(1 for m in cap.msgs if "dead events" in m) == dead_logs_before + 1
+      and any("1 dead events" in m for m in cap.msgs))
+
 
 # ===== 三封阶梯序列 =====
 base = utcnow()
@@ -303,6 +338,25 @@ check("阶段1 消费：subject='Still thinking about your GLOWMAG cart?' 含码
           and "subject=Still thinking about your GLOWMAG cart?" in m
           and "ABANDON10" in m and f"https://glowmag.com/cart?rc={token1}" in m
           and "Bare Gems" in m and "Your cart misses you" in m for m in email_logs()))
+
+# ===== 召回链接前缀读 site_url（GM_SITE_URL 覆盖默认 glowmag.com）=====
+os.environ["GM_SITE_URL"] = "https://shop.example.com"
+try:
+    cart_url = Cart(session_id="tok-url", email="url@glow.test",
+                    items=[{"variantId": v1.id, "qty": 1}], abandoned_mails_sent=0,
+                    created_at=base - timedelta(hours=3),
+                    updated_at=base - timedelta(minutes=95))
+    s.add(cart_url)
+    s.commit()
+    worker.scan_abandoned_carts(s)
+    s.expire_all()
+    ev_url = ab_events("url@glow.test")
+    check("GM_SITE_URL 覆盖召回链接前缀（shop.example.com）",
+          len(ev_url) == 1 and ev_url[0].payload["recovery_link"].startswith(
+              "https://shop.example.com/cart?rc="),
+          ev_url and ev_url[0].payload.get("recovery_link"))
+finally:
+    del os.environ["GM_SITE_URL"]
 
 lily.updated_at = base - timedelta(hours=25)
 s.commit()
@@ -381,6 +435,31 @@ check("两次 run_once 不重复入队：zoe 第 1 封恰 1 事件、阶段只�
       r1 is True and r2 is True and len(ab_events("zoe@glow.test")) == 1
       and ab_events("zoe@glow.test")[0].payload["stage"] == 1
       and s.get(Cart, cart_zoe.id).abandoned_mails_sent == 1)
+
+# ===== 弃购计数重置：三封发满后回访改车（新弃购周期）→ 清零并从第 1 封重算 =====
+from app.domains.trade import service_cart as _sc
+
+s.expire_all()
+lily_done = s.get(Cart, cart_lily.id)
+check("前置：lily 三封阶梯已发满（mails_sent=3 终态）",
+      lily_done.abandoned_mails_sent == 3)
+_sc.add_item(s, lily_done, "tok-lily", v1.id, 1)
+s.expire_all()
+lily_back = s.get(Cart, cart_lily.id)
+check("回访加购（items 变化）→ abandoned_mails_sent 重置 0",
+      lily_back.abandoned_mails_sent == 0 and lily_back.items[0]["qty"] == 2,
+      (lily_back.abandoned_mails_sent, lily_back.items))
+lily_back.updated_at = utcnow() - timedelta(minutes=95)
+s.commit()
+worker.scan_abandoned_carts(s)
+s.expire_all()
+lily_new = s.get(Cart, cart_lily.id)
+stage1_events = [e for e in ab_events("lily@glow.test") if e.payload.get("stage") == 1]
+check("再弃购 → 新周期从第 1 封重算（stage=1 / coupon=ABANDON10 / mails_sent=1）",
+      lily_new.abandoned_mails_sent == 1 and len(stage1_events) == 2
+      and stage1_events[1].payload["coupon_code"] == "ABANDON10"
+      and len(ab_events("lily@glow.test")) == 4,
+      (lily_new.abandoned_mails_sent, len(stage1_events)))
 
 s.close()
 print(f"\n{PASSED} passed, {len(FAILED)} failed")

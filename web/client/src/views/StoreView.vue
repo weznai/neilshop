@@ -21,6 +21,9 @@ const FALLBACK_CATS = [
   { slug: 'magnetic-lashes', name: 'Magnetic Lashes' },
 ]
 const cats = ref(FALLBACK_CATS)
+/* 深链补载判据：首屏 ?cat= 若不在兜底分类表中，首次 load() 实际未按分类过滤；
+   cats 树加载完成后若该参数仍未被消费过，则补一次 load */
+let catConsumed = !route.query.cat
 onMounted(async () => {
   try {
     const tree = await req('GET', '/api/catalog/categories')
@@ -29,6 +32,11 @@ onMounted(async () => {
     walk(tree || [])
     if (flat.length) cats.value = flat
   } catch (_) { /* 保留兜底 */ }
+})
+watch(cats, () => {
+  if (catConsumed || !route.query.cat || !activeCat()) return
+  catConsumed = true
+  load()
 })
 
 const SORTS = [
@@ -50,7 +58,20 @@ const activeCat = () => {
 }
 const activeTag = () => route.query.tag || route.query.style || ''
 
+/* 甲型筛选 chips（后端 GET /products?shape= 精确匹配变体 option1_value） */
+const SHAPE_CHIPS = [
+  ['almond', 'Almond', '短杏仁'],
+  ['square', 'Square', '中方头'],
+  ['stiletto', 'Stiletto', '尖头'],
+  ['coffin', 'Coffin', '棺材头'],
+]
+const shapeLabel = (v) => {
+  const hit = SHAPE_CHIPS.find((x) => x[0] === v)
+  return hit ? tt(hit[1], hit[2]) : String(v)
+}
+
 let ldSeq = 0
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 async function load() {
   loaded.value = false
   loadError.value = false
@@ -60,12 +81,17 @@ async function load() {
   }
   const cat = activeCat()
   if (cat) params.category = cat.slug
+  if (cat && route.query.cat) catConsumed = true
   const tag = activeTag()
   if (tag) params.tag = tag
   if (route.query.q) params.q = route.query.q
-  /* 价格区间（后端 min_price/max_price 美分，交集语义） */
-  if (route.query.min) params.min_price = Math.round(parseFloat(route.query.min) * 100)
-  if (route.query.max) params.max_price = Math.round(parseFloat(route.query.max) * 100)
+  /* 甲型筛选（后端 shape 参数，支持 almond/square/stiletto/coffin） */
+  if (route.query.shape) params.shape = String(route.query.shape)
+  /* 价格区间（后端 min_price/max_price 美分，交集语义；NaN 不发送） */
+  const minV = parseFloat(route.query.min)
+  if (Number.isFinite(minV)) params.min_price = Math.round(minV * 100)
+  const maxV = parseFloat(route.query.max)
+  if (Number.isFinite(maxV)) params.max_price = Math.round(maxV * 100)
   if (route.query.sale) params.on_sale = 1
   const qs = new URLSearchParams(params).toString()
   try {
@@ -80,7 +106,7 @@ async function load() {
   loaded.value = true
   if (pendingScroll.value) {
     pendingScroll.value = false
-    nextTick(() => gridEl.value && gridEl.value.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+    nextTick(() => gridEl.value && gridEl.value.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }))
   }
 }
 
@@ -88,6 +114,7 @@ async function load() {
 watch(() => route.query, (nq, oq) => {
   const sig = (qq) => JSON.stringify({ ...(qq || {}), page: 0 })
   if (sig(nq) !== sig(oq)) {
+    pendingScroll.value = true /* 筛选变化后滚回网格顶 */
     if (nq.page) { router.replace({ query: { ...nq, page: undefined } }); return }
     state.page = 1
   } else {
@@ -115,10 +142,43 @@ const heading = () => {
   if (route.query.q) return `"${route.query.q}"`
   if (route.query.sale) return i18n.t('footer.sale')
   const cat = activeCat()
-  if (cat) return cat.name
-  if (route.query.tag) return `#${route.query.tag}`
-  return i18n.t('footer.all')
+  let base = cat ? cat.name : (route.query.tag ? `#${route.query.tag}` : i18n.t('footer.all'))
+  if (route.query.shape) base += ' · ' + shapeLabel(route.query.shape)
+  return base
 }
+
+/* 空态回显：逐条列出当前生效筛选（pill 带 × 单独移除）+ 清除全部 */
+const activeFilters = () => {
+  const out = []
+  if (route.query.q) out.push({ keys: ['q'], label: `"${route.query.q}"` })
+  const cat = activeCat()
+  if (cat) out.push({ keys: ['cat'], label: cat.name })
+  const st = route.query.style || route.query.tag
+  if (st) out.push({ keys: ['style', 'tag'], label: '#' + st })
+  if (route.query.shape) out.push({ keys: ['shape'], label: shapeLabel(route.query.shape) })
+  const lo = parseFloat(route.query.min), hi = parseFloat(route.query.max)
+  if (Number.isFinite(lo) || Number.isFinite(hi)) {
+    const label = Number.isFinite(lo) && Number.isFinite(hi)
+      ? `$${lo} – $${hi}`
+      : Number.isFinite(hi) ? `${tt('Under', '低于')} $${hi}` : `$${lo}+`
+    out.push({ keys: ['min', 'max'], label })
+  }
+  if (route.query.sale) out.push({ keys: ['sale'], label: i18n.t('store.chip.sale') })
+  return out
+}
+function dropFilter(f) {
+  const query = { ...route.query }
+  f.keys.forEach((k) => delete query[k])
+  router.push({ path: '/store', query })
+}
+function clearAllFilters() { router.push({ path: '/store' }) }
+
+/* 空态热词（品牌化回逛路径） */
+const HOT_LINKS = [
+  ['French', { cat: 'press-on-nails', style: 'french' }],
+  ['Glitter', { cat: 'press-on-nails', style: 'glitter' }],
+  ['Cat-Eye', { cat: 'magnetic-lashes', tag: 'cat-eye' }],
+].map(([label, query]) => ({ label, to: { path: '/store', query } }))
 </script>
 
 <template>
@@ -126,10 +186,10 @@ const heading = () => {
     <div class="container">
       <div class="section-head store-head">
         <h2 class="section-title">{{ heading() }}</h2>
-        <div class="store-chiprow" style="gap:6px">
+        <div class="seg" :aria-label="tt('Sort by', '排序')">
           <router-link
             v-for="[v, label] in SORTS" :key="v"
-            class="trend-chip" :class="{ on: curSort() === v }"
+            class="seg-btn" :class="{ on: curSort() === v }"
             :to="{ path: '/store', query: { ...route.query, sort: v } }"
           >{{ i18n.t(label) }}</router-link>
         </div>
@@ -146,6 +206,9 @@ const heading = () => {
         >{{ c.name }}</router-link>
       </div>
       <div class="store-chiprow" style="margin-bottom:22px">
+        <router-link class="trend-chip" :class="{ on: !route.query.style && !route.query.tag }" :to="{ path: '/store', query: { ...route.query, style: undefined, tag: undefined } }">
+          {{ tt('All Styles', '全部风格') }}
+        </router-link>
         <router-link class="trend-chip" :class="{ on: route.query.style === 'french' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'french', tag: undefined } }">
           {{ i18n.t('store.style.french') }}
         </router-link>
@@ -155,9 +218,17 @@ const heading = () => {
         <router-link class="trend-chip" :class="{ on: !!route.query.sale }" :to="route.query.sale ? { path: '/store', query: { ...route.query, sale: undefined } } : { path: '/store', query: { ...route.query, sale: 1 } }">
           🔥 {{ i18n.t('store.chip.sale') }}
         </router-link>
-        <span v-if="route.query.shape" class="trend-chip on" style="cursor:default">
-          {{ i18n.t('store.chip.shape', route.query.shape) }}
-        </span>
+      </div>
+      <!-- 甲型筛选：可点选 chip 组（后端 shape 参数） -->
+      <div class="store-chiprow" style="margin-bottom:22px">
+        <router-link class="trend-chip" :class="{ on: !route.query.shape }" :to="{ path: '/store', query: { ...route.query, shape: undefined } }">
+          {{ tt('All Shapes', '全部甲型') }}
+        </router-link>
+        <router-link
+          v-for="[v, en, cn] in SHAPE_CHIPS" :key="v" class="trend-chip"
+          :class="{ on: route.query.shape === v }"
+          :to="{ path: '/store', query: { ...route.query, shape: v } }"
+        >{{ tt(en, cn) }}</router-link>
       </div>
       <!-- 价格区间（后端 min_price/max_price 交集筛选） -->
       <div class="store-chiprow" style="margin-bottom:22px">
@@ -175,16 +246,16 @@ const heading = () => {
         </router-link>
       </div>
 
-      <p v-if="loaded" style="font-size:13px;color:var(--gray);margin-bottom:16px">
+      <p v-if="loaded && !loadError" style="font-size:13px;color:var(--gray);margin-bottom:16px">
         {{ i18n.t(state.total === 1 ? 'store.count.one' : 'store.count.many', state.total) }}
       </p>
 
       <div ref="gridEl" class="grid grid-4">
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="sk-card">
-            <div class="sk-img"></div>
-            <div class="sk-line" style="width:70%;height:14px;margin-top:10px"></div>
-            <div class="sk-line" style="width:40%;height:14px;margin-top:8px"></div>
+            <div class="sk-img sk-shimmer"></div>
+            <div class="sk-line sk-shimmer" style="width:70%;height:14px;margin-top:10px"></div>
+            <div class="sk-line sk-shimmer" style="width:40%;height:14px;margin-top:8px"></div>
           </div>
         </template>
         <ProductCard v-for="p in state.items" :key="p.id" :p="p" />
@@ -196,17 +267,29 @@ const heading = () => {
           <button class="btn btn-secondary btn-sm" @click="load">↻ {{ tt('Retry', '重试') }}</button>
         </div>
       </div>
-      <div v-else-if="loaded && !state.items.length" style="text-align:center;padding:60px 0;color:var(--gray)">
-        <div style="font-size:44px;margin-bottom:10px">🔍</div>
-        {{ i18n.t('store.empty') }} —
-        <router-link to="/store" style="color:var(--plum)">{{ i18n.t('store.clear') }}</router-link>
+      <div v-else-if="loaded && !state.items.length" class="store-empty">
+        <div class="se-icon" aria-hidden="true">▣</div>
+        <p style="margin:12px 0 0;font-weight:600;color:var(--ink)">{{ i18n.t('store.empty') }}</p>
+        <div v-if="activeFilters().length" class="se-filters" role="list" :aria-label="tt('Active filters', '生效筛选')">
+          <span v-for="f in activeFilters()" :key="f.keys.join('-')" class="se-pill" role="listitem">
+            {{ f.label }}
+            <button type="button" class="se-x" :aria-label="tt('Remove filter', '移除筛选') + ': ' + f.label" @click="dropFilter(f)">×</button>
+          </span>
+          <button type="button" class="btn btn-secondary btn-sm se-clear" @click="clearAllFilters">
+            {{ tt('Clear all filters', '清除全部筛选') }}
+          </button>
+        </div>
+        <div class="se-trend">
+          <span style="font-size:12px;color:var(--gray);font-weight:700">{{ tt('Trending', '热门') }}</span>
+          <router-link v-for="h in HOT_LINKS" :key="h.label" class="trend-chip" :to="h.to">🔥 {{ h.label }}</router-link>
+        </div>
       </div>
 
       <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:32px">
         <button class="btn btn-secondary btn-sm" :disabled="state.page <= 1" @click="goPage(state.page - 1)">←</button>
         <button v-if="pageWindow()[0] > 1" class="btn btn-secondary btn-sm" disabled>…</button>
         <button
-          v-for="p in pageWindow()" :key="p" class="btn btn-sm"
+          v-for="p in pageWindow()" :key="p" class="btn btn-sm pg"
           :class="p === state.page ? 'btn-primary' : 'btn-secondary'" @click="goPage(p)"
         >{{ p }}</button>
         <button v-if="pageWindow()[pageWindow().length - 1] < pages" class="btn btn-secondary btn-sm" disabled>…</button>
@@ -219,7 +302,23 @@ const heading = () => {
 <style scoped>
 .sk-card { border-radius: 12px; }
 .sk-img { aspect-ratio: 1; border-radius: 12px; }
-.sk-img, .sk-line { background: linear-gradient(100deg, var(--gray-light) 40%, #f7f3f5 50%, var(--gray-light) 60%); background-size: 200% 100%; animation: skShimmer 1.2s infinite; }
-@keyframes skShimmer { to { background-position: -200% 0; } }
+.sk-line { border-radius: 8px; }
 .trend-chip.on { background: var(--plum); border-color: var(--plum); color: #fff; }
+/* 排序分段控件：容器圆角边框内分段按钮，选中段 plum 底白字 */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1.5px solid var(--gray-light); border-radius: 999px; background: #fff; }
+.seg-btn { padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--gray); transition: all .15s; }
+.seg-btn:hover { color: var(--plum); background: var(--rose-pale); }
+.seg-btn.on { background: var(--plum); color: #fff; }
+/* 分页非当前页 hover 微上浮 */
+.pg { transition: transform .15s ease-out, background .15s, color .15s, border-color .15s; }
+.pg:not(.btn-primary):not(:disabled):hover { transform: translateY(-1px); }
+/* 空态品牌化：44px 甲型符号 + 生效筛选 pill（可单独移除）+ 热词回逛 */
+.store-empty { text-align: center; padding: 56px 0 40px; color: var(--gray); }
+.se-icon { font-size: 44px; line-height: 1; color: var(--plum); opacity: .5; }
+.se-filters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; margin: 16px 0 4px; }
+.se-pill { display: inline-flex; align-items: center; gap: 6px; background: var(--rose-pale); color: var(--plum); font-size: 12.5px; font-weight: 600; padding: 4px 6px 4px 12px; border-radius: 999px; }
+.se-x { border: none; background: rgba(109,46,70,.12); color: var(--plum); width: 20px; height: 20px; border-radius: 50%; font-size: 12px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.se-x:hover { background: var(--plum); color: #fff; }
+.se-clear { margin-top: 2px; }
+.se-trend { display: flex; flex-wrap: wrap; gap: 4px 8px; justify-content: center; align-items: center; margin-top: 20px; }
 </style>

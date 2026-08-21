@@ -178,14 +178,40 @@ def member_risk(db: Session, admin: User, user_id: int, body: RiskIn) -> dict:
 # ===== 审计日志 =====
 
 
-def admin_logs(db: Session, entity: str | None, page: int, size: int) -> dict:
-    q = repo.admin_logs_query(db, entity)
+def _parse_log_dt(value: str, name: str) -> datetime:
+    """ISO 日期(时间)解析：支持 Z 后缀与显式时区，统一落 naive UTC（与 created_at 列口径一致）"""
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        d = datetime.fromisoformat(s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid {name}")
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d
+
+
+def admin_logs(
+    db: Session, entity: str | None, page: int, size: int, *,
+    action: str | None = None, admin_id: int | None = None,
+    start: str | None = None, end: str | None = None,
+) -> dict:
+    start_at = _parse_log_dt(start, "start") if start else None
+    end_at = _parse_log_dt(end, "end") if end else None
+    q = repo.admin_logs_query(
+        db, entity, action=action, admin_id=admin_id, start=start_at, end=end_at
+    )
     rows, total = repo.page(q, page, size)
+    admins = {u.id: (u.name or u.email) for u in repo.users_by_ids(
+        db, {a.admin_id for a in rows}
+    )}
     return {
         "items": [
             {
                 "id": a.id,
                 "admin_id": a.admin_id,
+                "admin_name": admins.get(a.admin_id),
                 "action": a.action,
                 "entity": a.entity,
                 "entity_id": a.entity_id,

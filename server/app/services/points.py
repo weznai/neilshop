@@ -21,6 +21,12 @@ _SPEND_SQL = text(
 )
 _ADD_POINTS_SQL = text("UPDATE users SET points = points + :amt WHERE id = :uid")
 _POINTS_OF_SQL = text("SELECT points FROM users WHERE id = :uid")
+# 作废扣减（下限 0）：raw SQL 与 _ADD_POINTS_SQL 同通道，避免同事务内 ORM 脏值
+# 在 commit flush 时覆盖 refund_return 的回补；CASE 下限写法 MySQL/SQLite 通用
+_VOID_POINTS_SQL = text(
+    "UPDATE users SET points = CASE WHEN points < :amt THEN 0 ELSE points - :amt END "
+    "WHERE id = :uid"
+)
 
 
 def _write_ledger(db: Session, user_id: int, change: int, reason: PointsReason,
@@ -110,6 +116,9 @@ def refund_void(db: Session, order: Order) -> None:
     """全额退款：作废该单冻结积分（若仍在冻结期）。"""
     if not order.user_id or order.points_earned <= 0:
         return
+    user = db.get(User, order.user_id)
+    if not user:
+        return
     frozen_rows = (
         db.query(PointsLedger)
         .filter(PointsLedger.user_id == order.user_id,
@@ -122,9 +131,11 @@ def refund_void(db: Session, order: Order) -> None:
     void_total = sum(r.change for r in frozen_rows)
     if void_total <= 0:
         return
-    user = db.get(User, order.user_id)
-    user.points = max(0, user.points - void_total)
+    # raw SQL 扣减（下限 0）：与 refund_return 的 raw 回补同事务共存，
+    # ORM 赋值会在 commit flush 时用脏快照覆盖回补结果
+    db.execute(_VOID_POINTS_SQL, {"uid": order.user_id, "amt": void_total})
+    balance = int(db.execute(_POINTS_OF_SQL, {"uid": order.user_id}).scalar())
     for r in frozen_rows:
         r.frozen = 0
     _write_ledger(db, order.user_id, -void_total, PointsReason.REFUND_VOID,
-                  user.points, ref_type="order", ref_id=order.id)
+                  balance, ref_type="order", ref_id=order.id)

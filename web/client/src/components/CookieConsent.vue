@@ -9,7 +9,8 @@ function readConsent() {
   try { return JSON.parse(localStorage.getItem('gm_consent') || '{}') || {} } catch (_) { return {} }
 }
 const saved = readConsent()
-const banner = ref(!localStorage.getItem('gm_consent'))
+const banner = ref(false)
+try { banner.value = !localStorage.getItem('gm_consent') } catch (_) { banner.value = true }
 const settings = ref(false)
 const model = reactive({
   ana: !!saved.ana,
@@ -34,7 +35,7 @@ onUnmounted(() => {
 })
 
 function save(c) {
-  localStorage.setItem('gm_consent', JSON.stringify({ ...c, at: Date.now() }))
+  try { localStorage.setItem('gm_consent', JSON.stringify({ ...c, at: Date.now() })) } catch (_) { /* 隐私模式等写入失败即弃 */ }
   banner.value = false
   settings.value = false
   window.dispatchEvent(new CustomEvent('gm:consent-saved'))
@@ -61,7 +62,7 @@ function saveFromModal() {
 
   <div v-if="settings" class="modal open" role="dialog" :aria-label="i18n.t('consent.title')" @click.self="settings = false">
     <div class="modal-box" style="max-width:520px">
-      <button class="modal-x" style="font-size:22px" :aria-label="'Close'" @click="settings = false">×</button>
+      <button class="modal-x" style="font-size:22px" :aria-label="i18n.lang === 'zh' ? '关闭' : 'Close'" @click="settings = false">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ i18n.t('consent.title') }}</h3>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--gray-light)">
         <div><b style="font-size:14px">{{ i18n.t('consent.nec') }}</b>

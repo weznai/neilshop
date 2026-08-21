@@ -18,9 +18,9 @@ from app.core.config import settings
 from app.core.db import utcnow
 from app.core.security import create_token, hash_password, verify_password
 from app.models import (
-    CookieConsent, DataRequest, EmailPreference, Order, OrderItem, PointsLedger,
-    Referral, Review, Setting, Subscription, Ticket, TicketMessage, User,
-    UserAddress,
+    CookieConsent, DataRequest, EmailPreference, Order, OrderItem, OutboxEvent,
+    PointsLedger, Referral, Review, Setting, Subscription, Ticket, TicketMessage,
+    User, UserAddress,
 )
 from app.services.emails import deliver, render
 
@@ -28,8 +28,8 @@ from app.domains.member import repository as repo
 from app.domains.member import service_referrals
 from app.domains.member.schemas import (
     AddressIn, ConsentIn, EmailPreferencesUpdateIn, LoginIn, NewsletterIn,
-    PasswordResetConfirmIn, PasswordResetRequestIn, ProfileUpdateIn, RegisterIn,
-    UnsubscribeIn,
+    PasswordChangeIn, PasswordResetConfirmIn, PasswordResetRequestIn,
+    ProfileUpdateIn, RegisterIn, UnsubscribeIn,
 )
 
 def _user_out(u: User) -> dict:
@@ -83,6 +83,11 @@ def _addr_out(a) -> dict:
     }
 
 
+# welcome_coupon 模板回落常量（折扣码表查不到 WELCOME20/非百分比型时使用）
+_WELCOME_FALLBACK_CODE = "WELCOME20"
+_WELCOME_FALLBACK_DISCOUNT = 20
+
+
 def register(db: Session, body: RegisterIn) -> dict:
     if repo.user_email_taken(db, body.email):
         raise HTTPException(status_code=409, detail="email already registered")
@@ -93,6 +98,19 @@ def register(db: Session, body: RegisterIn) -> dict:
     # 推荐绑定闭环：/register?ref= 落地页承诺的双方 1000 积分依赖此绑定记录
     # （首单支付发放逻辑在 trade 域 on_order_paid，此处只负责把邀请关系写对）
     service_referrals.bind_referral_on_register(db, body.ref_code, user)
+    # 欢迎邮件走 outbox（worker 消费，营销偏好 sub_promo=0 时合规跳过并标记 published）
+    # payload 供 welcome_coupon 模板渲染：discount/code 取折扣码表 WELCOME20 换算，
+    # 查不到回落常量（20% / WELCOME20）
+    code, discount = repo.welcome_coupon(db) or (
+        _WELCOME_FALLBACK_CODE, _WELCOME_FALLBACK_DISCOUNT
+    )
+    db.add(OutboxEvent(
+        aggregate_type="user", aggregate_id=user.id, event_type="user.welcome",
+        payload={
+            "user_id": user.id, "email": user.email,
+            "code": code, "discount": discount,
+        },
+    ))
     db.commit()
     db.refresh(user)
     return {"token": create_token(user.id, user.role), "user": _user_out(user)}
@@ -159,6 +177,12 @@ def update_address(db: Session, user: User, address_id: int, body: AddressIn) ->
     addr = repo.get_address(db, user.id, address_id)
     if not addr:
         raise HTTPException(status_code=404, detail="address not found")
+    # 唯一默认防线：撤掉唯一默认地址会让地址簿无默认（下单默认收货地址失去兜底）
+    if (
+        addr.is_default == 1 and not body.is_default
+        and not repo.has_other_default_address(db, user.id, addr.id)
+    ):
+        raise HTTPException(status_code=422, detail="last_default_required")
     addr.full_name = body.full_name
     addr.line1 = body.line1
     addr.line2 = body.line2
@@ -189,6 +213,10 @@ def wishlist(db: Session, user: User) -> list[dict]:
     prods = repo.wishlist_products(db, user.id)
     vmap = repo.active_variants_by_product(db, [p.id for p in prods])
     return [_wish_card(p, vmap.get(p.id, [])) for p in prods]
+
+
+def wishlist_has(db: Session, user: User, product_id: int) -> dict:
+    return {"in_wishlist": repo.get_wishlist_item(db, user.id, product_id) is not None}
 
 
 def add_to_wishlist(db: Session, user: User, product_id: int) -> tuple[dict, bool]:
@@ -326,6 +354,19 @@ def password_reset_confirm(db: Session, body: PasswordResetConfirmIn) -> dict:
     user = repo.get_user_by_email(db, body.email)
     if not user or payload.get("sub") != str(user.id):
         raise HTTPException(status_code=400, detail="invalid_token")
+    user.password_hash = hash_password(body.new_password)
+    db.commit()
+    return {"ok": True}
+
+
+def change_password(db: Session, user: User, body: PasswordChangeIn) -> dict:
+    """登录态改密：旧密校验失败 401；password_hash 为 None（GDPR 匿名/OAuth-only 用户）
+    无旧密可验 → 401（走邮件重置流）。不做 token_version 主动失效旧会话 ——
+    与邮件重置 password_reset_confirm 同口径（既有 token 自然过期）。"""
+    if user.password_hash is None or not verify_password(
+        body.old_password, user.password_hash
+    ):
+        raise HTTPException(status_code=401, detail="invalid credentials")
     user.password_hash = hash_password(body.new_password)
     db.commit()
     return {"ok": True}

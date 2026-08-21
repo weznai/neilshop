@@ -42,9 +42,15 @@ def member_risk(user_id: int, body: RiskIn, admin: User = Depends(require_admin)
 @router.get("/api/admin/ops/logs")
 def admin_logs(
     entity: str | None = Query(None),
+    action: str | None = Query(None),
+    admin_id: int | None = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.admin_logs(db, entity, page, size)
+    return service.admin_logs(
+        db, entity, page, size, action=action, admin_id=admin_id, start=start, end=end
+    )

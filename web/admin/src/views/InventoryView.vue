@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
+import Pagination from '../components/Pagination.vue'
 
 const variants = ref([])
 const low = ref([])
@@ -44,7 +46,7 @@ async function loadMovements() {
   } catch (e) { toast('变动流水加载失败：' + (e.message || ''), 'error') }
 }
 async function load() {
-  loaded.value = false
+  /* 刷新保留旧数据，骨架只在首载出现 */
   await Promise.all([loadVariants(), loadLow(), loadMovements()])
   loaded.value = true
 }
@@ -53,13 +55,33 @@ onMounted(load)
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 
 function search() { page.value = 1; loadVariants() }
+
+/* 当前页前端排序（现货库存）：三态切换，空值恒沉底 */
+const sort = reactive({ key: '', dir: 1 })
+function sortBy(k) {
+  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
+  else if (sort.dir === 1) { sort.dir = -1 }
+  else { sort.key = ''; sort.dir = 1 }
+}
+const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
+const sortedVariants = computed(() => {
+  if (!sort.key) return variants.value
+  const k = sort.key
+  return [...variants.value].sort((a, b) => {
+    const av = a[k], bv = b[k]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av === bv) return 0
+    return (av > bv ? 1 : -1) * sort.dir
+  })
+})
 function applyThreshold() {
   threshold.value = Math.max(0, Math.min(9999, parseInt(threshold.value, 10) || 0))
   loadLow()
 }
 function filterVar(v) { mVar.value = v; mPage.value = 1; loadMovements() }
 function clearVar() { mVar.value = null; mPage.value = 1; loadMovements() }
-function mvPage(d) { mPage.value = Math.min(mPages.value, Math.max(1, mPage.value + d)); loadMovements() }
 
 async function doAdjust() {
   if (!adjust.value || !adjChange.value) { toast('请填写增减数量（±）', 'error'); return }
@@ -89,13 +111,18 @@ async function doAdjust() {
     </div>
   </div>
 
-  <div class="card tbl-wrap" style="margin-bottom:16px">
+  <div v-if="!loaded" class="card skeleton" style="min-height:280px;margin-bottom:16px" />
+
+  <template v-else>
+    <div class="card tbl-wrap" style="margin-bottom:16px">
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="padding:10px">SKU</th><th>商品</th><th>规格</th><th>价格</th><th>现货</th><th>安全库存</th><th>水位</th><th style="text-align:right">操作</th>
+        <th style="padding:10px">SKU</th><th>商品</th><th>规格</th><th>价格</th>
+        <th class="sortable" title="点击排序（当前页）" @click="sortBy('stock')">现货<span v-if="sortInd('stock')" class="sort-ind">{{ sortInd('stock') }}</span></th>
+        <th>安全库存</th><th>水位</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
-        <tr v-for="v in variants" :key="v.id" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="v in sortedVariants" :key="v.id" style="border-top:1px solid var(--gray-light)">
           <td style="padding:10px"><b>{{ v.sku }}</b></td>
           <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">{{ v.product_title }}</td>
           <td>{{ v.option1_value }}</td>
@@ -115,12 +142,9 @@ async function doAdjust() {
         </tr>
       </tbody>
     </table>
-    <div v-if="loaded && !variants.length" style="text-align:center;color:var(--gray);padding:28px 0">无匹配 SKU</div>
-    <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:12px;align-items:center">
-      <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="page--; loadVariants()">←</button>
-      <span style="font-size:13px;color:var(--gray)">第 {{ page }} / {{ pages }} 页</span>
-      <button class="btn btn-secondary btn-sm" :disabled="page >= pages" @click="page++; loadVariants()">→</button>
-    </div>
+    <EmptyState v-if="!variants.length" icon="📦" title="无匹配 SKU" sub="试试其他关键词" />
+    <Pagination embed :page="page" :pages="pages" @go="page = $event; loadVariants()" />
+    <div v-if="sort.key" style="text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
   </div>
 
   <div class="grid-2" style="align-items:start">
@@ -149,14 +173,11 @@ async function doAdjust() {
         <span style="color:var(--gray)" :title="m.operator || ''">{{ (m.created_at || '').slice(5, 16).replace('T', ' ') }} · {{ MTYPE[m.type] || m.type }}<span v-if="m.ref_id" title="关联单号（内部ID）"> #{{ m.ref_id }}</span></span>
         <b :style="{ color: m.change >= 0 ? 'var(--success)' : 'var(--error)' }">{{ m.change >= 0 ? '+' : '' }}{{ m.change }} → {{ m.stock_after }}</b>
       </div>
-      <div v-if="!movements.length" style="font-size:13px;color:var(--gray);padding:10px 0">{{ mVar ? '该 SKU 暂无流水' : '暂无流水' }}</div>
-      <div v-if="mPages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:10px;align-items:center">
-        <button class="btn btn-secondary btn-sm" :disabled="mPage <= 1" @click="mvPage(-1)">←</button>
-        <span style="font-size:12.5px;color:var(--gray)">第 {{ mPage }} / {{ mPages }} 页</span>
-        <button class="btn btn-secondary btn-sm" :disabled="mPage >= mPages" @click="mvPage(1)">→</button>
-      </div>
+      <EmptyState v-if="!movements.length" icon="📜" :title="mVar ? '该 SKU 暂无流水' : '暂无流水'" />
+      <Pagination embed :page="mPage" :pages="mPages" @go="mPage = $event; loadMovements()" />
     </div>
   </div>
+  </template>
 
   <!-- 调整弹窗 -->
   <div v-if="adjust" class="modal open" @click.self="adjust = null">

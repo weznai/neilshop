@@ -56,8 +56,9 @@ onMounted(async () => {
 
 <style scoped>
 .b44 span{display:inline-block;animation:bounceIn .7s cubic-bezier(.34,1.56,.64,1) both}
-.b44 span:nth-child(2){animation-delay:.1s}
-.b44 span:nth-child(3){animation-delay:.2s}
+.b44 span:nth-child(1){color:var(--rose);animation-delay:0s}
+.b44 span:nth-child(2){color:var(--plum);animation-delay:.1s}
+.b44 span:nth-child(3){color:var(--coral);animation-delay:.2s}
 @keyframes bounceIn{
   0%{transform:translateY(-56px) scale(.55);opacity:0}
   60%{transform:translateY(10px) scale(1.06);opacity:1}

@@ -103,3 +103,28 @@ def rma_detail(db: Session, user: User, rma_no: str) -> dict:
         raise HTTPException(status_code=404, detail="rma_not_found")
     item = repo.get_order_item(db, rma.order_item_id)
     return _payload(rma, item, order_no=order.order_no)
+
+
+def cancel_rma(db: Session, user: User, rma_no: str) -> dict:
+    """误建 RMA 撤销：归属校验复用 rma_detail 模式 → CAS 删除 status=0（申请中）行，
+    删后可重新申请；非申请中（已批/在途/已退）409。"""
+    rma = repo.rma_by_no(db, rma_no.strip().upper())
+    if not rma:
+        raise HTTPException(status_code=404, detail="rma_not_found")
+    order = repo.get_order(db, rma.order_id)
+    if not order or order.user_id != user.id:
+        raise HTTPException(status_code=404, detail="rma_not_found")
+    deleted = (
+        db.query(Rma)
+        .filter(Rma.id == rma.id, Rma.status == 0)
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        db.rollback()
+        db.expire(rma)
+        raise HTTPException(status_code=409, detail=f"rma_not_cancellable:{rma.status}")
+    repo.add_timeline(db, order.id, "rma_canceled", actor="user", detail={
+        "rma_no": rma.rma_no,
+    })
+    db.commit()
+    return {"rma_no": rma.rma_no, "status": "canceled"}

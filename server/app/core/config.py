@@ -34,6 +34,8 @@ class Settings:
     paypal_client_id: str = os.getenv("GM_PAYPAL_CLIENT_ID", "")
     paypal_secret: str = os.getenv("GM_PAYPAL_SECRET", "")
     paypal_base: str = os.getenv("GM_PAYPAL_BASE", "https://api-m.sandbox.paypal.com")
+    # PayPal Webhook ID（可选；非 dev 环境作为 webhook 门禁/验签匹配依据，空则拒绝处理）
+    paypal_webhook_id: str = os.getenv("GM_PAYPAL_WEBHOOK_ID", "")
 
     _cache_flag: str = os.getenv("GM_CACHE", "").strip().lower()
     cache_enable: bool = _cache_flag not in ("", "0", "false", "off", "no")

@@ -2,10 +2,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
+import { useArmConfirm } from '../../composables/useArmConfirm'
 import { i18n } from '../../i18n'
 
 const ui = useUiStore()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+
+/* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
+const arm = useArmConfirm()
 
 const list = ref([])
 const loaded = ref(false)
@@ -134,7 +138,6 @@ async function makeDefault(a) {
 }
 
 async function remove(a) {
-  if (!window.confirm(tt(`Remove “${a.full_name}”’s address?`, `确认删除「${a.full_name}」的地址？`))) return
   try {
     await req('DELETE', '/api/account/addresses/' + a.id)
     ui.toast(tt('Address removed', '地址已删除'), 'success')
@@ -158,7 +161,10 @@ async function remove(a) {
             <div style="display:flex;gap:6px">
               <button v-if="!a.is_default" class="btn btn-ghost btn-sm" style="color:var(--plum)" :class="{ loading: settingDefault === a.id }" :disabled="!!settingDefault" @click="makeDefault(a)">{{ tt('Set as default', '设为默认') }}</button>
               <button class="btn btn-ghost btn-sm" @click="edit(a)">{{ tt('Edit', '编辑') }}</button>
-              <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="remove(a)">{{ tt('Delete', '删除') }}</button>
+              <button
+                class="btn btn-ghost btn-sm" :class="{ arm: arm.is(a.id) }"
+                @click="arm.hit(a.id, () => remove(a))"
+              >{{ arm.is(a.id) ? tt('Tap again to confirm', '再点一次确认') : tt('Delete', '删除') }}</button>
             </div>
           </div>
           <div style="font-size:13.5px;line-height:1.7">
@@ -174,27 +180,30 @@ async function remove(a) {
       </div>
     </template>
 
-    <div class="card" style="padding:20px">
-      <h3 style="font-size:15px;margin-bottom:14px">{{ editing === null ? '➕ ' + tt('Add address', '新增地址') : '✏️ ' + tt('Edit address', '编辑地址') }}</h3>
+    <div class="card addr-form" :class="{ 'addr-editing': editing !== null }" style="padding:20px">
+      <h3 style="font-size:15px;margin-bottom:14px">
+        <template v-if="editing === null">➕ {{ tt('Add address', '新增地址') }}</template>
+        <template v-else>✏️ {{ tt('Edit address', '编辑地址') }}<span v-if="editingAddr" style="color:var(--plum)"> · {{ editingAddr.full_name }}</span></template>
+      </h3>
       <div class="grid-m-1" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Recipient name', '收件人姓名') }} *</label><input v-model="form.full_name" class="input" maxlength="100"></div>
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Street address', '街道地址') }} *</label><input v-model="form.line1" class="input" maxlength="191"></div>
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Apt / Suite (optional)', '门牌 / 单元（可选）') }}</label><input v-model="form.line2" class="input" maxlength="191"></div>
-        <div class="field"><label>{{ tt('City', '城市') }} *</label><input v-model="form.city" class="input" maxlength="100"></div>
-        <div class="field"><label>{{ tt('State / Province', '州 / 省') }}</label><input v-model="form.state" class="input" maxlength="100"></div>
-        <div class="field"><label>{{ tt('ZIP / Postal code', '邮编') }} *</label><input v-model="form.zip" class="input" maxlength="20"></div>
+        <div class="field" style="grid-column:1/-1"><label>{{ tt('Recipient name', '收件人姓名') }} *</label><input v-model="form.full_name" class="input" maxlength="100" autocomplete="name"></div>
+        <div class="field" style="grid-column:1/-1"><label>{{ tt('Street address', '街道地址') }} *</label><input v-model="form.line1" class="input" maxlength="191" autocomplete="address-line1"></div>
+        <div class="field" style="grid-column:1/-1"><label>{{ tt('Apt / Suite (optional)', '门牌 / 单元（可选）') }}</label><input v-model="form.line2" class="input" maxlength="191" autocomplete="address-line2"></div>
+        <div class="field"><label>{{ tt('City', '城市') }} *</label><input v-model="form.city" class="input" maxlength="100" autocomplete="address-level2"></div>
+        <div class="field"><label>{{ tt('State / Province', '州 / 省') }}</label><input v-model="form.state" class="input" maxlength="100" autocomplete="address-level1"></div>
+        <div class="field"><label>{{ tt('ZIP / Postal code', '邮编') }} *</label><input v-model="form.zip" class="input" maxlength="20" autocomplete="postal-code"></div>
         <div class="field">
           <label>{{ tt('Country', '国家') }} *</label>
-          <select v-model="countrySel" class="input">
+          <select v-model="countrySel" class="input" autocomplete="country">
             <option v-for="[code, label] in COUNTRIES" :key="code" :value="code">{{ label }}（{{ code }}）</option>
             <option :value="OTHER">{{ tt('Other (enter 2-letter code)', '其他（自填 2 位代码）') }}</option>
           </select>
         </div>
         <div v-if="countryIsOther" class="field">
           <label>{{ tt('Country code (2 letters)', '国家代码（2 位字母）') }} *</label>
-          <input v-model="form.country" class="input" maxlength="2" placeholder="US" @input="form.country = form.country.toUpperCase()">
+          <input v-model="form.country" class="input" maxlength="2" placeholder="US" autocomplete="country-code" @input="form.country = form.country.toUpperCase()">
         </div>
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Phone (optional)', '电话（可选）') }}</label><input v-model="form.phone" class="input" maxlength="32"></div>
+        <div class="field" style="grid-column:1/-1"><label>{{ tt('Phone (optional)', '电话（可选）') }}</label><input v-model="form.phone" class="input" maxlength="32" type="tel" autocomplete="tel"></div>
       </div>
       <label style="display:flex;gap:8px;align-items:center;margin:12px 0;font-size:13.5px" :class="{ 'gm-locked': defaultLocked }">
         <input v-model="form.is_default" type="checkbox" style="width:16px;height:16px" :disabled="defaultLocked">
@@ -210,3 +219,8 @@ async function remove(a) {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 编辑态表单卡：左缘 3px plum 强调 */
+.addr-editing { border-left: 3px solid var(--plum); }
+</style>

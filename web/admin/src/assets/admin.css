@@ -1,6 +1,7 @@
 /* GLOWMAG 后台共享样式（10 个 admin*.html 公共布局/组件）
    依赖 assets/style.css 的 Design Tokens，页面引入顺序：style.css → admin.css
    不重复 style.css 已有的 .btn/.table/.tag/.modal/.toast 等 */
+:root{--pale-error:#FDE9EA}   /* 浅错误底（提示条），与 style.css v13 的 --pale-error 同值统一 */
 body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .main{font-size:13.5px}
 .main .table{font-size:13px}
@@ -16,7 +17,11 @@ body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .anav a{padding:10px 12px;border-radius:8px;font-size:13.5px;color:var(--gray);display:flex;gap:11px;align-items:center}
 .anav a.on,.anav a:hover{background:var(--rose-pale);color:var(--plum)}
 .anav a.on svg,.anav a:hover svg{stroke:var(--plum)}
+/* 激活态：左侧 3px 指示条 + 加粗（置于 hover 之后保证 on 优先） */
+.anav a.on{box-shadow:inset 3px 0 0 var(--plum);font-weight:600}
 .anav .sep{border-top:1px solid var(--gray-light);margin:10px 12px}
+/* 分组小节标题（交易/商品/运营）：小号字距标签，折叠态隐藏 */
+.anav .group{font-size:10.5px;letter-spacing:2.5px;color:var(--gray);padding:14px 12px 4px;user-select:none;white-space:nowrap}
 .main{padding:24px 28px;min-width:0}
 .panel{background:#fff;border-radius:12px;box-shadow:var(--shadow-card);padding:20px;margin-bottom:20px}
 .panel h3{font-size:15px;margin-bottom:14px}
@@ -41,18 +46,25 @@ body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .mini-bar{display:grid;grid-template-columns:120px 1fr 44px;gap:10px;align-items:center;font-size:13px;padding:6px 0}
 .mini-bar .track{height:8px;background:var(--gray-light);border-radius:4px;overflow:hidden}
 .mini-bar .fill{height:100%;background:var(--plum);border-radius:4px}
-/* 后台响应式：≤900px 侧栏折叠为图标栏 */
+/* 后台响应式：≤900px 侧栏折叠为图标栏 + 主区边距收紧 */
 @media(max-width:900px){
   .admin{grid-template-columns:64px 1fr}
-  .aside .logo span,.anav a span,.aside div[style*="letter-spacing"]{display:none}
+  .aside .logo span,.anav a span,.anav .group,.aside div[style*="letter-spacing"]{display:none}
   .anav a{justify-content:center;padding:10px 8px}
   .stat-grid{grid-template-columns:1fr 1fr}
   .cols{grid-template-columns:1fr}
+  .main{padding:16px}
+}
+/* 超窄屏 KPI 卡：单列 + 数值降级（22px → 19px），避免长金额溢出 */
+@media(max-width:480px){
+  .stat-grid{grid-template-columns:1fr}
+  .main .stat .vl{font-size:19px}
 }
 /* 手动折叠（side-min）：与响应式同一形态；桌面端点击切换、localStorage 记忆 */
 .admin.side-min{grid-template-columns:64px 1fr}
 .admin.side-min .aside .logo span,
 .admin.side-min .anav a span,
+.admin.side-min .anav .group,
 .admin.side-min .aside div[style*="letter-spacing"]{display:none}
 .admin.side-min .anav a{justify-content:center;padding:10px 8px}
 .side-toggle{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);width:36px;height:36px;border-radius:10px;background:var(--rose-pale);color:var(--plum);display:flex;align-items:center;justify-content:center;transition:background .2s}
@@ -62,7 +74,8 @@ body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .aside .anav{flex:1}
 /* 数值列对齐 + 宽表滚动 */
 .num{text-align:right;font-variant-numeric:tabular-nums}
-.tbl-wrap{overflow-x:auto}
+/* 宽表滚动容器：限高 + 双向滚动，长表 sticky 表头在容器内生效 */
+.tbl-wrap{max-height:calc(100vh - 280px);overflow:auto}
 .tbl-wrap table{min-width:720px}
 
 /* 登录页独立外壳（勿复用 .admin——那是侧栏+主区两栏 grid） */
@@ -101,7 +114,17 @@ th.sortable:hover{color:var(--plum)}
 @keyframes gmSk{100%{transform:translateX(100%)}}
 /* 表格：行悬停 + 数字列弱化边框 */
 .main table tbody tr{transition:background .12s}
-.main table tbody tr:hover{background:#FBF7F8}
+.main table tbody tr:hover{background:#F7EEF0}
+/* 斑马纹（偶数行浅底）+ sticky 表头（长表滚动时表头常驻于 tbl-wrap 容器顶部） */
+.main table thead th{position:sticky;top:0;background:#fff;z-index:1;box-shadow:inset 0 -1px 0 var(--gray-light)}
+.main table tbody tr:nth-child(even){background:#FBF9FA}
+.main table tbody tr:nth-child(even):hover{background:#F7EEF0}
+/* 右缘渐隐滚动提示：条件化——仅横向可滚（.can-scroll）且未滚到尽头（无 .at-end）时出现；
+ * 类名由 AdminLayout 的 ResizeObserver/scroll 监听切换（.card-lift 悬浮定义在 style.css，此处不重复） */
+.tbl-wrap.can-scroll:not(.at-end){
+  -webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 24px),transparent 100%);
+  mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 24px),transparent 100%);
+}
 /* 卡片与统计卡：轻悬浮反馈 */
 .card{transition:box-shadow .2s}
 .stat{transition:transform .18s,box-shadow .2s}

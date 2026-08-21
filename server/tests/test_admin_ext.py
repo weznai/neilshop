@@ -34,8 +34,8 @@ from app.core.db import SessionLocal, utcnow  # noqa: E402
 from app.core.security import create_token, hash_password  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
-    Category, Exchange, Order, OrderItem, Payment, PopupConfig, Product,
-    Rma, Ticket, User, Variant,
+    Category, Collection, CollectionProduct, Exchange, Order, OrderItem, Payment,
+    PopupConfig, Product, Rma, Ticket, User, Variant,
 )
 
 PASSED = 0
@@ -57,11 +57,11 @@ ADDR = {"full_name": "T", "line1": "1 Main St", "city": "SF", "state": "CA",
 
 
 def make_order(s, no, *, email="ext@glow.test", status=1, subtotal=1000,
-               grand_total=None):
+               grand_total=None, note=None):
     o = Order(order_no=no, email=email, status=status, subtotal=subtotal,
               grand_total=grand_total if grand_total is not None else subtotal,
               shipping_address=ADDR, placed_at=utcnow(), paid_at=utcnow(),
-              points_earned=0, giftcard_discount=0)
+              points_earned=0, giftcard_discount=0, note=note)
     s.add(o)
     s.flush()
     return o
@@ -105,6 +105,22 @@ with TestClient(app) as client:
           d["per_page"] == 10 and len(d["items"]) == 10
           and client.get("/api/admin/trade/orders", headers=H_OPS,
                          params={"per_page": 500}).json()["per_page"] == 100, d.get("per_page"))
+
+    # ===== 1b. orders note 字段贯通（列表 + 详情）=====
+    make_order(s, "EXT260820NOTE1", note="Please gift wrap, it's a birthday gift")
+    s.commit()
+    r = client.get("/api/admin/trade/orders", headers=H_OPS,
+                   params={"q": "EXT260820NOTE1"})
+    d = r.json()
+    check("orders 列表行含 note 且值完整（下单备注贯通）",
+          r.status_code == 200 and d["total"] == 1
+          and d["items"][0]["note"] == "Please gift wrap, it's a birthday gift",
+          d.get("items"))
+    r = client.get("/api/admin/trade/orders/EXT260820NOTE1", headers=H_OPS)
+    d = r.json()
+    check("orders 详情含 note（同值）",
+          r.status_code == 200 and d["note"] == "Please gift wrap, it's a birthday gift",
+          d.get("note"))
 
     # ===== 2. admin exchanges size（默认 10 兼容 / size=50 生效）=====
     o_ex = make_order(s, "EXT260820EXB01")
@@ -226,6 +242,87 @@ with TestClient(app) as client:
                     json={"close_reason": 2})
     check("重复 close 已关闭工单 → 409（closed_at/close_reason 不被覆盖）",
           r.status_code == 409 and "already" in r.text, r.status_code)
+
+    # ===== 6b. ops logs 增强：action/admin_id/start/end 过滤 + admin_name 回填 =====
+    r = client.get("/api/admin/ops/logs", headers=H_OPS,
+                   params={"entity": "ticket", "action": "close"})
+    d = r.json()
+    check("logs entity AND action 组合过滤 + admin_name 批量回填",
+          r.status_code == 200 and d["total"] >= 1
+          and all(i["action"] == "close" and i["admin_name"] == admin.name
+                  for i in d["items"]), d.get("total"))
+    r = client.get("/api/admin/ops/logs", headers=H_OPS,
+                   params={"admin_id": admin.id, "size": 5})
+    d = r.json()
+    check("logs admin_id 过滤（全部归属 ops）",
+          d["total"] >= 1 and all(i["admin_id"] == admin.id for i in d["items"]),
+          d.get("total"))
+    check("logs 未知 admin_id → 空集不 400",
+          client.get("/api/admin/ops/logs", headers=H_OPS,
+                     params={"admin_id": 999999}).json()["total"] == 0)
+    total_all = client.get("/api/admin/ops/logs", headers=H_OPS,
+                           params={"size": 100}).json()["total"]
+    r = client.get("/api/admin/ops/logs", headers=H_OPS,
+                   params={"start": "2020-01-01", "end": utcnow().isoformat() + "Z",
+                           "size": 100})
+    check("logs start/end 时间窗（ISO 日期 + Z 后缀）覆盖全部",
+          r.json()["total"] == total_all, (r.json()["total"], total_all))
+    check("logs 未来 start → 空集 / 非法 start → 400",
+          client.get("/api/admin/ops/logs", headers=H_OPS,
+                     params={"start": "2099-01-01"}).json()["total"] == 0
+          and client.get("/api/admin/ops/logs", headers=H_OPS,
+                         params={"start": "not-a-date"}).status_code == 400)
+
+    # ===== 6c. admin collections 补全：PUT 更新 / GET 商品清单 / DELETE 级联 =====
+    r = client.post("/api/admin/catalog/collections", headers=H_OPS,
+                    json={"slug": "ext-coll", "title": "Ext Coll", "rule_json": {}})
+    cid = r.json()["id"]
+    check("集合创建 201", r.status_code == 201 and cid, r.text[:120])
+    r = client.post("/api/admin/catalog/collections", headers=H_OPS,
+                    json={"slug": "ext-coll-bn", "title": "Ext Coll Banner",
+                          "rule_json": {}, "banner_image": "https://img/banner.jpg"})
+    d = r.json()
+    s.expire_all()
+    check("集合创建带 banner_image 落库（http(s) 校验通过）",
+          r.status_code == 201 and d["banner_image"] == "https://img/banner.jpg"
+          and s.get(Collection, d["id"]).banner_image == "https://img/banner.jpg", d)
+    check("集合创建 banner 非 http(s)（相对路径/javascript:）→ 422",
+          client.post("/api/admin/catalog/collections", headers=H_OPS,
+                      json={"slug": "ext-coll-bad", "title": "Bad", "rule_json": {},
+                            "banner_image": "/img/rel.jpg"}).status_code == 422
+          and client.post("/api/admin/catalog/collections", headers=H_OPS,
+                          json={"slug": "ext-coll-bad", "title": "Bad", "rule_json": {},
+                                "banner_image": "javascript:alert(1)"}).status_code == 422)
+    r = client.put(f"/api/admin/catalog/collections/{cid}", headers=H_OPS,
+                   json={"title": "Ext Coll v2", "banner_image": "/img/banner.jpg",
+                         "sort_order": 5, "is_active": False})
+    d = r.json()
+    check("集合 PUT 部分更新（未传 rule_json 保持原值）",
+          r.status_code == 200 and d["title"] == "Ext Coll v2"
+          and d["banner_image"] == "/img/banner.jpg" and d["sort_order"] == 5
+          and d["is_active"] == 0 and d["rule_json"] == {}, d)
+    r = client.put(f"/api/admin/catalog/collections/{cid}/products", headers=H_OPS,
+                   json={"products": [{"product_id": p.id, "sort_order": 1}]})
+    check("集合挂商品 ok", r.status_code == 200 and r.json()["count"] == 1, r.text[:120])
+    r = client.get(f"/api/admin/catalog/collections/{cid}/products", headers=H_OPS)
+    d = r.json()
+    check("集合商品清单（product_id/sort_order/product 三元组）",
+          r.status_code == 200 and d["items"] == [
+              {"product_id": p.id, "sort_order": 1,
+               "product": {"id": p.id, "title": "Ext Gel", "slug": "ext-gel"}}], d)
+    r = client.delete(f"/api/admin/catalog/collections/{cid}", headers=H_OPS)
+    s.expire_all()
+    check("集合 DELETE → 级联清 CollectionProduct 且集合消失",
+          r.status_code == 200 and s.get(Collection, cid) is None
+          and s.query(CollectionProduct).filter(
+              CollectionProduct.collection_id == cid).count() == 0, r.text[:120])
+    check("未知集合 PUT/DELETE/GET products → 404",
+          client.put("/api/admin/catalog/collections/999999", headers=H_OPS,
+                     json={"title": "x"}).status_code == 404
+          and client.delete("/api/admin/catalog/collections/999999",
+                            headers=H_OPS).status_code == 404
+          and client.get("/api/admin/catalog/collections/999999/products",
+                         headers=H_OPS).status_code == 404)
 
     # ===== 7. 审计回归：多笔 RMA 比例折算累计超剩余可退 → 钳制收尾全额退 =====
     o_cl = make_order(s, "EXT260820CLMP1", status=4, subtotal=2998, grand_total=3110)

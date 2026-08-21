@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { req } from '../api/client'
+import { i18n } from '../i18n'
 
 const route = useRoute()
 const post = ref(null)
@@ -15,36 +16,84 @@ function esc(s) {
 function inline(t) {
   return t
     /* 图片语法 ![alt](url)：仅允许 src/alt 属性，URL 限 http(s)（先于链接规则匹配） */
-    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '<img src="$2" alt="$1">')
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '<img src="$2" alt="$1" loading="lazy" decoding="async">')
+    /* 行内代码 `code`（先于加粗/链接，避免代码片段被二次加工） */
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    /* 链接协议白名单：http(s) 外链新窗打开；以 / 开头的站内路径当页跳转；
+     * 其余（javascript: / data: / vbscript: 等）剥掉链接语法只保留纯文本 */
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, text, href) => {
+      if (/^https?:\/\//i.test(href)) return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`
+      if (/^\/(?!\/)/.test(href)) return `<a href="${href}">${text}</a>`
+      return text
+    })
 }
+/* 状态机渲染：标题 / 无序 / 有序列表（1. 1)）/ 引用块（esc 后 ^&gt;）/ 行内代码 / 段落；
+ * ul、ol、blockquote 三个开闭状态互斥，空行或换块型时先闭合 */
 function mdHtml(md) {
   const lines = esc(md).split(/\r?\n/)
   const out = []
-  let inList = false
+  let list = ''
+  let quote = false
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = '' } }
+  const closeQuote = () => { if (quote) { out.push('</blockquote>'); quote = false } }
   for (const raw of lines) {
     const l = raw.trim()
-    if (!l) { if (inList) { out.push('</ul>'); inList = false } continue }
     let m
+    if (!l) { closeList(); closeQuote(); continue }
     if ((m = l.match(/^(#{1,4})\s+(.*)$/))) {
-      if (inList) { out.push('</ul>'); inList = false }
+      closeList(); closeQuote()
       const h = Math.min(m[1].length + 1, 4)
       out.push(`<h${h}>${inline(m[2])}</h${h}>`)
+    } else if ((m = l.match(/^&gt;\s?(.*)$/))) {
+      closeList()
+      if (!quote) { out.push('<blockquote>'); quote = true }
+      out.push(`<p>${inline(m[1])}</p>`)
     } else if ((m = l.match(/^[-*]\s+(.*)$/))) {
-      if (!inList) { out.push('<ul>'); inList = true }
+      closeQuote()
+      if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul' }
+      out.push(`<li>${inline(m[1])}</li>`)
+    } else if ((m = l.match(/^\d{1,3}[.)]\s+(.*)$/))) {
+      closeQuote()
+      if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol' }
       out.push(`<li>${inline(m[1])}</li>`)
     } else {
-      if (inList) { out.push('</ul>'); inList = false }
+      closeList(); closeQuote()
       out.push(`<p>${inline(l)}</p>`)
     }
   }
-  if (inList) out.push('</ul>')
+  closeList(); closeQuote()
   return out.join('')
 }
 const body = computed(() => mdHtml(post.value?.content_md || ''))
 const PH = 'https://placehold.co/1200x600/F5D8DA/6D2E46?text=GLOWMAG+Journal'
 function coverFallback(e) { e.target.src = PH }
+
+/* 阅读时长：EN 词数 + CJK 字数折算（~200/分钟） */
+const readMins = computed(() => {
+  const txt = String(post.value?.content_md || '')
+  const words = (txt.match(/[A-Za-z0-9_'’-]+/g) || []).length + (txt.match(/[\u4e00-\u9fff]/g) || []).length
+  return Math.max(1, Math.round(words / 200))
+})
+
+/* SEO 纯文本派生：剥 md 语法后压平空白 */
+function stripMd(s) {
+  return String(s || '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[*_`#>~]/g, '')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/^\s*\d{1,3}[.)]\s+/gm, '')
+    .replace(/\s*\n+\s*/g, ' ')
+    .trim()
+}
+/* JSON-LD image 绝对化（相对路径挂当前 origin） */
+function abs(u) {
+  if (!u) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  if (typeof location === 'undefined') return u
+  try { return new URL(u, location.origin).href } catch (_) { return u }
+}
 
 async function loadRelated(p) {
   related.value = []
@@ -70,16 +119,19 @@ async function load() {
   try {
     post.value = await req('GET', '/api/content/articles/' + encodeURIComponent(slug))
     /* 动态 SEO：OG/JSON-LD Article（dateModified 无独立字段时回落 datePublished；
-     * publisher 补 logo（站内 favicon 绝对路径）；mainEntityOfPage 指向当前页） */
+     * publisher 补 logo（站内 favicon 绝对路径）；mainEntityOfPage 指向当前页；
+     * description 从 content_md 派生 160 字符纯文本（stripMd 后，无正文回落 summary）；
+     * JSON-LD image 绝对化；标题后缀 · GLOWMAG 对齐全站 titleSuffix） */
     try {
       const origin = typeof location !== 'undefined' ? location.origin : ''
+      const desc = stripMd(post.value.content_md).slice(0, 160) || String(post.value.summary || '').slice(0, 160)
       window.dispatchEvent(new CustomEvent('gm:seo', { detail: {
-        title: post.value.title + ' | GLOWMAG Blog',
-        description: (post.value.summary || '').slice(0, 160),
+        title: post.value.title + ' · GLOWMAG',
+        description: desc,
         image: post.value.cover, type: 'article',
         jsonLd: {
           '@context': 'https://schema.org', '@type': 'Article',
-          headline: post.value.title, image: post.value.cover ? [post.value.cover] : undefined,
+          headline: post.value.title, image: [abs(post.value.cover || PH)],
           datePublished: post.value.published_at || undefined,
           dateModified: post.value.published_at || undefined,
           mainEntityOfPage: { '@type': 'WebPage', '@id': origin + route.fullPath },
@@ -109,13 +161,13 @@ onMounted(load)
 
       <div v-else-if="err" class="card" style="padding:44px;text-align:center">
         <div style="font-size:38px;margin-bottom:8px">💅</div>
-        <b style="font-size:16px">Post not found</b>
+        <b style="font-size:16px">{{ i18n.t('post.errT') }}</b>
         <p style="font-size:13.5px;color:var(--gray);margin:8px 0 16px">
-          This story moved or never existed — the journal still has plenty of glam.
+          {{ i18n.t('post.errD') }}
         </p>
         <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-          <router-link to="/blog" class="btn btn-primary btn-sm">Back to journal</router-link>
-          <router-link to="/store" class="btn btn-secondary btn-sm">Shop the looks</router-link>
+          <router-link to="/blog" class="btn btn-primary btn-sm">{{ i18n.t('post.back') }}</router-link>
+          <router-link to="/store" class="btn btn-secondary btn-sm">{{ i18n.t('post.shop') }}</router-link>
         </div>
       </div>
 
@@ -125,13 +177,14 @@ onMounted(load)
         </div>
         <span v-for="t in (post.tags || []).slice(0, 3)" :key="t" class="tag tag-cat" style="margin-right:6px">{{ t.toUpperCase() }}</span>
         <h1 style="font-family:var(--font-title);font-size:32px;margin:12px 0 8px">{{ post.title }}</h1>
-        <div style="font-size:13px;color:var(--gray);margin-bottom:22px">
-          {{ (post.published_at || '').slice(0, 10) }} · By {{ post.author || 'GLOWMAG Team' }}
+        <div class="post-meta">
+          <span>{{ (post.published_at || '').slice(0, 10) }} · {{ i18n.t('post.by', post.author || i18n.t('post.fallbackAuthor')) }}</span>
+          <span class="read-chip">⏱ {{ i18n.t('post.readTime', readMins) }}</span>
         </div>
         <article class="prose" style="font-size:15px" v-html="body" />
 
         <div v-if="related.length" style="margin-top:44px">
-          <h3 style="font-family:var(--font-title);font-size:20px;margin-bottom:16px">Keep reading</h3>
+          <h3 style="font-family:var(--font-title);font-size:20px;margin-bottom:16px">{{ i18n.t('post.related') }}</h3>
           <div class="grid" style="grid-template-columns:repeat(3,1fr);gap:14px">
             <router-link
               v-for="r in related" :key="r.slug"
@@ -161,6 +214,26 @@ onMounted(load)
   border-radius: 12px;
 }
 @keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+
+/* 作者行 + 阅读时长 chip */
+.post-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--gray); margin-bottom: 22px; }
+.read-chip { background: var(--rose-pale); color: var(--plum); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }
+
+/* 正文排版补全（v-html 内容经 :deep 穿透）：68ch 可读行宽 + h3/h4 层级 + 品牌链接/图片样式
+ * + 列表（ul/ol）+ 引用块（rose 左边条 + rose-pale 底）+ 行内代码 */
+.prose { max-width: 68ch; }
+.prose :deep(h3) { font-family: var(--font-title); font-size: 19px; margin: 26px 0 10px; color: var(--ink); }
+.prose :deep(h4) { font-family: var(--font-title); font-size: 16px; margin: 20px 0 8px; color: var(--ink); }
+.prose :deep(a) { color: var(--plum); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rose); }
+.prose :deep(a:hover) { text-decoration-color: var(--plum); }
+.prose :deep(img) { border-radius: 12px; margin: 16px 0; }
+.prose :deep(ul), .prose :deep(ol) { margin: 12px 0; padding-left: 22px; }
+.prose :deep(li) { margin: 4px 0; }
+.prose :deep(blockquote) { margin: 16px 0; padding: 10px 16px; border-left: 3px solid var(--rose); background: var(--rose-pale); border-radius: 0 10px 10px 0; }
+.prose :deep(blockquote p) { margin: 4px 0; }
+.prose :deep(code) { background: var(--cream); border: 1px solid var(--gray-light); border-radius: 6px; padding: 1px 6px; font-size: .88em; font-family: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace; }
+/* 首段 drop-cap：font-title 3em rose（纯静态，无动画） */
+.prose :deep(p:first-child::first-letter) { font-family: var(--font-title); font-size: 3em; font-weight: 700; color: var(--rose); float: left; line-height: .82; padding: 3px 8px 0 0; }
 @media (max-width: 768px) {
   .grid { grid-template-columns: 1fr !important; }
 }

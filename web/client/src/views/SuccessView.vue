@@ -108,7 +108,7 @@ onMounted(async () => {
 <template>
   <section class="section">
     <div class="container" style="max-width:640px;text-align:center">
-      <div :style="{
+      <div class="ok-ring" :style="{
         width: '72px', height: '72px', borderRadius: '50%', margin: '0 auto 18px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px',
         background: order && order.status === 0 ? 'var(--pale-warn)' : 'rgba(62,189,147,.12)',
@@ -147,7 +147,7 @@ onMounted(async () => {
         <div style="display:flex;justify-content:space-between"><span>{{ t('Total', '合计') }}</span><b style="color:var(--plum)">{{ money(order.grand_total) }}</b></div>
         <div v-if="order.discount_total" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ t('Discounts', '优惠') }}</span><span>−{{ money(order.discount_total) }}</span></div>
         <div v-if="order.points_used" style="display:flex;justify-content:space-between;color:var(--gray)"><span>⭐ {{ t('Points used', '使用积分') }}</span><span>{{ order.points_used }} pts (−{{ money(order.points_discount) }})</span></div>
-        <div v-if="order.points_earned" style="display:flex;justify-content:space-between;color:var(--success)"><span>🎁 {{ t('Points earned (frozen till delivery)', '本单获得积分（确认收货后解冻）') }}</span><span>+{{ order.points_earned }} pts</span></div>
+        <div v-if="order.points_earned" style="display:flex;justify-content:space-between;color:var(--success)"><span>🎁 {{ t('Points earned (frozen till delivery)', '本单获得积分（确认收货后解冻）') }}</span><b style="color:var(--gold)">+{{ order.points_earned }} pts</b></div>
         <div v-if="order.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>💳 {{ t('Gift card', '礼品卡') }}</span><span>−{{ money(order.giftcard_discount) }}</span></div>
         <div style="display:flex;justify-content:space-between"><span>{{ t('Status', '状态') }}</span>
           <span class="tag" :class="statusTag(order.status)">{{ statusText(order.status) }}</span>
@@ -190,4 +190,8 @@ onMounted(async () => {
 <style scoped>
 .copy-btn { border: 1px solid var(--gray-light); background: #fff; color: var(--plum); font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; cursor: pointer; }
 .copy-btn:hover { background: var(--rose-pale); }
+/* 成功圆环：popIn 入场 + 常驻柔光 pulse 组合 */
+.ok-ring { animation: ringIn .45s cubic-bezier(.34,1.56,.64,1) both, ringPulse 2s ease-out .6s infinite; }
+@keyframes ringIn { from { transform: scale(.5); opacity: 0; } }
+@keyframes ringPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(62,189,147,.32); } 50% { box-shadow: 0 0 0 14px rgba(62,189,147,0); } }
 </style>

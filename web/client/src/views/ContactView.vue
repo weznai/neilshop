@@ -216,12 +216,12 @@ onMounted(() => {
         <div v-else class="card" style="padding:24px">
           <div class="field" :class="{ error: errors.email }">
             <label>{{ tt('Email', '邮箱') }} *</label>
-            <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" placeholder="you@example.com">
+            <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" autocomplete="email" placeholder="you@example.com" @input="errors.email = ''">
             <div class="field-msg">{{ errors.email }}</div>
           </div>
           <div class="field" :class="{ error: errors.order_no }">
             <label>{{ tt('Order number', '订单号') }} <span style="color:var(--gray);font-weight:400">({{ tt('optional — speeds things up', '选填，可加快处理') }})</span></label>
-            <input v-model="form.order_no" class="input" :class="{ error: errors.order_no }" placeholder="NS260728XXXXXX">
+            <input v-model="form.order_no" class="input" :class="{ error: errors.order_no }" placeholder="NS260728XXXXXX" autocomplete="off" @input="errors.order_no = ''">
             <div class="field-msg">{{ errors.order_no }}</div>
           </div>
           <div class="field">
@@ -232,7 +232,7 @@ onMounted(() => {
           </div>
           <div class="field" :class="{ error: errors.subject }">
             <label>{{ tt('Subject', '主题') }} *</label>
-            <input v-model="form.subject" class="input" :class="{ error: errors.subject }" maxlength="80" :placeholder="tt('Short summary, e.g. Wrong size in my set', '简短概述，例如：套装尺码不对')">
+            <input v-model="form.subject" class="input" :class="{ error: errors.subject }" maxlength="80" :placeholder="tt('Short summary, e.g. Wrong size in my set', '简短概述，例如：套装尺码不对')" @input="errors.subject = ''">
             <div class="field-msg">{{ errors.subject }}</div>
           </div>
           <div v-if="templates.length" style="margin-bottom:14px">
@@ -243,7 +243,7 @@ onMounted(() => {
           </div>
           <div class="field" :class="{ error: errors.content }">
             <label>{{ tt('Message', '留言内容') }} *</label>
-            <textarea v-model="form.content" class="input" :class="{ error: errors.content }" rows="5" style="height:auto;padding-top:10px" :placeholder="tt('How can we help? Include sizes, order details or anything handy.', '我们能帮你什么？可附上尺码、订单信息等细节。')"></textarea>
+            <textarea v-model="form.content" class="input" :class="{ error: errors.content }" rows="5" style="height:auto;padding-top:10px" :placeholder="tt('How can we help? Include sizes, order details or anything handy.', '我们能帮你什么？可附上尺码、订单信息等细节。')" @input="errors.content = ''"></textarea>
             <div class="field-msg">{{ errors.content }}</div>
           </div>
           <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="submit">{{ tt('Send message', '发送留言') }}</button>
@@ -255,8 +255,8 @@ onMounted(() => {
 
       <div v-else class="card" style="padding:24px">
         <div class="lk-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="lookup.email" class="input" type="email" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')"></div>
-          <div v-if="!auth.isLoggedIn" class="field"><label>{{ tt('Ticket number', '工单号') }}</label><input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX"></div>
+          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="lookup.email" class="input" type="email" autocomplete="email" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')"></div>
+          <div v-if="!auth.isLoggedIn" class="field"><label>{{ tt('Ticket number', '工单号') }}</label><input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX" autocomplete="off"></div>
         </div>
         <p v-if="auth.isLoggedIn" style="font-size:12.5px;color:var(--gray);margin:6px 0 0">
           {{ tt('Signed in — all tickets created with this account email are listed.', '已登录——将显示用该账户邮箱创建的全部工单，无需工单号。') }}

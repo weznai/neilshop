@@ -69,6 +69,23 @@ def _restock_items(db: Session, order: Order, *, ref_type: str) -> None:
         )
 
 
+def _refund_giftcard_debit(db: Session, order: Order) -> None:
+    """礼品卡扣款回补：按该单 ledger change_type=3（消费确认）流水反查逐卡返还
+    （余额加回 + 用尽卡复活 + change_type=5 流水）；无礼品卡扣款时为空操作。
+    礼品卡 MVP 下单即扣且不建 payment 行，取消/超时/退款共用此回补。"""
+    for row in repo.giftcard_debit_ledgers(db, order.id):
+        gc = repo.get_gift_card(db, row.gift_card_id)
+        if not gc:
+            continue
+        gc.balance += row.amount
+        if gc.status == 3 and gc.balance > 0:
+            gc.status = 1
+        repo.add_giftcard_ledger(
+            db, gift_card_id=gc.id, order_id=order.id, change_type=5,
+            amount=row.amount, balance_after=gc.balance,
+        )
+
+
 def apply_refund(
     db: Session,
     order: Order,
@@ -100,18 +117,7 @@ def apply_refund(
         # 累计退满：该单已用积分返还（points_used=0 跳过，同单幂等）
         points_svc.refund_return(db, order, order.user_id, order.points_used)
         if order.giftcard_discount > 0:
-            ledger_rows = repo.giftcard_debit_ledgers(db, order.id)
-            for row in ledger_rows:
-                gc = repo.get_gift_card(db, row.gift_card_id)
-                if not gc:
-                    continue
-                gc.balance += row.amount
-                if gc.status == 3 and gc.balance > 0:
-                    gc.status = 1
-                repo.add_giftcard_ledger(
-                    db, gift_card_id=gc.id, order_id=order.id, change_type=5,
-                    amount=row.amount, balance_after=gc.balance,
-                )
+            _refund_giftcard_debit(db, order)
         repo.add_outbox_event(
             db, aggregate_type="order", aggregate_id=order.id,
             event_type="order.refunded",
@@ -144,6 +150,7 @@ def list_orders(
         "items": [{
             "order_no": o.order_no, "email": o.email, "status": o.status,
             "grand_total": o.grand_total, "shipping_status": o.shipping_status,
+            "note": o.note,
             "placed_at": o.placed_at.isoformat() if o.placed_at else None,
             "paid_at": o.paid_at.isoformat() if o.paid_at else None,
         } for o in orders],
@@ -176,6 +183,7 @@ def order_detail(db: Session, order_no: str) -> dict:
         "grand_total": order.grand_total,
         "shipping_address": order.shipping_address,
         "tracking_no": order.tracking_no,
+        "note": order.note,
         "placed_at": order.placed_at.isoformat() if order.placed_at else None,
         "paid_at": order.paid_at.isoformat() if order.paid_at else None,
         "shipped_at": order.shipped_at.isoformat() if order.shipped_at else None,

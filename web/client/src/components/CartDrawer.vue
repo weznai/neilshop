@@ -16,6 +16,15 @@ const zh = computed(() => i18n.lang === 'zh')
 const recs = ref([])
 let recSeq = 0
 
+/* 行项图/推荐图兜底：回落 placehold + dataset 守卫防循环 */
+const IMG_FALLBACK = 'https://placehold.co/200x200/E8B4B8/552338?text=GLOWMAG'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
+
 watch(
   () => cart.items.map((i) => i.pid || i.id).join(','),
   async (ids) => {
@@ -136,7 +145,7 @@ function drawerKeydown(e) {
           v-for="i in cart.items" :key="i.id"
           style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--gray-light)"
         >
-          <img :src="i.img" style="width:72px;height:72px;border-radius:8px;object-fit:cover" :alt="i.title">
+          <img :src="i.img" style="width:72px;height:72px;border-radius:8px;object-fit:cover" :alt="i.title" loading="lazy" @error="imgFallback">
           <div style="flex:1;min-width:0">
             <div style="font-weight:600;font-size:14px">{{ i.title }}</div>
             <div style="font-size:12px;color:var(--gray)">{{ i.variant }}</div>
@@ -177,7 +186,7 @@ function drawerKeydown(e) {
         <div class="rec-head">{{ i18n.t('cart.pairs') }}</div>
         <div class="rec-row">
           <div v-for="p in recs" :key="p.id" class="rec-card">
-            <img :src="p.hero_image" :alt="p.title">
+            <img :src="p.hero_image" :alt="p.title" loading="lazy" @error="imgFallback">
             <div class="rec-info">
               <div class="rec-title">{{ recTitle(p) }}</div>
               <div class="rec-price">${{ (p.price_min / 100).toFixed(2) }}</div>

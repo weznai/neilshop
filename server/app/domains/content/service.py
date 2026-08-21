@@ -1,5 +1,6 @@
 """内容域服务 —— FAQ/博客/评价/UGC 业务（含后台审核与积分奖励）"""
 
+from collections import Counter
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -69,6 +70,16 @@ def list_faqs(db: Session, category: int | None) -> list[dict]:
 # ===== 用户侧：博客文章 =====
 
 
+def _article_summary(content_md: str | None) -> str:
+    """列表摘要：剥首个 '# ' 标题行与空行后截 120 字符；剥完为空回落原文截断"""
+    raw = content_md or ""
+    lines = [ln for ln in raw.splitlines() if ln.strip()]
+    if lines and lines[0].lstrip().startswith("# "):
+        lines = lines[1:]
+    body = "\n".join(lines).strip()
+    return body[:120] if body else raw[:120]
+
+
 def list_articles(db: Session, page: int, size: int, tag: str | None) -> dict:
     q = repo.published_articles(db, tag)
     total = q.count()
@@ -81,11 +92,22 @@ def list_articles(db: Session, page: int, size: int, tag: str | None) -> dict:
             "author": a.author,
             "tags": a.tags,
             "published_at": a.published_at,
-            "summary": (a.content_md or "")[:120],
+            "summary": _article_summary(a.content_md),
         }
         for a in rows
     ]
-    return {"items": items, "total": total, "page": page, "size": size}
+    # 标签云：全量已发布文章 tags（JSON 列表）Counter 聚合，count 降序（并列按首次出现）
+    counter: Counter = Counter()
+    for tags in repo.published_article_tags(db):
+        for t in tags or []:
+            counter[str(t)] += 1
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+        "tags": [{"name": name, "count": n} for name, n in counter.most_common()],
+    }
 
 
 def article_detail(db: Session, slug: str) -> dict:

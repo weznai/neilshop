@@ -53,7 +53,8 @@ class Exchange(Base):
     order_item_id = Column(BigInteger, nullable=False)
     old_variant_id = Column(BigInteger, nullable=False)
     new_variant_id = Column(BigInteger, nullable=False)
-    price_diff = Column(Integer, nullable=False, default=0)  # 正补差/负退差/0
+    qty = Column(Integer, nullable=False, default=1)         # 换货数量（1..可换量）
+    price_diff = Column(Integer, nullable=False, default=0)  # 正补差/负退差/0（已乘 qty）
     status = Column(SmallInteger, nullable=False, default=0)
     shipment_id = Column(BigInteger)
     diff_payment_id = Column(BigInteger)

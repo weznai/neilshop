@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { i18n } from '../i18n'
@@ -59,12 +59,22 @@ const pv = ref(null)
 const pvBusy = ref(false)
 const pvError = ref('')
 
+/* 摘要行项图兜底：回落 placehold + dataset 守卫防循环 */
+const IMG_FALLBACK = 'https://placehold.co/120x120/E8B4B8/552338?text=GLOWMAG'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
+
 let pvTimer = null
 let pvSeq = 0
 function schedulePreview() {
   clearTimeout(pvTimer)
   pvTimer = setTimeout(runPreview, 500)
 }
+onUnmounted(() => clearTimeout(pvTimer))
 
 const pointsUsable = computed(() => (auth.points && auth.points.usable) || 0)
 const pointsApplied = computed(() => {
@@ -254,11 +264,16 @@ async function place() {
     if (utm) body.utm = utm
     const d = await req('POST', '/api/checkout/place', body)
     /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock） */
-    const useMock = paySel.value === 'mock' || payDefault.value === 'mock'
+    const useMock = paySel.value === 'mock'
     try {
       const ib = { order_no: d.order_no }
       if (paySel.value && paySel.value !== 'mock' && paySel.value !== payDefault.value) ib.provider = paySel.value
-      await req('POST', '/api/payments/create-intent', ib)
+      const intent = await req('POST', '/api/payments/create-intent', ib)
+      /* hosted checkout：非 mock 通道返回 redirect_url 时跳转 provider 收银台（替代直接进 success） */
+      if (!useMock && intent && intent.redirect_url) {
+        window.location.href = intent.redirect_url
+        await new Promise(() => {}) /* 页面即将跳转：挂起以保持下单 loading 态，阻止后续路由跳转 */
+      }
       if (useMock) await req('POST', '/api/payments/mock-pay', { order_no: d.order_no, succeed: true })
     } catch (_) { /* /success 页保留待支付提示 + 支付按钮 */ }
     router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
@@ -316,7 +331,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
         <div style="display:grid;gap:18px">
           <!-- 联系 & 地址 -->
           <div class="card" style="padding:22px">
-            <h3 style="font-size:16px;margin-bottom:14px">1 · {{ i18n.t('co.step1') }}</h3>
+            <h3 class="co-step"><i class="step-b">1</i>{{ i18n.t('co.step1') }}</h3>
             <div class="field" :class="{ error: errors.email }">
               <label>{{ i18n.t('co.email') }} *</label>
               <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" placeholder="you@example.com" autocomplete="email">
@@ -353,7 +368,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
 
           <!-- 配送 -->
           <div class="card" style="padding:22px">
-            <h3 style="font-size:16px;margin-bottom:14px">2 · {{ i18n.t('co.step2') }}</h3>
+            <h3 class="co-step"><i class="step-b">2</i>{{ i18n.t('co.step2') }}</h3>
             <label v-for="m in shipMethods" :key="m.method" class="pay-row" :class="{ on: shipMethod === m.method }" style="cursor:pointer">
               <input v-model="shipMethod" type="radio" :value="m.method" style="display:none">
               <b>{{ methodLabel(m) }}</b>
@@ -368,7 +383,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
 
           <!-- 支付 -->
           <div class="card" style="padding:22px">
-            <h3 style="font-size:16px;margin-bottom:14px">3 · {{ i18n.t('co.step3') }}</h3>
+            <h3 class="co-step"><i class="step-b">3</i>{{ i18n.t('co.step3') }}</h3>
             <label v-for="p in payProviders" :key="p.id" class="pay-row" :class="{ on: paySel === p.id }" style="cursor:pointer">
               <input v-model="paySel" type="radio" :value="p.id" style="display:none">
               <b>{{ p.id === 'mock' ? '💳' : '🅿️' }} {{ p.name }}</b>
@@ -438,14 +453,16 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
             {{ i18n.t('co.summary') }}
             <span v-if="pvBusy" style="font-size:11px;color:var(--gray)">⟳ {{ i18n.t('co.updating') }}</span>
           </h3>
-          <div style="display:grid;gap:12px;max-height:240px;overflow-y:auto">
-            <div v-for="i in itemsView" :key="i.id" style="display:flex;gap:10px;align-items:center">
-              <div style="position:relative">
-                <img :src="i.img" :alt="i.title" style="width:48px;height:48px;border-radius:8px;object-fit:cover">
-                <span style="position:absolute;top:-6px;right:-6px;background:var(--ink);color:#fff;font-size:10px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center">{{ i.qty }}</span>
+          <div class="sum-mask" :class="{ 'sum-fade': itemsView.length > 4 }">
+            <div style="display:grid;gap:12px;max-height:240px;overflow-y:auto">
+              <div v-for="i in itemsView" :key="i.id" style="display:flex;gap:10px;align-items:center">
+                <div style="position:relative">
+                  <img :src="i.img" :alt="i.title" style="width:48px;height:48px;border-radius:8px;object-fit:cover" loading="lazy" @error="imgFallback">
+                  <span style="position:absolute;top:-6px;right:-6px;background:var(--ink);color:#fff;font-size:10px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center">{{ i.qty }}</span>
+                </div>
+                <div style="flex:1;min-width:0;font-size:13px"><b>{{ i.title }}</b><div style="color:var(--gray);font-size:12px">{{ i.variant }}</div></div>
+                <b style="font-size:13px;font-variant-numeric:tabular-nums">{{ money(i.lineC) }}</b>
               </div>
-              <div style="flex:1;min-width:0;font-size:13px"><b>{{ i.title }}</b><div style="color:var(--gray);font-size:12px">{{ i.variant }}</div></div>
-              <b style="font-size:13px;font-variant-numeric:tabular-nums">{{ money(i.lineC) }}</b>
             </div>
           </div>
           <div style="display:flex;gap:8px;margin:16px 0">
@@ -502,7 +519,13 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
 <style scoped>
 .pay-row { display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--gray-light); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; transition: all .15s; }
 .pay-row:hover { border-color: var(--rose); }
-.pay-row.on { border-color: var(--plum); background: var(--rose-pale); }
+.pay-row.on { border-color: var(--plum); background: var(--rose-pale); box-shadow: inset 3px 0 0 var(--plum); }
+/* 三步骤号：28px 圆形徽标（rose-pale 底 plum 字） */
+.co-step { display: flex; align-items: center; gap: 10px; font-size: 16px; margin-bottom: 14px; }
+.step-b { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--rose-pale); color: var(--plum); font-style: normal; font-size: 14px; font-weight: 700; flex: none; }
+/* 摘要列表底部渐变遮罩（仅溢出时出现） */
+.sum-mask { position: relative; }
+.sum-fade::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 26px; background: linear-gradient(rgba(255,255,255,0), #fff); pointer-events: none; }
 .srow { display: flex; justify-content: space-between; align-items: baseline; }
 .srow .num { font-variant-numeric: tabular-nums; }
 .srow.ok { color: var(--success); }

@@ -119,13 +119,24 @@ _expected = {
     "/api/account/register": 30,
     "/api/account/password-reset": 20,
     "/api/account/newsletter": 30,
+    "/api/account/consent": 10,
     "/api/promo/giftcard/purchase": 20,
+    "/api/promo/giftcard": 20,
+    "/api/promo/popup": 60,
     "/api/promo/validate": 60,
+    "/api/checkout/place": 10,
     "/api/payments/mock-pay": 120,
+    "/api/payments/webhook": 120,
+    "/api/payments/create-intent": 30,
+    "/api/cart/items-batch": 30,
+    "/api/returns": 20,
+    "/api/exchanges": 20,
+    "/api/orders/track": 30,
+    "/api/catalog/stock-notify": 10,
     "/api/support/tickets": 30,
 }
 _rules = dict(obs.RATE_RULES)
-check("9 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
+check("20 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
 check("全局规则不含 /api/ai（域内 30/min 自治，避免双重 429）",
       not any(p.startswith("/api/ai") for p, _ in obs.RATE_RULES))
 check("admin/login 规则排在宽前缀 login 之前",
@@ -137,8 +148,14 @@ check("/api/account/admin/logout 不被 admin/login 规则误伤",
       obs._check_rate_limit("u1", "/api/account/admin/logout") == (None, 0))
 check("/api/account/logout 不被 login 规则误伤",
       obs._check_rate_limit("u2", "/api/account/logout") == (None, 0))
-check("/api/promo/giftcard（查询）不被 purchase 规则误伤",
-      obs._check_rate_limit("u3", "/api/promo/giftcard") == (None, 0))
+check("/api/promo/giftcard（查询）命中专属 giftcard 规则而非 purchase 规则",
+      obs._check_rate_limit("u3", "/api/promo/giftcard")[0] == "/api/promo/giftcard")
+check("/api/promo/giftcard/purchase 先命中 purchase 规则（更具体前缀在前）",
+      obs._check_rate_limit("u3b", "/api/promo/giftcard/purchase")[0]
+      == "/api/promo/giftcard/purchase")
+check("/api/orders/track 全路径规则不覆盖 /api/orders 列表端点",
+      obs._check_rate_limit("u3c", "/api/orders") == (None, 0)
+      and obs._check_rate_limit("u3d", "/api/orders/NS123") == (None, 0))
 check("/api/account/password-reset 覆盖 /request 与 /confirm 两子路径",
       obs._check_rate_limit("u4", "/api/account/password-reset/request")[0]
       == "/api/account/password-reset"

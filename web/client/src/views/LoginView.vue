@@ -19,6 +19,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const mode = ref('login') /* login | forgot | sent */
 const email = ref('')
 const password = ref('')
+const showPw = ref(false)
 const busy = ref(false)
 const err = ref('')
 
@@ -72,8 +73,18 @@ async function sendReset() {
 
 <template>
   <section class="section">
-    <div class="container" style="max-width:420px">
-      <div class="card" style="padding:30px">
+    <div class="container auth-wrap">
+      <!-- 品牌分栏：左 45% 渐变板（≤768px 折叠为顶部 140px 横条） -->
+      <aside class="auth-brand">
+        <div class="auth-logo">GLOW<span>MAG</span></div>
+        <p class="auth-tag">{{ tt('Press-on nails & magnetic lashes, delivered glam.', '穿戴甲与磁吸假睫毛，美貌直达。') }}</p>
+        <ul class="auth-trust">
+          <li>↩️ {{ tt('30-day free returns', '30 天免费退货') }}</li>
+          <li>🚚 {{ tt('Free shipping over $35', '满 $35 免邮') }}</li>
+          <li>⭐ {{ tt('Points on every order', '每单攒积分') }}</li>
+        </ul>
+      </aside>
+      <div class="card auth-card">
         <template v-if="mode === 'login'">
           <h1 style="font-family:var(--font-title);font-size:26px;margin-bottom:4px">{{ tt('Welcome back 💅', '欢迎回来 💅') }}</h1>
           <p style="font-size:13.5px;color:var(--gray);margin-bottom:20px">{{ tt('Sign in for orders, points & faster checkout.', '登录后管理订单、积分，结算更快捷。') }}</p>
@@ -87,10 +98,15 @@ async function sendReset() {
                 <label>{{ tt('Password', '密码') }}</label>
                 <button type="button" style="font-size:12px;color:var(--plum);font-weight:600;background:none;border:none;cursor:pointer;padding:0" @click="mode = 'forgot'; err = ''">{{ tt('Forgot password?', '忘记密码？') }}</button>
               </div>
-              <input v-model="password" class="input" type="password" autocomplete="current-password" placeholder="••••••••">
+              <div class="pw-wrap">
+                <input v-model="password" class="input" :type="showPw ? 'text' : 'password'" autocomplete="current-password" placeholder="••••••••">
+                <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showPw = !showPw">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+                </button>
+              </div>
             </div>
             <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
-            <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Sign In 登录', '登录 Sign In') }}</button>
+            <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Sign In', '登录') }}</button>
           </form>
           <div style="text-align:center;margin-top:14px;font-size:13px;color:var(--gray)">
             {{ tt('New here?', '还不是会员？') }}
@@ -131,3 +147,21 @@ async function sendReset() {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 品牌分栏登录页：左 45% 渐变品牌板 + 右表单卡（≤768px 折叠为顶部 140px 横条） */
+.auth-wrap { max-width: 860px; display: grid; grid-template-columns: 45% 1fr; align-items: stretch; border-radius: var(--radius-card); overflow: hidden; box-shadow: var(--shadow-card); background: #fff; }
+.auth-brand { background: linear-gradient(160deg, var(--rose), var(--plum)); color: #fff; padding: 48px 36px; display: flex; flex-direction: column; justify-content: center; gap: 14px; }
+.auth-logo { font-family: var(--font-title); font-size: 42px; font-weight: 700; letter-spacing: 1px; }
+.auth-logo span { opacity: .7; }
+.auth-tag { font-size: 13.5px; opacity: .88; line-height: 1.7; margin: 0; }
+.auth-trust { list-style: none; display: grid; gap: 10px; margin: 10px 0 0; padding: 0; }
+.auth-trust li { display: flex; gap: 10px; align-items: center; font-size: 13px; font-weight: 600; background: rgba(255,255,255,.14); border-radius: 10px; padding: 10px 14px; }
+.auth-card { border: none; box-shadow: none; padding: 34px 30px; }
+@media (max-width: 768px) {
+  .auth-wrap { grid-template-columns: 1fr; }
+  .auth-brand { min-height: 140px; padding: 24px 22px; }
+  .auth-logo { font-size: 28px; }
+  .auth-trust { display: none; }
+}
+</style>

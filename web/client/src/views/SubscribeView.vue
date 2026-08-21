@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '../api/client'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
@@ -103,8 +103,19 @@ async function act(sub, action, body) {
 }
 function pause(sub) { act(sub, 'pause', {}) }
 function resume(sub) { act(sub, 'resume') }
+/* 取消订阅：两段式站内确认（替代 window.confirm，对齐 UnsubscribeView 模式）——首次点击进入 arm 态，5 秒未确认自动复位 */
+const cancelArm = ref(0)
+let cancelTimer = null
+onUnmounted(() => clearTimeout(cancelTimer))
 function cancelSub(sub) {
-  if (!window.confirm(tt('Cancel this subscription? You can re-subscribe anytime.', '确认取消订阅？可随时重新订阅。'))) return
+  if (cancelArm.value !== sub.id) {
+    cancelArm.value = sub.id
+    clearTimeout(cancelTimer)
+    cancelTimer = setTimeout(() => { cancelArm.value = 0 }, 5000)
+    return
+  }
+  cancelArm.value = 0
+  clearTimeout(cancelTimer)
   act(sub, 'cancel', { cancel_reason: 1 })
 }
 function skipNext(sub) {
@@ -155,11 +166,17 @@ const styleText = (m) => (m === 2 ? tt('Blind box', '盲盒惊喜') : tt('My cho
             <div v-if="s.status === 1" style="display:flex;gap:8px;flex-wrap:wrap">
               <button class="btn btn-secondary btn-sm" :disabled="busy" @click="skipNext(s)">{{ tt('⏭ Skip next box', '⏭ 跳过下一盒') }}</button>
               <button class="btn btn-secondary btn-sm" :disabled="busy" @click="pause(s)">{{ tt('⏸ Pause', '⏸ 暂停') }}</button>
-              <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="busy" @click="cancelSub(s)">{{ tt('Cancel', '取消订阅') }}</button>
+              <button
+                class="btn btn-ghost btn-sm" :disabled="busy" @click="cancelSub(s)"
+                :style="cancelArm === s.id ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
+              >{{ cancelArm === s.id ? tt('Tap again to confirm', '再点一次确认取消') : tt('Cancel', '取消订阅') }}</button>
             </div>
             <div v-else-if="s.status === 2" style="display:flex;gap:8px;flex-wrap:wrap">
               <button class="btn btn-primary btn-sm" :disabled="busy" @click="resume(s)">{{ tt('▶ Resume', '▶️ 恢复订阅') }}</button>
-              <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="busy" @click="cancelSub(s)">{{ tt('Cancel', '取消订阅') }}</button>
+              <button
+                class="btn btn-ghost btn-sm" :disabled="busy" @click="cancelSub(s)"
+                :style="cancelArm === s.id ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
+              >{{ cancelArm === s.id ? tt('Tap again to confirm', '再点一次确认取消') : tt('Cancel', '取消订阅') }}</button>
             </div>
           </div>
         </template>

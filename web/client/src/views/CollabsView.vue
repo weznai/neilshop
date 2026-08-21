@@ -18,10 +18,12 @@ const PICKS = [
         <p style="color:var(--gray)">{{ tt('Editorial picks curated with creators we love — shop the styles they actually wear.', '编辑部精选 · 与创作者合作的心水款式合辑') }}</p>
       </div>
       <div class="grid grid-2">
-        <div v-for="c in PICKS" :key="c[1]" class="card" style="padding:0;overflow:hidden">
-          <img :src="c[4]" :alt="c[1]" style="width:100%;aspect-ratio:1;object-fit:cover" loading="lazy">
+        <div v-for="c in PICKS" :key="c[1]" class="card collab-card" style="padding:0;overflow:hidden">
+          <div class="collab-img">
+            <img :src="c[4]" :alt="c[1]" loading="lazy">
+          </div>
           <div style="padding:18px">
-            <span class="tag tag-cat">{{ c[0] }}</span>
+            <span class="trend-chip collab-chip">{{ c[0] }}</span>
             <b style="display:block;font-family:var(--font-title);font-size:19px;margin:8px 0 4px">{{ c[1] }}</b>
             <div style="font-size:13px;color:var(--gray);margin-bottom:12px">{{ tt(c[2], c[3]) }}</div>
             <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
@@ -30,13 +32,13 @@ const PICKS = [
       </div>
       <div class="card" style="padding:26px;margin-top:22px">
         <b style="font-size:16px">{{ tt('Want to collab?', '想和我们联名？') }}</b>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">
+        <div class="collab-reqs">
           <span v-for="r in [
             tt('10k+ followers', '1 万+ 粉丝'),
             tt('Nail or lash content', '美甲或睫毛内容创作者'),
             tt('Based anywhere we ship', '位于可配送地区'),
             tt('Love a glam drop', '热爱美的事业'),
-          ]" :key="r" class="tag tag-cat">{{ r }}</span>
+          ]" :key="r" class="trend-chip collab-chip">{{ r }}</span>
         </div>
         <p style="font-size:13.5px;color:var(--gray);line-height:1.7;margin:0 0 14px">
           {{ tt(
@@ -52,3 +54,14 @@ const PICKS = [
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 合辑卡：图 hover scale(1.03) 慢速缩放（容器裁切） */
+.collab-img { overflow: hidden; }
+.collab-img img { width: 100%; aspect-ratio: 4/5; object-fit: cover; display: block; transition: transform .35s ease-out; }
+.collab-card:hover .collab-img img { transform: scale(1.03); }
+
+/* trend-chip 统一（页内 flex 容器内去除自带 margin） */
+.collab-reqs { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.collab-chip { margin: 0; }
+</style>

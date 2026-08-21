@@ -29,7 +29,8 @@ const off = computed(() =>
   props.p.compare_at_price && props.p.compare_at_price > minCents.value
     ? Math.round((1 - minCents.value / props.p.compare_at_price) * 100)
     : 0)
-const hoverImg = computed(() => (props.p.images || [])[1] || PLACEHOLDER)
+/* hover 副图缺省回落主图（不再跳占位图；无 images[1] 时与主图同图，hover 无感切换） */
+const hoverImg = computed(() => (props.p.images || [])[1] || props.p.hero_image)
 const soldOut = computed(() => !!(props.p.stock_summary && props.p.stock_summary.out))
 const lowStock = computed(() => {
   const s = props.p.stock_summary
@@ -45,7 +46,13 @@ const soldLabel = computed(() => {
   return n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : null
 })
 
-function imgFallback(e) { e.target.src = PLACEHOLDER }
+/* 兜底占位：dataset 守卫防循环（对齐 HomeView heroFallback / ProductView imgFallback） */
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = PLACEHOLDER
+}
 
 const busy = ref(false)
 async function quickAdd() {

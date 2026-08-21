@@ -1,10 +1,12 @@
 <script setup>
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { i18n } from '../i18n'
 import { req } from '../api/client'
+import { useUiStore } from '../stores/ui'
 
 const router = useRouter()
+const ui = useUiStore()
 const open = ref(false)
 const greeted = ref(false)
 const busy = ref(false)
@@ -17,9 +19,22 @@ const HIST_KEY = 'gm_chat_hist'
 const HIST_MAX = 30 /* 最近 N 条持久化（含问答双方） */
 let msgSeq = 0 /* 稳定 key：避免 v-for 用 idx（历史裁剪/typing 增删导致错位复用） */
 
+/* 纳入全局 ESC（capture 阶段先于 App 的 document 委托）：其它浮层（drawer/search/mnav/modal）
+   开着时跳过自己，让全局先关浮层；仅面板独立在场时才自关并阻断后续监听 */
+function onEsc(e) {
+  if (e.key !== 'Escape' || !open.value) return
+  if (ui.cartDrawer || ui.mnavOpen || ui.searchOpen || ui.openModalId) return
+  e.stopPropagation()
+  open.value = false
+}
+
+/* 面板开合上报 ui store：body 滚动锁由 StoreLayout 统一 watch anyOverlay 处理 */
+watch(open, (v) => { ui.chatOpen = v })
+
 const shipQ = () => (i18n.lang === 'zh' ? '🚚 运费与配送时效？' : '🚚 Shipping cost & delivery time?')
 
 onMounted(() => {
+  window.addEventListener('keydown', onEsc, true)
   try {
     const saved = JSON.parse(localStorage.getItem(HIST_KEY) || '[]')
     if (Array.isArray(saved) && saved.length) {
@@ -31,6 +46,7 @@ onMounted(() => {
     }
   } catch (_) { msgs.value = [] }
 })
+onUnmounted(() => { window.removeEventListener('keydown', onEsc, true); ui.chatOpen = false })
 
 watch(msgs, () => {
   const keep = msgs.value.filter((m) => !m.typing).slice(-HIST_MAX)

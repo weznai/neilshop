@@ -96,8 +96,8 @@ onMounted(() => {
       <div class="card" style="padding:24px">
         <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">{{ tt('No login needed — order number + email used at checkout.', '免登录——订单号 + 下单邮箱即可查询。') }}</p>
         <form @submit.prevent="track">
-          <div class="field"><label>{{ tt('Order number', '订单号') }}</label><input v-model="no" class="input" placeholder="NS260728D4E5F6"></div>
-          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="email" class="input" type="email" placeholder="you@example.com"></div>
+          <div class="field"><label>{{ tt('Order number', '订单号') }}</label><input v-model="no" class="input" placeholder="NS260728D4E5F6" autocomplete="off"></div>
+          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com"></div>
           <div v-if="err" class="field-msg" style="display:block;color:var(--error)">{{ err }}</div>
           <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy">{{ tt('Track', '查询') }}</button>
         </form>

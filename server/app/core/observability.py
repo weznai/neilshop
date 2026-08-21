@@ -44,6 +44,7 @@ RATE_RULES: list[tuple[str, int]] = [
     ("/api/payments/mock-pay", 120),
     ("/api/payments/webhook", 120),
     ("/api/payments/create-intent", 30),
+    ("/api/cart/items-batch", 30),
     ("/api/returns", 20),
     ("/api/exchanges", 20),
     ("/api/orders/track", 30),

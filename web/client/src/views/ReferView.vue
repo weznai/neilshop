@@ -23,6 +23,19 @@ const link = computed(() => {
   return window.location.origin + '/register?ref=' + me.value.code
 })
 
+/* ReferralStatus 0-4 → [en, zh]（对齐 server service_referrals.py STATUS_TEXT；未知 status 回落后端 status_text） */
+const REF_STATUS = {
+  0: ['Clicked · sign-up pending', '点击注册'],
+  1: ['Registered', '已注册'],
+  2: ['First order pending', '首单待确认'],
+  3: ['Rewarded', '已奖励'],
+  4: ['Invalid', '无效'],
+}
+function refStatus(r) {
+  const row = REF_STATUS[r.status]
+  return row ? tt(row[0], row[1]) : (r.status_text || String(r.status))
+}
+
 function fmt(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -125,7 +138,7 @@ async function sendInvite() {
             <div style="font-size:13.5px;font-weight:700;margin-bottom:6px">{{ tt('My invites', '我的邀请') }}</div>
             <div v-for="(r, i) in me.invited" :key="i" style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:9px 0;border-bottom:1px dashed var(--gray-light)">
               <span>{{ r.email_masked }}<span style="color:var(--gray)"> · {{ fmt(r.created_at) }}</span></span>
-              <span class="tag" :class="r.status === 3 ? 'tag-paid' : r.status === 4 ? 'tag-error' : 'tag-pending'">{{ r.status_text }}</span>
+              <span class="tag" :class="r.status === 3 ? 'tag-paid' : r.status === 4 ? 'tag-error' : 'tag-pending'">{{ refStatus(r) }}</span>
             </div>
           </div>
           <div v-else class="card" style="padding:22px;color:var(--gray);font-size:13.5px;max-width:500px;margin:0 auto">

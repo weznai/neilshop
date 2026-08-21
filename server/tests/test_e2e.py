@@ -104,9 +104,14 @@ with TestClient(app) as client:
           and r.json().get("city") == "San Francisco", r.text[:200])
 
     r = client.put(f"/api/account/addresses/{addr_id}", headers=u1_auth,
-                   json={**ADDR, "city": "Oakland"})
-    check("addresses PUT 改 city → Oakland", r.status_code == 200
-          and r.json().get("city") == "Oakland", r.text[:200])
+                   json={**ADDR, "city": "Oakland", "is_default": True})
+    check("addresses PUT 改 city → Oakland（保持默认）", r.status_code == 200
+          and r.json().get("city") == "Oakland" and r.json().get("is_default") is True,
+          r.text[:200])
+    r = client.put(f"/api/account/addresses/{addr_id}", headers=u1_auth,
+                   json={**ADDR, "city": "Oakland", "is_default": False})
+    check("唯一默认地址撤默认 → 422 last_default_required", r.status_code == 422
+          and r.json().get("detail") == "last_default_required", r.text[:200])
 
     r = client.delete(f"/api/account/addresses/{addr_id}", headers=u1_auth)
     lst = client.get("/api/account/addresses", headers=u1_auth).json()

@@ -149,8 +149,24 @@ def member_ledger_recent(db: Session, user_id: int, limit: int = 10) -> list[Poi
 # ===== 审计日志 =====
 
 
-def admin_logs_query(db: Session, entity: str | None) -> Query:
+def admin_logs_query(
+    db: Session, entity: str | None, *, action: str | None = None,
+    admin_id: int | None = None, start=None, end=None,
+) -> Query:
     q = db.query(AdminLog).order_by(AdminLog.id.desc())
     if entity:
         q = q.filter(AdminLog.entity == entity)
+    if action:
+        q = q.filter(AdminLog.action == action)
+    if admin_id is not None:
+        q = q.filter(AdminLog.admin_id == admin_id)
+    if start is not None:
+        q = q.filter(AdminLog.created_at >= start)
+    if end is not None:
+        q = q.filter(AdminLog.created_at <= end)
     return q
+
+
+def users_by_ids(db: Session, ids: set[int]) -> list[User]:
+    """日志 admin_name 回填用批量查询（避免逐行 join/查用户）"""
+    return db.query(User).filter(User.id.in_(ids)).all() if ids else []

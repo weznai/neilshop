@@ -1,4 +1,6 @@
 <script setup>
+import { useTocSpy } from '../composables/useTocSpy'
+
 const SECS = [
   ['orders', '1 · Orders & payment'],
   ['shipping', '2 · Shipping'],
@@ -7,10 +9,12 @@ const SECS = [
   ['liability', '5 · Liability'],
   ['law', '6 · Governing law'],
 ]
+const { active } = useTocSpy(SECS.map((s) => s[0]))
 function go(id) {
   const el = document.getElementById(id)
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
+function printPage() { window.print() }
 </script>
 
 <template>
@@ -19,12 +23,13 @@ function go(id) {
       <h1 class="page-title" style="font-family:var(--font-title);font-size:30px;margin-bottom:6px">Terms of Service</h1>
       <div class="meta-row">
         <span>Last updated: Aug 2026</span><span class="meta-dot" /><span>By using glowmag.com you agree to these terms</span>
+        <button class="print-link" type="button" @click="printPage">🖨 Print / Save PDF</button>
       </div>
       <div class="policy-grid" style="display:grid;grid-template-columns:200px 1fr;gap:32px">
         <aside class="policy-side">
           <div class="toc-card">
             <span class="toc-title">On this page</span>
-            <a v-for="[id, label] in SECS" :key="id" :href="'#' + id" @click.prevent="go(id)">{{ label }}</a>
+            <a v-for="[id, label] in SECS" :key="id" class="toc-link" :class="{ on: active === id }" :href="'#' + id" @click.prevent="go(id)">{{ label }}</a>
           </div>
         </aside>
         <article class="prose">
@@ -50,4 +55,13 @@ function go(id) {
 @media (max-width: 768px) {
   .policy-grid { grid-template-columns: 1fr !important; gap: 16px; }
 }
+/* TOC 命中态（Scrollspy）：plum + 左侧指示条 */
+.toc-link.on { color: var(--plum); font-weight: 700; border-left: 3px solid var(--plum); padding-left: 10px; margin-left: -13px; }
+/* 正文排版补全：68ch 行宽 + h3/h4 层级 + 品牌链接/圆角图片 */
+.prose { max-width: 68ch; }
+.prose h3 { font-family: var(--font-title); font-size: 18px; margin: 26px 0 10px; }
+.prose h4 { font-family: var(--font-title); font-size: 15.5px; margin: 20px 0 8px; }
+.prose a { color: var(--plum); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rose); }
+.prose a:hover { text-decoration-color: var(--plum); }
+.prose img { border-radius: 12px; }
 </style>

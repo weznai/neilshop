@@ -117,6 +117,8 @@ from app.models.product import Product  # noqa: E402
 _SITEMAP_STATIC_PATHS = (
     "/", "/store", "/sale", "/bundles", "/gallery", "/blog",
     "/faq", "/about", "/how-it-works", "/size-guide", "/contact", "/rewards", "/refer",
+    "/privacy", "/terms", "/shipping-policy", "/returns-policy",
+    "/collabs", "/subscribe", "/gift-cards",
 )
 
 

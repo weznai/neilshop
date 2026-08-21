@@ -1,10 +1,17 @@
 /* 购物车 store：服务端权威 —— add/setQty/remove 全部先写服务端再以视图刷新本地渲染缓存
  * （localStorage gm_cart 仅作渲染缓存快照，供下次进入前先画一帧） */
 import { defineStore } from 'pinia'
-import { req } from '../api/client'
+import { productDetail, req } from '../api/client'
 import { i18n } from '../i18n'
 
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+
+function readCartCache() {
+  try { return JSON.parse(localStorage.getItem('gm_cart') || '[]') || [] } catch (_) { return [] }
+}
+function writeCartCache(items) {
+  try { localStorage.setItem('gm_cart', JSON.stringify(items)) } catch (_) { /* 隐私模式等写入失败即弃 */ }
+}
 
 function viewToItems(view) {
   return (view && view.items ? view.items : []).map((i) => ({
@@ -25,7 +32,7 @@ function viewToItems(view) {
 
 export const useCartStore = defineStore('cart', {
   state: () => ({
-    items: JSON.parse(localStorage.getItem('gm_cart') || '[]'),
+    items: readCartCache(),
     loaded: false,
     error: null,
     removed: null, /* {vid,qty,title,at} 最近删除快照，供 UI 撤销 */
@@ -40,7 +47,7 @@ export const useCartStore = defineStore('cart', {
     _apply(view) {
       this.items = viewToItems(view)
       this.loaded = true
-      localStorage.setItem('gm_cart', JSON.stringify(this.items))
+      writeCartCache(this.items)
     },
     _err(e, ui) {
       this.error = e
@@ -62,9 +69,10 @@ export const useCartStore = defineStore('cart', {
       } catch (e) { this._err(e, ui); return false }
     },
     async addByProductId(pid, qty, ui) {
-      /* 按 product id 加购：动态解析变体（优先选有货变体，避免首选变体售罄即失败） */
+      /* 按 product id 加购：动态解析变体（优先选有货变体，避免首选变体售罄即失败）；
+         走 productDetail 内存缓存——同商品快速加购/推荐位重复点击不重复请求 */
       try {
-        const d = await req('GET', '/api/catalog/products-by-id/' + pid)
+        const d = await productDetail(pid)
         const vs = d.variants || []
         const v = vs.find((x) => (x.stock ?? 0) > 0 && x.stock_status !== 'out') || vs[0]
         if (!v) throw new Error('no variant')
@@ -111,7 +119,9 @@ export const useCartStore = defineStore('cart', {
     dismissRemoved() { this.removed = null },
     /* 登录后合并游客车（登录流程调用） */
     async mergeAfterLogin() {
-      try { await req('POST', '/api/cart/merge', { token: localStorage.getItem('gm_cart_token') || '' }) } catch (_) { /* token 无车 */ }
+      let token = ''
+      try { token = localStorage.getItem('gm_cart_token') || '' } catch (_) { /* 隐私模式 */ }
+      try { await req('POST', '/api/cart/merge', { token }) } catch (_) { /* token 无车 */ }
       await this.refresh().catch(() => {})
     },
   },

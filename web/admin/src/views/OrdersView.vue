@@ -1,8 +1,13 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
+import Pagination from '../components/Pagination.vue'
 
+const route = useRoute()
+const router = useRouter()
 const items = ref([])
 const total = ref(0)
 const pages = ref(1)
@@ -29,6 +34,28 @@ const TABS = [
 ]
 const statusLabel = computed(() => (status.value == null ? '' : OSTATUS[status.value]?.[0] || ''))
 
+/* URL 筛选同步：初始化读 route.query（dashboard 深链 ?status=1 等），变化 router.replace（可分享/可回退） */
+function initFromQuery() {
+  const rq = route.query
+  if (typeof rq.q === 'string') q.value = rq.q
+  if (rq.status !== undefined && rq.status !== '') {
+    const n = Number(rq.status)
+    if (OSTATUS[n]) status.value = n
+  }
+  const p = parseInt(rq.page, 10)
+  if (Number.isInteger(p) && p >= 1) page.value = p
+  const pp = parseInt(rq.per_page, 10)
+  if ([20, 50, 100].includes(pp)) perPage.value = pp
+}
+function syncUrl() {
+  const query = {}
+  if (q.value.trim()) query.q = q.value.trim()
+  if (status.value != null) query.status = status.value
+  if (page.value > 1) query.page = page.value
+  if (perPage.value !== 20) query.per_page = perPage.value
+  if (JSON.stringify(query) !== JSON.stringify(route.query)) router.replace({ query })
+}
+
 async function load() {
   /* 筛选/翻页保留旧数据不清空，骨架只在首次出现 */
   refreshing.value = true
@@ -41,11 +68,12 @@ async function load() {
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = d.pages ?? 1
+    syncUrl()
   } catch (e) { toast('加载失败：' + (e.message || ''), 'error') }
   loaded.value = true
   refreshing.value = false
 }
-onMounted(load)
+onMounted(() => { initFromQuery(); load() })
 
 function tab(sv) { status.value = sv; page.value = 1; load() }
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
@@ -56,6 +84,27 @@ const time = (iso) => {
   const p = (x) => String(x).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+
+/* 当前页前端排序：三态切换（无 → 升 → 降 → 无），空值恒沉底 */
+const sort = reactive({ key: '', dir: 1 })
+function sortBy(k) {
+  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
+  else if (sort.dir === 1) { sort.dir = -1 }
+  else { sort.key = ''; sort.dir = 1 }
+}
+const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
+const sortedItems = computed(() => {
+  if (!sort.key) return items.value
+  const k = sort.key
+  return [...items.value].sort((a, b) => {
+    const av = a[k], bv = b[k]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av === bv) return 0
+    return (av > bv ? 1 : -1) * sort.dir
+  })
+})
 
 const shipDlg = ref(null) /* {order_no} */
 const carrier = ref('USPS')
@@ -100,8 +149,8 @@ async function exportCsv() {
       const s = String(v ?? '')
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
     }
-    const rows = [['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间'],
-      ...all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.[0], SHSTATUS[o.shipping_status]?.[0], o.placed_at, o.paid_at || ''])]
+    const rows = [['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '留言'],
+      ...all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.[0], SHSTATUS[o.shipping_status]?.[0], time(o.placed_at), o.paid_at ? time(o.paid_at) : '', o.note || ''])]
     const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
     const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
     const a = document.createElement('a')
@@ -150,13 +199,19 @@ async function exportCsv() {
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead>
         <tr style="text-align:left;color:var(--gray)">
-          <th style="padding:10px">订单号</th><th>客户</th><th>金额</th><th>状态</th><th>履约</th><th>下单时间</th><th>支付时间</th><th style="text-align:right">操作</th>
+          <th style="padding:10px">订单号</th><th>客户</th><th>留言</th>
+          <th class="sortable" title="点击排序（当前页）" @click="sortBy('grand_total')">金额<span v-if="sortInd('grand_total')" class="sort-ind">{{ sortInd('grand_total') }}</span></th>
+          <th>状态</th><th>履约</th>
+          <th class="sortable" title="点击排序（当前页）" @click="sortBy('placed_at')">下单时间<span v-if="sortInd('placed_at')" class="sort-ind">{{ sortInd('placed_at') }}</span></th>
+          <th class="sortable" title="点击排序（当前页）" @click="sortBy('paid_at')">支付时间<span v-if="sortInd('paid_at')" class="sort-ind">{{ sortInd('paid_at') }}</span></th>
+          <th style="text-align:right">操作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="o in items" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="o in sortedItems" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
           <td style="padding:11px 10px"><b>{{ o.order_no }}</b></td>
           <td>{{ esc(o.email) }}</td>
+          <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray)" :title="o.note || ''">{{ o.note ? esc(o.note) : '—' }}</td>
           <td><b style="color:var(--plum)">{{ money(o.grand_total) }}</b></td>
           <td><span class="tag" :class="OSTATUS[o.status]?.[1]">{{ OSTATUS[o.status]?.[0] }}</span></td>
           <td><span class="tag" :class="SHSTATUS[o.shipping_status]?.[1] || 'tag-pending'" :title="'shipping_status: ' + o.shipping_status">{{ SHSTATUS[o.shipping_status]?.[0] || '—' }}</span></td>
@@ -169,16 +224,11 @@ async function exportCsv() {
         </tr>
       </tbody>
     </table>
-    <div v-if="!items.length" style="text-align:center;color:var(--gray);padding:32px 0">
-      <div style="font-size:28px;margin-bottom:6px">📭</div>该状态下暂无订单，试试其他筛选或搜索词
-    </div>
+    <EmptyState v-if="!items.length" icon="📭" title="该状态下暂无订单" sub="试试其他筛选或搜索词" />
   </div>
 
-  <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:16px;align-items:center">
-    <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="page--; load()">←</button>
-    <span style="font-size:13px;color:var(--gray)">第 {{ page }} / {{ pages }} 页</span>
-    <button class="btn btn-secondary btn-sm" :disabled="page >= pages" @click="page++; load()">→</button>
-  </div>
+  <Pagination v-if="loaded" :page="page" :pages="pages" :total="total" unit="单" @go="page = $event; load()" />
+  <div v-if="sort.key" style="margin-top:6px;text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
 
   <!-- 发货弹窗 -->
   <div v-if="shipDlg" class="modal open" @click.self="shipDlg = null">

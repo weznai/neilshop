@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { req } from '../api/client'
 import { GM_CATALOG } from '../data/catalog'
 import { i18n } from '../i18n'
+import GmIcon from '../components/GmIcon.vue'
 import ProductCard from '../components/ProductCard.vue'
 
 const newProducts = ref([])
@@ -23,6 +24,14 @@ const REVIEWS = [
   { n: 'Priya S.', p: 'Cherry Bomb', c: 'home.rev.3' },
 ]
 
+/* 价值条图标（GmIcon 线性图标集：品质/快捷/循环使用/无损防护） */
+const VALUES = [
+  ['star', 'home.value.1'],
+  ['check', 'home.value.2'],
+  ['refresh', 'home.value.3'],
+  ['shield', 'home.value.4'],
+]
+
 function seedCards() {
   return GM_CATALOG.map((c) => ({
     id: c.id, slug: '', title: c.title,
@@ -33,8 +42,9 @@ function seedCards() {
   }))
 }
 
-onMounted(async () => {
-  /* 两组卡片并行拉取（allSettled：单接口失败回落种子数据，不拖住另一组） */
+/* LCP：请求前置到 setup 顶层立即发出（不等 onMounted）；
+   两组卡片并行拉取（allSettled：单接口失败回落种子数据，不拖住另一组） */
+;(async () => {
   const [nr, br] = await Promise.allSettled([
     req('GET', '/api/catalog/products?sort=new&size=4'),
     req('GET', '/api/catalog/products?sort=best&size=4'),
@@ -44,7 +54,7 @@ onMounted(async () => {
   bestProducts.value = br.status === 'fulfilled' && br.value.items && br.value.items.length
     ? br.value.items : seedCards().slice(4, 8)
   loaded.value = true
-})
+})()
 
 const heroImg = computed(() => (newProducts.value[0] && newProducts.value[0].hero_image) ||
   'https://placehold.co/600x450/F5D8DA/6D2E46?text=New+Season+Glam')
@@ -92,10 +102,11 @@ function heroFallback(e) {
       <div style="position:relative">
         <img :src="heroImg"
              :alt="i18n.t('home.hero.alt')"
+             fetchpriority="high" decoding="async"
              style="width:100%;border-radius:24px;aspect-ratio:4/3;object-fit:cover;background:var(--rose-pale)"
              @error="heroFallback">
-        <div style="position:absolute;top:-14px;left:-10px;width:48px;height:48px;border-radius:50%;background:#fff;box-shadow:var(--shadow-card);display:flex;align-items:center;justify-content:center;font-size:22px">✨</div>
-        <div class="card" style="position:absolute;bottom:-24px;right:-10px;padding:14px 18px;display:flex;gap:10px;align-items:center">
+        <div style="position:absolute;top:-14px;left:-10px;width:48px;height:48px;border-radius:50%;background:#fff;box-shadow:var(--shadow-card);display:flex;align-items:center;justify-content:center;font-size:22px;transition:transform .2s ease-out" class="hero-float">✨</div>
+        <div class="card hero-float" style="position:absolute;bottom:-24px;right:-10px;padding:14px 18px;display:flex;gap:10px;align-items:center">
           <span style="font-size:26px">🧲</span>
           <div><b style="font-size:13px">{{ i18n.t('home.hero.lash') }}</b><div style="font-size:12px;color:var(--gray)">{{ i18n.t('home.hero.lashD') }}</div></div>
         </div>
@@ -106,7 +117,9 @@ function heroFallback(e) {
   <!-- ============ 价值条 ============ -->
   <section style="background:var(--ink);color:#fff;padding:22px 0">
     <div class="container grid-m-2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center;font-size:13px">
-      <span>{{ i18n.t('home.value.1') }}</span><span>{{ i18n.t('home.value.2') }}</span><span>{{ i18n.t('home.value.3') }}</span><span>{{ i18n.t('home.value.4') }}</span>
+      <span v-for="[ico, key] in VALUES" :key="key" class="value-item">
+        <GmIcon :name="ico" :size="15" />{{ i18n.t(key) }}
+      </span>
     </div>
   </section>
 
@@ -121,9 +134,9 @@ function heroFallback(e) {
       <div class="grid grid-4">
         <template v-if="!loaded">
           <div v-for="i in 4" :key="'sk' + i" class="home-sk-card">
-            <div class="home-sk-img"></div>
-            <div class="home-sk-line" style="width:70%"></div>
-            <div class="home-sk-line" style="width:40%"></div>
+            <div class="home-sk-img sk-shimmer"></div>
+            <div class="home-sk-line sk-shimmer" style="width:70%"></div>
+            <div class="home-sk-line sk-shimmer" style="width:40%"></div>
           </div>
         </template>
         <template v-else>
@@ -139,7 +152,7 @@ function heroFallback(e) {
       <div class="section-head"><h2 class="section-title">{{ i18n.t('home.shape.t') }}</h2></div>
       <div class="grid grid-4">
         <router-link v-for="s in SHAPES" :key="s.v" class="card shape-card" :to="`/store?cat=nails&shape=${s.v}`">
-          <div style="font-size:44px;padding:28px 0 12px;text-align:center">{{ s.icon }}</div>
+          <div class="shape-ico" style="font-size:44px;padding:28px 0 12px;text-align:center">{{ s.icon }}</div>
           <div style="padding:0 18px 20px;text-align:center">
             <b style="font-family:var(--font-title);font-size:18px">{{ i18n.t(s.t) }}</b>
             <div style="font-size:12.5px;color:var(--gray);margin-top:4px">{{ i18n.t(s.d) }}</div>
@@ -159,9 +172,9 @@ function heroFallback(e) {
       <div class="grid grid-4">
         <template v-if="!loaded">
           <div v-for="i in 4" :key="'sk2' + i" class="home-sk-card">
-            <div class="home-sk-img"></div>
-            <div class="home-sk-line" style="width:70%"></div>
-            <div class="home-sk-line" style="width:40%"></div>
+            <div class="home-sk-img sk-shimmer"></div>
+            <div class="home-sk-line sk-shimmer" style="width:70%"></div>
+            <div class="home-sk-line sk-shimmer" style="width:40%"></div>
           </div>
         </template>
         <template v-else>
@@ -206,7 +219,7 @@ function heroFallback(e) {
           <div class="stars" style="color:var(--gold)">★★★★★</div>
           <p style="font-size:14px;margin:10px 0 14px">"{{ i18n.t(rv.c) }}"</p>
           <div style="display:flex;align-items:center;gap:10px">
-            <span style="width:34px;height:34px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">{{ rv.n.charAt(0) }}</span>
+            <span class="rev-ava"><span>{{ rv.n.charAt(0) }}</span></span>
             <div><b style="font-size:13px">{{ rv.n }}</b><div style="font-size:11.5px;color:var(--gray)">✓ {{ i18n.t('home.rev.verified') }} · {{ rv.p }}</div></div>
           </div>
         </div>
@@ -231,14 +244,24 @@ function heroFallback(e) {
 .step-n{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--plum));color:#fff;display:inline-flex;align-items:center;justify-content:center;font-family:var(--font-title);font-size:24px;font-weight:700;margin-bottom:14px}
 .ugc-band{display:flex;gap:12px;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;padding:2px 0 6px}
 .ugc-band::-webkit-scrollbar{display:none}
-.ugc-band img{width:140px;height:140px;flex:none;border-radius:12px;object-fit:cover}
+.ugc-band img{width:140px;height:140px;flex:none;border-radius:12px;object-fit:cover;transition:transform .2s ease-out,box-shadow .2s ease-out}
+.ugc-band img:hover{transform:scale(1.04);box-shadow:var(--shadow-pop)}
 .ugc-cta{width:140px;height:140px;flex:none;border-radius:14px;background:linear-gradient(135deg,var(--rose),var(--plum));color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:12px;font-weight:500;text-align:center;padding:10px;transition:filter .15s;box-shadow:0 12px 26px rgba(109,46,70,.30);border:2px solid rgba(255,255,255,.55)}
 .ugc-cta:hover{filter:brightness(1.08)}
 .ugc-cta b{font-size:21px;font-family:var(--font-title)}
 .shape-card{display:block;padding:0;overflow:hidden;color:inherit}
+.shape-ico{transition:transform .2s ease-out,color .2s ease-out}
+.shape-card:hover .shape-ico{transform:scale(1.15);color:var(--plum)}
+/* hero 浮动徽标/卡片 hover 上浮 */
+.hero-float{transition:transform .2s ease-out,box-shadow .2s ease-out}
+.hero-float:hover{transform:translateY(-4px)}
+/* 价值条：GmIcon + 文案（深底上 rose 描边图标） */
+.value-item{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:0}
+.value-item svg{stroke:var(--rose);flex:none}
+/* REVIEWS 头像渐变描边 */
+.rev-ava{width:38px;height:38px;padding:2px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--plum));flex:none}
+.rev-ava span{width:100%;height:100%;border-radius:50%;background:var(--plum);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
 .home-sk-card{border-radius:12px}
 .home-sk-img{aspect-ratio:1;border-radius:12px}
-.home-sk-img,.home-sk-line{background:linear-gradient(100deg,var(--gray-light) 40%,#f7f3f5 50%,var(--gray-light) 60%);background-size:200% 100%;animation:homeSk 1.2s infinite}
 .home-sk-line{height:14px;border-radius:7px;margin-top:10px}
-@keyframes homeSk{to{background-position:-200% 0}}
 </style>

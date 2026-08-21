@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
 
 const tab = ref('shipping')
 const settings = reactive({})   /* key → {value, description} */
@@ -92,7 +93,7 @@ const rawRows = computed(() => {
 
   <!-- 运费与运营（常用 key 表单化；保存即 upsert，未初始化的 key 用默认值占位） -->
   <div v-if="tab === 'shipping'" class="card" style="padding:20px;max-width:620px">
-    <div v-if="settingsErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin-bottom:16px;background:#FDECEC;border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
+    <div v-if="settingsErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin-bottom:16px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
       <span>⚠️ 配置加载失败，保存已禁用——防止默认值覆盖线上配置</span>
       <button class="btn btn-secondary btn-sm" @click="load">重试加载</button>
     </div>
@@ -119,7 +120,7 @@ const rawRows = computed(() => {
       <div><b>{{ t.name }}</b><div style="font-size:12px;color:var(--gray)">主题：{{ t.subject }}</div></div>
       <button class="btn btn-secondary btn-sm" @click="showTpl(t)">👁 预览</button>
     </div>
-    <div v-if="loaded && !tplList().length" style="text-align:center;color:var(--gray);padding:24px 0">暂无模板</div>
+    <EmptyState v-if="loaded && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
   </div>
 
   <!-- 全部参数（raw k-v，支持关键字过滤） -->
@@ -138,8 +139,8 @@ const rawRows = computed(() => {
         </tr>
       </tbody>
     </table>
-    <div v-if="loaded && !Object.keys(settings).length" style="text-align:center;color:var(--gray);padding:24px 0">暂无参数</div>
-    <div v-else-if="loaded && !rawRows.length" style="text-align:center;color:var(--gray);padding:24px 0">没有匹配「{{ rawFilter }}」的参数</div>
+    <EmptyState v-if="loaded && !Object.keys(settings).length" icon="⚙️" title="暂无参数" sub="服务端暂无预置参数，保存后将写入并即时生效" />
+    <EmptyState v-else-if="loaded && !rawRows.length" icon="🔍" title="没有匹配的参数" :sub="'没有匹配「' + rawFilter + '」的参数'" />
   </div>
 
   <!-- 模板预览弹窗（iframe 沙箱渲染 html，宽度自适应邮件版式） -->

@@ -68,6 +68,7 @@ const router = createRouter({
         { path: 'success', name: 'success', component: () => import('./views/SuccessView.vue'), meta: { title: 'Order Confirmed' } },
         { path: 'login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { title: 'Sign In' } },
         { path: 'register', name: 'register', component: () => import('./views/RegisterView.vue'), meta: { title: 'Create Account' } },
+        { path: 'reset-password', name: 'reset-password', component: () => import('./views/ResetPasswordView.vue'), meta: { title: 'Reset Password' } },
         { path: 'account', component: () => import('./views/account/AccountShell.vue'), meta: { requiresAuth: true, title: 'My Account' }, children: [
           { path: '', name: 'account', component: () => import('./views/account/AccountView.vue') },
           { path: 'orders', name: 'account-orders', component: () => import('./views/account/OrdersView.vue'), meta: { title: 'My Orders' } },
@@ -99,7 +100,7 @@ const router = createRouter({
         { path: 'terms', name: 'terms', component: () => import('./views/TermsView.vue'), meta: { title: 'Terms of Service' } },
         { path: 'shipping-policy', name: 'shipping-policy', component: () => import('./views/ShippingPolicyView.vue'), meta: { title: 'Shipping Policy' } },
         { path: 'returns-policy', name: 'returns-policy', component: () => import('./views/ReturnsPolicyView.vue'), meta: { title: 'Returns & Exchange Policy' } },
-        { path: 'unsubscribe', name: 'unsubscribe', component: () => import('./views/UnsubscribeView.vue'), meta: { title: 'Email Preferences' } },
+        { path: 'unsubscribe', name: 'unsubscribe', component: () => import('./views/UnsubscribeView.vue'), meta: { title: 'Email Preferences', noindex: true } },
         { path: '404', name: 'not-found', component: () => import('./views/NotFoundView.vue'), meta: { title: 'Page Not Found' } },
         { path: ':pathMatch(.*)*', redirect: '/404' },
       ],

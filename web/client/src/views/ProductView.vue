@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { req, wishlistAdd } from '../api/client'
+import { req, wishlistAdd, wishlistHas, wishlistRemove } from '../api/client'
 import { i18n } from '../i18n'
 import { catalogById } from '../data/catalog'
 import { useCartStore } from '../stores/cart'
@@ -29,6 +29,16 @@ const notifyEmail = ref('')
 const notifyState = ref(0)          /* 0 未订阅 / 1 提交中 / 2 已订阅 */
 const lightbox = ref(null)          /* { src, caption } */
 const zh = computed(() => i18n.lang === 'zh')
+const tt = (en, cn) => (zh.value ? cn : en)
+
+/* 主图/缩略图加载失败兜底：回落 placehold 常量 + dataset 守卫防循环（对齐 HomeView heroFallback） */
+const IMG_FALLBACK = 'https://placehold.co/600x600/E8B4B8/552338?text=GLOWMAG'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
 
 const locale = computed(() => (zh.value ? 'zh-CN' : null))
 const variant = computed(() => (p.value?.variants || [])[vIdx.value] || null)
@@ -78,26 +88,37 @@ function pushRecent(d) {
   } catch (_) { /* 隐私模式等 */ }
 }
 
+const rvRating = ref(0)             /* 评价星级筛选（0 = 全部） */
+let rvSeq = 0                       /* 评价请求独立序号：星级筛选连点/加载更多与商品切换(ldSeq)互不污染 */
 async function fetchReviews(reset) {
   if (!p.value) return
+  const seq = ++rvSeq
   if (reset) { rvPage.value = 1; reviews.value = []; rvTotal.value = 0 }
   try {
-    const d = await req('GET', `/api/catalog/reviews?product_id=${p.value.id}&page=${rvPage.value}&size=6`)
+    const d = await req('GET', `/api/catalog/reviews?product_id=${p.value.id}&page=${rvPage.value}&size=6` + (rvRating.value ? `&rating=${rvRating.value}` : ''))
+    if (seq !== rvSeq) return
     reviews.value = reset ? (d.items || []) : reviews.value.concat(d.items || [])
     rvTotal.value = d.total || 0
-  } catch (_) { if (reset) reviews.value = [] }
+  } catch (_) { if (seq === rvSeq && reset) reviews.value = [] }
+  if (seq !== rvSeq) return
   rvMore.value = reviews.value.length < rvTotal.value
+}
+function toggleRvStar(star) {
+  rvRating.value = (rvRating.value === star) ? 0 : star
+  fetchReviews(true)
 }
 
 let ldSeq = 0
 async function load() {
   const seq = ++ldSeq
+  rvSeq++ /* 作废在途评价请求（切商品瞬间旧响应不得写入新状态） */
   vIdx.value = 0
   qty.value = 1
   galIdx.value = 0
   loading.value = true
   notifyState.value = 0
   wlDone.value = false
+  rvRating.value = 0
   const id = parseInt(route.query.id, 10)
   const slug = route.query.slug
   /* 无 id/slug 参数：直接渲染商品不存在态，不兜底请求 */
@@ -109,6 +130,12 @@ async function load() {
     if (seq !== ldSeq) return
     p.value = d
     pushRecent(p.value)
+    /* 心愿单初始态：登录时并发查是否已收藏（client.js 带 Set 缓存，命中不再发请求） */
+    if (auth.isLoggedIn) {
+      wishlistHas(p.value.id)
+        .then((hit) => { if (hit && seq === ldSeq) wlDone.value = true })
+        .catch(() => { /* 未登录态/接口失败忽略 */ })
+    }
     /* 动态 SEO：OG/JSON-LD（seo.js 监听 gm:seo 事件，路由切换自动复位） */
     try {
       window.dispatchEvent(new CustomEvent('gm:seo', { detail: {
@@ -160,6 +187,7 @@ watch(vIdx, () => {
    桌面容器不可滚动（overflow:hidden），两个函数均为 no-op，行为与改造前一致 */
 const mainScrollEl = ref(null)
 let galScrollT = null
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 function onGalScroll() {
   const el = mainScrollEl.value
   if (!el || el.scrollWidth <= el.clientWidth) return
@@ -174,19 +202,23 @@ function syncGalScroll() {
   const el = mainScrollEl.value
   if (!el || el.scrollWidth <= el.clientWidth) return
   const t = galIdx.value * el.clientWidth
-  if (Math.abs(el.scrollLeft - t) > 4) el.scrollTo({ left: t, behavior: 'smooth' })
+  if (Math.abs(el.scrollLeft - t) > 4) el.scrollTo({ left: t, behavior: reduceMotion() ? 'auto' : 'smooth' })
 }
 watch(galIdx, syncGalScroll)
 
+/* 已订阅状态查询按 variant_id 内存缓存（promise 级）：售罄变体间快速切换不重复请求，防 429 限流 */
+const notifyHasCache = {}
 watch(variant, async (v) => {
   notifyState.value = 0
   notifyEmail.value = ''
   const em = auth.user && auth.user.email
   if (v && v.stock_status === 'out' && em) {
-    try {
-      const d = await req('GET', `/api/catalog/stock-notify?variant_id=${v.id}&email=${encodeURIComponent(em)}`)
-      if (d.watching) notifyState.value = 2
-    } catch (_) { /* 未登录态忽略 */ }
+    if (!notifyHasCache[v.id]) {
+      notifyHasCache[v.id] = req('GET', `/api/catalog/stock-notify?variant_id=${v.id}&email=${encodeURIComponent(em)}`)
+        .catch(() => ({ watching: false }))
+    }
+    const d = await notifyHasCache[v.id]
+    if (variant.value && variant.value.id === v.id && d.watching) notifyState.value = 2
   }
 })
 
@@ -236,7 +268,7 @@ async function bundleAdd() {
   bundling.value = false
 }
 
-/* 心愿单：登录调 API + 角标事件；未登录跳登录并带回跳 */
+/* 心愿单：登录调 API + 角标事件；未登录跳登录并带回跳；已收藏可再点移除（toggle） */
 const wlBusy = ref(false)
 const wlDone = ref(false)
 async function toggleWishlist() {
@@ -245,12 +277,19 @@ async function toggleWishlist() {
     router.push({ path: '/login', query: { next: route.fullPath } })
     return
   }
-  if (wlDone.value) {
-    ui.toast(zh.value ? '已在心愿单中 ♥' : 'Already in your wishlist ♥', 'success')
-    return
-  }
   wlBusy.value = true
   try {
+    if (wlDone.value) {
+      await wishlistRemove(p.value.id)
+      wlDone.value = false
+      try {
+        const n = Math.max(0, (parseInt(localStorage.getItem('gm_wl_count'), 10) || 1) - 1)
+        localStorage.setItem('gm_wl_count', String(n))
+      } catch (_) { /* 隐私模式等 */ }
+      window.dispatchEvent(new Event('gm:wl-changed'))
+      ui.toast(zh.value ? '已从心愿单移除' : 'Removed from wishlist', 'success')
+      return
+    }
     await wishlistAdd(p.value.id)
     wlDone.value = true
     try {
@@ -260,11 +299,16 @@ async function toggleWishlist() {
     window.dispatchEvent(new Event('gm:wl-changed'))
     ui.toast(zh.value ? '已加入心愿单 ♥' : 'Added to wishlist ♥', 'success')
   } catch (e) {
-    if (e && e.status === 409) {
+    if (!wlDone.value && e && e.status === 409) {
       wlDone.value = true
       ui.toast(zh.value ? '已在心愿单中 ♥' : 'Already in your wishlist ♥', 'success')
+    } else if (wlDone.value && e && e.status === 404) {
+      /* 心愿单本就没有它：本地态直接拉平 */
+      wlDone.value = false
     } else {
-      ui.toast(zh.value ? '加入心愿单失败，请重试' : 'Could not add to wishlist — try again', 'error')
+      ui.toast(zh.value
+        ? (wlDone.value ? '移除失败，请重试' : '加入心愿单失败，请重试')
+        : (wlDone.value ? 'Could not remove — try again' : 'Could not add to wishlist — try again'), 'error')
     }
   } finally { wlBusy.value = false }
 }
@@ -283,6 +327,7 @@ async function notifyMe() {
   notifyState.value = 1
   try {
     await req('POST', '/api/catalog/stock-notify', { variant_id: variant.value.id, email: em })
+    notifyHasCache[variant.value.id] = Promise.resolve({ watching: true })
     notifyState.value = 2
     ui.toast(zh.value ? '到货后第一时间邮件通知你 ✓' : "We'll email you when it's back in stock ✓", 'success')
   } catch (e) {
@@ -296,7 +341,10 @@ async function notifyMe() {
 async function cancelNotify() {
   const em = notifyEmailValue()
   if (!variant.value || !em) { notifyState.value = 0; return }
-  try { await req('DELETE', `/api/catalog/stock-notify?variant_id=${variant.value.id}&email=${encodeURIComponent(em)}`) } catch (_) { /* 幂等 */ }
+  try {
+    await req('DELETE', `/api/catalog/stock-notify?variant_id=${variant.value.id}&email=${encodeURIComponent(em)}`)
+    notifyHasCache[variant.value.id] = Promise.resolve({ watching: false })
+  } catch (_) { /* 幂等 */ }
   notifyState.value = 0
   ui.toast(zh.value ? '已取消到货通知' : 'Restock alert cancelled')
 }
@@ -305,9 +353,11 @@ function moreReviews() { rvPage.value++; fetchReviews(false) }
 function openLightbox(src, caption) { lightbox.value = { src, caption } }
 function closeLightbox() { lightbox.value = null }
 function onKey(e) { if (e.key === 'Escape') closeLightbox() }
+/* Lightbox 打开锁滚动（与全站弹层 .gm-locked 同口径） */
+watch(lightbox, (v) => document.body.classList.toggle('gm-locked', !!v))
 /* v16: PDP 在场标记（style.css v16 据此让返回顶部避开粘性加购栏） */
 onMounted(() => { document.body.classList.add('gm-pdp'); window.addEventListener('keydown', onKey) })
-onUnmounted(() => { document.body.classList.remove('gm-pdp'); window.removeEventListener('keydown', onKey) })
+onUnmounted(() => { document.body.classList.remove('gm-pdp'); document.body.classList.remove('gm-locked'); window.removeEventListener('keydown', onKey) })
 
 const gmEta = () => {
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -321,16 +371,16 @@ const gmEta = () => {
 <template>
   <section v-if="loading" class="section">
     <div class="container">
-      <div class="grid-m-1 pdp-grid">
-        <div class="sk-block" style="aspect-ratio:1;border-radius:18px"></div>
-        <div style="display:grid;gap:14px">
-          <div class="sk-line" style="width:70%;height:34px"></div>
-          <div class="sk-line" style="width:40%;height:16px"></div>
-          <div class="sk-line" style="width:30%;height:30px"></div>
-          <div class="sk-line" style="width:100%;height:44px"></div>
-          <div class="sk-line" style="width:100%;height:52px"></div>
+        <div class="grid-m-1 pdp-grid">
+          <div class="sk-block sk-shimmer" style="aspect-ratio:1;border-radius:18px"></div>
+          <div style="display:grid;gap:14px">
+            <div class="sk-line sk-shimmer" style="width:70%;height:34px"></div>
+            <div class="sk-line sk-shimmer" style="width:40%;height:16px"></div>
+            <div class="sk-line sk-shimmer" style="width:30%;height:30px"></div>
+            <div class="sk-line sk-shimmer" style="width:100%;height:44px"></div>
+            <div class="sk-line sk-shimmer" style="width:100%;height:52px"></div>
+          </div>
         </div>
-      </div>
     </div>
   </section>
 
@@ -352,14 +402,14 @@ const gmEta = () => {
               @scroll.passive="onGalScroll"
             >
               <div v-for="(im, i) in media" :key="im" class="pdp-slide" :class="{ on: !showVideo && mainIdx === i }">
-                <img :src="im" :alt="p.title" style="width:100%;height:100%;object-fit:cover" @error="$event.target.src = media[0]">
+                <img :src="im" :alt="p.title" style="width:100%;height:100%;object-fit:cover" @error="imgFallback">
               </div>
               <div v-if="p.video_url" class="pdp-slide" :class="{ on: showVideo }">
                 <video :src="p.video_url" controls playsinline style="width:100%;height:100%;object-fit:cover;background:#000"></video>
               </div>
             </div>
             <span v-if="p.is_new" class="badge badge-new" style="position:absolute;top:14px;left:14px">NEW</span>
-            <span v-if="p.compare_at_price" class="badge badge-sale" style="position:absolute;top:14px;right:14px">
+            <span v-if="p.compare_at_price && p.compare_at_price > p.price_min" class="badge badge-sale" style="position:absolute;top:14px;right:14px">
               -{{ Math.max(1, Math.round((1 - p.price_min / p.compare_at_price) * 100)) }}%
             </span>
             <button v-if="!showVideo && media.length > 1" class="pdp-zoom" :aria-label="zh ? '放大查看' : 'Zoom image'" @click="openLightbox(media[mainIdx], p.title)">⤢</button>
@@ -369,10 +419,10 @@ const gmEta = () => {
               v-for="(im, i) in media" :key="im"
               class="pdp-thumb" :class="{ on: mainIdx === i }" :aria-label="`${p.title} view ${i + 1}`" @click="galIdx = i"
             >
-              <img :src="im" :alt="`${p.title} view ${i + 1}`" loading="lazy">
+              <img :src="im" :alt="`${p.title} view ${i + 1}`" loading="lazy" @error="imgFallback">
             </button>
             <button v-if="p.video_url" class="pdp-thumb" :class="{ on: showVideo }" :aria-label="zh ? '观看视频' : 'Watch video'" @click="galIdx = media.length">
-              <img :src="media[0]" alt="" loading="lazy">
+              <img :src="media[0]" alt="" loading="lazy" @error="imgFallback">
               <span class="pdp-play">▶</span>
             </button>
           </div>
@@ -390,14 +440,17 @@ const gmEta = () => {
             </template>
             <span v-else style="font-size:13px;color:var(--gray)">✨ {{ zh ? '全新上架 · 抢先体验' : 'Just launched — be the first to review' }}</span>
           </div>
-          <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:18px">
+          <div class="pdp-price-row" style="display:flex;align-items:baseline;gap:10px;margin-bottom:18px">
             <span style="font-size:32px;font-weight:800;color:var(--plum);font-variant-numeric:tabular-nums">
               ${{ unit.toFixed(2) }}
             </span>
             <span v-if="p.compare_at_price && p.compare_at_price > p.price_min" style="color:var(--gray);text-decoration:line-through">
               ${{ (p.compare_at_price / 100).toFixed(2) }}
             </span>
-            <span v-if="variant?.sku" style="font-size:11.5px;color:var(--gray-light);font-weight:600">SKU {{ variant.sku }}</span>
+            <span v-if="p.compare_at_price && p.compare_at_price > p.price_min" class="save-pill">
+              {{ tt('SAVE', '省') }} ${{ ((p.compare_at_price - p.price_min) / 100).toFixed(2) }}
+            </span>
+            <span v-if="variant?.sku" class="pdp-sku" style="font-size:11.5px;color:var(--gray-light);font-weight:600">SKU {{ variant.sku }}</span>
           </div>
 
           <!-- 变体选择 -->
@@ -407,10 +460,10 @@ const gmEta = () => {
               <span v-if="variant?.option2_value" style="margin-left:8px;font-weight:500;letter-spacing:0">· {{ variant.option2_value }}</span>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <!-- 售罄变体保持可选（置灰视觉+aria 后缀），选中即到货通知表单（不再 disabled 拦截） -->
               <button
                 v-for="(v, i) in p.variants" :key="v.id"
                 class="vbtn" :class="{ sel: vIdx === i, out: v.stock_status === 'out' }"
-                :disabled="v.stock_status === 'out'"
                 :aria-label="v.option1_value + (v.stock_status === 'out' ? ' (sold out)' : '')"
                 @click="vIdx = i"
               >
@@ -464,7 +517,8 @@ const gmEta = () => {
             </button>
             <button
               type="button" class="wl-btn" :class="{ active: wlDone }" :disabled="wlBusy"
-              :aria-label="zh ? '加入心愿单' : 'Add to wishlist'" :title="wlDone ? (zh ? '已在心愿单' : 'In your wishlist') : (zh ? '加入心愿单' : 'Add to wishlist')"
+              :aria-label="wlDone ? (zh ? '移出心愿单' : 'Remove from wishlist') : (zh ? '加入心愿单' : 'Add to wishlist')"
+              :title="wlDone ? (zh ? '移出心愿单' : 'Remove from wishlist') : (zh ? '加入心愿单' : 'Add to wishlist')"
               @click="toggleWishlist"
             ><span aria-hidden="true">{{ wlDone ? '♥' : '♡' }}</span></button>
           </div>
@@ -473,7 +527,7 @@ const gmEta = () => {
           </button>
 
           <div style="font-size:12.5px;color:var(--gray);margin:16px 0 0;display:grid;gap:6px">
-            <span>🚚 {{ zh ? '满 $35 包邮' : 'Free shipping over $35' }} · {{ zh ? '预计送达' : 'Est. delivery' }} {{ gmEta() }}</span>
+            <span>🚚 {{ tt('Free shipping over $35', '满 $35 包邮') }} · {{ zh ? '预计送达' : 'Est. delivery' }} {{ gmEta() }}</span>
             <span>↩️ 30-day returns · {{ zh ? '换货永久免费' : 'exchanges always free' }}</span>
             <span>🔒 {{ zh ? '安全支付' : 'Secure checkout' }} · VISA / MC / PAYPAL / KLARNA</span>
           </div>
@@ -491,7 +545,13 @@ const gmEta = () => {
       <!-- 评价 -->
       <section class="section" style="padding-top:44px">
         <div class="section-head">
-          <h2 class="section-title">{{ zh ? '买家评价' : 'Reviews' }} ({{ (p.rating_count || 0).toLocaleString() }})</h2>
+          <h2 class="section-title">
+            {{ zh ? '买家评价' : 'Reviews' }} ({{ (p.rating_count || 0).toLocaleString() }})
+            <span v-if="rvRating" style="font-size:14px;font-weight:600;color:var(--plum);vertical-align:middle">
+              · {{ rvRating }}★ · {{ zh ? `当前 ${rvTotal} 条` : `${rvTotal} shown` }}
+              <button type="button" class="rv-clear" @click="toggleRvStar(rvRating)">{{ zh ? '清除' : 'clear' }}</button>
+            </span>
+          </h2>
           <span v-if="hasReviews" style="font-size:14px;color:var(--gray)">{{ p.rating.toFixed(1) }} / 5</span>
         </div>
         <div v-if="hasReviews || reviews.length" class="grid-m-1" style="display:grid;grid-template-columns:240px 1fr;gap:36px;align-items:start">
@@ -499,18 +559,23 @@ const gmEta = () => {
             <div style="font-family:var(--font-title);font-size:40px;font-weight:700;color:var(--plum)">{{ p.rating.toFixed(1) }}</div>
             <div class="stars" style="margin:4px 0 6px">{{ '★'.repeat(filled) }}<span class="off">{{ '★'.repeat(5 - filled) }}</span></div>
             <div style="font-size:12px;color:var(--gray);margin-bottom:12px">{{ p.rating_count.toLocaleString() }} {{ zh ? '条已审核评价' : 'verified reviews' }}</div>
-            <div v-for="d in dist" :key="d.star" style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--gray);margin-bottom:4px">
-              <span style="width:26px">{{ d.star }}★</span>
+            <button
+              v-for="d in dist" :key="d.star" type="button" class="dist-row"
+              :class="{ on: rvRating === d.star, dim: !!rvRating && rvRating !== d.star }"
+              :aria-pressed="rvRating === d.star ? 'true' : 'false'"
+              :aria-label="zh ? `筛选 ${d.star} 星评价` : `Filter ${d.star}-star reviews`"
+              @click="toggleRvStar(d.star)"
+            >
+              <span style="width:26px;flex:none">{{ d.star }}★</span>
               <span style="flex:1;height:5px;background:var(--gray-light);border-radius:3px;overflow:hidden"><span style="display:block;height:100%;background:var(--gold);border-radius:3px" :style="{ width: d.pct + '%' }"></span></span>
-            </div>
+              <span class="dist-n">{{ d.count }}</span>
+            </button>
           </div>
           <div>
             <div class="grid grid-2 rv-list">
-              <div v-for="rv in reviews" :key="rv.id" class="card" style="padding:18px">
+              <div v-for="rv in reviews" :key="rv.id" class="card card-lift" style="padding:18px">
                 <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
-                  <span style="width:32px;height:32px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">
-                    {{ (rv.user || rv.user_name || 'A').charAt(0).toUpperCase() }}
-                  </span>
+                  <span class="rv-ava" aria-hidden="true"><span>{{ (rv.user || rv.user_name || 'A').charAt(0).toUpperCase() }}</span></span>
                   <b style="font-size:13px">{{ rv.user || rv.user_name || 'Glowmag Fan' }}</b>
                   <span style="font-size:10.5px;font-weight:700;color:var(--success);background:rgba(62,189,147,.10);border:1px solid rgba(62,189,147,.35);border-radius:999px;padding:1.5px 9px;white-space:nowrap">✓ {{ zh ? '已验证购买' : 'Verified Buyer' }}</span>
                 </div>
@@ -551,7 +616,9 @@ const gmEta = () => {
     <!-- v16 移动端粘性加购栏：价格 + 加购（≤768 显示，fixed 于 tabbar 之上；复用 addToCart，SEO/既有交互零改动） -->
     <div class="pdp-buybar">
       <div class="pdp-buybar-info">
-        <b class="pdp-buybar-price">${{ unit.toFixed(2) }}</b>
+        <Transition name="tick" mode="out-in">
+          <b :key="unit.toFixed(2)" class="pdp-buybar-price">${{ unit.toFixed(2) }}</b>
+        </Transition>
         <s v-if="p.compare_at_price && p.compare_at_price > p.price_min">${{ (p.compare_at_price / 100).toFixed(2) }}</s>
         <span class="pdp-buybar-title">{{ p.title }}</span>
       </div>
@@ -569,7 +636,7 @@ const gmEta = () => {
     </div>
   </section>
 
-  <div v-if="lightbox" class="lb-overlay" @click.self="closeLightbox">
+  <div v-if="lightbox" class="lb-overlay" role="dialog" aria-modal="true" :aria-label="lightbox.caption || (zh ? '查看大图' : 'Image viewer')" @click.self="closeLightbox">
     <button class="lb-x" :aria-label="zh ? '关闭' : 'Close'" @click="closeLightbox">×</button>
     <img :src="lightbox.src" :alt="lightbox.caption || 'GLOWMAG'" @error="closeLightbox">
     <div v-if="lightbox.caption" class="lb-cap">{{ lightbox.caption }}</div>
@@ -580,12 +647,15 @@ const gmEta = () => {
 .pdp-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 44px; }
 .vbtn { display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid var(--gray-light); background: #fff; border-radius: 12px; padding: 10px 16px; font-size: 13.5px; font-weight: 600; color: var(--ink); transition: all .15s; }
 .vbtn:hover:not(:disabled) { border-color: var(--rose); background: var(--rose-pale); }
-.vbtn.sel { border-color: var(--plum); background: var(--plum); color: #fff; }
+.vbtn.sel { border-color: var(--plum); background: var(--plum); color: #fff; box-shadow: 0 4px 14px rgba(109,46,70,.28); }
 .vbtn.sel b { color: #fff; }
 .vbtn i { font-style: normal; font-size: 11px; color: var(--gray); }
-.vbtn.out { color: var(--gray); background: var(--gray-light); border-color: var(--gray-light); cursor: not-allowed; text-decoration: line-through; }
+/* 售罄变体可选（点击展示到货通知）：保留置灰+删除线视觉，光标改 pointer */
+.vbtn.out { color: var(--gray); background: var(--gray-light); border-color: var(--gray-light); cursor: pointer; text-decoration: line-through; }
 .vbtn.out i { color: var(--error); text-decoration: none; font-weight: 700; }
 .vbtn.sel i { color: rgba(255,255,255,.85); }
+/* 选中态优先于置灰：售罄变体被选中时仍显示 plum 选中框（通知表单归属可见） */
+.vbtn.sel.out { border-color: var(--plum); background: var(--plum); color: #fff; box-shadow: 0 4px 14px rgba(109,46,70,.28); }
 .qbtn { width: 34px; height: 38px; font-size: 17px; font-weight: 600; color: var(--plum); }
 .qbtn:disabled { color: var(--gray-light); cursor: not-allowed; }
 .wl-btn { flex: none; width: 54px; border: 1.5px solid var(--gray-light); border-radius: 12px; background: #fff; color: var(--plum); font-size: 22px; line-height: 1; cursor: pointer; transition: all .15s; }
@@ -605,14 +675,30 @@ const gmEta = () => {
 .pdp-desc ul { margin: 0 0 12px 20px; }
 .pdp-desc li { margin-bottom: 4px; }
 .rv-list { gap: 16px; }
+/* 评价人头像渐变描边（rose→plum，对齐 HomeView .rev-ava） */
+.rv-ava { width: 32px; height: 32px; padding: 2px; border-radius: 50%; background: linear-gradient(135deg, var(--rose), var(--plum)); flex: none; }
+.rv-ava span { width: 100%; height: 100%; border-radius: 50%; background: var(--plum); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.rv-clear { border: none; background: none; padding: 0; color: var(--plum); text-decoration: underline; font-size: 14px; font-weight: 600; cursor: pointer; }
+.rv-clear:hover { opacity: .75; }
+.dist-row { display: flex; align-items: center; gap: 8px; width: 100%; font-size: 12px; color: var(--gray); margin-bottom: 4px; padding: 3px 6px; border: none; background: none; border-radius: 8px; cursor: pointer; transition: background .15s, opacity .15s; }
+.dist-row:hover { background: var(--rose-pale); color: var(--plum); }
+.dist-row.on { background: var(--rose-pale); color: var(--plum); font-weight: 700; box-shadow: inset 3px 0 0 var(--plum); }
+/* 星级筛选态：非选中行降透明度弱化 */
+.dist-row.dim { opacity: .45; }
+.dist-n { flex: none; min-width: 22px; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+.save-pill { background: var(--coral); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .5px; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+/* 价格行 375px 防溢出：允许换行，SKU 独立成行（≤480px） */
+.pdp-price-row { flex-wrap: wrap; }
+.pdp-sku { white-space: nowrap; }
+@media (max-width: 480px) { .pdp-sku { flex-basis: 100%; } }
+.tick-enter-active { animation: popTick .3s ease-out; }
 .lb-overlay { position: fixed; inset: 0; z-index: 320; background: rgba(31,27,30,.82); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 20px; animation: popIn .2s ease-out; }
 .lb-overlay img { max-width: min(88vw, 720px); max-height: 78vh; border-radius: 14px; object-fit: contain; box-shadow: var(--shadow-pop); }
 .lb-x { position: absolute; top: 18px; right: 22px; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; font-size: 24px; }
 .lb-x:hover { background: rgba(255,255,255,.28); }
 .lb-cap { margin-top: 14px; color: rgba(255,255,255,.85); font-size: 13px; }
-.sk-block { background: linear-gradient(100deg, var(--gray-light) 40%, #f7f3f5 50%, var(--gray-light) 60%); background-size: 200% 100%; animation: skShimmer 1.2s infinite; }
-.sk-line { border-radius: 8px; background: linear-gradient(100deg, var(--gray-light) 40%, #f7f3f5 50%, var(--gray-light) 60%); background-size: 200% 100%; animation: skShimmer 1.2s infinite; }
-@keyframes skShimmer { to { background-position: -200% 0; } }
+.sk-block { border-radius: 18px; }
+.sk-line { border-radius: 8px; }
 @media (max-width: 900px) {
   .pdp-grid { grid-template-columns: 1fr; gap: 28px; }
 }

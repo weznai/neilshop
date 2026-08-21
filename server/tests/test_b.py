@@ -532,6 +532,79 @@ with TestClient(app) as client:
           client.put("/api/admin/trade/shipping-rates/999", headers=admin_auth,
                      json={"price": 1}).status_code == 404)
 
+    # ===== P1 回归：礼品卡下单（未支付）→ 用户取消 → 余额回原值 =====
+    s.add(GiftCard(code="GC-CANCEL-0001", initial_amount=2000, balance=2000,
+                   status=1, purchaser_email="emma@glow.test"))
+    s.commit()
+    winter_before = stock(v_winter.id)
+    set_cart_items(cart_main.id, [{"variantId": v_winter.id, "qty": 1}])
+    r = client.post("/api/checkout/place", headers={**guest_main, **emma_auth}, json={
+        "email": "emma@glow.test", "address": addr,
+        "gift_card_code": "GC-CANCEL-0001"})
+    d = r.json()
+    gcx_no = d.get("order_no", "")
+    s.expire_all()
+    gcx = s.query(GiftCard).filter(GiftCard.code == "GC-CANCEL-0001").first()
+    check("place 礼品卡单（未支付）→ MVP 即扣 balance 2000→401 + change_type=3 流水",
+          r.status_code == 201 and d["giftcard_discount"] == 1599 and gcx.balance == 401
+          and s.query(GiftCardLedger).filter(GiftCardLedger.gift_card_id == gcx.id,
+                                             GiftCardLedger.change_type == 3).count() == 1,
+          (d, gcx.balance))
+    r = client.post(f"/api/orders/{gcx_no}/cancel", headers=emma_auth)
+    s.expire_all()
+    gcx = s.query(GiftCard).filter(GiftCard.code == "GC-CANCEL-0001").first()
+    gc_ledger5 = s.query(GiftCardLedger).filter(
+        GiftCardLedger.gift_card_id == gcx.id, GiftCardLedger.change_type == 5).count()
+    check("cancel 待付礼品卡单 → 余额回原值 2000 + change_type=5 回补流水 + 库存回补",
+          r.status_code == 200 and r.json()["status"] == 8
+          and gcx.balance == 2000 and gc_ledger5 == 1
+          and stock(v_winter.id) == winter_before, (r.text, gcx.balance))
+
+    # ===== risk_flag=2 黑名单用户下单 → 403 =====
+    s.expire_all()
+    s.get(User, emma.id).risk_flag = 2
+    s.commit()
+    set_cart_items(cart_main.id, [{"variantId": v_cherry.id, "qty": 1}])
+    r = client.post("/api/checkout/place", headers={**guest_main, **emma_auth}, json={
+        "email": "emma@glow.test", "address": addr})
+    check("place risk_flag=2 → 403 account_blocked",
+          r.status_code == 403 and r.json().get("detail") == "account_blocked", r.text)
+    s.expire_all()
+    s.get(User, emma.id).risk_flag = 0
+    s.commit()
+
+    # ===== 购物车批量加购 /api/cart/items-batch =====
+    set_cart_items(cart_main.id, [])
+    r = client.post("/api/cart/items-batch", headers={**guest_main, **emma_auth},
+                    json={"items": [{"variant_id": v_winter.id, "qty": 1},
+                                    {"variant_id": v_glue.id, "qty": 2},
+                                    {"variant_id": 999999, "qty": 1},
+                                    {"variant_id": v_winter.id, "qty": 90}]})
+    d = r.json()
+    check("batch 混合：added=[winter,glue] / failed 2（variant_not_found + insufficient_stock）",
+          r.status_code == 201 and d["added"] == [v_winter.id, v_glue.id]
+          and len(d["failed"]) == 2
+          and {f["reason"] for f in d["failed"]} == {"variant_not_found", "insufficient_stock"},
+          d)
+    check("batch 成功件进车视图（winter 1 / glue 2）且复用现有视图组装",
+          {i["variant_id"]: i["qty"] for i in d["items"]} == {v_winter.id: 1, v_glue.id: 2}
+          and "subtotal_cents" in d and d["token"], d.get("items"))
+    r = client.post("/api/cart/items-batch", headers={**guest_main, **emma_auth},
+                    json={"items": [{"variant_id": 999999, "qty": 1}]})
+    d = r.json()
+    check("batch 全失败 → 201 added=[] / 车保持不变（单件失败不回滚整体）",
+          r.status_code == 201 and d["added"] == [] and len(d["failed"]) == 1
+          and {i["variant_id"]: i["qty"] for i in d["items"]} == {v_winter.id: 1, v_glue.id: 2},
+          d)
+    check("batch 超 20 件 → 422",
+          client.post("/api/cart/items-batch", headers=guest_main,
+                      json={"items": [{"variant_id": v_bare.id, "qty": 1}] * 21}
+                      ).status_code == 422)
+    check("batch qty 越界 → 422",
+          client.post("/api/cart/items-batch", headers=guest_main,
+                      json={"items": [{"variant_id": v_bare.id, "qty": 0}]}
+                      ).status_code == 422)
+
     s.close()
 
 print(f"\n{PASSED} passed, {len(FAILED)} failed")

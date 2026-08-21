@@ -26,6 +26,15 @@ const appliedCode = ref(null)
 const pv = ref(null)
 const pvBusy = ref(false)
 
+/* 行项图兜底：回落 placehold + dataset 守卫防循环 */
+const IMG_FALLBACK = 'https://placehold.co/200x200/E8B4B8/552338?text=GLOWMAG'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
+
 /* preview 试算（standard 运费模板）：小计/组合折扣/码折扣/运费与后端逐字一致 */
 let pvSeq = 0
 async function runPreview() {
@@ -90,11 +99,11 @@ function undoRemove() {
 
 onMounted(() => {
   cart.refresh().catch(() => {})
-  runPreview()
 })
 watch(
   () => cart.items.map((i) => i.vid + ':' + i.qty).join('|'),
   () => runPreview(),
+  { immediate: true },
 )
 
 /* 摘要（全部美分 → $xx.xx） */
@@ -107,6 +116,15 @@ const shipC = computed(() => {
   return pv.value.free_shipping ? 0 : (pv.value.shipping_fee != null ? pv.value.shipping_fee : FALLBACK_SHIP_C)
 })
 const freeShip = computed(() => shipC.value === 0)
+/* 免邮达成瞬间脉冲（复用全局 pillPop 关键帧，跑两遍） */
+const freePop = ref(false)
+let freePopT = null
+watch(freeShip, (v) => {
+  if (!v) return
+  freePop.value = true
+  clearTimeout(freePopT)
+  freePopT = setTimeout(() => { freePop.value = false }, 1100)
+})
 /* 免邮进度口径：存在有效折扣码时以 preview 折后小计为准（后端免邮按折后判定），否则按原小计 */
 const awayC = computed(() => {
   if (codeActive.value) {
@@ -151,10 +169,11 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
           </div>
           <div
             v-for="i in cart.items" :key="i.id"
+            class="cart-row"
             style="display:flex;gap:14px;padding:18px 0;border-bottom:1px solid var(--gray-light)"
           >
             <router-link :to="`/product?id=${i.pid}`">
-              <img :src="i.img" :alt="i.title" style="width:88px;height:88px;border-radius:12px;object-fit:cover">
+              <img :src="i.img" :alt="i.title" style="width:88px;height:88px;border-radius:12px;object-fit:cover" loading="lazy" @error="imgFallback">
             </router-link>
             <div style="flex:1;min-width:0">
               <div style="display:flex;justify-content:space-between;gap:10px">
@@ -194,7 +213,10 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
         </div>
 
         <div class="card" style="padding:22px;position:sticky;top:20px">
-          <div class="ship-bar" :class="{ 'gwp-bar': freeShip }" style="margin-bottom:10px"
+          <div
+            class="ship-bar"
+            :class="[{ 'gwp-bar': freeShip }, freePop ? 'free-pop' : '']"
+            style="margin-bottom:10px"
             v-html="freeShip
               ? i18n.t('ship.unlocked')
               : i18n.t('ship.away', (awayC / 100).toFixed(2))"></div>
@@ -249,8 +271,14 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
 .qbtn:disabled { opacity: .35; cursor: not-allowed; }
 .srow { display: flex; justify-content: space-between; align-items: baseline; }
 .srow .val { font-variant-numeric: tabular-nums; font-weight: 600; }
-.undo-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--rose-pale); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin: 14px 0 4px; }
+.undo-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--rose-pale); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin: 14px 0 4px; animation: undoIn .25s ease-out; }
 .undo-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .undo-btn { border: none; background: var(--plum); color: #fff; font-size: 12px; font-weight: 700; padding: 5px 13px; border-radius: 999px; cursor: pointer; flex: none; }
 .undo-btn:hover { opacity: .88; }
+/* 行 hover 背景 rose-pale 渐显 */
+.cart-row { border-radius: 10px; transition: background .2s ease-out; }
+.cart-row:hover { background: var(--rose-pale); }
+/* 免邮达成瞬间 pill 脉冲 */
+.free-pop { animation: pillPop .5s ease-out 2; }
+@keyframes undoIn { from { opacity: 0; transform: translateY(-6px); } }
 </style>

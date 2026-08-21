@@ -1,7 +1,9 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import EmptyState from '../components/EmptyState.vue'
+import Pagination from '../components/Pagination.vue'
 
 const members = ref([])
 const total = ref(0)
@@ -18,7 +20,7 @@ const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
 async function load(p = 1) {
-  loaded.value = false
+  /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
   try {
     const params = new URLSearchParams({ page: p, size: SIZE })
@@ -39,7 +41,27 @@ onMounted(() => load(1))
 
 function search() { load(1) }
 function setTier(v) { tier.value = v; load(1) }
-function go(d) { const n = page.value + d; if (n >= 1 && n <= pages.value) load(n) }
+
+/* 当前页前端排序（积分/累计消费）：三态切换，空值恒沉底 */
+const sort = reactive({ key: '', dir: 1 })
+function sortBy(k) {
+  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
+  else if (sort.dir === 1) { sort.dir = -1 }
+  else { sort.key = ''; sort.dir = 1 }
+}
+const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
+const sortedMembers = computed(() => {
+  if (!sort.key) return members.value
+  const k = sort.key
+  return [...members.value].sort((a, b) => {
+    const av = a[k], bv = b[k]
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (av === bv) return 0
+    return (av > bv ? 1 : -1) * sort.dir
+  })
+})
 
 async function openDetail(m) {
   try {
@@ -90,13 +112,18 @@ async function setRisk(flag) {
     </div>
   </div>
 
-  <div class="card tbl-wrap">
+  <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
+
+  <div v-else class="card tbl-wrap">
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="padding:10px">会员</th><th>等级</th><th>积分</th><th>累计消费</th><th>最近下单</th><th>风控</th><th style="text-align:right">操作</th>
+        <th style="padding:10px">会员</th><th>等级</th>
+        <th class="sortable" title="点击排序（当前页）" @click="sortBy('points')">积分<span v-if="sortInd('points')" class="sort-ind">{{ sortInd('points') }}</span></th>
+        <th class="sortable" title="点击排序（当前页）" @click="sortBy('total_spent')">累计消费<span v-if="sortInd('total_spent')" class="sort-ind">{{ sortInd('total_spent') }}</span></th>
+        <th>最近下单</th><th>风控</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
-        <tr v-for="m in members" :key="m.id" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="m in sortedMembers" :key="m.id" style="border-top:1px solid var(--gray-light)">
           <td style="padding:10px">
             <div style="display:flex;gap:10px;align-items:center">
               <span style="width:34px;height:34px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">
@@ -115,19 +142,12 @@ async function setRisk(flag) {
         </tr>
       </tbody>
     </table>
-    <div v-if="loadErr" style="text-align:center;padding:28px 0">
-      <div style="font-size:24px;margin-bottom:6px">⚠️</div>
-      <div style="color:var(--error);font-size:13px;margin-bottom:10px">会员列表加载失败</div>
-      <button class="btn btn-secondary btn-sm" @click="load(1)">重试</button>
-    </div>
-    <div v-else-if="loaded && !members.length" style="text-align:center;color:var(--gray);padding:28px 0">没有匹配会员</div>
-    <div v-if="pages > 1" style="display:flex;justify-content:space-between;align-items:center;padding:12px 10px;font-size:12.5px;color:var(--gray);border-top:1px solid var(--gray-light)">
-      <span>第 {{ page }} / {{ pages }} 页 · 共 {{ total }} 位</span>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary btn-sm" :disabled="page <= 1" :style="{ opacity: page <= 1 ? 0.45 : 1 }" @click="go(-1)">上一页</button>
-        <button class="btn btn-secondary btn-sm" :disabled="page >= pages" :style="{ opacity: page >= pages ? 0.45 : 1 }" @click="go(1)">下一页</button>
-      </div>
-    </div>
+    <EmptyState v-if="loadErr" icon="⚠️" title="会员列表加载失败" sub="服务端可能未启动或会话已过期">
+      <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
+    </EmptyState>
+    <EmptyState v-else-if="!members.length" icon="🧍" title="没有匹配会员" sub="试试其他关键词或等级筛选" />
+    <Pagination embed :page="page" :pages="pages" :total="total" unit="位" @go="load" />
+    <div v-if="sort.key" style="text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
   </div>
 
   <!-- 会员画像弹窗 -->
@@ -154,7 +174,7 @@ async function setRisk(flag) {
       </div>
 
       <div style="margin-top:6px">
-        <router-link to="/orders" style="font-size:12.5px;color:var(--plum)">查看订单 →</router-link>
+        <router-link :to="{ path: '/orders', query: { q: active.email } }" style="font-size:12.5px;color:var(--plum)">查看订单 →</router-link>
       </div>
 
       <div v-if="active.ledger && active.ledger.length" style="margin-top:14px">

@@ -76,6 +76,12 @@ class PasswordResetConfirmIn(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class PasswordChangeIn(BaseModel):
+    """登录态改密（偏好中心入口）：需校验旧密码；匿名 OAuth 用户无旧密可验走重置流"""
+    old_password: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 # ---------- 推荐 ----------
 
 class SimulateInviteIn(BaseModel):

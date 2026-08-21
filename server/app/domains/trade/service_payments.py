@@ -2,10 +2,14 @@
 支付成功核心事务 mark_order_paid 由 mock-pay 与 webhook 共用（调用方 commit），
 内部对 orders/payments 状态推进做 CAS 抢占（UPDATE ... WHERE status=0/!=1 + rowcount），
 抢占失败即并发方已处理 → 幂等返回，不再重复发积分/计数。
+赢者语义：先 CAS 订单（WHERE status=0），赢了才推进 payment 为 SUCCESS；
+订单已被取消/关单（输者）不碰 payment 状态 —— 防已取消订单的迟到回调假支付。
 真实 Stripe 模式：GM_STRIPE_KEY / GM_STRIPE_WEBHOOK_SECRET（pip install stripe）自动启用；
 无密钥或缺包回落 MockProvider，行为与 mock 版一致。
 环境门禁（GM_ENV，默认 dev）：非 dev 下 mock-pay 404；webhook 在非 dev 且
 未配置 provider 验签密钥时 400 拒绝处理。"""
+
+import logging
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -19,6 +23,8 @@ from app.services.payment_provider import (
     InvalidSignatureError, MockProvider, ProviderUnavailable,
     WebhookVerificationError, get_provider, normalize_event,
 )
+
+log = logging.getLogger("glowmag.payments")
 
 
 def _get_order(db: Session, order_no: str) -> Order:
@@ -54,14 +60,20 @@ def mark_order_paid(
 ) -> bool:
     """支付成功核心事务：订单 PAID + 实扣确认 + 积分发放 + Redemption + outbox（调用方 commit）。
     订单状态推进为 CAS 抢占（WHERE status=0）：rowcount=0 说明并发回调已处理或订单已被
-    关单/取消 → 返回 False（幂等，不重复发放积分/ Redemption / 计数）。"""
+    关单/取消 → 输者直接返回 False：不推进 payment（保持原状态，防假支付）、
+    不发放积分/ Redemption / 计数。"""
     now = utcnow()
     claimed = repo.claim_order_paid(db, order.id, now)
-    repo.claim_payment_paid(db, payment.id)
     if claimed == 0:
         db.expire(order)
         db.expire(payment)
+        log.warning(
+            "mark_order_paid lost order claim: order=%s is status=%s (canceled/closed "
+            "or handled concurrently), late callback keeps payment=%s in status=%s",
+            order.order_no, order.status, payment.id, payment.status,
+        )
         return False
+    repo.claim_payment_paid(db, payment.id)
     order.status = 1
     order.paid_at = now
     payment.status = 1
@@ -127,8 +139,12 @@ def create_intent(db: Session, order_no: str) -> dict:
     order = _get_order(db, order_no)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
-    # 幂等：同单已有 PENDING payment 直接复用返回，不堆积新行
-    pending = repo.pending_payment_of_order(db, order.id)
+    provider = get_provider()
+    # 环境门禁：非 dev 禁止 mock intent（无真实凭据时宁可 409 也不静默降级 mock）
+    if provider.name == "mock" and settings.env != "dev":
+        raise HTTPException(status_code=409, detail="mock_provider_disabled")
+    # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
+    pending = repo.pending_payment_of_order(db, order.id, provider=provider.name)
     if pending:
         return {
             "payment_intent": pending.stripe_payment_intent,
@@ -137,15 +153,18 @@ def create_intent(db: Session, order_no: str) -> dict:
                 or f"{pending.stripe_payment_intent}_secret_mock"
             ),
             "amount": pending.amount,
+            "redirect_url": "",
         }
     try:
-        intent = get_provider().create_intent(order, order.grand_total)
+        intent = provider.create_intent(order, order.grand_total)
     except ProviderUnavailable:
+        if settings.env != "dev":
+            raise HTTPException(status_code=409, detail="mock_provider_disabled")
         intent = MockProvider().create_intent(order, order.grand_total)
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],
-        stripe_checkout_session=(intent.get("client_secret") or "")[:64],
+        stripe_checkout_session=(intent.get("client_secret") or "")[:255],
         amount=order.grand_total,
         status=0,
     )
@@ -155,6 +174,7 @@ def create_intent(db: Session, order_no: str) -> dict:
         "payment_intent": payment.stripe_payment_intent,
         "client_secret": intent["client_secret"],
         "amount": payment.amount,
+        "redirect_url": intent.get("redirect_url", ""),
     }
 
 
@@ -188,13 +208,21 @@ def mock_pay(db: Session, order_no: str, succeed: bool) -> dict:
     }
 
 
+# webhook 不可恢复错误前缀：数据状态永久无法推进（PI 不存在/订单丢失/已全退/无可退行），
+# 重试永远同结果 → 标记 status=2 落库并 200 skipped，避免 provider 无限重推打爆日志
+_UNRECOVERABLE_PREFIXES = (
+    "payment_intent_not_found", "order_not_found",
+    "no_refundable_payment", "already_fully_refunded",
+)
+
+
 def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) -> dict:
     provider = get_provider()
     # 环境门禁：非 dev 必须配置对应 provider 的验签密钥，否则任何人可伪造回调
     if settings.env != "dev":
         secret = (
             settings.stripe_webhook_secret if provider.name == "stripe"
-            else getattr(settings, "paypal_webhook_id", "")
+            else settings.paypal_webhook_id
         )
         if not secret:
             raise HTTPException(status_code=400, detail="webhook_secret_not_configured")
@@ -212,6 +240,9 @@ def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) ->
     existing = repo.get_webhook_event(db, event_id)
     if existing and existing.status == 1:
         return {"ok": True, "duplicate": True}
+    if existing and existing.status == 2:
+        # 曾判定不可恢复（skipped）的事件再推送：直接幂等跳过
+        return {"ok": True, "skipped": True}
     if not existing:
         repo.add_webhook_event(
             db, event_id=event_id, source="stripe", type=event_type,
@@ -219,31 +250,48 @@ def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) ->
         )
         db.flush()
 
-    payment_intent = (data or {}).get("payment_intent")
-    payment = repo.payment_by_intent(db, payment_intent)
-    if not payment:
-        db.rollback()
-        raise HTTPException(status_code=404, detail="payment_intent_not_found")
-    order = repo.get_order(db, payment.order_id)
-    if not order:
-        db.rollback()
-        raise HTTPException(status_code=404, detail="order_not_found")
+    try:
+        payment_intent = (data or {}).get("payment_intent")
+        payment = repo.payment_by_intent(db, payment_intent)
+        if not payment:
+            raise HTTPException(status_code=404, detail="payment_intent_not_found")
+        order = repo.get_order(db, payment.order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="order_not_found")
 
-    if event_type == "payment_intent.succeeded":
-        if payment.status != 1:
-            if order.status != 1:
-                mark_order_paid(db, order, payment, source="webhook")
-            else:
-                payment.status = 1
-    elif event_type == "charge.refunded":
-        from app.domains.trade.service_admin import apply_refund
+        if event_type == "payment_intent.succeeded":
+            if payment.status != 1:
+                if order.status != 1:
+                    mark_order_paid(db, order, payment, source="webhook")
+                else:
+                    payment.status = 1
+        elif event_type == "charge.refunded":
+            from app.domains.trade.service_admin import apply_refund
 
-        apply_refund(
-            db, order, (data or {}).get("amount"),
-            reason="webhook:charge.refunded", actor="system",
+            apply_refund(
+                db, order, (data or {}).get("amount"),
+                reason="webhook:charge.refunded", actor="system",
+            )
+        else:
+            pass
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        if not any(detail.startswith(p) for p in _UNRECOVERABLE_PREFIXES):
+            raise
+        # rollback（撤回上面的 WebhookEvent 插入）→ 重插并标记 status=2 + 告警 + 200 skipped
+        db.rollback()
+        repo.add_webhook_event(
+            db, event_id=event_id, source="stripe", type=event_type,
+            payload={"id": event_id, "type": event_type, "data": data},
         )
-    else:
-        pass
+        db.flush()
+        evt = repo.get_webhook_event(db, event_id)
+        evt.status = 2
+        evt.processed_at = utcnow()
+        db.commit()
+        log.warning("webhook event %s unrecoverable, marked status=2 and skipped: %s",
+                    event_id, detail)
+        return {"ok": True, "skipped": detail}
 
     evt = repo.get_webhook_event(db, event_id)
     evt.status = 1

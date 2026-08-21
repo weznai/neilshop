@@ -114,9 +114,10 @@ async function unsubAll() {
         <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">
           {{ tt('Managing email preferences for', '正在管理') }} <b>{{ prefs.email }}</b>{{ tt('. Turn everything off to unsubscribe — you can re-enable here anytime.', ' 的邮件偏好。关闭全部即退出订阅；之后随时可在此重新开启。') }}
         </p>
-        <label v-for="[k, label] in prefLabels" :key="k" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--gray-light);font-size:14px">
+        <label v-for="[k, label] in prefLabels" :key="k" style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--gray-light);font-size:14px;position:relative">
           <span>{{ label }}</span>
-          <input v-model="prefs[k]" type="checkbox" style="width:18px;height:18px;accent-color:var(--plum)" :disabled="saving">
+          <input v-model="prefs[k]" type="checkbox" class="unsub-chk" :disabled="saving">
+          <span class="unsub-sw" aria-hidden="true"></span>
         </label>
         <div v-if="prefs.unsubscribed_at" style="font-size:12.5px;color:var(--warn);margin-top:10px">
           ⚠️ {{ tt('You are unsubscribed from all emails — turn any option on to re-subscribe.', '你已退订全部邮件 —— 开启任一项即可恢复订阅。') }}
@@ -148,3 +149,17 @@ async function unsubAll() {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* 自绘 checkbox 开关（隐藏原生输入，checked 态经相邻选择器驱动滑轨/滑钮） */
+.unsub-chk { position: absolute; opacity: 0; pointer-events: none; }
+.unsub-sw { position: relative; flex: none; width: 44px; height: 26px; border-radius: 999px; background: var(--gray-light); transition: background .2s; }
+.unsub-sw::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .2s;
+}
+.unsub-chk:checked + .unsub-sw { background: var(--success); }
+.unsub-chk:checked + .unsub-sw::after { left: 21px; }
+.unsub-chk:disabled + .unsub-sw { opacity: .55; }
+.unsub-chk:focus-visible + .unsub-sw { outline: 2px solid rgba(109,46,70,.6); outline-offset: 2px; }
+</style>

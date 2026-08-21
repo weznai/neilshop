@@ -10,9 +10,11 @@ export const useUiStore = defineStore('ui', {
     cartDrawer: false,
     mnavOpen: false,
     searchOpen: false,
+    chatOpen: false,      /* ChatWidget 面板（组件自上报，body 滚动锁统一走 anyOverlay） */
+    popupsOpen: false,    /* MarketingPopups welcome/exit（同上） */
   }),
   getters: {
-    anyOverlay: (s) => s.openModalId || s.cartDrawer || s.mnavOpen || s.searchOpen,
+    anyOverlay: (s) => s.openModalId || s.cartDrawer || s.mnavOpen || s.searchOpen || s.chatOpen || s.popupsOpen,
   },
   actions: {
     toast(msg, type = '', opts) {
@@ -36,6 +38,8 @@ export const useUiStore = defineStore('ui', {
     closeMnav() { this.mnavOpen = false },
     openSearch() { this.searchOpen = true },
     closeSearch() { this.searchOpen = false },
+    /* ESC 委托（App 根挂 keydown）：仅关抽屉/搜索/移动导航/模态；
+       chatOpen/popupsOpen 由各组件自管（ESC 优先关上面的浮层，见 ChatWidget） */
     closeAll() {
       this.openModalId = null
       this.cartDrawer = false

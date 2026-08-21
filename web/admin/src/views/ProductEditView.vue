@@ -61,6 +61,7 @@ async function loadProduct(id) {
     loadedSchedISO.value = p.scheduled ? new Date(asUTC(p.published_at)).toISOString() : null
     schedAt.value = loadedSchedISO.value ? fmtLocal(new Date(asUTC(p.published_at))) : ''
     variants.value = await loadVariants(id)
+    loadTranslations(id)
   } catch (e) { toast('商品加载失败：' + (e.message || ''), 'error') }
 }
 
@@ -145,6 +146,54 @@ async function saveEdit() {
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
+
+/* ===== 多语言翻译（GET/PUT /products/{id}/translations、DELETE /{locale}；GET 返回裸数组）
+ * 契约：locale 须匹配 ^[a-z]{2}-[A-Z]{2}$，title 必填，subtitle/description_md 可选 ===== */
+const LOCALES = ['zh-CN', 'en-US', 'fr-FR', 'de-DE', 'ja-JP']
+const LOCALE_LABEL = { 'zh-CN': '简体中文', 'en-US': 'English', 'fr-FR': 'Français', 'de-DE': 'Deutsch', 'ja-JP': '日本語' }
+const translations = ref([])
+const trDlg = ref(false)
+const trEditing = ref(false)   /* true=编辑已有语言（locale 锁定） */
+const trForm = reactive({ locale: 'zh-CN', title: '', subtitle: '', description_md: '' })
+async function loadTranslations(id) {
+  try { translations.value = (await req('GET', `/api/admin/catalog/products/${id}/translations`)) || [] }
+  catch (_) { translations.value = [] }
+}
+function newTr() {
+  /* 默认选中尚未翻译的语言；全占时回退第一个 */
+  const used = new Set(translations.value.map((t) => t.locale))
+  Object.assign(trForm, { locale: LOCALES.find((l) => !used.has(l)) || LOCALES[0], title: '', subtitle: '', description_md: '' })
+  trEditing.value = false
+  trDlg.value = true
+}
+function editTr(t) {
+  Object.assign(trForm, { locale: t.locale, title: t.title || '', subtitle: t.subtitle || '', description_md: t.description_md || '' })
+  trEditing.value = true
+  trDlg.value = true
+}
+async function saveTr() {
+  if (!trForm.title.trim()) { toast('翻译标题必填', 'error'); return }
+  if (!trEditing.value && translations.value.some((t) => t.locale === trForm.locale)) { toast('该语言已有翻译，请直接编辑', 'error'); return }
+  try {
+    await req('PUT', `/api/admin/catalog/products/${pid.value}/translations`, {
+      locale: trForm.locale,
+      title: trForm.title.trim(),
+      subtitle: trForm.subtitle.trim() || null,
+      description_md: trForm.description_md || null,
+    })
+    toast('翻译已保存 ✓', 'success')
+    trDlg.value = false
+    loadTranslations(pid.value)
+  } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+}
+async function delTr(t) {
+  if (!confirm(`删除${LOCALE_LABEL[t.locale] || t.locale}（${t.locale}）翻译？前台该语言将回退默认内容。`)) return
+  try {
+    await req('DELETE', `/api/admin/catalog/products/${pid.value}/translations/${t.locale}`)
+    toast('已删除', 'success')
+    loadTranslations(pid.value)
+  } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
+}
 </script>
 
 <template>
@@ -267,6 +316,21 @@ const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
         <p style="font-size:11.5px;color:var(--gray);margin-top:8px">保存后生效：到点前台自动可见；清空并保存 = 取消定时（立即按当前状态可见）。需先在列表页「上架」。</p>
       </div>
 
+      <!-- 多语言（仅编辑态；GET 返回裸数组，locale 徽标 + 标题 + 编辑/删除） -->
+      <div v-if="pid" class="card" style="padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3 style="font-size:15px">多语言</h3>
+          <button class="btn btn-secondary btn-sm" @click="newTr">＋ 添加语言</button>
+        </div>
+        <p v-if="!translations.length" style="font-size:12.5px;color:var(--gray)">暂无翻译，前台将展示上方主商品信息。</p>
+        <div v-for="t in translations" :key="t.locale" style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--gray-light);font-size:13px">
+          <span class="tag tag-cat" style="flex:none" :title="LOCALE_LABEL[t.locale] || t.locale">{{ t.locale }}</span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="t.title">{{ t.title }}</span>
+          <button class="btn btn-ghost btn-sm" @click="editTr(t)">编辑</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delTr(t)">删除</button>
+        </div>
+      </div>
+
       <div class="card" style="padding:20px">
         <h3 style="font-size:15px;margin-bottom:12px">组织</h3>
         <div class="field"><label>标签（逗号分隔）</label>
@@ -279,6 +343,26 @@ const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
           <input v-model="form.is_best_seller" type="checkbox" style="width:16px;height:16px"> 热销徽标
         </label>
       </div>
+    </div>
+  </div>
+
+  <!-- 多语言添加/编辑弹层 -->
+  <div v-if="trDlg" class="modal open" @click.self="trDlg = false">
+    <div class="modal-box" style="max-width:520px">
+      <button class="modal-x" @click="trDlg = false">×</button>
+      <h3 style="font-family:var(--font-title);margin-bottom:6px">🌐 {{ trEditing ? '编辑' : '添加' }}翻译</h3>
+      <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">同语言重复保存为覆盖更新；前台无翻译的语言回退主商品信息。</p>
+      <div style="display:grid;gap:12px">
+        <div class="field"><label>语言</label>
+          <select v-model="trForm.locale" class="input" :disabled="trEditing" :style="trEditing ? 'background:var(--rose-pale)' : ''">
+            <option v-for="l in LOCALES" :key="l" :value="l">{{ l }} · {{ LOCALE_LABEL[l] }}</option>
+          </select>
+        </div>
+        <div class="field"><label>标题 *</label><input v-model="trForm.title" class="input"></div>
+        <div class="field"><label>副标题（可选）</label><input v-model="trForm.subtitle" class="input"></div>
+        <div class="field"><label>描述 Markdown（可选）</label><textarea v-model="trForm.description_md" class="input" rows="5"></textarea></div>
+      </div>
+      <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveTr">保存</button>
     </div>
   </div>
 </template>

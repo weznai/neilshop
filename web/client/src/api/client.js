@@ -99,17 +99,35 @@ export async function req(method, path, body, opts) {
   return data
 }
 
-/* 商品动态解析（内存缓存，替代旧 SLUGS 硬编码表）；rejected promise 不滞留缓存（重进可重试） */
+/* 商品动态解析（内存缓存 + 60s TTL，替代旧 SLUGS 硬编码表）；
+   在途请求 at=Infinity 不判过期；rejected promise 不滞留缓存（重进可重试） */
 const _byId = {}
+const DETAIL_TTL = 60000
 export function productDetail(pid) {
-  if (!_byId[pid]) {
-    _byId[pid] = req('GET', '/api/catalog/products-by-id/' + pid)
-      .catch((e) => { delete _byId[pid]; throw e })
-  }
-  return _byId[pid]
+  const hit = _byId[pid]
+  if (hit && Date.now() - hit.at < DETAIL_TTL) return hit.promise
+  const rec = { at: Infinity, promise: null }
+  rec.promise = req('GET', '/api/catalog/products-by-id/' + pid)
+    .then((d) => { rec.at = Date.now(); return d })
+    .catch((e) => { if (_byId[pid] === rec) delete _byId[pid]; throw e })
+  _byId[pid] = rec
+  return rec.promise
 }
 
-/* 心愿单加入（登录态；ProductView 心形按钮调用） */
+/* 心愿单：加入 / 查询是否已收藏 / 移除（端点形态对齐 WishlistView：POST|DELETE /api/account/wishlist/{pid}）
+   _wlKnown 会话内缓存已确认收藏的 id，避免 PDP 重复发 has 请求 */
+const _wlKnown = new Set()
 export function wishlistAdd(pid) {
-  return req('POST', '/api/account/wishlist/' + pid)
+  return req('POST', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.add(pid); return d })
+}
+export function wishlistHas(pid) {
+  if (_wlKnown.has(pid)) return Promise.resolve(true)
+  return req('GET', '/api/account/wishlist/has?product_id=' + pid).then((d) => {
+    const hit = !!(d && d.in_wishlist)
+    if (hit) _wlKnown.add(pid)
+    return hit
+  })
+}
+export function wishlistRemove(pid) {
+  return req('DELETE', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.delete(pid); return d })
 }
