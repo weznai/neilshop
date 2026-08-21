@@ -53,6 +53,8 @@ const router = createRouter({
     /* 返回（含详情↔列表）优先恢复滚动位置；锚点定位留出吸顶高度 */
     if (saved) return saved
     if (to.hash) return { el: to.hash, top: 84 }
+    /* 同页仅 query 变化（筛选/排序/分页）：保持当前滚动位置，不跳顶 */
+    if (to.path === from.path) return false
     return { top: 0 }
   },
   routes: [

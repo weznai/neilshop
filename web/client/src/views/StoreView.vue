@@ -114,7 +114,7 @@ async function load() {
 watch(() => route.query, (nq, oq) => {
   const sig = (qq) => JSON.stringify({ ...(qq || {}), page: 0 })
   if (sig(nq) !== sig(oq)) {
-    pendingScroll.value = true /* 筛选变化后滚回网格顶 */
+    /* 筛选变化不滚动（保持当前位置）；仅翻页滚回网格顶 */
     if (nq.page) { router.replace({ query: { ...nq, page: undefined } }); return }
     state.page = 1
   } else {
@@ -195,58 +195,70 @@ const HOT_LINKS = [
         </div>
       </div>
 
-      <div class="store-chiprow" style="margin-bottom:8px">
-        <router-link class="trend-chip" :class="{ on: !route.query.cat }" :to="{ path: '/store', query: { ...route.query, cat: undefined } }">
-          {{ i18n.t('store.cat.all') }}
-        </router-link>
-        <router-link
-          v-for="c in cats" :key="c.slug" class="trend-chip"
-          :class="{ on: (route.query.cat === c.slug) || (route.query.cat && CAT_ALIAS[route.query.cat] === c.slug) }"
-          :to="{ path: '/store', query: { ...route.query, cat: c.slug } }"
-        >{{ c.name }}</router-link>
-      </div>
-      <div class="store-chiprow" style="margin-bottom:22px">
-        <router-link class="trend-chip" :class="{ on: !route.query.style && !route.query.tag }" :to="{ path: '/store', query: { ...route.query, style: undefined, tag: undefined } }">
-          {{ tt('All Styles', '全部风格') }}
-        </router-link>
-        <router-link class="trend-chip" :class="{ on: route.query.style === 'french' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'french', tag: undefined } }">
-          {{ i18n.t('store.style.french') }}
-        </router-link>
-        <router-link class="trend-chip" :class="{ on: route.query.style === 'glitter' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'glitter', tag: undefined } }">
-          {{ i18n.t('store.style.glitter') }}
-        </router-link>
-        <router-link class="trend-chip" :class="{ on: !!route.query.sale }" :to="route.query.sale ? { path: '/store', query: { ...route.query, sale: undefined } } : { path: '/store', query: { ...route.query, sale: 1 } }">
-          🔥 {{ i18n.t('store.chip.sale') }}
-        </router-link>
-      </div>
-      <!-- 甲型筛选：可点选 chip 组（后端 shape 参数） -->
-      <div class="store-chiprow" style="margin-bottom:22px">
-        <router-link class="trend-chip" :class="{ on: !route.query.shape }" :to="{ path: '/store', query: { ...route.query, shape: undefined } }">
-          {{ tt('All Shapes', '全部甲型') }}
-        </router-link>
-        <router-link
-          v-for="[v, en, cn] in SHAPE_CHIPS" :key="v" class="trend-chip"
-          :class="{ on: route.query.shape === v }"
-          :to="{ path: '/store', query: { ...route.query, shape: v } }"
-        >{{ tt(en, cn) }}</router-link>
-      </div>
-      <!-- 价格区间（后端 min_price/max_price 交集筛选） -->
-      <div class="store-chiprow" style="margin-bottom:22px">
-        <router-link class="trend-chip" :class="{ on: !route.query.min && !route.query.max }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: undefined } }">
-          {{ i18n.t('store.price.any') }}
-        </router-link>
-        <router-link class="trend-chip" :class="{ on: route.query.max === '15' }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: 15 } }">
-          {{ i18n.t('store.price.under') }}
-        </router-link>
-        <router-link class="trend-chip" :class="{ on: route.query.min === '15' && route.query.max === '18' }" :to="{ path: '/store', query: { ...route.query, min: 15, max: 18 } }">
-          $15 – $18
-        </router-link>
-        <router-link class="trend-chip" :class="{ on: route.query.min === '18' }" :to="{ path: '/store', query: { ...route.query, min: 18, max: undefined } }">
-          $18+
-        </router-link>
+      <div class="store-filters">
+        <div class="sf-row">
+          <span class="sf-label">{{ tt('Category', '分类') }}</span>
+          <div class="sf-chips">
+            <router-link class="trend-chip" :class="{ on: !route.query.cat }" :to="{ path: '/store', query: { ...route.query, cat: undefined } }">
+              {{ i18n.t('store.cat.all') }}
+            </router-link>
+            <router-link
+              v-for="c in cats" :key="c.slug" class="trend-chip"
+              :class="{ on: (route.query.cat === c.slug) || (route.query.cat && CAT_ALIAS[route.query.cat] === c.slug) }"
+              :to="{ path: '/store', query: { ...route.query, cat: c.slug } }"
+            >{{ c.name }}</router-link>
+          </div>
+        </div>
+        <div class="sf-row">
+          <span class="sf-label">{{ tt('Style', '风格') }}</span>
+          <div class="sf-chips">
+            <router-link class="trend-chip" :class="{ on: !route.query.style && !route.query.tag }" :to="{ path: '/store', query: { ...route.query, style: undefined, tag: undefined } }">
+              {{ tt('All', '全部') }}
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: route.query.style === 'french' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'french', tag: undefined } }">
+              {{ i18n.t('store.style.french') }}
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: route.query.style === 'glitter' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'glitter', tag: undefined } }">
+              {{ i18n.t('store.style.glitter') }}
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: !!route.query.sale }" :to="route.query.sale ? { path: '/store', query: { ...route.query, sale: undefined } } : { path: '/store', query: { ...route.query, sale: 1 } }">
+              🔥 {{ i18n.t('store.chip.sale') }}
+            </router-link>
+          </div>
+        </div>
+        <div class="sf-row">
+          <span class="sf-label">{{ tt('Shape', '甲型') }}</span>
+          <div class="sf-chips">
+            <router-link class="trend-chip" :class="{ on: !route.query.shape }" :to="{ path: '/store', query: { ...route.query, shape: undefined } }">
+              {{ tt('All', '全部') }}
+            </router-link>
+            <router-link
+              v-for="[v, en, cn] in SHAPE_CHIPS" :key="v" class="trend-chip"
+              :class="{ on: route.query.shape === v }"
+              :to="{ path: '/store', query: { ...route.query, shape: v } }"
+            >{{ tt(en, cn) }}</router-link>
+          </div>
+        </div>
+        <div class="sf-row sf-last">
+          <span class="sf-label">{{ tt('Price', '价格') }}</span>
+          <div class="sf-chips">
+            <router-link class="trend-chip" :class="{ on: !route.query.min && !route.query.max }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: undefined } }">
+              {{ i18n.t('store.price.any') }}
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: route.query.max === '15' }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: 15 } }">
+              {{ i18n.t('store.price.under') }}
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: route.query.min === '15' && route.query.max === '18' }" :to="{ path: '/store', query: { ...route.query, min: 15, max: 18 } }">
+              $15 – $18
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: route.query.min === '18' }" :to="{ path: '/store', query: { ...route.query, min: 18, max: undefined } }">
+              $18+
+            </router-link>
+          </div>
+        </div>
       </div>
 
-      <p v-if="loaded && !loadError" style="font-size:13px;color:var(--gray);margin-bottom:16px">
+      <p v-if="loaded && !loadError" class="store-count">
         {{ i18n.t(state.total === 1 ? 'store.count.one' : 'store.count.many', state.total) }}
       </p>
 
@@ -304,6 +316,49 @@ const HOT_LINKS = [
 .sk-img { aspect-ratio: 1; border-radius: 12px; }
 .sk-line { border-radius: 8px; }
 .trend-chip.on { background: var(--plum); border-color: var(--plum); color: #fff; }
+
+/* 筛选卡片：标签左置 + 紧凑行式布局，收敛竖向高度 */
+.store-filters {
+  background: #fff;
+  border: 1px solid var(--gray-light);
+  border-radius: 14px;
+  padding: 6px 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 10px rgba(31,27,30,.03);
+}
+.sf-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px dashed var(--gray-light);
+}
+.sf-last { border-bottom: none; }
+.sf-label {
+  flex: none;
+  width: 58px;
+  padding-top: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: var(--gray);
+}
+.sf-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; flex: 1; }
+.sf-chips .trend-chip { margin: 0; padding: 4px 13px; font-size: 12px; }
+
+.store-head { margin-bottom: 18px; }
+.store-count { font-size: 12.5px; color: var(--gray); margin-bottom: 14px; }
+
+@media (max-width: 768px) {
+  .store-filters { padding: 4px 14px; }
+  .sf-row { flex-direction: column; gap: 8px; padding: 10px 0; }
+  .sf-label { width: auto; padding-top: 0; }
+  .sf-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .sf-chips::-webkit-scrollbar { display: none; }
+  .sf-chips .trend-chip { flex: none; }
+}
+
 /* 排序分段控件：容器圆角边框内分段按钮，选中段 plum 底白字 */
 .seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 3px; border: 1.5px solid var(--gray-light); border-radius: 999px; background: #fff; }
 .seg-btn { padding: 6px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 600; color: var(--gray); transition: all .15s; }

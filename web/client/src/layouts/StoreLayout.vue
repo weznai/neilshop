@@ -195,76 +195,86 @@ onUnmounted(() => {
     </router-view>
   </main>
 
-  <footer class="footer">
-    <div class="container">
-      <div class="trust-row">
-        <div class="trust-item"><span class="trust-ico"><GmIcon name="truck" :size="20" /></span><b>{{ i18n.t('trust.ship') }}</b></div>
-        <div class="trust-item"><span class="trust-ico"><GmIcon name="refresh" :size="20" /></span><b>{{ i18n.t('trust.ret') }}</b></div>
-        <div class="trust-item"><span class="trust-ico"><GmIcon name="lock" :size="20" /></span><b>{{ i18n.t('trust.pay') }}</b></div>
-        <div class="trust-item"><span class="trust-ico"><GmIcon name="star" :size="20" /></span><b>{{ i18n.t('trust.love') }}</b></div>
-      </div>
-      <div class="footer-news">
+  <section class="newsletter-band">
+    <div class="footer-inner">
+      <div class="news-text">
+        <span class="news-ico"><GmIcon name="mail" :size="18" /></span>
         <div>
           <h5>{{ i18n.t('footer.news.t') }}</h5>
           <p>{{ i18n.t('footer.news.d') }}</p>
         </div>
-        <form class="news-form" @submit.prevent="subscribeNews">
-          <input v-model="newsEmail" type="email" :placeholder="i18n.t('welcome.ph')" aria-label="Email">
-          <button class="btn btn-sm news-btn" type="submit" :disabled="newsBusy">{{ i18n.t('welcome.btn') }}</button>
-        </form>
       </div>
-      <div class="footer-grid">
-        <div>
-          <div class="logo" style="color:#fff;font-size:24px;margin-bottom:14px">GLOW<span style="color:var(--rose)">MAG</span></div>
-          <p style="font-size:13px;color:rgba(255,255,255,.7);max-width:280px">{{ i18n.t('footer.tag') }}</p>
-          <div style="display:flex;gap:16px;margin-top:18px">
+      <form class="news-form" @submit.prevent="subscribeNews">
+        <input v-model="newsEmail" type="email" :placeholder="i18n.t('welcome.ph')" aria-label="Email">
+        <button class="btn btn-sm news-btn" type="submit" :disabled="newsBusy">{{ i18n.t('welcome.btn') }}</button>
+      </form>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="trust-row">
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="truck" :size="16" /></span><b>{{ i18n.t('trust.ship') }}</b></div>
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="refresh" :size="16" /></span><b>{{ i18n.t('trust.ret') }}</b></div>
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="lock" :size="16" /></span><b>{{ i18n.t('trust.pay') }}</b></div>
+        <div class="trust-item"><span class="trust-ico"><GmIcon name="star" :size="16" /></span><b>{{ i18n.t('trust.love') }}</b></div>
+      </div>
+
+      <div class="footer-main">
+        <div class="footer-brand">
+          <div class="logo footer-logo">GLOW<span>MAG</span></div>
+          <p class="footer-tagline">{{ i18n.t('footer.tag') }}</p>
+          <div class="social-row">
             <button
               v-for="s in ['tiktok', 'instagram', 'youtube', 'pinterest']" :key="s"
               type="button" class="social-btn" :aria-label="i18n.t('aria.' + s)"
               @click="ui.toast('Social link (demo) 💅')"
             >
-              <GmIcon :name="s" :size="22" />
+              <GmIcon :name="s" :size="18" />
             </button>
           </div>
         </div>
-        <div>
-          <h4>{{ i18n.t('footer.shop') }}</h4>
-          <div class="footer-links">
-            <router-link to="/store">{{ i18n.t('footer.all') }}</router-link>
-            <router-link to="/store?sort=new">{{ i18n.t('footer.new') }}</router-link>
-            <router-link to="/sale">{{ i18n.t('footer.sale') }}</router-link>
-            <router-link to="/gift-cards">{{ i18n.t('footer.gift') }}</router-link>
+        <div class="footer-links-group">
+          <div>
+            <h4>{{ i18n.t('footer.shop') }}</h4>
+            <div class="footer-links">
+              <router-link to="/store">{{ i18n.t('footer.all') }}</router-link>
+              <router-link to="/store?sort=new">{{ i18n.t('footer.new') }}</router-link>
+              <router-link to="/sale">{{ i18n.t('footer.sale') }}</router-link>
+              <router-link to="/gift-cards">{{ i18n.t('footer.gift') }}</router-link>
+            </div>
           </div>
-        </div>
-        <div>
-          <h4>{{ i18n.t('footer.help') }}</h4>
-          <div class="footer-links">
-            <router-link to="/faq">{{ i18n.t('footer.faq') }}</router-link>
-            <router-link to="/size-guide">{{ i18n.t('footer.size') }}</router-link>
-            <router-link to="/track">{{ i18n.t('footer.track') }}</router-link>
-            <router-link to="/contact">{{ i18n.t('footer.contact') }}</router-link>
-            <router-link to="/returns-policy">{{ i18n.t('footer.returns') }}</router-link>
-            <router-link to="/shipping-policy">{{ i18n.t('footer.shipping') }}</router-link>
+          <div>
+            <h4>{{ i18n.t('footer.help') }}</h4>
+            <div class="footer-links">
+              <router-link to="/faq">{{ i18n.t('footer.faq') }}</router-link>
+              <router-link to="/size-guide">{{ i18n.t('footer.size') }}</router-link>
+              <router-link to="/track">{{ i18n.t('footer.track') }}</router-link>
+              <router-link to="/contact">{{ i18n.t('footer.contact') }}</router-link>
+              <router-link to="/returns-policy">{{ i18n.t('footer.returns') }}</router-link>
+              <router-link to="/shipping-policy">{{ i18n.t('footer.shipping') }}</router-link>
+            </div>
           </div>
-        </div>
-        <div>
-          <h4>{{ i18n.t('footer.company') }}</h4>
-          <div class="footer-links">
-            <router-link to="/about">{{ i18n.t('footer.story') }}</router-link>
-            <router-link to="/blog">{{ i18n.t('footer.blog') }}</router-link>
-            <router-link to="/rewards">{{ i18n.t('footer.rewards') }}</router-link>
-            <router-link to="/subscribe">{{ i18n.t('footer.club') }}</router-link>
-            <router-link to="/privacy">{{ i18n.t('footer.privacy') }}</router-link>
-            <router-link to="/terms">{{ i18n.t('footer.terms') }}</router-link>
+          <div>
+            <h4>{{ i18n.t('footer.company') }}</h4>
+            <div class="footer-links">
+              <router-link to="/about">{{ i18n.t('footer.story') }}</router-link>
+              <router-link to="/blog">{{ i18n.t('footer.blog') }}</router-link>
+              <router-link to="/rewards">{{ i18n.t('footer.rewards') }}</router-link>
+              <router-link to="/subscribe">{{ i18n.t('footer.club') }}</router-link>
+              <router-link to="/privacy">{{ i18n.t('footer.privacy') }}</router-link>
+              <router-link to="/terms">{{ i18n.t('footer.terms') }}</router-link>
+            </div>
           </div>
         </div>
       </div>
+
       <div class="footer-bottom">
-        <div>
+        <div class="footer-bottom-left">
           <span>© {{ year }} GLOWMAG. {{ i18n.t('footer.rights') }}</span>
-          <div style="margin-top:6px;display:flex;gap:14px;font-size:12px">
-            <router-link to="/privacy#ccpa" style="font-size:12px">{{ i18n.t('footer.dns') }}</router-link>
-            <router-link to="/unsubscribe" style="font-size:12px">{{ i18n.t('footer.unsub') }}</router-link>
+          <div class="footer-legal">
+            <router-link to="/privacy#ccpa">{{ i18n.t('footer.dns') }}</router-link>
+            <router-link to="/unsubscribe">{{ i18n.t('footer.unsub') }}</router-link>
             <button type="button" class="foot-link-mini" @click="openConsent">{{ i18n.t('footer.cookie') }}</button>
           </div>
         </div>
@@ -324,10 +334,10 @@ onUnmounted(() => {
 .ann-leave-to{opacity:0;transform:translateY(-6px)}
 
 /* 页脚社交按钮（原 javascript:void(0) 伪链接 button 化；保留 demo toast） */
-.social-btn{display:inline-flex;align-items:center;justify-content:center;background:none;border:none;padding:0;cursor:pointer;color:rgba(255,255,255,.75);transition:color .15s,transform .15s ease-out}
-.social-btn:hover{color:var(--rose);transform:translateY(-2px)}
+.social-btn{display:inline-flex;align-items:center;justify-content:center;background:none;border:none;padding:0;cursor:pointer;color:var(--plum);transition:color .15s,transform .15s ease-out}
+.social-btn:hover{color:var(--plum);transform:translateY(-2px)}
 .foot-link-mini{background:none;border:none;padding:0;cursor:pointer;font-size:12px;color:inherit;font-family:inherit}
-.foot-link-mini:hover{color:var(--rose)}
+.foot-link-mini:hover{color:var(--plum)}
 
 /* v15 顶栏滚动收缩 + 毛玻璃（sticky 下内容自底部透过半透明底色） */
 .header-inner{transition:height .25s ease-out}
@@ -337,32 +347,67 @@ onUnmounted(() => {
 /* v15 全局面包屑 */
 .crumb-sep{stroke:var(--gray);opacity:.7;margin:-2px 2px 0}
 
-/* v15 页脚信任徽章行 */
-.trust-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:24px 0;border-bottom:1px solid rgba(255,255,255,.12)}
-.trust-item{display:flex;align-items:center;gap:11px;min-width:0}
-.trust-item b{color:rgba(255,255,255,.88);font-size:13px;font-weight:600;line-height:1.35}
-.trust-ico{width:38px;height:38px;border-radius:12px;background:rgba(255,255,255,.1);display:flex;align-items:center;justify-content:center;color:var(--rose);flex:none}
-.trust-ico svg{stroke:var(--rose)}
+/* ===== Newsletter 独立模块 ===== */
+.newsletter-band{background:#fff;padding:24px 0;border-top:1px solid var(--gray-light)}
+.newsletter-band .footer-inner{display:flex;justify-content:space-between;align-items:center;gap:20px}
+.newsletter-band .news-text{display:flex;align-items:center;gap:14px}
+.newsletter-band .news-ico{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--plum));display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 6px 16px rgba(232,180,184,.5)}
+.newsletter-band .news-ico svg{stroke:#fff}
+.newsletter-band .news-text h5{font-family:var(--font-title);font-size:17px;color:var(--plum);margin-bottom:3px;font-weight:700}
+.newsletter-band .news-text p{font-size:12.5px;color:var(--gray)}
+.newsletter-band .news-form{display:flex;gap:8px;flex:none}
+.newsletter-band .news-form input{width:260px;height:40px;border-radius:999px;border:1.5px solid var(--gray-light);background:#fff;color:var(--ink);padding:0 16px;font-size:12.5px;outline:none;transition:border-color .2s,box-shadow .2s}
+.newsletter-band .news-form input::placeholder{color:var(--gray)}
+.newsletter-band .news-form input:focus{border-color:var(--rose);box-shadow:0 0 0 3px rgba(232,180,184,.25)}
+.newsletter-band .news-btn{background:var(--plum);color:#fff;font-weight:600;padding:0 22px;height:40px;border-radius:999px;font-size:12.5px;transition:transform .15s, filter .15s, box-shadow .2s}
+.newsletter-band .news-btn:hover{filter:brightness(1.12);transform:translateY(-1px);box-shadow:0 6px 14px rgba(109,46,70,.25)}
+.newsletter-band .news-btn:active{transform:scale(.98)}
 @media (max-width:768px){
-  .trust-row{grid-template-columns:1fr 1fr;gap:12px}
-  .trust-item b{font-size:12px}
+  .newsletter-band{padding:20px 0}
+  .newsletter-band .footer-inner{flex-direction:column;align-items:stretch;text-align:center;gap:12px}
+  .newsletter-band .news-text{flex-direction:column;gap:8px}
+  .newsletter-band .news-text h5{font-size:16px}
+  .newsletter-band .news-form input{width:auto;flex:1;height:44px;font-size:14px}
+  .newsletter-band .news-btn{height:44px;padding:0 20px}
 }
 
-/* v15 页脚 newsletter 订阅条 */
-.footer-news{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:22px 0;border-bottom:1px solid rgba(255,255,255,.12)}
-.footer-news h5{font-family:var(--font-title);font-size:17px;color:#fff;margin-bottom:3px}
-.footer-news p{font-size:12.5px;color:rgba(255,255,255,.62)}
-.news-form{display:flex;gap:8px;flex:none}
-.news-form input{width:250px;height:40px;border-radius:999px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.1);color:#fff;padding:0 16px;font-size:13px;outline:none;transition:border-color .15s}
-.news-form input::placeholder{color:rgba(255,255,255,.5)}
-.news-form input:focus{border-color:var(--rose)}
-.news-btn{background:var(--rose);color:var(--plum-dark)}
-.news-btn:hover{filter:brightness(1.06)}
+/* ===== Footer 样式（浅色主题） ===== */
+
+/* 信任徽章行：白卡片 + 梅紫图标圆 */
+.trust-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:20px 0 18px;border-bottom:1px solid rgba(109,46,70,.14)}
+.trust-item{display:flex;align-items:center;gap:10px;min-width:0;background:rgba(255,255,255,.92);border:1px solid rgba(109,46,70,.08);border-radius:12px;padding:10px 14px;transition:transform .2s, box-shadow .2s}
+.trust-item:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(109,46,70,.12)}
+.trust-item b{color:var(--plum);font-size:12px;font-weight:600;line-height:1.3}
+.trust-ico{width:30px;height:30px;border-radius:50%;background:var(--rose-pale);display:flex;align-items:center;justify-content:center;flex:none;transition:transform .2s}
+.trust-item:hover .trust-ico{transform:scale(1.1)}
+.trust-ico svg{stroke:var(--plum)}
 @media (max-width:768px){
-  .footer-news{flex-direction:column;align-items:stretch;text-align:center;gap:14px}
-  .news-form input{width:auto;flex:1}
-  /* v16: iOS 输入聚焦不自动放大（<16px 触发缩放）；高度同步抬到触摸标准 */
-  .news-form input{font-size:16px;height:46px}
-  .news-btn{height:46px}
+  .trust-row{grid-template-columns:1fr 1fr;gap:8px;padding:14px 0 12px}
+  .trust-item{padding:8px 10px;gap:8px;border-radius:10px}
+  .trust-item b{font-size:11px}
+  .trust-ico{width:26px;height:26px}
+}
+
+/* Footer 主内容区 */
+.footer-main{display:grid;grid-template-columns:1.5fr 2fr;gap:32px;padding:30px 0 26px;border-bottom:1px solid rgba(109,46,70,.14)}
+.footer-logo{color:var(--plum)!important;font-size:21px;margin-bottom:8px;letter-spacing:1px}
+.footer-logo span{color:#fff}
+.footer-tagline{font-size:12.5px;color:#7D5A64;max-width:250px;line-height:1.55;margin-bottom:0}
+.social-row{display:flex;gap:8px;margin-top:16px}
+.social-btn{width:34px;height:34px;border-radius:50%;background:#fff;border:1px solid rgba(109,46,70,.12);color:var(--plum);display:flex;align-items:center;justify-content:center;transition:all .2s;cursor:pointer;box-shadow:0 2px 8px rgba(109,46,70,.08)}
+.social-btn:hover{background:var(--plum);color:#fff;border-color:var(--plum);transform:translateY(-2px);box-shadow:0 6px 14px rgba(109,46,70,.25)}
+.social-btn svg{stroke:currentColor}
+.footer-links-group{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.footer-links-group h4{font-size:11px;margin-bottom:12px}
+.footer-links-group .footer-links{gap:7px}
+@media (max-width:1024px){
+  .footer-main{grid-template-columns:1fr;gap:24px}
+  .footer-links-group{grid-template-columns:repeat(2,1fr);gap:20px}
+}
+@media (max-width:768px){
+  .footer-main{grid-template-columns:1fr;gap:20px;padding:22px 0 18px}
+  .footer-links-group{grid-template-columns:1fr;gap:16px}
+  .social-row{gap:8px}
+  .social-btn{width:36px;height:36px}
 }
 </style>
