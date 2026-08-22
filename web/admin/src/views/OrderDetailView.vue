@@ -260,25 +260,37 @@ async function refundConfirm() {
       </div>
     </div>
 
-    <div class="grid-2" style="align-items:start;margin-top:16px">
-      <div style="display:grid;gap:16px">
-        <div class="card od-card" style="padding:20px">
-          <div class="dhead">
-            <h3 class="dtitle">商品明细</h3>
-            <span class="item-cnt" v-if="(o.items || []).length">{{ o.items.length }} 项</span>
-          </div>
-          <div v-for="(it, i) in o.items || []" :key="i" class="oitem">
-            <div class="oitem-main">
-              <b class="oitem-title">{{ it.title }}</b>
-              <div class="oitem-meta">
-                <span class="qtypill">x{{ it.qty }}</span>
-                <span>单价 {{ money(it.unit_price) }}</span>
-                <span v-if="it.refunded_qty" class="refpill">已退 {{ it.refunded_qty }}</span>
+    <!-- 主栏 1.6fr / 侧栏 1fr：商品（交易主数据）在左，客户信息在右 -->
+    <div class="od-grid">
+      <div class="card od-card" style="padding:20px">
+        <div class="dhead">
+          <h3 class="dtitle">商品明细</h3>
+          <span class="item-cnt" v-if="(o.items || []).length">{{ o.items.length }} 项</span>
+        </div>
+        <div class="oi-wrap">
+          <div class="oi-list">
+            <div v-for="(it, i) in o.items || []" :key="i" class="oitem">
+              <div class="oitem-main">
+                <b class="oitem-title">{{ it.title }}</b>
+                <div class="oitem-meta">
+                  <span class="qtypill">x{{ it.qty }}</span>
+                  <span>单价 {{ money(it.unit_price) }}</span>
+                  <span v-if="it.refunded_qty" class="refpill">已退 {{ it.refunded_qty }}</span>
+                </div>
+              </div>
+              <b class="oitem-sub">{{ money(it.subtotal) }}</b>
+            </div>
+            <div v-if="!(o.items || []).length" class="empty-line">📭 此订单暂无商品</div>
+            <!-- 折扣码核销并入商品卡（同属交易明细） -->
+            <div v-if="o.redemptions && o.redemptions.length" class="redem">
+              <div class="redem-title">🎟 折扣码核销</div>
+              <div v-for="(r, i) in o.redemptions" :key="i" class="redem-row">
+                <span>#{{ r.code_id }}<i class="kv-sub"> · {{ r.email }}</i></span>
+                <b>−{{ money(r.discount_amount) }}</b>
               </div>
             </div>
-            <b class="oitem-sub">{{ money(it.subtotal) }}</b>
           </div>
-          <div v-if="!(o.items || []).length" class="empty-line">📭 此订单暂无商品</div>
+          <!-- 发票式汇总：右侧竖栏，虚线分隔 -->
           <div class="sum">
             <div class="sum-row"><span>小计</span><span>{{ money(o.subtotal) }}</span></div>
             <div v-if="o.discount_total" class="sum-row disc"><span>折扣</span><span>−{{ money(o.discount_total) }}</span></div>
@@ -289,88 +301,22 @@ async function refundConfirm() {
             <div class="sum-total"><span>总计</span><b>{{ money(o.grand_total) }}</b></div>
           </div>
         </div>
-
-        <div class="card od-card" style="padding:20px;animation-delay:.08s">
-          <div class="dhead">
-            <h3 class="dtitle">时间线</h3>
-            <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
-          </div>
-          <div class="tl">
-            <div v-for="(t, i) in o.timeline || []" :key="i" class="tl-item">
-              <i class="tl-dot" :class="dotCls(t.event)"></i>
-              <div class="tl-head">
-                <b>{{ EVENT_LABEL[t.event] || t.event }}</b>
-                <span class="tl-actor">{{ ACTOR[t.actor] || t.actor }}</span>
-                <span class="tl-time">{{ dt(t.created_at) }}</span>
-              </div>
-              <div v-if="eventText(t)" class="tl-text">{{ eventText(t) }}</div>
-            </div>
-          </div>
-          <div v-if="!(o.timeline || []).length" class="empty-line">📭 暂无时间线记录</div>
-        </div>
       </div>
 
-      <div style="display:grid;gap:16px">
-        <div class="card od-card" style="padding:20px;animation-delay:.05s">
-          <div class="dhead"><h3 class="dtitle">订单信息</h3></div>
-          <div class="kv">
-            <div class="kv-row"><span>客户</span><b class="kv-val">{{ o.email }}</b></div>
-            <div class="kv-row"><span>下单</span><span class="kv-val">{{ dt(o.placed_at) || '—' }}</span></div>
-            <div class="kv-row"><span>支付</span><span class="kv-val">{{ dt(o.paid_at) || '—' }}</span></div>
-            <div v-if="o.shipped_at" class="kv-row"><span>发货</span><span class="kv-val">{{ dt(o.shipped_at) }}</span></div>
-            <div v-if="o.delivered_at" class="kv-row"><span>送达</span><span class="kv-val">{{ dt(o.delivered_at) }}</span></div>
-            <div class="kv-row"><span>物流单号</span><span class="kv-val">{{ o.tracking_no || '—' }}</span></div>
-            <div class="kv-row"><span>积分</span><span class="kv-val">+{{ o.points_earned ?? 0 }} 得 / −{{ o.points_used ?? 0 }} 用</span></div>
-          </div>
-          <!-- 客户留言（下单时提交，浅底强调） -->
-          <div v-if="o.note" class="note-box">
-            <div class="note-lb">💬 客户留言</div>
-            <div class="note-txt">{{ o.note }}</div>
-          </div>
+      <!-- 侧栏：基本信息 + 收件地址 + 客户留言 合并为一张高卡，与左栏等高平衡 -->
+      <div class="card od-card" style="padding:20px;animation-delay:.06s">
+        <div class="dhead"><h3 class="dtitle">订单信息</h3></div>
+        <div class="kv">
+          <div class="kv-row"><span>客户</span><b class="kv-val">{{ o.email }}</b></div>
+          <div class="kv-row"><span>下单</span><span class="kv-val">{{ dt(o.placed_at) || '—' }}</span></div>
+          <div class="kv-row"><span>支付</span><span class="kv-val">{{ dt(o.paid_at) || '—' }}</span></div>
+          <div v-if="o.shipped_at" class="kv-row"><span>发货</span><span class="kv-val">{{ dt(o.shipped_at) }}</span></div>
+          <div v-if="o.delivered_at" class="kv-row"><span>送达</span><span class="kv-val">{{ dt(o.delivered_at) }}</span></div>
+          <div class="kv-row"><span>物流单号</span><span class="kv-val">{{ o.tracking_no || '—' }}</span></div>
+          <div class="kv-row"><span>积分</span><span class="kv-val">+{{ o.points_earned ?? 0 }} 得 / −{{ o.points_used ?? 0 }} 用</span></div>
         </div>
-
-        <div class="card od-card" style="padding:20px;animation-delay:.1s">
-          <div class="dhead"><h3 class="dtitle">支付信息</h3></div>
-          <div v-for="p in o.payments || []" :key="p.id" class="pay-row">
-            <div class="pay-main">
-              <b>{{ money(p.amount) }}</b>
-              <div class="pay-meta">
-                尾号 {{ (p.payment_intent || '').slice(-8) || '—' }}<span v-if="p.refunded_amount"> · 已退 {{ money(p.refunded_amount) }}</span>
-              </div>
-            </div>
-            <span class="tag" :class="PSTATUS[p.status]?.[1]">{{ PSTATUS[p.status]?.[0] ?? p.status }}</span>
-          </div>
-          <div v-if="!(o.payments || []).length" class="empty-line">📭 暂无支付记录</div>
-          <div v-else class="ref-box" :class="{ on: refundable > 0 }">
-            <span>可退余额（最新可退支付）</span>
-            <b>{{ money(refundable) }}</b>
-          </div>
-        </div>
-
-        <div class="card od-card" style="padding:20px;animation-delay:.15s">
-          <div class="dhead"><h3 class="dtitle">物流包裹</h3></div>
-          <div v-for="s in o.shipments || []" :key="s.shipment_no" class="pay-row">
-            <div class="pay-main">
-              <b>{{ s.shipment_no }}</b> · {{ s.carrier || '—' }}
-              <div class="pay-meta">
-                {{ s.tracking_no || '无单号' }} · 发货 {{ dt(s.shipped_at) || '—' }}<span v-if="s.delivered_at"> · 送达 {{ dt(s.delivered_at) }}</span>
-              </div>
-            </div>
-            <span class="tag" :class="SHSTATUS[s.status]?.[1]">{{ SHSTATUS[s.status]?.[0] ?? s.status }}</span>
-          </div>
-          <div v-if="!(o.shipments || []).length" class="empty-line">📭 暂无物流包裹</div>
-        </div>
-
-        <div v-if="o.redemptions && o.redemptions.length" class="card od-card" style="padding:20px;animation-delay:.2s">
-          <div class="dhead"><h3 class="dtitle">折扣码核销</h3></div>
-          <div v-for="(r, i) in o.redemptions" :key="i" class="kv-row">
-            <span>折扣码 #{{ r.code_id }}<i class="kv-sub"> · {{ r.email }}</i></span>
-            <b style="color:var(--success)">−{{ money(r.discount_amount) }}</b>
-          </div>
-        </div>
-
-        <div class="card od-card" style="padding:20px;animation-delay:.25s">
-          <div class="dhead"><h3 class="dtitle">收件地址</h3></div>
+        <div class="addr-sec">
+          <div class="sec-lb">📍 收件地址</div>
           <div v-if="o.shipping_address" class="addr">
             <b>{{ o.shipping_address?.full_name }}</b>
             <p>{{ o.shipping_address?.line1 }} {{ o.shipping_address?.line2 }}</p>
@@ -378,7 +324,67 @@ async function refundConfirm() {
           </div>
           <div v-else class="empty-line">📭 暂无收件地址</div>
         </div>
+        <!-- 客户留言（下单时提交，浅底强调） -->
+        <div v-if="o.note" class="note-box">
+          <div class="note-lb">💬 客户留言</div>
+          <div class="note-txt">{{ o.note }}</div>
+        </div>
       </div>
+    </div>
+
+    <!-- 支付 / 物流：两张矮卡并排一行，消除竖向碎片空白 -->
+    <div class="duo">
+      <div class="card od-card" style="padding:20px;animation-delay:.1s">
+        <div class="dhead"><h3 class="dtitle">支付信息</h3></div>
+        <div v-for="p in o.payments || []" :key="p.id" class="pay-row">
+          <div class="pay-main">
+            <b>{{ money(p.amount) }}</b>
+            <div class="pay-meta">
+              尾号 {{ (p.payment_intent || '').slice(-8) || '—' }}<span v-if="p.refunded_amount"> · 已退 {{ money(p.refunded_amount) }}</span>
+            </div>
+          </div>
+          <span class="tag" :class="PSTATUS[p.status]?.[1]">{{ PSTATUS[p.status]?.[0] ?? p.status }}</span>
+        </div>
+        <div v-if="!(o.payments || []).length" class="empty-line">📭 暂无支付记录</div>
+        <div v-else class="ref-box" :class="{ on: refundable > 0 }">
+          <span>可退余额（最新可退支付）</span>
+          <b>{{ money(refundable) }}</b>
+        </div>
+      </div>
+
+      <div class="card od-card" style="padding:20px;animation-delay:.14s">
+        <div class="dhead"><h3 class="dtitle">物流包裹</h3></div>
+        <div v-for="s in o.shipments || []" :key="s.shipment_no" class="pay-row">
+          <div class="pay-main">
+            <b>{{ s.shipment_no }}</b> · {{ s.carrier || '—' }}
+            <div class="pay-meta">
+              {{ s.tracking_no || '无单号' }} · 发货 {{ dt(s.shipped_at) || '—' }}<span v-if="s.delivered_at"> · 送达 {{ dt(s.delivered_at) }}</span>
+            </div>
+          </div>
+          <span class="tag" :class="SHSTATUS[s.status]?.[1]">{{ SHSTATUS[s.status]?.[0] ?? s.status }}</span>
+        </div>
+        <div v-if="!(o.shipments || []).length" class="empty-line">📭 暂无物流包裹</div>
+      </div>
+    </div>
+
+    <!-- 时间线：底部通栏（日志式行填充整行宽度，不再撑高左栏） -->
+    <div class="card od-card" style="padding:20px;animation-delay:.18s">
+      <div class="dhead">
+        <h3 class="dtitle">时间线</h3>
+        <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
+      </div>
+      <div class="tl">
+        <div v-for="(t, i) in o.timeline || []" :key="i" class="tl-item">
+          <i class="tl-dot" :class="dotCls(t.event)"></i>
+          <div class="tl-head">
+            <b>{{ EVENT_LABEL[t.event] || t.event }}</b>
+            <span class="tl-actor">{{ ACTOR[t.actor] || t.actor }}</span>
+            <span class="tl-time">{{ dt(t.created_at) }}</span>
+          </div>
+          <div v-if="eventText(t)" class="tl-text">{{ eventText(t) }}</div>
+        </div>
+      </div>
+      <div v-if="!(o.timeline || []).length" class="empty-line">📭 暂无时间线记录</div>
     </div>
   </template>
 
@@ -478,16 +484,28 @@ async function refundConfirm() {
 .dtitle::before{content:"";width:4px;height:16px;border-radius:2px;background:linear-gradient(180deg,var(--rose),var(--plum));flex:none}
 .item-cnt{font-size:12px;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:2px 10px;white-space:nowrap}
 
-/* ===== 商品明细 ===== */
-.oitem{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+/* ===== 页面骨架：主栏 1.6fr / 侧栏 1fr，支付物流并排，时间线通栏 ===== */
+.od-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start;margin-top:16px}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;align-items:start}
+
+/* ===== 商品明细：条目列表 + 发票式汇总并排 ===== */
+.oi-wrap{display:grid;grid-template-columns:1fr 232px;gap:0 22px;align-items:start}
+.oi-list{min-width:0}
+.oitem{display:flex;gap:12px;align-items:center;padding:11px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.oitem:last-of-type{border-bottom:none}
 .oitem-main{flex:1;min-width:0}
 .oitem-title{display:block;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .oitem-meta{display:flex;align-items:center;gap:8px;color:var(--gray);font-size:12px;margin-top:4px;flex-wrap:wrap}
 .qtypill{background:var(--rose-pale);color:var(--plum);border-radius:6px;padding:0 7px;font-weight:700}
 .refpill{background:var(--pale-error);color:var(--error);border-radius:6px;padding:0 7px;font-weight:700}
 .oitem-sub{flex:none;font-variant-numeric:tabular-nums}
-/* 金额汇总 */
-.sum{display:grid;gap:7px;margin-top:14px;font-size:13px}
+/* 折扣码核销（并入商品卡） */
+.redem{margin-top:12px;padding-top:10px;border-top:1px dashed var(--gray-light)}
+.redem-title{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--gray);margin-bottom:4px}
+.redem-row{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:4px 0}
+.redem-row b{color:var(--success);font-variant-numeric:tabular-nums}
+/* 汇总竖栏：虚线分隔的发票式小票 */
+.sum{display:grid;gap:7px;font-size:13px;border-left:1px dashed var(--gray-light);padding-left:20px;align-content:start}
 .sum-row{display:flex;justify-content:space-between;color:var(--ink)}
 .sum-row span+span{font-variant-numeric:tabular-nums}
 .sum-row.disc{color:var(--success)}
@@ -495,7 +513,7 @@ async function refundConfirm() {
   padding:10px 14px;margin-top:6px;font-weight:700;font-size:13px}
 .sum-total b{color:var(--plum);font-size:17px;font-weight:800;font-variant-numeric:tabular-nums}
 
-/* ===== 时间线（竖向圆点连线） ===== */
+/* ===== 时间线（竖向圆点连线，底部通栏） ===== */
 .tl{position:relative;padding-left:20px}
 .tl::before{content:"";position:absolute;left:5px;top:6px;bottom:10px;width:2px;background:var(--gray-light);border-radius:1px}
 .tl-item{position:relative;padding-bottom:16px}
@@ -536,7 +554,9 @@ async function refundConfirm() {
 .ref-box b{font-variant-numeric:tabular-nums}
 .ref-box.on{background:var(--rose-pale);color:var(--plum)}
 
-/* ===== 收件地址 ===== */
+/* ===== 收件地址（侧栏内小节） ===== */
+.addr-sec{margin-top:12px;padding-top:12px;border-top:1px dashed var(--gray-light)}
+.sec-lb{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--gray);margin-bottom:6px}
 .addr{font-size:13px;line-height:1.8}
 .addr b{font-size:13.5px}
 .addr p{color:var(--gray)}
@@ -546,11 +566,17 @@ async function refundConfirm() {
 .od-card{animation:odRise .45s ease-out backwards}
 @keyframes odRise{from{opacity:0;transform:translateY(10px)}}
 
-/* ===== 移动端 ===== */
-@media (max-width:768px) {
+/* ===== 响应式：窄屏逐级塌缩 ===== */
+@media (max-width:1080px){
+  .od-grid{grid-template-columns:1fr}
+}
+@media (max-width:768px){
   .hero{padding:16px}
   .hero-amount{text-align:left}
   .hero-ops .btn{flex:1}
+  .duo{grid-template-columns:1fr}
+  .oi-wrap{grid-template-columns:1fr}
+  .sum{border-left:none;padding-left:0;border-top:1px dashed var(--gray-light);padding-top:14px}
   .tl-time{margin-left:0;width:100%;flex-basis:100%}
 }
 </style>
