@@ -7,7 +7,7 @@ from sqlalchemy.orm import Query, Session
 
 from app.models import (
     AdminLog, Cart, CookieConsent, NewsletterSubscriber, Order, PointsLedger,
-    Product, ReconciliationDaily, Review, Ticket, User, Variant,
+    Product, ReconciliationDaily, Review, Ticket, UgcSubmission, User, Variant,
 )
 
 
@@ -133,6 +133,7 @@ _MEMBER_SORTS = {
 
 def members_query(
     db: Session, q: str | None, tier: int | None, sort: str | None = None,
+    risk: int | None = None,
 ) -> Query:
     query = db.query(User).filter(User.role == 0)
     if q:
@@ -140,6 +141,8 @@ def members_query(
         query = query.filter(or_(User.email.ilike(like), User.name.ilike(like)))
     if tier is not None:
         query = query.filter(User.tier == tier)
+    if risk is not None:
+        query = query.filter(User.risk_flag == risk)
     order = _MEMBER_SORTS.get(sort or "")
     if order is None:
         # 非法/缺省排序走默认 id 倒序
@@ -158,6 +161,39 @@ def member_ledger_recent(db: Session, user_id: int, limit: int = 10) -> list[Poi
         .order_by(PointsLedger.id.desc())
         .limit(limit)
         .all()
+    )
+
+
+# ===== 评价/UGC 审核（后台 /api/admin/ops 列表与批量队列） =====
+
+
+def admin_reviews_query(
+    db: Session, status: int | None, rating: int | None = None,
+    product_id: int | None = None,
+) -> Query:
+    q = db.query(Review).order_by(Review.id.desc())
+    if status is not None:
+        q = q.filter(Review.status == status)
+    if rating is not None:
+        q = q.filter(Review.rating == rating)
+    if product_id is not None:
+        q = q.filter(Review.product_id == product_id)
+    return q
+
+
+def reviews_pending_by_ids(db: Session, ids: list[int]) -> list[Review]:
+    """批量审核候选：仅取待审(0)记录，非待审/不存在静默跳过"""
+    return (
+        db.query(Review).filter(Review.id.in_(ids), Review.status == 0).all()
+        if ids else []
+    )
+
+
+def ugc_pending_by_ids(db: Session, ids: list[int]) -> list[UgcSubmission]:
+    return (
+        db.query(UgcSubmission)
+        .filter(UgcSubmission.id.in_(ids), UgcSubmission.status == 0).all()
+        if ids else []
     )
 
 

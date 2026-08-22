@@ -492,6 +492,21 @@ def all_collections(db: Session) -> list[Collection]:
     )
 
 
+def collection_product_counts(db: Session, cids: list[int]) -> dict[int, int]:
+    """后台集合列表商品数：单条 GROUP BY 批量计数（避免逐集合 count 的 N+1）"""
+    counts = {cid: 0 for cid in cids}
+    if not cids:
+        return counts
+    rows = (
+        db.query(CollectionProduct.collection_id, func.count())
+        .filter(CollectionProduct.collection_id.in_(cids))
+        .group_by(CollectionProduct.collection_id)
+        .all()
+    )
+    counts.update(dict(rows))
+    return counts
+
+
 def collection_slug_taken(db: Session, slug: str) -> bool:
     return db.query(Collection.id).filter(Collection.slug == slug).first() is not None
 

@@ -565,7 +565,9 @@ def admin_publish_product(db: Session, admin: User, product_id: int) -> dict:
     if not p:
         raise HTTPException(status_code=404, detail="product not found")
     p.status = 1
-    p.published_at = utcnow()
+    # 定时上架不被覆盖：已有未来 published_at（定时计划）则保留生效；为空或已过才落当前时间
+    if not (p.published_at and p.published_at > utcnow()):
+        p.published_at = utcnow()
     _log(db, admin, "publish", "product", p.id)
     db.commit()
     _invalidate_cache()
@@ -674,6 +676,7 @@ def admin_create_category(db: Session, admin: User, body: CategoryCreateIn) -> d
 
 def admin_list_collections(db: Session) -> dict:
     rows = repo.all_collections(db)
+    counts = repo.collection_product_counts(db, [c.id for c in rows])
     return {
         "items": [
             {
@@ -684,6 +687,7 @@ def admin_list_collections(db: Session) -> dict:
                 "banner_image": c.banner_image,
                 "sort_order": c.sort_order,
                 "is_active": c.is_active,
+                "product_count": counts.get(c.id, 0),
             }
             for c in rows
         ]

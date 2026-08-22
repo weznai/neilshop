@@ -2,7 +2,7 @@
 
 import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -10,13 +10,14 @@ from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.models import (
-    AdminLog, DiscountCode, GiftCard, Order, OrderItem, OrderTimeline,
-    PopupConfig, Setting, User,
+    AdminLog, DiscountCode, DiscountRedemption, GiftCard, GiftCardLedger,
+    Order, OrderItem, OrderTimeline, PopupConfig, Setting, User,
 )
 from app.domains.promo import repository as repo
 from app.domains.promo.schemas import (
-    DiscountCreateIn, DiscountUpdateIn, GiftcardIn, GiftcardPurchaseIn,
-    PopupCreateIn, PopupUpdateIn, SettingIn, ValidateIn, REASON_TEXT,
+    DiscountCreateIn, DiscountUpdateIn, GiftcardAdminCreateIn, GiftcardIn,
+    GiftcardPurchaseIn, PopupCreateIn, PopupUpdateIn, SettingIn, ValidateIn,
+    REASON_TEXT,
 )
 from app.services import promo_rules
 
@@ -104,17 +105,20 @@ def track_popup_convert(db: Session, popup_id: int) -> dict:
     return {"ok": True}
 
 
-def purchase_giftcard(db: Session, body: GiftcardPurchaseIn) -> dict:
+def _new_gift_code(db: Session) -> str:
+    """生成唯一礼品卡码（GC-XXXX-XXXX-XXXX，购卡/后台发卡共用）"""
     for _ in range(5):
         code = "GC-" + "-".join(
             "".join(secrets.choice(_GIFT_ALPHABET) for _ in range(4))
             for _ in range(3)
         )
         if not repo.giftcard_id_by_code(db, code):
-            break
-    else:
-        raise HTTPException(status_code=500, detail="code collision")
+            return code
+    raise HTTPException(status_code=500, detail="code collision")
 
+
+def purchase_giftcard(db: Session, body: GiftcardPurchaseIn) -> dict:
+    code = _new_gift_code(db)
     now = utcnow()
     order = Order(
         order_no="NS" + now.strftime("%y%m%d") + uuid.uuid4().hex[:6].upper(),
@@ -228,6 +232,138 @@ def toggle_discount(db: Session, admin: User, discount_id: int) -> dict:
     db.commit()
     db.refresh(dc)
     return _discount_dict(dc)
+
+
+def discount_usages(db: Session, discount_id: int, page: int, size: int) -> dict:
+    """核销明细：redemption join 订单带出 order_no，时间倒序"""
+    dc = db.get(DiscountCode, discount_id)
+    if not dc:
+        raise HTTPException(status_code=404, detail="discount not found")
+    rows, total = repo.page(repo.discount_usages(db, dc.id), page, size)
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "order_no": order_no,
+                "email": r.email,
+                "discount_amount_cents": r.discount_amount,
+                "created_at": r.created_at,
+            }
+            for r, order_no in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
+
+
+def delete_discount(db: Session, admin: User, discount_id: int) -> dict:
+    """有核销记录的码不可删（409 code_in_use），无引用直接删除"""
+    dc = db.get(DiscountCode, discount_id)
+    if not dc:
+        raise HTTPException(status_code=404, detail="discount not found")
+    if repo.discount_redemption_exists(db, dc.id):
+        raise HTTPException(status_code=409, detail="code_in_use")
+    log_admin(db, admin, "delete", "discount", dc.id, {"code": dc.code, "type": dc.type, "value": dc.value})
+    db.delete(dc)
+    db.commit()
+    return {"ok": True}
+
+
+# ===== 后台：礼品卡 =====
+
+
+def _giftcard_dict(c: GiftCard) -> dict:
+    return {
+        "id": c.id,
+        "code": c.code,
+        "initial_cents": c.initial_amount,
+        "balance_cents": c.balance,
+        "status": c.status,
+        "purchaser_email": c.purchaser_email,
+        "recipient_email": c.recipient_email,
+        "created_at": c.created_at,
+        "expires_at": c.expires_at,
+    }
+
+
+def list_giftcards(db: Session, page: int, size: int, q: str | None, status: int | None) -> dict:
+    rows, total = repo.page(repo.giftcards_filtered(db, q, status), page, size)
+    return {"items": [_giftcard_dict(c) for c in rows], "total": total, "page": page, "size": size}
+
+
+def create_giftcard(db: Session, admin: User, body: GiftcardAdminCreateIn) -> dict:
+    """手工发卡：code 留空按购卡规则生成唯一码；expires_days 留空永久。
+    无 kind 概念的流水表按现有激活模式记 delta=+initial；冻结卡结算天然不可用（pricing 仅认 status=1）。"""
+    code = (body.code or "").strip().upper()
+    if code:
+        if repo.giftcard_id_by_code(db, code):
+            raise HTTPException(status_code=409, detail="code exists")
+    else:
+        code = _new_gift_code(db)
+    card = GiftCard(
+        code=code, initial_amount=body.initial_cents, balance=body.initial_cents,
+        status=1, purchaser_email=admin.email,
+        expires_at=utcnow() + timedelta(days=body.expires_days) if body.expires_days else None,
+    )
+    db.add(card)
+    db.flush()
+    db.add(GiftCardLedger(
+        gift_card_id=card.id, change_type=1,
+        amount=body.initial_cents, balance_after=card.balance,
+    ))
+    log_admin(db, admin, "create", "giftcard", card.id, {
+        "code": code, "initial_cents": body.initial_cents,
+        "expires_days": body.expires_days, "note": body.note,
+    })
+    db.commit()
+    db.refresh(card)
+    return _giftcard_dict(card)
+
+
+def freeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
+    card = db.get(GiftCard, gift_card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="giftcard not found")
+    card.status = 2
+    log_admin(db, admin, "freeze", "giftcard", card.id, {"code": card.code, "status": card.status})
+    db.commit()
+    db.refresh(card)
+    return _giftcard_dict(card)
+
+
+def unfreeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
+    card = db.get(GiftCard, gift_card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="giftcard not found")
+    card.status = 1
+    log_admin(db, admin, "unfreeze", "giftcard", card.id, {"code": card.code, "status": card.status})
+    db.commit()
+    db.refresh(card)
+    return _giftcard_dict(card)
+
+
+def giftcard_ledger(db: Session, gift_card_id: int, page: int, size: int) -> dict:
+    card = db.get(GiftCard, gift_card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="giftcard not found")
+    rows, total = repo.page(repo.giftcard_ledgers(db, card.id), page, size)
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "change_type": r.change_type,
+                "delta_cents": r.amount,
+                "balance_after_cents": r.balance_after,
+                "order_no": order_no,
+                "created_at": r.created_at,
+            }
+            for r, order_no in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
 
 
 # ===== 后台：弹窗 =====

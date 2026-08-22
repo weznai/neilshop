@@ -800,8 +800,9 @@ h1, h2, h3, h4, .page-title, .section-title, .pcard-title, .pcard-price, .prose,
   overflow: hidden;
 }
 
-/* 3) mega 菜单键盘可达：焦点落在 nav-item 内任一链接时展开（补 hover 之外的路径） */
-.nav-item:focus-within .mega { display: grid; }
+/* 3) mega 菜单键盘可达：仅键盘焦点（focus-visible）展开。勿用 :focus-within——鼠标点击链接后焦点残留，
+      旧 mega 不会收起，悬停相邻菜单时两个下拉同位叠显（nails 620px / lashes 440px 区域嵌套） */
+.nav-item:has(:focus-visible) .mega { display: grid; }
 
 /* 4) 弹层滚动穿透锁：StoreLayout watch ui.anyOverlay 切换 */
 .gm-locked { overflow: hidden; }

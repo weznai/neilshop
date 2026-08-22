@@ -7,9 +7,13 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
-from app.models import AdminLog, User
+from app.models import AdminLog, Review, UgcSubmission, User
+from app.domains.content import service as content_service
+from app.domains.content.schemas import ReasonIn
 from app.domains.ops import repository as repo
-from app.domains.ops.schemas import REASON_TEXT, RiskIn
+from app.domains.ops.schemas import (
+    REASON_TEXT, ReviewBulkIn, RiskIn, UgcBulkIn,
+)
 
 logger = logging.getLogger("glowmag.ops")
 
@@ -114,9 +118,9 @@ def dashboard(db: Session) -> dict:
 
 def list_members(
     db: Session, q: str | None, tier: int | None, page: int, size: int,
-    sort: str | None = None,
+    sort: str | None = None, risk: int | None = None,
 ) -> dict:
-    query = repo.members_query(db, q, tier, sort)
+    query = repo.members_query(db, q, tier, sort, risk)
     rows, total = repo.page(query, page, size)
     return {
         "items": [
@@ -176,6 +180,91 @@ def member_risk(db: Session, admin: User, user_id: int, body: RiskIn) -> dict:
     db.commit()
     db.refresh(u)
     return {"id": u.id, "risk_flag": u.risk_flag}
+
+
+# ===== 评价/UGC 审核（/api/admin/ops，复用 content 域单条 approve/reject） =====
+
+
+def admin_reviews(
+    db: Session, status: int | None, rating: int | None,
+    product_id: int | None, page: int, size: int,
+) -> dict:
+    """后台评价队列：在 content 域列表基础上加 rating/product_id 过滤（响应结构不变）"""
+    rows, total = repo.page(
+        repo.admin_reviews_query(db, status, rating, product_id), page, size,
+    )
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "product_id": r.product_id,
+                "user_id": r.user_id,
+                "order_item_id": r.order_item_id,
+                "rating": r.rating,
+                "content": r.content,
+                "images": r.images,
+                "status": r.status,
+                "reject_reason": r.reject_reason,
+                "created_at": r.created_at,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+    }
+
+
+def bulk_reviews(db: Session, admin: User, body: ReviewBulkIn) -> dict:
+    """批量审核：仅处理待审(0)记录（非待审/不存在跳过），单条逻辑复用 content 域 service"""
+    rows = repo.reviews_pending_by_ids(db, body.ids)
+    for r in rows:
+        if body.action == "approve":
+            content_service.approve_review(db, admin, r.id)
+        else:
+            content_service.reject_review(db, admin, r.id, ReasonIn(reason=body.reason or ""))
+    return {"updated": len(rows)}
+
+
+def unapprove_review(db: Session, admin: User, review_id: int) -> dict:
+    """审核撤回：1通过/2拒绝 → 0 重新待审；撤回已通过评价需重算商品评分聚合"""
+    r = db.get(Review, review_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="review not found")
+    if r.status not in (1, 2):
+        raise HTTPException(status_code=409, detail="invalid_status")
+    prev = r.status
+    r.status = 0
+    if prev == 1:
+        content_service._recalc_rating(db, r.product_id)
+    log_admin(db, admin, "unapprove", "review", r.id, {"from": prev, "to": 0})
+    db.commit()
+    return {"id": r.id, "status": r.status}
+
+
+def bulk_ugc(db: Session, admin: User, body: UgcBulkIn) -> dict:
+    """UGC 批量审核：与评价同构（无 reason），单条逻辑复用 content 域 service"""
+    rows = repo.ugc_pending_by_ids(db, body.ids)
+    for u in rows:
+        if body.action == "approve":
+            content_service.approve_ugc(db, admin, u.id)
+        else:
+            content_service.reject_ugc(db, admin, u.id)
+    return {"updated": len(rows)}
+
+
+def unapprove_ugc(db: Session, admin: User, ugc_id: int) -> dict:
+    """UGC 审核撤回：1上墙/2拒绝 → 0 重新待审（已发积分不回收）"""
+    u = db.get(UgcSubmission, ugc_id)
+    if not u:
+        raise HTTPException(status_code=404, detail="ugc not found")
+    if u.status not in (1, 2):
+        raise HTTPException(status_code=409, detail="invalid_status")
+    prev = u.status
+    u.status = 0
+    log_admin(db, admin, "unapprove", "ugc", u.id, {"from": prev, "to": 0})
+    db.commit()
+    return {"id": u.id, "status": u.status}
 
 
 # ===== 审计日志 =====

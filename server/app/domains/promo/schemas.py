@@ -35,6 +35,13 @@ class GiftcardPurchaseIn(BaseModel):
     message: str | None = Field(default=None, max_length=255)
 
 
+class GiftcardAdminCreateIn(BaseModel):
+    initial_cents: int = Field(gt=0)
+    expires_days: int | None = Field(default=None, ge=1)
+    code: str | None = Field(default=None, min_length=1, max_length=19)
+    note: str | None = Field(default=None, max_length=255)
+
+
 class DiscountCreateIn(BaseModel):
     code: str
     type: int = Field(ge=1, le=3)

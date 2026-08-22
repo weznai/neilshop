@@ -1,4 +1,4 @@
-"""营销域后台路由 —— /api/admin/ops 下 discounts/popups/settings（绝对路径，由 admin_ops shim 组装）"""
+"""营销域后台路由 —— /api/admin/ops 下 discounts/popups/settings + /api/admin/promo 下礼品卡/折扣码明细（绝对路径，由 admin_ops shim 组装）"""
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -7,7 +7,8 @@ from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.promo import service
 from app.domains.promo.schemas import (
-    DiscountCreateIn, DiscountUpdateIn, PopupCreateIn, PopupUpdateIn, SettingIn,
+    DiscountCreateIn, DiscountUpdateIn, GiftcardAdminCreateIn, PopupCreateIn,
+    PopupUpdateIn, SettingIn,
 )
 from app.models import User
 
@@ -37,6 +38,66 @@ def update_discount(discount_id: int, body: DiscountUpdateIn, admin: User = Depe
 @router.post("/api/admin/ops/discounts/{discount_id}/toggle")
 def toggle_discount(discount_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return service.toggle_discount(db, admin, discount_id)
+
+
+# ----- 礼品卡后台（/api/admin/promo） -----
+
+
+@router.get("/api/admin/promo/giftcards")
+def list_giftcards(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    q: str | None = None,
+    status: int | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.list_giftcards(db, page, size, q, status)
+
+
+@router.post("/api/admin/promo/giftcards")
+def create_giftcard(body: GiftcardAdminCreateIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.create_giftcard(db, admin, body)
+
+
+@router.put("/api/admin/promo/giftcards/{gift_card_id}/freeze")
+def freeze_giftcard(gift_card_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.freeze_giftcard(db, admin, gift_card_id)
+
+
+@router.put("/api/admin/promo/giftcards/{gift_card_id}/unfreeze")
+def unfreeze_giftcard(gift_card_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.unfreeze_giftcard(db, admin, gift_card_id)
+
+
+@router.get("/api/admin/promo/giftcards/{gift_card_id}/ledger")
+def giftcard_ledger(
+    gift_card_id: int,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.giftcard_ledger(db, gift_card_id, page, size)
+
+
+# ----- 折扣码使用明细/删除（/api/admin/promo） -----
+
+
+@router.get("/api/admin/promo/discounts/{discount_id}/usages")
+def discount_usages(
+    discount_id: int,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.discount_usages(db, discount_id, page, size)
+
+
+@router.delete("/api/admin/promo/discounts/{discount_id}")
+def delete_discount(discount_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.delete_discount(db, admin, discount_id)
 
 
 @router.get("/api/admin/ops/popups")

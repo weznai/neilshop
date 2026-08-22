@@ -20,3 +20,17 @@ REASON_TEXT = {
 
 class RiskIn(BaseModel):
     flag: int = Field(ge=0, le=2)
+
+
+class BulkModerationIn(BaseModel):
+    """评价/UGC 批量审核入参基类：仅待审(0)记录会被处理，非待审静默跳过"""
+    ids: list[int] = Field(min_length=1)
+    action: str = Field(pattern="^(approve|reject)$")
+
+
+class ReviewBulkIn(BulkModerationIn):
+    reason: str | None = None  # 仅 reject 使用
+
+
+class UgcBulkIn(BulkModerationIn):
+    pass

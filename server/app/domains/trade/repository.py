@@ -3,9 +3,10 @@
 订单/支付/RMA/GiftCard/Webhook 查询与分页、时间线/流水/后台日志/outbox 追加。
 纯查询/写入，无业务分支、无 HTTP 语义。"""
 
+from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -167,6 +168,7 @@ def find_guest_cart(db: Session, token: str) -> Optional[Cart]:
 def paginate_orders(
     db: Session, *, user_id: Optional[int] = None, status: Optional[int] = None,
     q: Optional[str] = None, page: int = 1, per_page: int = 10,
+    date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
 ) -> tuple[list[Order], int]:
     query = db.query(Order)
     if user_id is not None:
@@ -176,6 +178,11 @@ def paginate_orders(
     if q:
         like = f"%{q.strip()}%"
         query = query.filter((Order.order_no.like(like)) | (Order.email.like(like)))
+    # 下单时间范围（naive UTC 闭区间，date_to 由调用方补到 23:59:59）
+    if date_from is not None:
+        query = query.filter(Order.placed_at >= date_from)
+    if date_to is not None:
+        query = query.filter(Order.placed_at <= date_to)
     total = query.count()
     orders = (
         query.order_by(Order.placed_at.desc(), Order.id.desc())
@@ -321,7 +328,8 @@ def list_user_rmas(db: Session, user_id: int) -> list[tuple[Rma, OrderItem, Orde
 
 
 def list_rmas(
-    db: Session, status: Optional[int] = None, page: int = 1, per_page: int = 20,
+    db: Session, status: Optional[int] = None, q: Optional[str] = None,
+    page: int = 1, per_page: int = 20,
 ) -> tuple[list[tuple[Rma, OrderItem, Order]], int]:
     query = (
         db.query(Rma, OrderItem, Order)
@@ -330,6 +338,12 @@ def list_rmas(
     )
     if status is not None:
         query = query.filter(Rma.status == status)
+    if q:
+        # 后台搜索：RMA 单号 / 订单号 / 下单邮箱 三字段模糊
+        like = f"%{q.strip()}%"
+        query = query.filter(or_(
+            Rma.rma_no.ilike(like), Order.order_no.ilike(like), Order.email.ilike(like),
+        ))
     total = query.count()
     rows = (
         query.order_by(Rma.id.desc())
@@ -358,10 +372,13 @@ def giftcard_debit_ledgers(db: Session, order_id: int) -> list[GiftCardLedger]:
 # ---------- 库存流水（后台分页/低库存） ----------
 def paginate_stock_movements(
     db: Session, variant_id: Optional[int] = None, page: int = 1, per_page: int = 20,
+    type: Optional[int] = None,
 ) -> tuple[list[StockMovement], int]:
     query = db.query(StockMovement)
     if variant_id is not None:
         query = query.filter(StockMovement.variant_id == variant_id)
+    if type is not None:
+        query = query.filter(StockMovement.type == type)
     total = query.count()
     rows = (
         query.order_by(StockMovement.id.desc())
@@ -476,6 +493,7 @@ def list_exchanges_by_email(db: Session, email: str) -> list[tuple[Exchange, Ord
 
 def paginate_exchanges(
     db: Session, status: Optional[int] = None, page: int = 1, per_page: int = 10,
+    q: Optional[str] = None,
 ) -> tuple[list[tuple[Exchange, OrderItem, Order]], int]:
     query = (
         db.query(Exchange, OrderItem, Order)
@@ -484,6 +502,12 @@ def paginate_exchanges(
     )
     if status is not None:
         query = query.filter(Exchange.status == status)
+    if q:
+        # 后台搜索：换货单号 / 订单号 / 下单邮箱 三字段模糊
+        like = f"%{q.strip()}%"
+        query = query.filter(or_(
+            Exchange.exchange_no.ilike(like), Order.order_no.ilike(like), Order.email.ilike(like),
+        ))
     total = query.count()
     rows = (
         query.order_by(Exchange.id.desc())

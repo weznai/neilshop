@@ -27,6 +27,7 @@ def _parse_statuses(raw: str | None) -> list[int] | None:
 def admin_tickets(
     status: str | None = Query(None, description="单值或逗号分隔多值，如 3,4"),
     category: int | None = Query(None),
+    priority: int | None = Query(None, description="按优先级过滤（0紧急 1普通）"),
     q: str | None = Query(None),
     assignee: int | None = Query(None, description="按指派人 admin_id 过滤"),
     page: int = Query(1, ge=1),
@@ -34,7 +35,7 @@ def admin_tickets(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.admin_tickets(db, _parse_statuses(status), category, q, page, size, assignee)
+    return service.admin_tickets(db, _parse_statuses(status), category, q, page, size, assignee, priority)
 
 
 @router.post("/api/admin/ops/tickets/{ticket_no}/reply")

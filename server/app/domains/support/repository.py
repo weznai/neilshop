@@ -36,7 +36,7 @@ def messages_asc(db: Session, ticket_id: int) -> list[TicketMessage]:
 
 def admin_tickets_query(
     db: Session, statuses: list[int] | None, category: int | None, q: str | None,
-    assignee: int | None = None,
+    assignee: int | None = None, priority: int | None = None,
 ) -> Query:
     query = db.query(Ticket)
     if statuses:
@@ -45,9 +45,14 @@ def admin_tickets_query(
         query = query.filter(Ticket.category == category)
     if assignee is not None:
         query = query.filter(Ticket.assignee_admin_id == assignee)
+    if priority is not None:
+        query = query.filter(Ticket.priority == priority)
     if q:
+        # 后台搜索：邮箱 / 工单号 / 主题 三字段模糊
         like = f"%{q}%"
-        query = query.filter(or_(Ticket.email.ilike(like), Ticket.ticket_no.ilike(like)))
+        query = query.filter(or_(
+            Ticket.email.ilike(like), Ticket.ticket_no.ilike(like), Ticket.subject.ilike(like),
+        ))
     return query.order_by(Ticket.priority.asc(), Ticket.created_at.desc(), Ticket.id.desc())
 
 

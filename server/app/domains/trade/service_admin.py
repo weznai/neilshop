@@ -2,9 +2,11 @@
 退款公共路径 apply_refund（admin 全额/部分、RMA 退款、webhook charge.refunded 共用）。"""
 
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -137,14 +139,29 @@ def apply_refund(
     return {"amount": refund_amount, "full": full, "payment_status": payment.status}
 
 
+def _parse_date(value: str, name: str) -> datetime:
+    """YYYY-MM-DD 解析为 naive UTC 日期零点（placed_at 存储口径），非法格式 400"""
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid_{name}")
+
+
 def list_orders(
     db: Session, status: Optional[int], q: Optional[str], page: int,
-    per_page: Optional[int] = None,
+    per_page: Optional[int] = None, date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> dict:
     # 可选每页条数：缺省 10 兼容；显式传值时钳制到 10-100
     pp = PER_PAGE_ORDERS if per_page is None else min(max(per_page, 10), 100)
+    # 时间范围闭区间：date_to 补到当日 23:59:59
+    start = _parse_date(date_from, "date_from") if date_from else None
+    end = None
+    if date_to:
+        end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
     orders, total = repo.paginate_orders(
         db, status=status, q=q, page=page, per_page=pp,
+        date_from=start, date_to=end,
     )
     return {
         "items": [{
@@ -328,9 +345,9 @@ def add_order_note(db: Session, admin: User, order_no: str, body: NoteIn) -> dic
 
 def list_rmas(
     db: Session, status: Optional[int],
-    page: int = 1, per_page: int = PER_PAGE_RMAS,
+    page: int = 1, per_page: int = PER_PAGE_RMAS, q: Optional[str] = None,
 ) -> dict:
-    rows, total = repo.list_rmas(db, status, page=page, per_page=per_page)
+    rows, total = repo.list_rmas(db, status, q=q, page=page, per_page=per_page)
     return {
         "items": [{
             "rma_no": rma.rma_no,
@@ -455,9 +472,10 @@ def adjust_stock(db: Session, admin: User, body: StockAdjustRequest) -> dict:
 
 def stock_movements(
     db: Session, variant_id: Optional[int], page: int,
+    type: Optional[int] = None,
 ) -> dict:
     rows, total = repo.paginate_stock_movements(
-        db, variant_id=variant_id, page=page, per_page=PER_PAGE_MOVEMENTS,
+        db, variant_id=variant_id, page=page, per_page=PER_PAGE_MOVEMENTS, type=type,
     )
     return {
         "items": [{
@@ -542,3 +560,21 @@ def update_shipping_rate(
         db.commit()
         db.refresh(r)
     return _rate_out(r)
+
+
+def delete_shipping_rate(db: Session, admin: User, rate_id: int) -> dict:
+    """删除运费模板：订单仅快照 shipping_fee/method 无 FK 引用，可直接删；
+    若未来引入引用约束导致删除失败，统一回落 409 rate_referenced。"""
+    r = db.get(ShippingRate, rate_id)
+    if not r:
+        raise HTTPException(status_code=404, detail="shipping_rate_not_found")
+    _admin_log(db, admin, "delete", "shipping_rate", r.id, {
+        "dest_country": r.dest_country, "carrier": r.carrier, "method": r.method,
+    })
+    try:
+        db.delete(r)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="rate_referenced")
+    return {"ok": True}

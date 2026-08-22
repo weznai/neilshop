@@ -22,12 +22,14 @@ router = APIRouter(prefix="/api/admin/trade", tags=["admin-trade"])
 def list_orders(
     status: Optional[int] = None,
     q: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     per_page: Optional[int] = Query(default=None, ge=1),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_orders(db, status, q, page, per_page)
+    return service_admin.list_orders(db, status, q, page, per_page, date_from, date_to)
 
 
 @router.get("/orders/{order_no}")
@@ -68,12 +70,13 @@ def add_order_note(order_no: str, body: NoteIn, admin: User = Depends(require_ad
 @router.get("/rmas")
 def list_rmas(
     status: Optional[int] = None,
+    q: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_rmas(db, status, page, per_page)
+    return service_admin.list_rmas(db, status, page, per_page, q)
 
 
 @router.post("/rmas/{rma_no}/approve")
@@ -99,11 +102,12 @@ def adjust_stock(body: StockAdjustRequest, admin: User = Depends(require_admin),
 @router.get("/stock/movements")
 def stock_movements(
     variant_id: Optional[int] = None,
+    type: Optional[int] = None,
     page: int = Query(default=1, ge=1),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.stock_movements(db, variant_id, page)
+    return service_admin.stock_movements(db, variant_id, page, type)
 
 
 @router.get("/stock/low")
@@ -118,12 +122,13 @@ def low_stock(
 @router.get("/exchanges")
 def list_exchanges(
     status: Optional[int] = None,
+    q: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     size: int = Query(default=10, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_exchanges.admin_list_exchanges(db, status, page, size)
+    return service_exchanges.admin_list_exchanges(db, status, page, size, q)
 
 
 @router.post("/exchanges/{exchange_no}/approve")
@@ -190,3 +195,11 @@ def update_shipping_rate(
     admin: User = Depends(require_admin), db: Session = Depends(get_db),
 ):
     return service_admin.update_shipping_rate(db, admin, rate_id, body)
+
+
+@router.delete("/shipping-rates/{rate_id}")
+def delete_shipping_rate(
+    rate_id: int,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service_admin.delete_shipping_rate(db, admin, rate_id)

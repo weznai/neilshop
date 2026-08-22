@@ -142,9 +142,9 @@ def _get_ticket(db: Session, ticket_no: str) -> Ticket:
 
 def admin_tickets(
     db: Session, statuses: list[int] | None, category: int | None, q: str | None,
-    page: int, size: int, assignee: int | None = None,
+    page: int, size: int, assignee: int | None = None, priority: int | None = None,
 ) -> dict:
-    query = repo.admin_tickets_query(db, statuses, category, q, assignee)
+    query = repo.admin_tickets_query(db, statuses, category, q, assignee, priority)
     rows, total = repo.page(query, page, size)
     names = _assignee_names(db, rows)
     return {"items": [_ticket_admin_dict(t, names) for t in rows], "total": total, "page": page, "size": size}
