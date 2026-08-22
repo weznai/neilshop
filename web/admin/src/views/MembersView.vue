@@ -2,20 +2,28 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { useQuerySync } from '../composables/useQuerySync'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 
 const members = ref([])
 const total = ref(0)
-const q = ref('')
 const tier = ref('')          /* '' = 全部等级（后端 tier 为精确匹配，null 不过滤） */
-const page = ref(1)
 const SIZE = 50
 const active = ref(null)
 const loaded = ref(false)
 const loadErr = ref(false)
+const detailBusy = ref(false)
+
+/* 筛选/分页 URL 同步 */
+const st = reactive({ q: '', page: 1 })
+useQuerySync(st, { nums: ['page'], defaults: { page: 1 } })
 
 const TIER = ['Glow', 'Shimmer', 'Diva', 'Queen']
+/* 等级视觉分档：Glow/Shimmer 淡玫瑰、Diva 蓝调（tag-ship）、Queen 金 */
+const tierCls = (t) => (t === 2 ? 'tag-ship' : '')
+const tierStyle = (t) => (t === 3 ? 'background:#C9A227;color:#fff' : 'background:var(--rose-pale);color:var(--plum)')
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
@@ -24,20 +32,20 @@ async function load(p = 1) {
   loadErr.value = false
   try {
     const params = new URLSearchParams({ page: p, size: SIZE })
-    const s = q.value.trim()
+    const s = st.q.trim()
     if (s) params.set('q', s)
     if (tier.value !== '') params.set('tier', tier.value)
     const d = await req('GET', '/api/admin/ops/members?' + params)
     members.value = d.items || []
     total.value = d.total ?? 0
-    page.value = d.page || p
+    st.page = d.page || p
   } catch (e) {
     loadErr.value = true
     toast('会员列表加载失败：' + (e.message || ''), 'error')
   }
   loaded.value = true
 }
-onMounted(() => load(1))
+onMounted(() => load(st.page))
 
 function search() { load(1) }
 function setTier(v) { tier.value = v; load(1) }
@@ -64,50 +72,58 @@ const sortedMembers = computed(() => {
 })
 
 async function openDetail(m) {
+  detailBusy.value = true
   try {
     active.value = await req('GET', '/api/admin/ops/members/' + m.id)
     riskDraft.value = String(active.value.risk_flag || 0)
   }
   catch (e) { toast('加载失败：' + (e.message || ''), 'error') }
+  finally { detailBusy.value = false }
 }
 
 /* 风控下拉：受控 v-model（riskDraft），确认/取消/失败都回写草稿值驱动视图复位 */
 const riskDraft = ref('0')
-async function setRisk(flag) {
+/* 拉黑走危险确认弹窗（替代原生 confirm），确认后才提交 */
+const banDlg = ref(false)
+const banBusy = ref(false)
+function setRisk(flag) {
   const cur = active.value.risk_flag || 0
   if (flag === cur) return
-  if (flag === 2) {
-    const name = active.value.name || active.value.email
-    if (!confirm(`确认将「${name}」加入黑名单？\n黑名单会员下单时将被风控拦截，无法完成支付。`)) {
-      riskDraft.value = String(cur)   /* 取消：受控回滚 */
-      return
-    }
-  }
+  if (flag === 2) { banDlg.value = true; return }
+  applyRisk(flag)
+}
+function cancelBan() {
+  banDlg.value = false
+  riskDraft.value = String(active.value?.risk_flag || 0)   /* 受控回滚 */
+}
+async function applyRisk(flag = 2) {
+  banBusy.value = true
   try {
     await req('POST', `/api/admin/ops/members/${active.value.id}/risk`, { flag })
     active.value.risk_flag = flag
     riskDraft.value = String(flag)
     members.value = members.value.map((x) => (x.id === active.value.id ? { ...x, risk_flag: flag } : x))
     toast(flag === 2 ? '已加入黑名单（下单将被风控拦截）' : '风控状态已更新 ✓', 'success')
+    banDlg.value = false
   } catch (e) {
-    riskDraft.value = String(cur)   /* 失败：受控回滚 */
+    riskDraft.value = String(active.value.risk_flag || 0)   /* 失败：受控回滚 */
     toast('操作失败：' + (e.data?.detail || e.message), 'error')
-  }
+  } finally { banBusy.value = false }
 }
 </script>
 
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">会员管理</h1>
-      <span style="font-size:12.5px;color:var(--gray)">共 {{ total }} 位会员</span>
+      <h1 class="page-title">会员管理</h1>
+      <span class="page-sub">共 {{ total }} 位会员</span>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div class="filter-bar">
       <select class="input" :value="tier" style="width:auto;height:38px;font-size:13px" @change="setTier($event.target.value)">
         <option value="">全部等级</option>
         <option v-for="(t, i) in TIER" :key="i" :value="String(i)">{{ t }}</option>
       </select>
-      <input v-model="q" class="input" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
+      <input v-model="st.q" class="input" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
     </div>
   </div>
@@ -132,13 +148,15 @@ async function setRisk(flag) {
               <div><b>{{ m.name || '—' }}</b><div style="font-size:11.5px;color:var(--gray)">{{ m.email }}</div></div>
             </div>
           </td>
-          <td><span class="tag tag-paid">{{ TIER[m.tier || 0] }}</span></td>
+          <td><span class="tag" :class="tierCls(m.tier || 0)" :style="tierStyle(m.tier || 0)">{{ TIER[m.tier || 0] }}</span></td>
           <td><b style="color:var(--plum)">{{ (m.points || 0).toLocaleString() }}</b></td>
           <td>{{ money(m.total_spent) }}</td>
           <td style="color:var(--gray)">{{ m.last_order_at ? m.last_order_at.slice(0, 10) : '—' }}</td>
           <td><span class="tag" :class="m.risk_flag === 2 ? 'tag-error' : m.risk_flag === 1 ? 'tag-pending' : 'tag-done'">
             {{ ['正常', '关注', '黑名单'][m.risk_flag || 0] }}</span></td>
-          <td style="text-align:right"><button class="btn btn-secondary btn-sm" @click="openDetail(m)">画像</button></td>
+          <td style="text-align:right">
+            <button class="btn btn-secondary btn-sm" :class="{ loading: detailBusy }" :disabled="detailBusy" @click="openDetail(m)">{{ detailBusy ? '加载中…' : '画像' }}</button>
+          </td>
         </tr>
       </tbody>
     </table>
@@ -146,7 +164,7 @@ async function setRisk(flag) {
       <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
     </EmptyState>
     <EmptyState v-else-if="!members.length" icon="🧍" title="没有匹配会员" sub="试试其他关键词或等级筛选" />
-    <Pagination embed :page="page" :pages="pages" :total="total" unit="位" @go="load" />
+    <Pagination embed :page="st.page" :pages="pages" :total="total" unit="位" @go="load" />
     <div v-if="sort.key" style="text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
   </div>
 
@@ -154,15 +172,16 @@ async function setRisk(flag) {
   <div v-if="active" class="modal open" @click.self="active = null">
     <div class="modal-box" style="max-width:540px">
       <button class="modal-x" @click="active = null">×</button>
-      <h3 style="font-family:var(--font-title);margin-bottom:4px">{{ active.name || active.email }}</h3>
-      <div style="font-size:12.5px;color:var(--gray);margin-bottom:14px">
-        {{ active.email }} · 加入于 {{ (active.created_at || '').slice(0, 10) }}
+      <div class="dhead">
+        <div class="dtitle">{{ active.name || active.email }}</div>
+        <span class="tag" :class="tierCls(active.tier || 0)" :style="tierStyle(active.tier || 0)">{{ TIER[active.tier || 0] }}</span>
       </div>
-      <div class="grid-2" style="gap:10px;margin-bottom:14px">
-        <div class="stat"><div class="lb">等级</div><div class="vl" style="font-size:18px">{{ TIER[active.tier || 0] }}</div></div>
-        <div class="stat"><div class="lb">积分</div><div class="vl" style="font-size:18px;color:var(--plum)">{{ (active.points || 0).toLocaleString() }}</div></div>
-        <div class="stat"><div class="lb">累计消费</div><div class="vl" style="font-size:18px">{{ money(active.total_spent) }}</div></div>
-        <div class="stat"><div class="lb">最近下单</div><div class="vl" style="font-size:15px">{{ active.last_order_at ? active.last_order_at.slice(0, 10) : '—' }}</div></div>
+      <div class="kv" style="margin-bottom:14px">
+        <div class="kv-row"><span>邮箱</span><span class="kv-val">{{ active.email }}</span></div>
+        <div class="kv-row"><span>加入时间</span><span class="kv-val">{{ (active.created_at || '').slice(0, 10) || '—' }}</span></div>
+        <div class="kv-row"><span>积分</span><span class="kv-val" style="color:var(--plum);font-weight:700">{{ (active.points || 0).toLocaleString() }}</span></div>
+        <div class="kv-row"><span>累计消费</span><span class="kv-val">{{ money(active.total_spent) }}</span></div>
+        <div class="kv-row"><span>最近下单</span><span class="kv-val">{{ active.last_order_at ? active.last_order_at.slice(0, 10) : '—' }}</span></div>
       </div>
 
       <div class="field">
@@ -173,12 +192,13 @@ async function setRisk(flag) {
         <p style="font-size:11.5px;color:var(--gray);margin-top:6px">黑名单会员下单时将被风控拦截（无法完成支付）；「关注」仅标记观察，不影响下单。</p>
       </div>
 
-      <div style="margin-top:6px">
-        <router-link :to="{ path: '/orders', query: { q: active.email } }" style="font-size:12.5px;color:var(--plum)">查看订单 →</router-link>
+      <div style="display:flex;gap:16px;margin-top:6px;font-size:12.5px">
+        <router-link :to="{ path: '/orders', query: { q: active.email } }" style="color:var(--plum)">查看订单 →</router-link>
+        <router-link :to="{ path: '/tickets', query: { q: active.email } }" style="color:var(--plum)">查看工单 →</router-link>
       </div>
 
       <div v-if="active.ledger && active.ledger.length" style="margin-top:14px">
-        <h4 style="font-size:13.5px;margin-bottom:8px">积分流水（近 {{ Math.min(10, active.ledger.length) }} 条）</h4>
+        <div class="dtitle" style="margin-bottom:8px">积分流水（近 {{ Math.min(10, active.ledger.length) }} 条）</div>
         <div v-for="(l, i) in active.ledger.slice(0, 10)" :key="l.id || i" style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--gray-light)">
           <span style="color:var(--gray);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
             {{ (l.created_at || '').slice(0, 10) }} · {{ l.reason || '—' }}<span v-if="l.frozen" class="tag tag-pending" style="font-size:10px;margin-left:4px">冻结中</span>
@@ -191,4 +211,11 @@ async function setRisk(flag) {
       </div>
     </div>
   </div>
+
+  <!-- 拉黑危险确认 -->
+  <ConfirmDialog
+    :open="banDlg" title="加入黑名单" danger confirm-text="确认拉黑" :busy="banBusy"
+    :body="'黑名单会员「' + (active?.name || active?.email || '') + '」下单时将被风控拦截，无法完成支付；「关注」仅标记观察不影响下单。'"
+    @confirm="applyRisk(2)" @close="cancelBan"
+  />
 </template>

@@ -1,10 +1,13 @@
 /* GLOWMAG 后台 API 客户端（独立站点 · Cookie gm_admin_token 会话）
  * 拆独立 API 域时：window.GM_ADMIN_API_BASE = 'https://api.glowmag.com'
- * 并在服务端 GM_ALLOWED_ORIGINS 白名单加上后台域名。 */
+  * 并在服务端 GM_ALLOWED_ORIGINS 白名单加上后台域名。 */
+import { toast } from '../composables/toast'
+
 export const API_BASE = window.GM_ADMIN_API_BASE || ''
 
 const TIMEOUT_MS = 30000
 let fired401 = false   /* 并发请求同时 401 只广播一次 */
+let fired403 = false   /* 并发请求同时 403 只提示/跳转一次 */
 
 /* FastAPI 错误 detail 统一格式化（与 web/client 同款）：
  * - string → 原样
@@ -54,6 +57,17 @@ export async function req(method, path, body) {
       fired401 = true
       window.dispatchEvent(new CustomEvent('gm-admin-401'))
       setTimeout(() => { fired401 = false }, 3000)
+    }
+    /* 权限不足/角色已变更（登录接口自身除外）：提示 + 广播 + 回登录页带 next 续位（与 401 同构） */
+    if (r.status === 403 && !path.includes('/login') && !fired403) {
+      fired403 = true
+      toast('权限不足或已变更，请重新登录', 'error')
+      window.dispatchEvent(new CustomEvent('gm-admin-403'))
+      if (!location.pathname.includes('/login')) {
+        /* 动态引入 router 规避静态循环依赖（router → stores/session → 本模块） */
+        import('../router').then((m) => m.default.push({ path: '/login', query: { next: location.pathname + location.search } }))
+      }
+      setTimeout(() => { fired403 = false }, 3000)
     }
     const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
     e.status = r.status

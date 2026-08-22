@@ -5,6 +5,7 @@ import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const router = useRouter()
 const items = ref([])
@@ -27,7 +28,11 @@ const failures = computed(() => (bulkResult.value?.results || []).filter((r) => 
 const categories = ref([])
 const catIdSet = computed(() => new Set(categories.value.map((c) => c.id)))
 async function loadCategories() {
-  try { categories.value = (await req('GET', '/api/admin/catalog/categories')).items || [] }
+  try {
+    /* 后端返回裸数组（兼容 {items} 包装），此前误取 .items 导致白名单恒空 */
+    const d = await req('GET', '/api/admin/catalog/categories')
+    categories.value = Array.isArray(d) ? d : (d.items || [])
+  }
   catch (_) { /* 拉取失败时导入校验回退为「任意正整数」，后端仍会兜底 */ }
 }
 
@@ -71,22 +76,42 @@ const sortedItems = computed(() => {
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 
-async function toggle(p) {
-  const action = p.status === 1 ? 'unpublish' : 'publish'
-  /* unpublish 语义为归档（status→2），文案与后端保持一致 */
-  if (!confirm(action === 'publish' ? `上架 ${p.title}？` : `归档 ${p.title}？（前台不再展示，可在「归档」tab 查看）`)) return
+/* 上架/归档确认弹窗：归档为危险操作；定时商品立即上架会覆盖定时时间 */
+const dlg = reactive({ open: false, busy: false, p: null, action: 'publish' })
+const dlgBody = computed(() => {
+  if (!dlg.p) return ''
+  let s = dlg.action === 'publish'
+    ? `上架「${dlg.p.title}」后前台立即可见。`
+    : `归档「${dlg.p.title}」后前台不再展示，可在「归档」tab 查看。`
+  if (dlg.action === 'publish' && dlg.p.scheduled) s += '\n⚠️ 该商品已设定时上架，立即上架将覆盖定时时间。'
+  return s
+})
+function toggle(p) {
+  dlg.p = p
+  dlg.action = p.status === 1 ? 'unpublish' : 'publish'
+  dlg.open = true
+}
+async function doToggle() {
+  if (!dlg.p) return
+  dlg.busy = true
   try {
-    await req('POST', `/api/admin/catalog/products/${p.id}/${action}`)
-    toast(action === 'publish' ? '已上架 ✓' : '已归档 ✓', 'success')
+    await req('POST', `/api/admin/catalog/products/${dlg.p.id}/${dlg.action}`)
+    toast(dlg.action === 'publish' ? '已上架 ✓' : '已归档 ✓', 'success')
+    dlg.open = false
     load()
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { dlg.busy = false }
 }
+
+/* 关闭批量导入弹窗时清空草稿与上次结果 */
+function closeBulk() { bulk.value = false; bulkText.value = ''; bulkResult.value = null }
+
 async function bulkImport() {
   try {
     /* 分类白名单：动态分类集合（拉取失败回退任意正整数，后端兜底校验） */
     const catHint = categories.value.length
       ? '可用分类 id：' + categories.value.map((c) => `${c.id}（${c.name}）`).join('、')
-      : '分类列表加载失败，暂仅校验为正整数（后端会再校验一次）'
+      : '分类列表为空或未加载成功，暂仅校验为正整数（后端会再校验一次）'
     const lines = bulkText.value.trim().split(/\n+/).filter(Boolean)
     const bad = []
     const rows = lines.map((l, i) => {
@@ -113,8 +138,8 @@ async function bulkImport() {
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">商品管理</h1>
-      <span style="font-size:12.5px;color:var(--gray)">共 {{ total }} 款</span>
+      <h1 class="page-title">商品管理</h1>
+      <span class="page-sub">共 {{ total }} 款</span>
     </div>
     <div style="display:flex;gap:10px">
       <input v-model="q" class="input" style="width:220px" placeholder="搜标题 / slug" @keydown.enter="search">
@@ -124,19 +149,16 @@ async function bulkImport() {
     </div>
   </div>
 
-  <div class="otab" style="display:flex;gap:4px;border-bottom:1.5px solid var(--gray-light);margin-bottom:14px">
-    <button v-for="[sv, label] in TABS" :key="String(sv)"
-            style="padding:9px 16px;font-size:13.5px;font-weight:600;border:none;background:none;cursor:pointer"
-            :style="{ color: status === sv ? 'var(--plum)' : 'var(--gray)', borderBottom: status === sv ? '2.5px solid var(--plum)' : '2.5px solid transparent' }"
-            @click="tab(sv)">{{ label }}</button>
+  <div class="otab">
+    <button v-for="[sv, label] in TABS" :key="String(sv)" :class="{ on: status === sv }" @click="tab(sv)">{{ label }}</button>
   </div>
 
   <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
 
   <div v-else class="card tbl-wrap">
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <table v-if="items.length" style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="padding:10px">商品</th>
+        <th>商品</th>
         <th class="sortable" title="点击排序（当前页）" @click="sortBy('price_min')">价格<span v-if="sortInd('price_min')" class="sort-ind">{{ sortInd('price_min') }}</span></th>
         <th>库存</th>
         <th class="sortable" title="点击排序（当前页）" @click="sortBy('sold_count')">销量<span v-if="sortInd('sold_count')" class="sort-ind">{{ sortInd('sold_count') }}</span></th>
@@ -144,7 +166,7 @@ async function bulkImport() {
       </tr></thead>
       <tbody>
         <tr v-for="p in sortedItems" :key="p.id" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:10px">
+          <td>
             <div style="display:flex;gap:10px;align-items:center">
               <img v-if="p.hero_image && !p.broken" :src="p.hero_image" :alt="p.title" style="width:42px;height:42px;border-radius:8px;object-fit:cover" @error="p.broken = true">
               <div v-else style="width:42px;height:42px;border-radius:8px;background:var(--rose-pale);color:var(--plum);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;flex:none">{{ (p.title || '?').slice(0, 1).toUpperCase() }}</div>
@@ -177,17 +199,17 @@ async function bulkImport() {
         </tr>
       </tbody>
     </table>
-    <EmptyState v-if="loaded && !items.length" icon="🔍" title="没有匹配商品" sub="试试其他关键词或状态筛选" />
+    <EmptyState v-else icon="🔍" title="没有匹配商品" sub="试试其他关键词或状态筛选" />
   </div>
 
   <Pagination v-if="loaded" :page="page" :pages="pages" :total="total" unit="款" @go="page = $event; load()" />
   <div v-if="sort.key" style="margin-top:6px;text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
 
   <!-- 批量导入弹窗 -->
-  <div v-if="bulk" class="modal open" @click.self="bulk = false">
+  <div v-if="bulk" class="modal open" @click.self="closeBulk">
     <div class="modal-box" style="max-width:560px">
-      <button class="modal-x" @click="bulk = false">×</button>
-      <h3 style="font-family:var(--font-title);margin-bottom:6px">📦 批量导入</h3>
+      <button class="modal-x" @click="closeBulk">×</button>
+      <div class="dhead"><h3 class="dtitle">📦 批量导入</h3></div>
       <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">CSV 粘贴（slug,title,price,category_id）≤100 行，部分成功不回滚；price 单位美元，库存请在变体中维护。</p>
       <textarea v-model="bulkText" class="input" rows="8" placeholder="nova-set,Nova Set,15.99,1"></textarea>
       <button class="btn btn-primary btn-block" style="margin-top:12px" @click="bulkImport">导入</button>
@@ -201,4 +223,15 @@ async function bulkImport() {
       </div>
     </div>
   </div>
+
+  <!-- 上架/归档确认 -->
+  <ConfirmDialog :open="dlg.open" :title="dlg.action === 'unpublish' ? '归档商品' : '上架商品'" :body="dlgBody"
+                 :danger="dlg.action === 'unpublish'" :confirm-text="dlg.action === 'unpublish' ? '归档' : '上架'"
+                 :busy="dlg.busy" @confirm="doToggle" @close="dlg.open = false" />
 </template>
+
+<style scoped>
+td,th{padding:10px 12px}
+.otab button{background:none;border:none;border-bottom:2.5px solid transparent;cursor:pointer}
+.otab button.on{color:var(--plum);border-color:var(--plum)}
+</style>

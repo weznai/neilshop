@@ -1,12 +1,14 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const route = useRoute()
+const router = useRouter()
 const tab = ref('discounts')
 const discounts = ref([])
 const rates = ref([])
@@ -34,10 +36,12 @@ function dscGo(n) {
 /* settings 是 k-v 列表 → 转对象（bundle 缺省回退 pricing.py 默认 15/20，避免 undefined 保存 422） */
 const settings = reactive({ bundle_2_off: 15, bundle_3_off: 20 })
 const BUNDLE_KEYS = { b2: 'bundle_2_off', b3: 'bundle_3_off' }
+/* 说明卡结算示例金额（美元两位小数，0 折扣 = 原价） */
+const example = (sub, pct) => ((sub * (100 - (Number(pct) || 0))) / 100).toFixed(2)
 
 const showNew = ref(false)
-/* DiscountCreateIn: type int 1-3（1=pct 2=fixed 3=ship）、value 分、starts_at 必填 */
-const NEW_CODE = { code: '', type: 1, value: 20, min_subtotal: 0, max_discount: null, usage_limit: null, per_user_limit: 1, first_order_only: 0, days: 30 }
+/* DiscountCreateIn: type int 1-3（1=pct 2=fixed 3=ship）、value 分、starts_at 必填；starts_at 空=立即生效 */
+const NEW_CODE = { code: '', type: 1, value: 20, min_subtotal: 0, max_discount: null, usage_limit: null, per_user_limit: 1, first_order_only: 0, days: 30, starts_at: '' }
 const newCode = reactive({ ...NEW_CODE })
 /* 弹窗开关整体重置（对齐 newPopup 的做法，避免残留上次输入） */
 function openNew() { Object.assign(newCode, NEW_CODE); showNew.value = true }
@@ -81,10 +85,11 @@ async function load() {
 }
 onMounted(() => { initTabFromQuery(); load() })
 
-/* tab 切换：集合页懒加载（避免无谓的逐集合商品数探测请求） */
+/* tab 切换：回写 URL 深链（可分享）+ 集合页懒加载（避免无谓的逐集合商品数探测请求） */
 const colLoaded = ref(false)
 function setTab(k) {
   tab.value = k
+  router.replace({ query: { ...route.query, tab: k } })
   if (k === 'collections' && !colLoaded.value) { colLoaded.value = true; loadCollections() }
 }
 
@@ -93,6 +98,8 @@ const TYPE_LABEL = { 1: (v) => `${v}% off`, 2: (v) => `${money(v)} off`, 3: () =
 /* ends_at 为 naive UTC：按 UTC 日期比较判定「已过期」（天级，避免本地时区偏移误标） */
 const todayUtc = () => new Date().toISOString().slice(0, 10)
 const isExpired = (c) => !!(c.ends_at && c.ends_at.slice(0, 10) < todayUtc())
+/* starts_at 在未来 → 「未生效」（与 isExpired 对称，天级比较） */
+const isNotStarted = (c) => !!(c.starts_at && c.starts_at.slice(0, 10) > todayUtc())
 
 async function toggleCode(c) {
   try {
@@ -115,7 +122,8 @@ async function addCode() {
       usage_limit: newCode.usage_limit ? Math.round(newCode.usage_limit) : null,
       per_user_limit: Math.round(newCode.per_user_limit || 1),
       first_order_only: newCode.first_order_only ? 1 : 0,
-      starts_at: new Date().toISOString().slice(0, 19),
+      /* 开始时间：填了按本地时间转 UTC ISO（datetime-local → Date → toISOString），空=当前时刻立即生效 */
+      starts_at: newCode.starts_at ? new Date(newCode.starts_at).toISOString().slice(0, 19) : new Date().toISOString().slice(0, 19),
       ends_at: newCode.days > 0 ? new Date(Date.now() + newCode.days * 864e5).toISOString().slice(0, 19) : null,
     })
     showNew.value = false
@@ -231,8 +239,11 @@ async function togglePopup(p) {
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
 }
 async function saveBundle(key) {
+  /* 0-50 越界拦截（超 5 折不合理） */
+  const v = Number(settings[BUNDLE_KEYS[key]])
+  if (!Number.isFinite(v) || v < 0 || v > 50) { toast('折扣比例需在 0-50 之间', 'error'); return }
   try {
-    await req('PUT', '/api/admin/ops/settings', { key: BUNDLE_KEYS[key], value: Number(settings[BUNDLE_KEYS[key]]) || 0 })
+    await req('PUT', '/api/admin/ops/settings', { key: BUNDLE_KEYS[key], value: v || 0 })
     toast('已保存（结算即时生效）✓', 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
@@ -306,7 +317,7 @@ async function loadCollections() {
   }
 }
 
-/* 新建集合（CollectionCreateIn{slug,title,rule_json}；banner_image 可选字段契约补充中，创建后也可在「编辑」中维护） */
+/* 新建集合（CollectionCreateIn{slug,title,rule_json}；banner_image 创建后可在「编辑」中维护） */
 const colDlg = ref(false)
 const colForm = reactive({ slug: '', title: '', banner: '', ruleStr: '{}' })
 function newCollection() {
@@ -401,23 +412,32 @@ function togglePick(p) {
   if (i > -1) picked.value.splice(i, 1)
   else picked.value.push({ product_id: p.id, title: p.title })
 }
-async function savePick() {
+/* 保存确认：先关商品选择弹窗再弹 ConfirmDialog（避免双层 modal），确认后执行原保存逻辑 */
+const pickConfirm = ref(false)
+const pickBusy = ref(false)
+const pickConfirmBody = computed(() => (pickOrigN.value > 0
+  ? `保存将替换现有 ${pickOrigN.value} 件商品为 ${picked.value.length} 件（全量替换），确认继续？`
+  : `保存将把 ${picked.value.length} 件商品全量写入该集合（覆盖现有配置），确认继续？`))
+function savePick() {
+  if (!pickCol.value) return
+  pickDlg.value = false
+  pickConfirm.value = true
+}
+async function doSavePick() {
   const c = pickCol.value
   if (!c) return
   const n = picked.value.length
-  const msg = pickOrigN.value > 0
-    ? `保存将替换现有 ${pickOrigN.value} 件商品为 ${n} 件（全量替换），确认继续？`
-    : `保存将把 ${n} 件商品全量写入该集合（覆盖现有配置），确认继续？`
-  if (!confirm(msg)) return
+  pickBusy.value = true
   try {
     await req('PUT', `/api/admin/catalog/collections/${c.id}/products`, {
       products: picked.value.map((x, i) => ({ product_id: x.product_id, sort_order: i })),
     })
     toast('集合商品已保存 ✓', 'success')
-    pickDlg.value = false
+    pickConfirm.value = false
     /* 刷新集合商品数（保存的即最新全量） */
     colCounts[c.id] = n
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+  pickBusy.value = false
 }
 
 /* 启停（PUT /collections/{id} CollectionUpdateIn.is_active） */
@@ -428,21 +448,31 @@ async function toggleCollection(c) {
     toast(c.is_active ? '已启用 ✓' : '已停用 ✓', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
 }
-async function delCollection(c) {
-  if (!confirm(`删除集合「${c.title}」？关联的 ${colCounts[c.id] ?? '?'} 件商品配置将一并移除，不可恢复。`)) return
+/* 删除集合：ConfirmDialog 危险确认（不可恢复） */
+const delColDlg = ref(false)
+const delColBusy = ref(false)
+const delColTarget = ref(null)
+const delColBody = computed(() => `删除集合「${delColTarget.value?.title || ''}」？关联的 ${colCounts[delColTarget.value?.id] ?? '?'} 件商品配置将一并移除，不可恢复。`)
+function delCollection(c) { delColTarget.value = c; delColDlg.value = true }
+async function doDelCollection() {
+  const c = delColTarget.value
+  if (!c) return
+  delColBusy.value = true
   try {
     await req('DELETE', `/api/admin/catalog/collections/${c.id}`)
     toast('已删除', 'success')
+    delColDlg.value = false
     loadCollections()
   } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
+  delColBusy.value = false
 }
 </script>
 
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">营销工具</h1>
-      <span style="font-size:12.5px;color:var(--gray)">折扣码 / 运费模板 / 捆绑折扣 / 弹窗 / 集合</span>
+      <h1 class="page-title">营销工具</h1>
+      <span class="page-sub">折扣码 / 运费模板 / 捆绑折扣 / 弹窗 / 集合</span>
     </div>
   </div>
 
@@ -456,18 +486,23 @@ async function delCollection(c) {
     >{{ label }}</button>
   </div>
 
+  <!-- 加载失败横幅：所有 tab 共用（初始加载/重试失败时置位，重试走 load） -->
+  <div v-if="loadErr" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;margin-bottom:14px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
+    <span>⚠️ 部分数据加载失败，展示的可能不是最新配置</span>
+    <button class="btn btn-secondary btn-sm" @click="load">重试</button>
+  </div>
+
   <!-- 折扣码 -->
   <template v-if="tab === 'discounts'">
-    <div class="card" style="padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:13.5px;color:var(--gray)">共 {{ dscTotal }} 个码 · 当前页启用 {{ discounts.filter((c) => c.is_active).length }}<span v-if="discounts.some((c) => isExpired(c))"> · 当前页 {{ discounts.filter((c) => isExpired(c)).length }} 个已过期</span></span>
-      <button class="btn btn-primary btn-sm" @click="openNew">＋ 新建折扣码</button>
-    </div>
-    <div v-if="loadErr" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
-      <span>⚠️ 部分数据加载失败，展示的可能不是最新配置</span>
-      <button class="btn btn-secondary btn-sm" @click="load">重试</button>
-    </div>
     <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
     <div v-else class="card tbl-wrap">
+      <div class="dhead" style="padding:14px 16px 0">
+        <h3 class="dtitle">折扣码</h3>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12.5px;color:var(--gray)">共 {{ dscTotal }} 个 · 当前页启用 {{ discounts.filter((c) => c.is_active).length }}<span v-if="discounts.some((c) => isExpired(c))"> · 当前页 {{ discounts.filter((c) => isExpired(c)).length }} 个已过期</span></span>
+          <button class="btn btn-primary btn-sm" @click="openNew">＋ 新建折扣码</button>
+        </div>
+      </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">码</th><th>规则</th><th>门槛/上限</th><th>已用</th><th>有效期</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
         <tbody>
@@ -486,6 +521,7 @@ async function delCollection(c) {
             <td style="color:var(--gray);font-size:12px">{{ (c.starts_at || '').slice(0, 10) }} ~ {{ c.ends_at ? c.ends_at.slice(0, 10) : '∞' }}</td>
             <td style="white-space:nowrap">
               <span v-if="c.is_active && isExpired(c)" class="tag tag-error">已过期</span>
+              <span v-else-if="c.is_active && isNotStarted(c)" class="tag tag-done">未生效</span>
               <span v-else class="tag" :class="c.is_active ? 'tag-paid' : 'tag-pending'">{{ c.is_active ? '启用' : '停用' }}</span>
             </td>
             <td style="text-align:right;white-space:nowrap">
@@ -495,7 +531,7 @@ async function delCollection(c) {
           </tr>
         </tbody>
       </table>
-      <EmptyState v-if="loaded && !discounts.length" icon="🏷️" title="暂无折扣码" sub="点击右上角「新建折扣码」创建第一个" />
+      <EmptyState v-if="!discounts.length" icon="🏷️" title="暂无折扣码" sub="点击右上角「新建折扣码」创建第一个" />
       <Pagination embed :page="dscPage" :pages="dscPages" :total="dscTotal" unit="个" @go="dscGo" />
     </div>
 
@@ -514,6 +550,7 @@ async function delCollection(c) {
             <input v-model.number="newCode.value" class="input" type="number"></div>
           <div class="field"><label>门槛 $（0=无）</label><input v-model.number="newCode.min_subtotal" class="input" type="number"></div>
           <div v-if="newCode.type === 1" class="field"><label>封顶 $（可选，%码适用）</label><input v-model.number="newCode.max_discount" class="input" type="number"></div>
+          <div class="field"><label>开始时间（空=立即生效）</label><input v-model="newCode.starts_at" class="input" type="datetime-local"></div>
           <div class="field"><label>有效天数（0=永久）</label><input v-model.number="newCode.days" class="input" type="number"></div>
           <div class="field"><label>总次数（空=不限）</label><input v-model.number="newCode.usage_limit" class="input" type="number" min="1"></div>
           <div class="field"><label>每人限用次数</label><input v-model.number="newCode.per_user_limit" class="input" type="number" min="1"></div>
@@ -521,7 +558,10 @@ async function delCollection(c) {
         <label style="display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer;margin-top:10px">
           <input v-model="newCode.first_order_only" type="checkbox" style="width:16px;height:16px"> 仅限首单使用
         </label>
-        <button class="btn btn-primary btn-block" style="margin-top:14px" @click="addCode">创建</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" @click="closeNew">取消</button>
+          <button class="btn btn-primary btn-sm" @click="addCode">创建</button>
+        </div>
       </div>
     </div>
 
@@ -541,19 +581,25 @@ async function delCollection(c) {
           <div class="field"><label>开始时间 (UTC)</label><input v-model="editCode.starts_at" class="input" type="datetime-local"></div>
           <div class="field"><label>结束时间 (UTC)（空=永久）</label><input v-model="editCode.ends_at" class="input" type="datetime-local"></div>
         </div>
-        <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveEdit">保存</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" @click="editDlg = false">取消</button>
+          <button class="btn btn-primary btn-sm" @click="saveEdit">保存</button>
+        </div>
       </div>
     </div>
   </template>
 
   <!-- 运费模板 -->
   <template v-else-if="tab === 'rates'">
-    <div class="card" style="padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:13.5px;color:var(--gray)">共 {{ rates.length }} 条 · 启用 {{ rates.filter((r) => r.active).length }} · 结算按「国家→方式」取启用模板</span>
-      <button class="btn btn-primary btn-sm" @click="newRate">＋ 新建模板</button>
-    </div>
     <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
     <div v-else class="card tbl-wrap">
+      <div class="dhead" style="padding:14px 16px 0">
+        <h3 class="dtitle">运费模板</h3>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12.5px;color:var(--gray)">共 {{ rates.length }} 条 · 启用 {{ rates.filter((r) => r.active).length }} · 结算按「国家→方式」取启用模板</span>
+          <button class="btn btn-primary btn-sm" @click="newRate">＋ 新建模板</button>
+        </div>
+      </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)">
           <th style="padding:10px">目的地</th><th>承运</th><th>方式</th><th>运费</th><th>免邮门槛</th><th>时效（天）</th><th>限重(g)</th><th>状态</th><th style="text-align:right">操作</th>
@@ -575,7 +621,7 @@ async function delCollection(c) {
           </tr>
         </tbody>
       </table>
-      <EmptyState v-if="loaded && !rates.length" icon="🚚" title="暂无运费模板" sub="结算将使用 settings 默认运费" />
+      <EmptyState v-if="!rates.length" icon="🚚" title="暂无运费模板" sub="结算将使用 settings 默认运费" />
     </div>
 
     <div v-if="rateDlg" class="modal open" @click.self="rateDlg = false">
@@ -605,37 +651,61 @@ async function delCollection(c) {
           <div class="field"><label>最大时效（天）</label><input v-model.number="rateForm.eta_max_days" class="input" type="number"></div>
           <div v-if="!rateForm.id" class="field"><label>限重（g）</label><input v-model.number="rateForm.max_weight_g" class="input" type="number"></div>
         </div>
-        <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveRate">保存</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" @click="rateDlg = false">取消</button>
+          <button class="btn btn-primary btn-sm" @click="saveRate">保存</button>
+        </div>
       </div>
     </div>
   </template>
 
-  <!-- 捆绑折扣 -->
-  <div v-else-if="tab === 'bundles'" class="card" style="padding:20px;max-width:460px">
-    <h3 style="font-size:14.5px;margin-bottom:6px">🎁 捆绑折扣（结算即时生效）</h3>
-    <p style="font-size:12.5px;color:var(--gray);margin-bottom:14px">两件 / 三件及以上的购物车整单折扣比例（%，0 = 关闭该档）。</p>
-    <div class="field"><label>买 2 件折扣 %</label>
-      <div style="display:flex;gap:8px">
-        <input v-model.number="settings.bundle_2_off" class="input" type="number" min="0" max="50">
-        <button class="btn btn-secondary" @click="saveBundle('b2')">保存</button>
+  <!-- 捆绑折扣：全宽双卡（左编辑表单 / 右当前生效规则与结算示例），≤900px 单列 -->
+  <template v-else-if="tab === 'bundles'">
+    <div class="bundle-grid">
+      <div class="card" style="padding:20px">
+        <div class="dhead" style="margin-bottom:10px">
+          <h3 class="dtitle">🎁 捆绑折扣</h3>
+          <span class="item-cnt">结算即时生效</span>
+        </div>
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:14px">两件 / 三件及以上的购物车整单折扣比例（%，0 = 关闭该档）。</p>
+        <div class="field"><label>买 2 件折扣 %（0-50）</label>
+          <div style="display:flex;gap:8px">
+            <input v-model.number="settings.bundle_2_off" class="input" type="number" min="0" max="50">
+            <button class="btn btn-secondary" @click="saveBundle('b2')">保存</button>
+          </div>
+        </div>
+        <div class="field"><label>买 3+ 件折扣 %（0-50）</label>
+          <div style="display:flex;gap:8px">
+            <input v-model.number="settings.bundle_3_off" class="input" type="number" min="0" max="50">
+            <button class="btn btn-secondary" @click="saveBundle('b3')">保存</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="padding:20px">
+        <div class="dhead" style="margin-bottom:10px"><h3 class="dtitle">当前生效规则与结算示例</h3></div>
+        <div class="kv-row"><span>买 2 件整单折扣</span><b>{{ Number(settings.bundle_2_off) ? settings.bundle_2_off + '%' : '已关闭' }}</b></div>
+        <div class="kv-row"><span>买 3+ 件整单折扣</span><b>{{ Number(settings.bundle_3_off) ? settings.bundle_3_off + '%' : '已关闭' }}</b></div>
+        <div class="kv-row"><span>生效范围</span><b>全店购物车结算</b></div>
+        <p style="font-size:12.5px;color:var(--gray);margin-top:12px;line-height:1.8">
+          结算示例：2 件小计 $100.00 → 享 −{{ settings.bundle_2_off }}%，应付 <b style="color:var(--plum)">${{ example(100, settings.bundle_2_off) }}</b>；
+          3 件小计 $150.00 → 享 −{{ settings.bundle_3_off }}%，应付 <b style="color:var(--plum)">${{ example(150, settings.bundle_3_off) }}</b>。
+          实际金额以后端结算为准。
+        </p>
       </div>
     </div>
-    <div class="field"><label>买 3+ 件折扣 %</label>
-      <div style="display:flex;gap:8px">
-        <input v-model.number="settings.bundle_3_off" class="input" type="number" min="0" max="50">
-        <button class="btn btn-secondary" @click="saveBundle('b3')">保存</button>
-      </div>
-    </div>
-  </div>
+  </template>
 
   <!-- 弹窗（PopupConfig 完整 CRUD + 启停；前台按 scene 拉取启用中的最新一条） -->
   <div v-else-if="tab === 'popups'">
-    <div class="card" style="padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:13.5px;color:var(--gray)">共 {{ popups.length }} 个 · 启用 {{ popups.filter((p) => p.active).length }} · 前台同场景取最新启用且在有效期内的一个</span>
-      <button class="btn btn-primary btn-sm" @click="newPopup">＋ 新建弹窗</button>
-    </div>
     <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
     <div v-else class="card tbl-wrap">
+      <div class="dhead" style="padding:14px 16px 0">
+        <h3 class="dtitle">弹窗</h3>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12.5px;color:var(--gray)">共 {{ popups.length }} 个 · 启用 {{ popups.filter((p) => p.active).length }} · 前台同场景取最新启用且在有效期内的一个</span>
+          <button class="btn btn-primary btn-sm" @click="newPopup">＋ 新建弹窗</button>
+        </div>
+      </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)">
           <th style="padding:10px">场景</th><th>标题 / 券码</th><th>触发规则</th><th>有效期</th><th>曝光/转化</th><th>状态</th><th style="text-align:right">操作</th>
@@ -663,7 +733,7 @@ async function delCollection(c) {
           </tr>
         </tbody>
       </table>
-      <EmptyState v-if="loaded && !popups.length" icon="🪟" title="暂无弹窗配置" sub="点击右上角「新建弹窗」创建" />
+      <EmptyState v-if="!popups.length" icon="🪟" title="暂无弹窗配置" sub="点击右上角「新建弹窗」创建" />
     </div>
 
     <!-- 弹窗编辑（scene/title/content_md/coupon_code/trigger_rules/有效期/active） -->
@@ -671,7 +741,7 @@ async function delCollection(c) {
       <div class="modal-box" style="max-width:560px">
         <button class="modal-x" @click="popupDlg = false">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ popupForm.id ? '✏️ 编辑弹窗 #' + popupForm.id : '🪟 新建弹窗' }}</h3>
-        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">前台 GET /api/promo/popup?scene= 按「启用中 + 有效期内 + 最新」取一个展示。</p>
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">按场景自动弹出：前台自动拉取「启用中 + 有效期内」的最新一条展示。</p>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="field"><label>场景 scene</label>
             <input v-model="popupForm.scene" class="input" list="popup-scenes" placeholder="welcome">
@@ -679,7 +749,12 @@ async function delCollection(c) {
               <option v-for="(name, s) in POPUP_SCENES" :key="s" :value="s">{{ name }}</option>
             </datalist>
           </div>
-          <div class="field"><label>券码（可选，会展示给用户）</label><input v-model="popupForm.coupon_code" class="input" placeholder="WELCOME20" style="text-transform:uppercase"></div>
+          <div class="field"><label>券码（可选，下拉选择或手动输入）</label>
+            <input v-model="popupForm.coupon_code" class="input" list="popup-coupon-codes" placeholder="WELCOME20" style="text-transform:uppercase">
+            <datalist id="popup-coupon-codes">
+              <option v-for="c in discounts" :key="c.id" :value="c.code" />
+            </datalist>
+          </div>
           <div class="field" style="grid-column:1/-1"><label>标题 *</label><input v-model="popupForm.title" class="input" placeholder="Get 20% off your first set"></div>
           <div class="field" style="grid-column:1/-1"><label>内容（Markdown）</label><textarea v-model="popupForm.content_md" class="input" rows="3"></textarea></div>
           <div class="field"><label>延迟秒数</label><input v-model.number="popupForm.delaySec" class="input" type="number" min="0"></div>
@@ -697,49 +772,58 @@ async function delCollection(c) {
             <input v-model.number="popupForm.active" type="checkbox" :true-value="1" :false-value="0" style="width:15px;height:15px"> 立即启用
           </label>
         </div>
-        <button class="btn btn-primary btn-block" style="margin-top:14px" @click="savePopup">保存</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" @click="popupDlg = false">取消</button>
+          <button class="btn btn-primary btn-sm" @click="savePopup">保存</button>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 集合页（GET/POST /api/admin/catalog/collections + PUT/DELETE /{id} + GET/PUT /{id}/products） -->
   <div v-else>
-    <div class="card" style="padding:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
-      <span style="font-size:13.5px;color:var(--gray)">共 {{ collections.length }} 个集合 · 启用 {{ collections.filter((c) => c.is_active).length }} · 商品数为手动配置的固定商品</span>
-      <button class="btn btn-primary btn-sm" @click="newCollection">＋ 新建集合</button>
-    </div>
     <EmptyState v-if="colErr" icon="⚠️" title="集合列表加载失败" sub="服务端可能未启动或端点暂不可用">
       <template #action><button class="btn btn-secondary btn-sm" @click="loadCollections">重试</button></template>
     </EmptyState>
-    <div v-else class="card tbl-wrap">
-      <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="text-align:left;color:var(--gray)">
-          <th style="padding:10px">集合</th><th>slug</th><th>规则</th><th>商品数</th><th>状态</th><th style="text-align:right">操作</th>
-        </tr></thead>
-        <tbody>
-          <tr v-for="c in collections" :key="c.id" style="border-top:1px solid var(--gray-light)">
-            <td style="padding:11px 10px">
-              <b>{{ c.title }}</b>
-              <div v-if="c.banner_image" style="font-size:11.5px;color:var(--gray);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" :title="c.banner_image">🖼 {{ c.banner_image }}</div>
-            </td>
-            <td><code style="font-size:12px">{{ c.slug }}</code></td>
-            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray);font-size:12px" :title="JSON.stringify(c.rule_json || {})">{{ JSON.stringify(c.rule_json || {}) }}</td>
-            <td>
-              <b v-if="colCounts[c.id] != null">{{ colCounts[c.id] }}</b>
-              <span v-else style="color:var(--gray)" title="商品数加载失败">—</span>
-            </td>
-            <td><span class="tag" :class="c.is_active ? 'tag-paid' : 'tag-pending'">{{ c.is_active ? '启用' : '停用' }}</span></td>
-            <td style="text-align:right;white-space:nowrap">
-              <button class="btn btn-secondary btn-sm" @click="openPick(c)">配商品</button>
-              <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="editCollection(c)">编辑</button>
-              <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="toggleCollection(c)">{{ c.is_active ? '停用' : '启用' }}</button>
-              <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delCollection(c)">删除</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <EmptyState v-if="colLoaded && !collections.length" icon="🗂️" title="暂无集合" sub="点击右上角「新建集合」创建第一个商品集合页" />
-    </div>
+    <template v-else>
+      <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
+      <div v-else class="card tbl-wrap">
+        <div class="dhead" style="padding:14px 16px 0">
+          <h3 class="dtitle">集合页</h3>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <span style="font-size:12.5px;color:var(--gray)">共 {{ collections.length }} 个集合 · 启用 {{ collections.filter((c) => c.is_active).length }} · 商品数为手动配置的固定商品</span>
+            <button class="btn btn-primary btn-sm" @click="newCollection">＋ 新建集合</button>
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="text-align:left;color:var(--gray)">
+            <th style="padding:10px">集合</th><th>slug</th><th>规则</th><th>商品数</th><th>状态</th><th style="text-align:right">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="c in collections" :key="c.id" style="border-top:1px solid var(--gray-light)">
+              <td style="padding:11px 10px">
+                <b>{{ c.title }}</b>
+                <div v-if="c.banner_image" style="font-size:11.5px;color:var(--gray);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" :title="c.banner_image">🖼 {{ c.banner_image }}</div>
+              </td>
+              <td><code style="font-size:12px">{{ c.slug }}</code></td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray);font-size:12px" :title="JSON.stringify(c.rule_json || {})">{{ JSON.stringify(c.rule_json || {}) }}</td>
+              <td>
+                <b v-if="colCounts[c.id] != null">{{ colCounts[c.id] }}</b>
+                <span v-else style="color:var(--gray)" title="商品数加载失败">—</span>
+              </td>
+              <td><span class="tag" :class="c.is_active ? 'tag-paid' : 'tag-pending'">{{ c.is_active ? '启用' : '停用' }}</span></td>
+              <td style="text-align:right;white-space:nowrap">
+                <button class="btn btn-secondary btn-sm" @click="openPick(c)">配商品</button>
+                <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="editCollection(c)">编辑</button>
+                <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="toggleCollection(c)">{{ c.is_active ? '停用' : '启用' }}</button>
+                <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delCollection(c)">删除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <EmptyState v-if="colLoaded && !collections.length" icon="🗂️" title="暂无集合" sub="点击右上角「新建集合」创建第一个商品集合页" />
+      </div>
+    </template>
 
     <!-- 新建集合弹窗（slug/title 必填；rule_json 需合法 JSON 对象） -->
     <div v-if="colDlg" class="modal open" @click.self="colDlg = false">
@@ -753,13 +837,16 @@ async function delCollection(c) {
           <div class="field"><label>标题 *</label><input v-model="colForm.title" class="input" placeholder="夏日精选"></div>
           <div class="field"><label>Banner 图 URL（可选）</label>
             <input v-model="colForm.banner" class="input" placeholder="/static/banners/summer.jpg">
-            <p style="font-size:11px;color:var(--gray);margin-top:4px">若创建时未生效，可在创建后的「编辑」中补充保存。</p>
+            <p style="font-size:11px;color:var(--gray);margin-top:4px">创建后可在编辑中补充图片。</p>
           </div>
           <div class="field"><label>高级规则 rule_json（JSON 对象，可选）</label>
             <textarea v-model="colForm.ruleStr" class="input" rows="3" placeholder='{} 或 {"category":"new"}'></textarea>
           </div>
         </div>
-        <button class="btn btn-primary btn-block" style="margin-top:14px" @click="createCollection">创建</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" @click="colDlg = false">取消</button>
+          <button class="btn btn-primary btn-sm" @click="createCollection">创建</button>
+        </div>
       </div>
     </div>
 
@@ -774,7 +861,10 @@ async function delCollection(c) {
           <div class="field"><label>Banner 图 URL（清空 = 移除）</label><input v-model="colEdit.banner" class="input" placeholder="/static/banners/summer.jpg"></div>
           <div class="field"><label>排序权重（小者靠前）</label><input v-model.number="colEdit.sort_order" class="input" type="number"></div>
         </div>
-        <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveColEdit">保存</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
+          <button class="btn btn-secondary btn-sm" @click="colEditDlg = false">取消</button>
+          <button class="btn btn-primary btn-sm" @click="saveColEdit">保存</button>
+        </div>
       </div>
     </div>
 
@@ -810,8 +900,22 @@ async function delCollection(c) {
             {{ i + 1 }}. {{ x.title }} ✕
           </span>
         </div>
-        <button class="btn btn-primary btn-block" @click="savePick">保存（替换现有 {{ pickOrigN }} 件）</button>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <button class="btn btn-secondary btn-sm" @click="pickDlg = false">取消</button>
+          <button class="btn btn-primary btn-sm" @click="savePick">保存（替换现有 {{ pickOrigN }} 件）</button>
+        </div>
       </div>
     </div>
+
+    <!-- 配商品保存确认（先关选择弹窗再确认） -->
+    <ConfirmDialog :open="pickConfirm" title="保存集合商品" :body="pickConfirmBody" confirm-text="保存" :busy="pickBusy" @confirm="doSavePick" @close="pickConfirm = false" />
+    <!-- 删除集合确认（危险操作） -->
+    <ConfirmDialog :open="delColDlg" title="删除集合" :body="delColBody" danger confirm-text="删除" :busy="delColBusy" @confirm="doDelCollection" @close="delColDlg = false" />
   </div>
 </template>
+
+<style scoped>
+/* 捆绑折扣双卡：宽屏左右并排，≤900px 单列堆叠 */
+.bundle-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+@media(max-width:900px){.bundle-grid{grid-template-columns:1fr}}
+</style>

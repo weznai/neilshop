@@ -4,18 +4,20 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { dt } from '../composables/format'
+import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 
 const items = ref([])
 const total = ref(0)
-const page = ref(1)
 const SIZE = 20
 const loaded = ref(false)
 const loadErr = ref(false)
 
-/* 筛选项（entity 集合与后端 AdminLog 写入方一致） */
-const f = reactive({ entity: '', action: '', admin_id: '', start: '', end: '' })
+/* 筛选项（entity 集合与后端 AdminLog 写入方一致）+ page 一并入 URL 同步 */
+const f = reactive({ entity: '', action: '', admin_id: '', start: '', end: '', page: 1 })
+useQuerySync(f, { nums: ['page'], defaults: { page: 1 } })
 
 const ENTITY_META = {
   order: '订单', return: '退货', exchange: '换货', product: '商品', variant: '变体',
@@ -43,9 +45,14 @@ const ACTION_TONE = {
   delete: 'tag-error', reject: 'tag-error', refund: 'tag-error',
 }
 const actClass = (a) => ACTION_TONE[a] || 'tag-done'
+/* action 输入联想：域内常见动作 */
+const ACTIONS = ['refund', 'publish', 'unpublish', 'ship', 'close', 'assign', 'reply', 'risk', 'upsert', 'approve', 'reject']
 
 /* entity 行跳转：按实体域映射到对应管理页（无映射的保持纯文本） */
 const ENT_ROUTE = {
+  order: () => ({ path: '/orders' }),
+  return: () => ({ path: '/returns', query: { tab: 'rma' } }),
+  exchange: () => ({ path: '/returns', query: { tab: 'exch' } }),
   product: (id) => ({ path: '/product-edit', query: { id } }),
   variant: (id) => ({ path: '/product-edit', query: { id } }),
   product_translation: (id) => ({ path: '/product-edit', query: { id } }),
@@ -58,7 +65,7 @@ const ENT_ROUTE = {
   member: () => ({ path: '/members' }),
   discount: () => ({ path: '/marketing' }),
   popup: () => ({ path: '/marketing' }),
-  setting: () => ({ path: '/marketing' }),
+  setting: () => ({ path: '/settings' }),
 }
 const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id) || null
 
@@ -81,22 +88,21 @@ async function load(p = 1) {
     const d = await req('GET', buildUrl(p))
     items.value = d.items || []
     total.value = d.total ?? 0
-    page.value = d.page || p
+    f.page = d.page || p
   } catch (e) {
     loadErr.value = true
     toast('审计日志加载失败：' + (e.message || ''), 'error')
   }
   loaded.value = true
 }
-onMounted(() => load(1))
+onMounted(() => load(f.page))
 
 function apply() { load(1) }
 function reset() {
-  Object.assign(f, { entity: '', action: '', admin_id: '', start: '', end: '' })
+  Object.assign(f, { entity: '', action: '', admin_id: '', start: '', end: '', page: 1 })
   load(1)
 }
 
-const fmtTime = (iso) => (iso || '').slice(0, 19).replace('T', ' ')
 const pad2 = (n) => String(n).padStart(2, '0')
 const fmtShort = (d) => `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 /* 含时刻的 ISO 串（末尾 Z/偏移保留原样，naive 按UTC理解） */
@@ -153,13 +159,13 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">审计日志</h1>
-      <span style="font-size:12.5px;color:var(--gray)">管理员操作记录 · 共 {{ total }} 条</span>
+      <h1 class="page-title">审计日志</h1>
+      <span class="page-sub">管理员操作记录 · 共 {{ total }} 条</span>
     </div>
   </div>
 
   <!-- 筛选栏 -->
-  <div class="card" style="padding:14px 16px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+  <div class="card filter-bar" style="padding:14px 16px;margin-bottom:14px;align-items:flex-end">
     <div class="field" style="margin:0">
       <label>实体</label>
       <select v-model="f.entity" class="input" style="width:130px" @change="apply">
@@ -169,7 +175,10 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
     </div>
     <div class="field" style="margin:0">
       <label>动作</label>
-      <input v-model="f.action" class="input" style="width:140px" placeholder="如 refund / publish" @keydown.enter="apply">
+      <input v-model="f.action" class="input" style="width:140px" list="log-actions" placeholder="如 refund / publish" @keydown.enter="apply">
+      <datalist id="log-actions">
+        <option v-for="a in ACTIONS" :key="a" :value="a"></option>
+      </datalist>
     </div>
     <div class="field" style="margin:0">
       <label>管理员 ID</label>
@@ -177,13 +186,13 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
     </div>
     <div class="field" style="margin:0">
       <label>开始日期</label>
-      <input v-model="f.start" class="input" style="width:150px" type="date">
+      <input v-model="f.start" class="input" style="width:150px" type="date" @change="apply">
     </div>
     <div class="field" style="margin:0">
       <label>结束日期</label>
-      <input v-model="f.end" class="input" style="width:150px" type="date">
+      <input v-model="f.end" class="input" style="width:150px" type="date" @change="apply">
     </div>
-    <button class="btn btn-primary btn-sm" style="height:36px" @click="apply">筛选</button>
+    <button class="btn btn-secondary btn-sm" style="height:36px" @click="apply">筛选</button>
     <button class="btn btn-ghost btn-sm" style="height:36px" @click="reset">重置</button>
   </div>
 
@@ -196,7 +205,7 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
       </tr></thead>
       <tbody>
         <tr v-for="l in items" :key="l.id" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:10px;white-space:nowrap;color:var(--gray)">{{ fmtTime(l.created_at) }}</td>
+          <td style="padding:10px;white-space:nowrap;color:var(--gray)">{{ dt(l.created_at) }}</td>
           <td style="white-space:nowrap">{{ adminName(l) }}</td>
           <td><span class="ent-badge" :style="badgeStyle(l.entity)">{{ entLabel(l.entity) }}</span></td>
           <td><span class="tag" :class="actClass(l.action)" style="font-size:11.5px">{{ l.action }}</span></td>
@@ -218,7 +227,7 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
       <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
     </EmptyState>
     <EmptyState v-else-if="!items.length" icon="🗒️" title="暂无匹配日志" sub="调整筛选条件后重试，或稍后再来看看" />
-    <Pagination embed :page="page" :pages="pages" :total="total" unit="条" @go="load" />
+    <Pagination embed :page="f.page" :pages="pages" :total="total" unit="条" @go="load" />
   </div>
 </template>
 

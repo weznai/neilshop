@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,6 +25,61 @@ const schedAt = ref('')
 const loadedSchedISO = ref(null)
 const prodSched = ref(false)
 const editing = ref(null)
+
+/* ===== 未保存变更跟踪：表单+定时一份基线；变体为即时保存，单独重置基线 ===== */
+const dirty = ref(false)
+const formLoaded = ref(false)
+const formSnap = ref('')
+const varSnap = ref('')
+const snapForm = () => JSON.stringify([form, schedAt.value])
+const snapVars = () => JSON.stringify(variants.value)
+function markClean() { formSnap.value = snapForm(); varSnap.value = snapVars(); dirty.value = false }
+function markVarsClean() { varSnap.value = snapVars(); checkDirty() }
+function checkDirty() {
+  if (!formLoaded.value) return /* 加载期间触发的 watch 一律跳过，防首载误判 dirty */
+  dirty.value = snapForm() !== formSnap.value || snapVars() !== varSnap.value
+}
+watch([form, schedAt], checkDirty, { deep: true })
+watch(variants, checkDirty, { deep: true })
+
+/* ===== 离开拦截：SPA 内弹 ConfirmDialog 暂停导航；刷新/关页走原生 beforeunload ===== */
+const leaveDlg = ref(false)
+let pendingNext = null
+onBeforeRouteLeave((to, from, next) => {
+  if (!dirty.value) { next(); return }
+  pendingNext = next
+  leaveDlg.value = true
+})
+function confirmLeave() {
+  leaveDlg.value = false
+  dirty.value = false
+  if (pendingNext) { const n = pendingNext; pendingNext = null; n() }
+}
+function cancelLeave() {
+  leaveDlg.value = false
+  if (pendingNext) { const n = pendingNext; pendingNext = null; n(false) }
+}
+function onUnload(e) {
+  if (!dirty.value) return
+  e.preventDefault()
+  e.returnValue = '' /* Chrome 等需 returnValue 才弹原生离开提示 */
+}
+
+/* 图片预览失败标记：URL 变化时重置 */
+const brokenHero = ref(false)
+const brokenImgs = reactive({})
+watch(() => form.hero_image, () => { brokenHero.value = false })
+watch(() => form.images.join('\n'), () => { Object.keys(brokenImgs).forEach((k) => delete brokenImgs[k]) })
+
+/* 长表单锚点导航 */
+const SECTIONS = [
+  { id: 'sec-base', label: '基本信息' },
+  { id: 'sec-pricing', label: '定价' },
+  { id: 'sec-variants', label: '变体' },
+  { id: 'sec-media', label: '媒体' },
+  { id: 'sec-i18n', label: '多语言' },
+]
+function jump(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' }) }
 
 const pad2 = (n) => String(n).padStart(2, '0')
 const fmtLocal = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
@@ -47,6 +103,7 @@ async function loadVariants(id) {
 }
 
 async function loadProduct(id) {
+  formLoaded.value = false /* 重载期间暂停 dirty 判定，防切换编辑时误报未保存 */
   try {
     const p = await req('GET', '/api/admin/catalog/products/' + id)
     Object.assign(form, {
@@ -61,22 +118,39 @@ async function loadProduct(id) {
     loadedSchedISO.value = p.scheduled ? new Date(asUTC(p.published_at)).toISOString() : null
     schedAt.value = loadedSchedISO.value ? fmtLocal(new Date(asUTC(p.published_at))) : ''
     variants.value = await loadVariants(id)
+    formLoaded.value = true
+    markClean()
     loadTranslations(id)
   } catch (e) { toast('商品加载失败：' + (e.message || ''), 'error') }
 }
 
 onMounted(async () => {
+  window.addEventListener('beforeunload', onUnload)
   try {
     cats.value = await req('GET', '/api/admin/catalog/categories')
     if (!pid.value && cats.value.length && !cats.value.some((c) => c.id === form.category_id)) form.category_id = cats.value[0].id
   } catch (_) { catsFailed.value = true; toast('分类加载失败，保存前请刷新重试', 'error') }
   if (pid.value) loadProduct(pid.value)
+  else { formLoaded.value = true; markClean() }
 })
+onBeforeUnmount(() => window.removeEventListener('beforeunload', onUnload))
 /* 新建→编辑切换（同路由 query 变化）时重新拉取 */
 watch(pid, (np, op) => { if (np && np !== op) loadProduct(np) })
 
 async function save() {
   if (!form.slug || !form.title) { toast('slug 与标题必填', 'error'); return }
+  /* 新建时 slug 格式：小写字母/数字/连字符（如 nova-set） */
+  if (!pid.value && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(form.slug)) { toast('slug 格式无效：仅小写字母、数字与连字符（如 nova-set）', 'error'); return }
+  /* 价格（单位：分）须为非负整数；划线价可空，且须高于最低价 */
+  for (const [k, label] of [['price_min', '最低价'], ['price_max', '最高价']]) {
+    const v = form[k]
+    if (v === null || v === '' || v === undefined || !Number.isInteger(Number(v)) || Number(v) < 0) { toast(label + '需为非负整数（单位：分）', 'error'); return }
+  }
+  const cap = form.compare_at_price
+  if (cap !== null && cap !== '' && cap !== undefined) {
+    if (!Number.isInteger(Number(cap)) || Number(cap) < 0) { toast('划线价需为非负整数（单位：分）', 'error'); return }
+    if (Number(cap) <= Number(form.price_min)) { toast('划线价应高于最低价', 'error'); return }
+  }
   if (!pid.value && !cats.value.length) { toast('分类未加载，无法保存，请刷新页面重试', 'error'); return }
   /* 价格倒挂直接阻止（不再静默纠正），由管理员修正后保存 */
   if (Number(form.price_max) < Number(form.price_min)) {
@@ -97,9 +171,11 @@ async function save() {
         prodSched.value = body.published_at ? new Date(body.published_at) > new Date() : false
       }
       toast('保存成功 ✓', 'success')
+      markClean()
     } else {
       const p = await req('POST', '/api/admin/catalog/products', body)
       toast('创建成功 ✓ 转编辑态', 'success')
+      markClean()
       router.replace({ path: '/product-edit', query: { id: p.id } })
     }
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
@@ -118,6 +194,7 @@ async function addVariant() {
     })
     newVar.option1 = ''
     variants.value = await loadVariants(pid.value)
+    markVarsClean()
     toast('变体已添加 ✓', 'success')
   } catch (e) {
     const d = e.data?.detail
@@ -129,6 +206,7 @@ async function toggleVar(v) {
   try {
     await req('PUT', '/api/admin/catalog/variants/' + v.id, { is_active: !v.is_active })
     v.is_active = !v.is_active
+    markVarsClean()
     toast(v.is_active ? '已启用' : '已停用', 'success')
   } catch (e) { toast('操作失败', 'error') }
 }
@@ -142,6 +220,7 @@ async function saveEdit() {
     const v = variants.value.find((x) => x.id === ed.id)
     if (v) { v.price = ed.price; v.safety_stock = ed.safety }
     editing.value = null
+    markVarsClean()
     toast('变体已更新 ✓', 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
@@ -186,11 +265,20 @@ async function saveTr() {
     loadTranslations(pid.value)
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
-async function delTr(t) {
-  if (!confirm(`删除${LOCALE_LABEL[t.locale] || t.locale}（${t.locale}）翻译？前台该语言将回退默认内容。`)) return
+/* 删除翻译改用 ConfirmDialog（危险操作） */
+const delDlgOpen = ref(false)
+const delTarget = ref(null)
+const delDlgBody = computed(() => {
+  const t = delTarget.value
+  return t ? `删除${LOCALE_LABEL[t.locale] || t.locale}（${t.locale}）翻译？前台该语言将回退默认内容。` : ''
+})
+function delTr(t) { delTarget.value = t; delDlgOpen.value = true }
+async function doDelTr() {
+  if (!delTarget.value) return
   try {
-    await req('DELETE', `/api/admin/catalog/products/${pid.value}/translations/${t.locale}`)
+    await req('DELETE', `/api/admin/catalog/products/${pid.value}/translations/${delTarget.value.locale}`)
     toast('已删除', 'success')
+    delDlgOpen.value = false
     loadTranslations(pid.value)
   } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
 }
@@ -199,8 +287,8 @@ async function delTr(t) {
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">{{ pid ? '编辑商品 #' + pid : '新建商品' }}</h1>
-      <span style="font-size:12.5px;color:var(--gray)">保存即生效 · 上架/下架在列表页操作</span>
+      <h1 class="page-title">{{ pid ? '编辑商品 #' + pid : '新建商品' }}</h1>
+      <span class="page-sub">保存即生效 · 上架/下架在列表页操作</span>
     </div>
     <div style="display:flex;gap:10px">
       <a v-if="pid" class="btn btn-secondary" :href="'/product?id=' + pid" target="_blank" rel="noopener">前台预览 ↗</a>
@@ -209,10 +297,14 @@ async function delTr(t) {
     </div>
   </div>
 
+  <div class="achips">
+    <button v-for="s in SECTIONS" :key="s.id" @click="jump(s.id)">{{ s.label }}</button>
+  </div>
+
   <div class="grid-2" style="align-items:start">
     <div style="display:grid;gap:16px">
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">基本信息</h3>
+      <div id="sec-base" class="card" style="padding:20px">
+        <div class="dhead"><h3 class="dtitle">基本信息</h3></div>
         <div class="field"><label>标题</label><input v-model="form.title" class="input"></div>
         <div v-if="!pid" class="field"><label>Slug</label><input v-model="form.slug" class="input" placeholder="nova-set"></div>
         <div v-else class="field"><label>Slug（不可改）</label><input :value="form.slug" class="input" disabled style="background:var(--rose-pale)"></div>
@@ -227,18 +319,18 @@ async function delTr(t) {
         <div class="field"><label>描述（Markdown）</label><textarea v-model="form.description_md" class="input" rows="6"></textarea></div>
       </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">定价（分）</h3>
+      <div id="sec-pricing" class="card" style="padding:20px">
+        <div class="dhead"><h3 class="dtitle">定价（分）</h3></div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-          <div class="field"><label>最低价</label><input v-model.number="form.price_min" class="input" type="number"></div>
-          <div class="field"><label>最高价</label><input v-model.number="form.price_max" class="input" type="number"></div>
-          <div class="field"><label>划线价</label><input v-model.number="form.compare_at_price" class="input" type="number"></div>
+          <div class="field"><label>最低价</label><input v-model.number="form.price_min" class="input" type="number" min="0" step="1"><p class="phint">≈ {{ money(form.price_min) }}</p></div>
+          <div class="field"><label>最高价</label><input v-model.number="form.price_max" class="input" type="number" min="0" step="1"><p class="phint">≈ {{ money(form.price_max) }}</p></div>
+          <div class="field"><label>划线价</label><input v-model.number="form.compare_at_price" class="input" type="number" min="0" step="1"><p v-if="form.compare_at_price" class="phint">≈ {{ money(form.compare_at_price) }}</p></div>
         </div>
         <p style="font-size:12px;color:var(--gray)">当前展示：{{ money(form.price_min) }}<span v-if="form.compare_at_price">（划线 {{ money(form.compare_at_price) }}）</span></p>
       </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">变体管理</h3>
+      <div id="sec-variants" class="card" style="padding:20px">
+        <div class="dhead"><h3 class="dtitle">变体管理</h3></div>
         <div v-if="variants.length" style="display:grid;gap:8px;margin-bottom:14px">
           <div v-for="v in variants" :key="v.id" style="display:flex;gap:12px;align-items:center;font-size:13px;padding:8px 0;border-bottom:1px solid var(--gray-light)">
             <b>{{ v.option1_value }}</b>
@@ -275,13 +367,14 @@ async function delTr(t) {
     </div>
 
     <div style="display:grid;gap:16px">
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">媒体</h3>
+      <div id="sec-media" class="card" style="padding:20px">
+        <div class="dhead"><h3 class="dtitle">媒体</h3></div>
         <div class="field">
           <label>主图 URL</label>
           <input v-model="form.hero_image" class="input" placeholder="https://…">
           <div style="margin-top:10px;border-radius:12px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);max-width:200px">
-            <img v-if="form.hero_image" :src="form.hero_image" alt="主图预览" style="width:100%;height:100%;object-fit:cover">
+            <img v-if="form.hero_image && !brokenHero" :src="form.hero_image" alt="主图预览" style="width:100%;height:100%;object-fit:cover" @error="brokenHero = true">
+            <div v-else-if="brokenHero" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--gray-light);color:var(--gray);font-size:12px">图片加载失败</div>
           </div>
         </div>
         <div class="field">
@@ -291,7 +384,8 @@ async function delTr(t) {
           <p style="font-size:11.5px;color:var(--gray)">{{ form.images.length }}/8</p>
           <div v-if="form.images.length" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px">
             <div v-for="(img, i) in form.images" :key="i" style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--rose-pale)">
-              <img :src="img" :alt="'图 ' + (i + 1)" style="width:100%;height:100%;object-fit:cover">
+              <img v-if="!brokenImgs[i]" :src="img" :alt="'图 ' + (i + 1)" style="width:100%;height:100%;object-fit:cover" @error="brokenImgs[i] = true">
+              <div v-else style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--gray-light);color:var(--gray);font-size:11px">图片加载失败</div>
               <button style="position:absolute;top:3px;right:3px;width:18px;height:18px;border:none;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:18px;padding:0;cursor:pointer" :title="'删除第 ' + (i + 1) + ' 张'" @click="form.images.splice(i, 1)">×</button>
             </div>
           </div>
@@ -300,9 +394,11 @@ async function delTr(t) {
       </div>
 
       <div v-if="pid" class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">定时上架
-          <span v-if="prodSched" class="tag tag-sched" style="margin-left:6px">已定时</span>
-        </h3>
+        <div class="dhead">
+          <h3 class="dtitle">定时上架
+            <span v-if="prodSched" class="tag tag-sched">已定时</span>
+          </h3>
+        </div>
         <div class="field">
           <label>上架时间（本地时区）</label>
           <input v-model="schedAt" class="input" type="datetime-local">
@@ -317,9 +413,9 @@ async function delTr(t) {
       </div>
 
       <!-- 多语言（仅编辑态；GET 返回裸数组，locale 徽标 + 标题 + 编辑/删除） -->
-      <div v-if="pid" class="card" style="padding:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="font-size:15px">多语言</h3>
+      <div v-if="pid" id="sec-i18n" class="card" style="padding:20px">
+        <div class="dhead">
+          <h3 class="dtitle">多语言</h3>
           <button class="btn btn-secondary btn-sm" @click="newTr">＋ 添加语言</button>
         </div>
         <p v-if="!translations.length" style="font-size:12.5px;color:var(--gray)">暂无翻译，前台将展示上方主商品信息。</p>
@@ -332,7 +428,7 @@ async function delTr(t) {
       </div>
 
       <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">组织</h3>
+        <div class="dhead"><h3 class="dtitle">组织</h3></div>
         <div class="field"><label>标签（逗号分隔）</label>
           <input :value="form.tags.join(',')" class="input" @input="form.tags = $event.target.value.split(',').map((s) => s.trim()).filter(Boolean)">
         </div>
@@ -346,8 +442,12 @@ async function delTr(t) {
     </div>
   </div>
 
-  <!-- 多语言添加/编辑弹层 -->
-  <div v-if="trDlg" class="modal open" @click.self="trDlg = false">
+  <div style="display:flex;justify-content:center;margin-top:8px">
+    <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="save">保存</button>
+  </div>
+
+  <!-- 多语言添加/编辑弹层（不点遮罩关闭，防误触丢稿，仅右上 × 可关） -->
+  <div v-if="trDlg" class="modal open">
     <div class="modal-box" style="max-width:520px">
       <button class="modal-x" @click="trDlg = false">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">🌐 {{ trEditing ? '编辑' : '添加' }}翻译</h3>
@@ -365,4 +465,16 @@ async function delTr(t) {
       <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveTr">保存</button>
     </div>
   </div>
+
+  <!-- 离开确认（SPA 内未保存拦截） -->
+  <ConfirmDialog :open="leaveDlg" title="未保存的修改" body="有未保存的修改，确认离开？" danger confirm-text="离开" @confirm="confirmLeave" @close="cancelLeave" />
+  <!-- 删除翻译确认 -->
+  <ConfirmDialog :open="delDlgOpen" title="删除翻译" :body="delDlgBody" danger confirm-text="删除" @confirm="doDelTr" @close="delDlgOpen = false" />
 </template>
+
+<style scoped>
+.achips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.achips button{padding:5px 12px;font-size:12.5px;border:1px solid var(--gray-light);background:#fff;border-radius:999px;color:var(--gray);cursor:pointer}
+.achips button:hover{color:var(--plum);border-color:var(--plum)}
+.phint{font-size:11.5px;color:var(--gray);margin-top:3px}
+</style>

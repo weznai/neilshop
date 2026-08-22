@@ -12,8 +12,8 @@ const guard = ref(true)
 const guardErr = ref('')
 const collapsed = ref(localStorage.getItem('gm_side_min') === '1')
 
-/* 当前登录人角色 badge（UserRole：9=超管 3=仓库 2=运营 1=客服） */
-const ROLE_BADGE = { 9: '超管', 3: '仓库', 2: '运营', 1: '客服' }
+/* 当前登录人角色 badge（UserRole：9=超管 3=仓库 2=运营；1=客服被守卫拒绝，不进后台） */
+const ROLE_BADGE = { 9: '超管', 3: '仓库', 2: '运营' }
 const roleBadge = computed(() => ROLE_BADGE[session.role] || '管理')
 
 /* 导航高亮：详情页别名 + 前缀匹配（/order-detail → 订单管理，/product-edit → 商品管理） */
@@ -40,7 +40,8 @@ const P = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
   panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
 }
-/* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营），数组 = [图标, 名称, 路径] */
+/* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营），数组 = [图标, 名称, 路径]；
+ * 营销工具/内容管理归「运营」组，与会员/日志/设置并列 */
 const ITEMS = [
   ['dash', '数据看板', '/'],
   '交易',
@@ -50,9 +51,9 @@ const ITEMS = [
   '商品',
   ['products', '商品管理', '/products'],
   ['inventory', '库存中心', '/inventory'],
+  '运营',
   ['promo', '营销工具', '/marketing'],
   ['content', '内容管理', '/content'],
-  '运营',
   ['members', '会员管理', '/members'],
   ['logs', '审计日志', '/logs'],
   ['settings', '系统设置', '/settings'],

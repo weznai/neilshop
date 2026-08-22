@@ -1,7 +1,7 @@
 """客服域 Pydantic 输入模型"""
 
 from email_validator import EmailNotValidError, EmailSyntaxError, validate_email
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _email_format(value: str) -> str:
@@ -40,6 +40,18 @@ class ReplyIn(BaseModel):
 
 class CloseIn(BaseModel):
     close_reason: int | None = None
+
+
+class TicketStatusIn(BaseModel):
+    """工单状态流转：status 仅允许 2/3/4（0/1 态只能经回复进入处理流）"""
+    status: int = Field(ge=2, le=4)
+    close_reason: int | None = None
+
+    @model_validator(mode="after")
+    def _close_reason_required(self):
+        if self.status == 4 and self.close_reason is None:
+            raise ValueError("close_reason required when status is 4")
+        return self
 
 
 class AssignIn(BaseModel):

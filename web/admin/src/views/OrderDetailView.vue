@@ -3,6 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { money, dt } from '../composables/format'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,10 +21,10 @@ const OSTATUS = {
   3: ['已发货', 'tag-ship'], 4: ['已送达', 'tag-ship'], 5: ['已完成', 'tag-done'],
   8: ['已取消', 'tag-error'], 9: ['已退款', 'tag-error'],
 }
-/* PaymentStatus：0待支付 1成功 2失败 3已退款 4部分退款 */
+/* PaymentStatus：0待支付 1成功 2失败 3已退款 4部分退款（退款语义统一红） */
 const PSTATUS = {
   0: ['待支付', 'tag-pending'], 1: ['支付成功', 'tag-paid'], 2: ['支付失败', 'tag-error'],
-  3: ['已退款', 'tag-done'], 4: ['部分退款', 'tag-ship'],
+  3: ['已退款', 'tag-error'], 4: ['部分退款', 'tag-ship'],
 }
 /* ShipmentStatus：0待打单 1已打单待拣货 2待交接 3运输中 4送达 5异常 6面单作废 */
 const SHSTATUS = {
@@ -52,6 +54,14 @@ const TL_DOT = {
 }
 const dotCls = (ev) => TL_DOT[ev] || ''
 
+/* 时间线折叠：>30 条默认只显示前 30，底部按钮展开/收起 */
+const TL_LIMIT = 30
+const tlOpen = ref(false)
+const tlItems = computed(() => {
+  const t = o.value?.timeline || []
+  return t.length > TL_LIMIT && !tlOpen.value ? t.slice(0, TL_LIMIT) : t
+})
+
 onMounted(async () => {
   const no = route.query.no
   if (!no) { err.value = '缺少订单号'; return }
@@ -59,8 +69,7 @@ onMounted(async () => {
   catch (e) { err.value = (e.status === 404 ? '订单不存在' : '加载失败 ' + (e.message || '')) }
 })
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-const dt = (iso) => (iso || '').replace('T', ' ').slice(0, 16)
+/* money/dt 统一走 format.js（dt 补 Z 修时区） */
 const reload = async () => { o.value = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(route.query.no)) }
 async function doReload() {
   try { await reload() ; toast('已刷新', 'success') } catch (e) { toast('刷新失败：' + (e.message || ''), 'error') }
@@ -141,37 +150,45 @@ function eventText(t) {
 }
 
 const refundDlg = ref(false)
-const refundAmt = ref(0)
+const refundAmt = ref(0) /* 美元数值，提交时 ×100 转分 */
 const refundReason = ref('')
 /* 发货弹窗（替代 prompt：可选承运商，与订单列表一致） */
 const shipDlg = ref(false)
+const deliverDlg = ref(false)
 const carrier = ref('USPS')
 const tracking = ref('')
+/* 写操作提交防抖：请求期间弹窗按钮 busy+disabled，双击不会重复 POST */
+const submitting = ref(false)
 
-async function act(type) {
-  const no = o.value.order_no
+function act(type) {
+  if (type === 'ship') {
+    tracking.value = ''
+    carrier.value = 'USPS'
+    shipDlg.value = true
+  } else if (type === 'deliver') {
+    deliverDlg.value = true
+  } else if (type === 'refund') {
+    if (refundable.value <= 0) { toast('暂无可退余额（无成功支付或已全额退款）', 'error'); return }
+    refundAmt.value = refundable.value / 100
+    refundReason.value = ''
+    refundDlg.value = true
+  }
+}
+async function deliverConfirm() {
+  if (submitting.value) return
+  submitting.value = true
   try {
-    if (type === 'ship') {
-      tracking.value = ''
-      carrier.value = 'USPS'
-      shipDlg.value = true
-      return
-    } else if (type === 'deliver') {
-      if (!confirm(`标记 ${no} 已妥投？`)) return
-      await req('POST', `/api/admin/trade/orders/${no}/mark-delivered`)
-    } else if (type === 'refund') {
-      if (refundable.value <= 0) { toast('暂无可退余额（无成功支付或已全额退款）', 'error'); return }
-      refundAmt.value = refundable.value
-      refundReason.value = ''
-      refundDlg.value = true
-      return
-    }
-    toast('操作成功 ✓', 'success')
+    await req('POST', `/api/admin/trade/orders/${o.value.order_no}/mark-delivered`)
+    toast('已标记妥投 ✓', 'success')
+    deliverDlg.value = false
     await reload()
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  submitting.value = false
 }
 async function shipConfirm() {
+  if (submitting.value) return
   if (!tracking.value.trim()) { toast('请填写物流单号', 'error'); return }
+  submitting.value = true
   try {
     await req('POST', `/api/admin/trade/orders/${o.value.order_no}/ship`, {
       carrier: carrier.value, tracking_no: tracking.value.trim(),
@@ -180,13 +197,17 @@ async function shipConfirm() {
     shipDlg.value = false
     await reload()
   } catch (e) { toast('发货失败：' + (e.data?.detail || e.message), 'error') }
+  submitting.value = false
 }
 async function refundConfirm() {
-  const amt = Math.round(Number(refundAmt.value))
-  if (!amt || amt <= 0 || amt > refundable.value) {
+  if (submitting.value) return
+  /* 美元输入 → 四舍五入到分，校验 $0.01 ~ 可退余额 */
+  const amt = Math.round(Number(refundAmt.value) * 100)
+  if (!Number.isFinite(amt) || amt < 1 || amt > refundable.value) {
     toast(`退款金额需在 $0.01 ~ ${money(refundable.value)}（可退余额）之间`, 'error')
     return
   }
+  submitting.value = true
   try {
     await req('POST', `/api/admin/trade/orders/${o.value.order_no}/refund`, {
       amount_cents: amt, reason: refundReason.value || 'ops-refund',
@@ -202,6 +223,7 @@ async function refundConfirm() {
     else if (msg === 'already_fully_refunded') msg = '该订单已全额退款'
     toast('退款失败：' + msg, 'error')
   }
+  submitting.value = false
 }
 </script>
 
@@ -374,7 +396,7 @@ async function refundConfirm() {
         <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
       </div>
       <div class="tl">
-        <div v-for="(t, i) in o.timeline || []" :key="i" class="tl-item">
+        <div v-for="(t, i) in tlItems" :key="i" class="tl-item">
           <i class="tl-dot" :class="dotCls(t.event)"></i>
           <div class="tl-head">
             <b>{{ EVENT_LABEL[t.event] || t.event }}</b>
@@ -384,6 +406,7 @@ async function refundConfirm() {
           <div v-if="eventText(t)" class="tl-text">{{ eventText(t) }}</div>
         </div>
       </div>
+      <button v-if="(o.timeline || []).length > TL_LIMIT" class="tl-more" @click="tlOpen = !tlOpen">{{ tlOpen ? '收起' : `展开全部 (${o.timeline.length})` }}</button>
       <div v-if="!(o.timeline || []).length" class="empty-line">📭 暂无时间线记录</div>
     </div>
   </template>
@@ -404,9 +427,20 @@ async function refundConfirm() {
         <label>物流单号</label>
         <input v-model="tracking" class="input" placeholder="9400…">
       </div>
-      <button class="btn btn-primary btn-block" style="margin-top:12px" @click="shipConfirm">确认发货</button>
+      <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="submitting" @click="shipConfirm">{{ submitting ? '发货中…' : '确认发货' }}</button>
     </div>
   </div>
+
+  <!-- 妥投确认弹窗 -->
+  <ConfirmDialog
+    :open="deliverDlg"
+    title="标记妥投"
+    :body="`确认标记 ${o?.order_no} 已妥投？`"
+    confirm-text="确认妥投"
+    :busy="submitting"
+    @confirm="deliverConfirm"
+    @close="deliverDlg = false"
+  />
 
   <!-- 退款弹窗 -->
   <div v-if="refundDlg" class="modal open" @click.self="refundDlg = false">
@@ -418,11 +452,11 @@ async function refundConfirm() {
         （按最新可退支付计算）。全额退款将回补库存、作废本单积分并恢复礼品卡抵扣。
       </p>
       <div class="field">
-        <label>退款金额（分）<span style="color:var(--gray);font-weight:400">≈ {{ money(refundAmt) }}</span></label>
-        <input v-model.number="refundAmt" class="input" type="number" min="1" :max="refundable">
+        <label>退款金额（美元）</label>
+        <input v-model.number="refundAmt" class="input" type="number" step="0.01" min="0.01" :max="refundable / 100">
       </div>
       <div class="field"><label>原因</label><input v-model="refundReason" class="input" placeholder="ops-refund"></div>
-      <button class="btn btn-primary btn-block" style="margin-top:12px" @click="refundConfirm">确认退款</button>
+      <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="submitting" @click="refundConfirm">{{ submitting ? '退款中…' : '确认退款' }}</button>
     </div>
   </div>
 </template>
@@ -478,12 +512,6 @@ async function refundConfirm() {
 .hero-refund{color:var(--error)}
 .hero-refund:hover{background:var(--pale-error)}
 
-/* ===== 卡片标题（渐变竖标，与看板一致） ===== */
-.dhead{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
-.dtitle{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}
-.dtitle::before{content:"";width:4px;height:16px;border-radius:2px;background:linear-gradient(180deg,var(--rose),var(--plum));flex:none}
-.item-cnt{font-size:12px;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:2px 10px;white-space:nowrap}
-
 /* ===== 页面骨架：主栏 1.6fr / 侧栏 1fr，支付物流并排，时间线通栏 ===== */
 .od-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start;margin-top:16px}
 .duo{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;align-items:start}
@@ -529,13 +557,11 @@ async function refundConfirm() {
 .tl-actor{font-size:10.5px;font-weight:700;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:1px 8px}
 .tl-time{font-size:11.5px;color:var(--gray);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tl-text{color:var(--gray);font-size:12.5px;margin-top:3px;line-height:1.6}
+/* 展开/收起全部（>30 条折叠） */
+.tl-more{background:none;border:none;cursor:pointer;padding:2px 0;font-size:12.5px;font-weight:600;color:var(--plum)}
+.tl-more:hover{text-decoration:underline}
 
-/* ===== 键值行 ===== */
-.kv{display:grid;gap:2px}
-.kv-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
-.kv-row:last-child{border-bottom:none}
-.kv-row>span:first-child{color:var(--gray);flex:none}
-.kv-val{text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* ===== 键值行（.kv/.kv-row/.kv-val 已全局化） ===== */
 .kv-sub{font-style:normal;color:var(--gray);font-size:12px}
 
 /* ===== 客户留言 ===== */
@@ -561,8 +587,7 @@ async function refundConfirm() {
 .addr b{font-size:13.5px}
 .addr p{color:var(--gray)}
 
-/* ===== 空态 / 入场动画 ===== */
-.empty-line{color:var(--gray);font-size:13px;padding:8px 0}
+/* ===== 入场动画 ===== */
 .od-card{animation:odRise .45s ease-out backwards}
 @keyframes odRise{from{opacity:0;transform:translateY(10px)}}
 

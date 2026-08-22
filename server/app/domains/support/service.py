@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.db import utcnow
 from app.models import AdminLog, Ticket, TicketMessage, User
 from app.domains.support import repository as repo
-from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TicketCreateIn, TicketMessageIn
+from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TicketCreateIn, TicketMessageIn, TicketStatusIn
 
 
 def log_admin(db: Session, admin: User, action: str, entity: str, entity_id: int, diff: dict | None = None):
@@ -109,7 +109,7 @@ def list_templates(db: Session, category: int | None) -> list[dict]:
 # ===== 后台：工单工作台 =====
 
 
-def _ticket_admin_dict(t: Ticket) -> dict:
+def _ticket_admin_dict(t: Ticket, admin_names: dict[int, str] | None = None) -> dict:
     return {
         "id": t.id,
         "ticket_no": t.ticket_no,
@@ -120,10 +120,17 @@ def _ticket_admin_dict(t: Ticket) -> dict:
         "subject": t.subject,
         "status": t.status,
         "assignee_admin_id": t.assignee_admin_id,
+        "assignee_name": admin_names.get(t.assignee_admin_id) if (t.assignee_admin_id and admin_names) else None,
         "first_reply_at": t.first_reply_at,
         "closed_at": t.closed_at,
         "created_at": t.created_at,
     }
+
+
+def _assignee_names(db: Session, tickets: list[Ticket]) -> dict[int, str]:
+    """列表/详情共用：按页内 assignee 批量取姓名（未指派/查不到 → 空 dict，dict 取值 None）"""
+    ids = {t.assignee_admin_id for t in tickets if t.assignee_admin_id}
+    return repo.admin_names_by_ids(db, ids)
 
 
 def _get_ticket(db: Session, ticket_no: str) -> Ticket:
@@ -133,10 +140,14 @@ def _get_ticket(db: Session, ticket_no: str) -> Ticket:
     return t
 
 
-def admin_tickets(db: Session, statuses: list[int] | None, category: int | None, q: str | None, page: int, size: int) -> dict:
-    query = repo.admin_tickets_query(db, statuses, category, q)
+def admin_tickets(
+    db: Session, statuses: list[int] | None, category: int | None, q: str | None,
+    page: int, size: int, assignee: int | None = None,
+) -> dict:
+    query = repo.admin_tickets_query(db, statuses, category, q, assignee)
     rows, total = repo.page(query, page, size)
-    return {"items": [_ticket_admin_dict(t) for t in rows], "total": total, "page": page, "size": size}
+    names = _assignee_names(db, rows)
+    return {"items": [_ticket_admin_dict(t, names) for t in rows], "total": total, "page": page, "size": size}
 
 
 def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict:
@@ -152,7 +163,7 @@ def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict
     log_admin(db, admin, "reply", "ticket", t.id, {"status": t.status})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t)
+    return _ticket_admin_dict(t, _assignee_names(db, [t]))
 
 
 def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict:
@@ -167,7 +178,7 @@ def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict
     log_admin(db, admin, "close", "ticket", t.id, {"status": 4, "close_reason": body.close_reason})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t)
+    return _ticket_admin_dict(t, _assignee_names(db, [t]))
 
 
 def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> dict:
@@ -176,4 +187,22 @@ def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> di
     log_admin(db, admin, "assign", "ticket", t.id, {"admin_id": body.admin_id})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t)
+    return _ticket_admin_dict(t, _assignee_names(db, [t]))
+
+
+# 状态机：仅允许 1→2/3/4、2→3/4、3→4（0/1 态只能经回复进入，4 已关闭为终态）
+_ALLOWED_TRANSITIONS = {(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)}
+
+
+def admin_set_status(db: Session, admin: User, ticket_no: str, body: TicketStatusIn) -> dict:
+    t = _get_ticket(db, ticket_no)
+    if (t.status, body.status) not in _ALLOWED_TRANSITIONS:
+        raise HTTPException(status_code=409, detail="invalid_status_transition")
+    t.status = body.status
+    if body.status == 4:
+        t.closed_at = utcnow()
+        t.close_reason = body.close_reason
+    log_admin(db, admin, "status", "ticket", t.id, {"status": body.status, "close_reason": body.close_reason})
+    db.commit()
+    db.refresh(t)
+    return _ticket_admin_dict(t, _assignee_names(db, [t]))

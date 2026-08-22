@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.domains.trade.schemas import (
-    RefundRequest, ShipRequest, ShippingRateIn, ShippingRateUpdateIn,
+    NoteIn, RefundRequest, ShipRequest, ShippingRateIn, ShippingRateUpdateIn,
     StockAdjustRequest,
 )
 from app.models import Order, Rma, Shipment, ShippingRate, User
@@ -282,6 +282,48 @@ def refund_order(
     result = apply_refund(db, order, amount, reason=reason, actor="admin", admin=admin)
     db.commit()
     return {"order_no": order.order_no, "order_status": order.status, **result}
+
+
+def cancel_order(db: Session, admin: User, order_no: str) -> dict:
+    """后台取消待支付订单：CAS 抢占（WHERE status=0，与支付回调/超时关单互斥）
+    + 库存/积分/礼品卡回补，回补路径与用户侧取消一致。"""
+    order = _get_order(db, order_no)
+    if order.status != 0:
+        raise HTTPException(status_code=409, detail="only_pending_can_cancel")
+    now = utcnow()
+    if repo.claim_order_canceled(db, order.id, now, "admin") == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail="only_pending_can_cancel")
+    order.status = 8
+    order.cancel_reason = "admin"
+    order.canceled_at = now
+    for item in repo.order_items(db, order.id):
+        repo.release_stock(db, item.variant_id, item.qty)
+        repo.add_stock_movement(
+            db, variant_id=item.variant_id, change=item.qty,
+            stock_after=repo.stock_of(db, item.variant_id),
+            type=4, ref_type="order", ref_id=order.id,
+        )
+    # 已用积分返还（points_used=0 自动跳过，同单幂等）
+    points_svc.refund_return(db, order, order.user_id, order.points_used)
+    # 礼品卡扣款回补（MVP 下单即扣；无 change_type=3 流水时为空操作）
+    _refund_giftcard_debit(db, order)
+    _timeline(db, order.id, "status_changed", actor="admin", detail={
+        "from": 0, "to": 8, "reason": "admin",
+    })
+    _admin_log(db, admin, "cancel", "order", order.id, {"from": 0, "to": 8})
+    db.commit()
+    return {"ok": True}
+
+
+def add_order_note(db: Session, admin: User, order_no: str, body: NoteIn) -> dict:
+    """后台订单备注：仅落 order_timeline（note_added），不改下单备注列"""
+    order = _get_order(db, order_no)
+    _timeline(db, order.id, "note_added", actor="admin", detail={"text": body.text})
+    _admin_log(db, admin, "note", "order", order.id, {"text": body.text})
+    db.commit()
+    return {"ok": True}
 
 
 def list_rmas(

@@ -74,6 +74,10 @@ class RefundRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class NoteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
 class StockAdjustRequest(BaseModel):
     variant_id: int
     change: int

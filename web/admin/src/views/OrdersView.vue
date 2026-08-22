@@ -5,6 +5,7 @@ import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
+import { dt } from '../composables/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -78,12 +79,7 @@ onMounted(() => { initFromQuery(); load() })
 function tab(sv) { status.value = sv; page.value = 1; load() }
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-const time = (iso) => {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  const p = (x) => String(x).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+/* 时间统一走 format.js 的 dt（补 Z 修时区） */
 
 /* 当前页前端排序：三态切换（无 → 升 → 降 → 无），空值恒沉底 */
 const sort = reactive({ key: '', dir: 1 })
@@ -110,15 +106,20 @@ const shipDlg = ref(null) /* {order_no} */
 const carrier = ref('USPS')
 const tracking = ref('')
 async function ship(o) { shipDlg.value = o; tracking.value = ''; carrier.value = 'USPS' }
+/* 提交防抖：请求期间按钮 busy+disabled，双击不会重复 POST */
+const shipSubmitting = ref(false)
 async function shipConfirm() {
+  if (shipSubmitting.value) return
   const o = shipDlg.value
   if (!tracking.value.trim()) { toast('请填写物流单号', 'error'); return }
+  shipSubmitting.value = true
   try {
     await req('POST', `/api/admin/trade/orders/${o.order_no}/ship`, { carrier: carrier.value, tracking_no: tracking.value.trim() })
     toast(`${o.order_no} 已发货 ✓`, 'success')
     shipDlg.value = null
     load()
   } catch (e) { toast('发货失败：' + (e.data?.detail || e.message), 'error') }
+  shipSubmitting.value = false
 }
 
 const exporting = ref(false)
@@ -150,7 +151,7 @@ async function exportCsv() {
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
     }
     const rows = [['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '留言'],
-      ...all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.[0], SHSTATUS[o.shipping_status]?.[0], time(o.placed_at), o.paid_at ? time(o.paid_at) : '', o.note || ''])]
+      ...all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.[0], SHSTATUS[o.shipping_status]?.[0], dt(o.placed_at), o.paid_at ? dt(o.paid_at) : '', o.note || ''])]
     const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
     const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
     const a = document.createElement('a')
@@ -167,10 +168,10 @@ async function exportCsv() {
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">订单管理
+      <h1 class="page-title">订单管理
         <span v-if="refreshing" style="font-size:12px;color:var(--gray);font-weight:400;margin-left:6px">⟳ 刷新中…</span>
       </h1>
-      <span style="font-size:12.5px;color:var(--gray)">共 {{ total }} 单<template v-if="statusLabel"> · 筛选：{{ statusLabel }}</template><template v-if="q.trim()"> · 关键词“{{ q.trim() }}”</template></span>
+      <span class="page-sub">共 {{ total }} 单<template v-if="statusLabel"> · 筛选：{{ statusLabel }}</template><template v-if="q.trim()"> · 关键词“{{ q.trim() }}”</template></span>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <select v-model.number="perPage" class="input" style="width:auto;height:36px;font-size:13px" @change="page = 1; load()">
@@ -215,8 +216,8 @@ async function exportCsv() {
           <td><b style="color:var(--plum)">{{ money(o.grand_total) }}</b></td>
           <td><span class="tag" :class="OSTATUS[o.status]?.[1]">{{ OSTATUS[o.status]?.[0] }}</span></td>
           <td><span class="tag" :class="SHSTATUS[o.shipping_status]?.[1] || 'tag-pending'" :title="'shipping_status: ' + o.shipping_status">{{ SHSTATUS[o.shipping_status]?.[0] || '—' }}</span></td>
-          <td style="color:var(--gray)">{{ time(o.placed_at) }}</td>
-          <td style="color:var(--gray)">{{ time(o.paid_at) }}</td>
+          <td style="color:var(--gray)">{{ dt(o.placed_at) || '—' }}</td>
+          <td style="color:var(--gray)">{{ dt(o.paid_at) || '—' }}</td>
           <td style="text-align:right;white-space:nowrap">
             <router-link class="btn btn-secondary btn-sm" :to="{ path: '/order-detail', query: { no: o.order_no } }">详情</router-link>
             <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" style="margin-left:6px" @click="ship(o)">📦 发货</button>
@@ -246,7 +247,7 @@ async function exportCsv() {
         <label>物流单号</label>
         <input v-model="tracking" class="input" placeholder="9400…">
       </div>
-      <button class="btn btn-primary btn-block" style="margin-top:12px" @click="shipConfirm">确认发货</button>
+      <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="shipSubmitting" @click="shipConfirm">{{ shipSubmitting ? '发货中…' : '确认发货' }}</button>
     </div>
   </div>
 </template>

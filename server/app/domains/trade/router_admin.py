@@ -10,7 +10,7 @@ from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.trade import service_admin, service_exchanges
 from app.domains.trade.schemas import (
-    ExchangeRejectRequest, RefundRequest, ShipRequest, ShippingRateIn,
+    ExchangeRejectRequest, NoteIn, RefundRequest, ShipRequest, ShippingRateIn,
     ShippingRateUpdateIn, StockAdjustRequest,
 )
 from app.models import User
@@ -53,6 +53,16 @@ def refund_order(
     db: Session = Depends(get_db),
 ):
     return service_admin.refund_order(db, admin, order_no, body)
+
+
+@router.post("/orders/{order_no}/cancel")
+def cancel_order(order_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service_admin.cancel_order(db, admin, order_no)
+
+
+@router.post("/orders/{order_no}/note")
+def add_order_note(order_no: str, body: NoteIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service_admin.add_order_note(db, admin, order_no, body)
 
 
 @router.get("/rmas")

@@ -122,14 +122,29 @@ def low_stock_top_rows(db: Session, limit: int = 5) -> list:
 # ===== 会员管理 =====
 
 
-def members_query(db: Session, q: str | None, tier: int | None) -> Query:
+# 会员排序白名单：points/total_spent 升降序，id 倒序作稳定分页的次序键
+_MEMBER_SORTS = {
+    "points": (User.points.asc(), User.id.desc()),
+    "-points": (User.points.desc(), User.id.desc()),
+    "total_spent": (User.total_spent.asc(), User.id.desc()),
+    "-total_spent": (User.total_spent.desc(), User.id.desc()),
+}
+
+
+def members_query(
+    db: Session, q: str | None, tier: int | None, sort: str | None = None,
+) -> Query:
     query = db.query(User).filter(User.role == 0)
     if q:
         like = f"%{q}%"
         query = query.filter(or_(User.email.ilike(like), User.name.ilike(like)))
     if tier is not None:
         query = query.filter(User.tier == tier)
-    return query.order_by(User.id.desc())
+    order = _MEMBER_SORTS.get(sort or "")
+    if order is None:
+        # 非法/缺省排序走默认 id 倒序
+        return query.order_by(User.id.desc())
+    return query.order_by(*order)
 
 
 def member_by_id(db: Session, user_id: int) -> User | None:

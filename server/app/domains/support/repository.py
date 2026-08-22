@@ -34,16 +34,29 @@ def messages_asc(db: Session, ticket_id: int) -> list[TicketMessage]:
     )
 
 
-def admin_tickets_query(db: Session, statuses: list[int] | None, category: int | None, q: str | None) -> Query:
+def admin_tickets_query(
+    db: Session, statuses: list[int] | None, category: int | None, q: str | None,
+    assignee: int | None = None,
+) -> Query:
     query = db.query(Ticket)
     if statuses:
         query = query.filter(Ticket.status.in_(statuses))
     if category is not None:
         query = query.filter(Ticket.category == category)
+    if assignee is not None:
+        query = query.filter(Ticket.assignee_admin_id == assignee)
     if q:
         like = f"%{q}%"
         query = query.filter(or_(Ticket.email.ilike(like), Ticket.ticket_no.ilike(like)))
     return query.order_by(Ticket.priority.asc(), Ticket.created_at.desc(), Ticket.id.desc())
+
+
+def admin_names_by_ids(db: Session, ids: set[int]) -> dict[int, str]:
+    """工单指派人姓名回填用批量查询（避免逐行查用户；name 为空回退 email）"""
+    if not ids:
+        return {}
+    rows = db.query(User).filter(User.id.in_(ids)).all()
+    return {u.id: (u.name or u.email) for u in rows}
 
 
 def active_templates(db: Session, category: int | None) -> list[ReplyTemplate]:

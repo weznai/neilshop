@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { API_BASE, req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
+import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 
@@ -13,11 +14,15 @@ const page = ref(1)
 const SIZE = 50
 const loaded = ref(false)
 const loadErr = ref(false)
-const tab = ref('all')         /* all/new/processing/wait/closed */
 const cat = ref('')            /* '' = 全部分类 */
-const q = ref('')
+const mine = ref('')           /* '' = 全部；'1' = 我的工单（assignee=当前管理员 id） */
 
-const SSTATUS = { 0: ['新工单', 'tag-pending'], 1: ['处理中', 'tag-paid'], 2: ['等待客户', 'tag-pending'], 3: ['已解决', 'tag-done'], 4: ['已关闭', 'tag-done'] }
+/* 筛选 URL 同步：tab/q 回填与写回 */
+const st = reactive({ tab: 'all', q: '' })
+useQuerySync(st, { defaults: { tab: 'all' } })
+
+/* 状态机：0 新工单 → 1 处理中（回复后）→ 2 等待客户 / 3 已解决 → 4 已关闭（带 close_reason） */
+const SSTATUS = { 0: ['新工单', 'tag-pending'], 1: ['处理中', 'tag-ship'], 2: ['等待客户', 'tag-pending'], 3: ['已解决', 'tag-paid'], 4: ['已关闭', 'tag-done'] }
 /* TicketCategory 1-6（core/enums.py）；priority 0=紧急 1=普通（models/support.py，列表按紧急在前排序） */
 const CATEGORY = { 1: '物流', 2: '质量', 3: '退换', 4: '账户', 5: '售前', 6: '其他' }
 const TABS = [
@@ -27,13 +32,18 @@ const TABS = [
   ['wait', '等待客户', 2],
   ['closed', '已关', '3,4'],
 ]
+/* CloseReason 枚举：1 解决 / 2 重复 / 3 无效 / 9 其他（status=4 时必传数字） */
+const CLOSE_REASON = [[1, '已解决'], [2, '重复工单'], [3, '无效工单'], [9, '其他']]
 
 const active = ref(null)      /* 列表行 */
 const thread = ref(null)      /* {messages: [{sender, content, created_at}]} */
 const reply = ref('')
 const busy = ref(false)
+const closeDlg = ref(false)
+const closeReason = ref(1)
+const closeBusy = ref(false)
 
-/* 仅 status===4（已关闭）锁定操作；3（已解决）保留「确认关闭」走 3→4 */
+/* 仅 status===4（已关闭）锁定操作；1 可转等待客户/已解决，3 走「确认关闭」3→4 */
 const isClosed = computed(() => !!active.value && active.value.status === 4)
 const isResolved = computed(() => !!active.value && active.value.status === 3)
 /* 响应含 total/page/size（无 pages），页数由 total 折算 */
@@ -43,7 +53,8 @@ function buildUrl(status, p) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (status !== null && status !== undefined) params.set('status', status)
   if (cat.value !== '') params.set('category', cat.value)
-  const s = q.value.trim()
+  if (mine.value === '1' && session.user?.id) params.set('assignee', session.user.id)
+  const s = st.q.trim()
   if (s) params.set('q', s)
   return '/api/admin/ops/tickets?' + params
 }
@@ -53,8 +64,8 @@ async function load(p = 1) {
   loadErr.value = false
   try {
     /* 已关 tab 由后端组合状态 status=3,4 单请求返回 */
-    const st = TABS.find((t) => t[0] === tab.value)?.[2]
-    const d = await req('GET', buildUrl(st, p))
+    const stt = TABS.find((t) => t[0] === st.tab)?.[2]
+    const d = await req('GET', buildUrl(stt, p))
     tickets.value = d.items || []
     total.value = d.total ?? 0
     page.value = p
@@ -66,8 +77,9 @@ async function load(p = 1) {
 }
 onMounted(() => load(1))
 
-function setTab(k) { if (tab.value !== k) { tab.value = k; load(1) } }
+function setTab(k) { if (st.tab !== k) { st.tab = k; load(1) } }
 function setCat(v) { cat.value = v; load(1) }
+function setMine(v) { mine.value = v; load(1) }
 function search() { load(1) }
 
 /* 快捷回复模板：GET /api/support/templates（公开端点，返回 [{id,category,title,content}]） */
@@ -119,22 +131,36 @@ async function send() {
   } catch (e) { toast('回复失败：' + (e.data?.detail || e.message), 'error') }
   finally { busy.value = false }
 }
-async function close() {
-  /* 危险确认：补后果说明（关闭后不可回复/不可重开） */
-  if (!confirm(`关闭工单 ${active.value.ticket_no}？\n关闭后客户将无法继续回复，工单不可重新打开；如问题未解决请改用回复。`)) return
+
+/* 状态流转：PUT /api/admin/support/tickets/{no}/status（2 等待客户 / 3 已解决） */
+async function setStatus(status) {
+  busy.value = true
   try {
-    const t = await req('POST', `/api/admin/ops/tickets/${active.value.ticket_no}/close`, { close_reason: 0 })
-    toast('工单已关闭 ✓', 'success')
+    const t = await req('PUT', `/api/admin/support/tickets/${active.value.ticket_no}/status`, { status })
+    toast(status === 2 ? '已标记等待客户 ✓' : '已标记解决 ✓', 'success')
     Object.assign(active.value, t)
     load(page.value)
-  } catch (e) {
-    const d = e.data?.detail
-    toast('关闭失败：' + (d === 'ticket_already_closed' ? '工单已是关闭状态，请刷新列表' : (d || e.message)), 'error')
-  }
+  } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { busy.value = false }
 }
-/* 指派展示：优先 admin_name（若响应带），否则「已指派 #id」 */
+
+/* 关闭（status=4）：ConfirmDialog 仅支持文本原因，此处按其同构样式内联弹窗 + 原因下拉 */
+function openClose() { closeReason.value = 1; closeDlg.value = true }
+async function doClose() {
+  closeBusy.value = true
+  try {
+    const t = await req('PUT', `/api/admin/support/tickets/${active.value.ticket_no}/status`, { status: 4, close_reason: Number(closeReason.value) })
+    toast('工单已关闭 ✓', 'success')
+    Object.assign(active.value, t)
+    closeDlg.value = false
+    load(page.value)
+  } catch (e) { toast('关闭失败：' + (e.data?.detail || e.message), 'error') }
+  finally { closeBusy.value = false }
+}
+
+/* 指派展示：优先 assignee_name（列表/详情新增），否则「#id」兜底 */
 const assigneeText = (t) => t.assignee_admin_id
-  ? (t.assignee_name || t.admin_name || `已指派 #${t.assignee_admin_id}`)
+  ? (t.assignee_name || `#${t.assignee_admin_id}`)
   : '未指派'
 /* 指派给我：AssignIn 需 admin_id（取当前登录管理员 id） */
 async function assignMe() {
@@ -153,19 +179,23 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">客服工单</h1>
-      <span style="font-size:12.5px;color:var(--gray)">当前筛选共 {{ total }} 张工单</span>
+      <h1 class="page-title">客服工单</h1>
+      <span class="page-sub">当前筛选共 {{ total }} 张工单</span>
     </div>
   </div>
 
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
-    <button v-for="[k, label] in TABS" :key="k" class="ttab" :class="{ on: tab === k }" @click="setTab(k)">{{ label }}</button>
+  <div class="filter-bar" style="margin-bottom:14px">
+    <button v-for="[k, label] in TABS" :key="k" class="ttab" :class="{ on: st.tab === k }" @click="setTab(k)">{{ label }}</button>
     <span style="flex:1"></span>
     <select class="input" :value="cat" style="width:auto;height:36px;font-size:13px" @change="setCat($event.target.value)">
       <option value="">全部分类</option>
       <option v-for="(label, v) in CATEGORY" :key="v" :value="String(v)">{{ label }}</option>
     </select>
-    <input v-model="q" class="input" style="width:200px;height:36px" placeholder="搜工单号 / 邮箱" @keydown.enter="search()">
+    <select class="input" :value="mine" style="width:auto;height:36px;font-size:13px" @change="setMine($event.target.value)">
+      <option value="">全部工单</option>
+      <option value="1">我的工单</option>
+    </select>
+    <input v-model="st.q" class="input" style="width:200px;height:36px" placeholder="搜工单号 / 邮箱" @keydown.enter="search()">
     <button class="btn btn-secondary btn-sm" style="height:36px" @click="search()">搜索</button>
   </div>
 
@@ -173,7 +203,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
 
   <div v-else class="grid-2" style="align-items:start">
     <div class="card tbl-wrap">
-      <table style="width:100%;min-width:620px;border-collapse:collapse;font-size:13px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">工单号</th><th>主题</th><th>客户</th><th>首次回复</th><th>指派</th><th>状态</th></tr></thead>
         <tbody>
           <tr
@@ -195,7 +225,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
               <span v-else class="tag tag-pending">待回复</span>
             </td>
             <td>
-              <span v-if="t.assignee_admin_id" class="tag tag-paid" :title="'assignee_admin_id: ' + t.assignee_admin_id">{{ t.assignee_name || t.admin_name || ('已指派 #' + t.assignee_admin_id) }}</span>
+              <span v-if="t.assignee_admin_id" class="tag tag-ship" :title="'#' + t.assignee_admin_id">{{ assigneeText(t) }}</span>
               <span v-else class="tag tag-pending">未指派</span>
             </td>
             <td><span class="tag" :class="SSTATUS[t.status]?.[1]">{{ SSTATUS[t.status]?.[0] }}</span></td>
@@ -212,21 +242,24 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
     <div class="card" style="padding:20px;position:sticky;top:16px">
       <EmptyState v-if="!active" icon="👈" title="选择一个工单查看对话" sub="点击左侧列表中的工单号或主题" />
       <template v-else>
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-          <b style="font-size:14.5px">{{ active.ticket_no }}</b>
+        <div class="dhead">
+          <div class="dtitle">{{ active.ticket_no }}</div>
           <span class="tag" :class="SSTATUS[active.status]?.[1]">{{ SSTATUS[active.status]?.[0] }}</span>
         </div>
-        <div style="font-size:12.5px;color:var(--gray);margin-bottom:12px">
+        <div class="page-sub" style="margin-bottom:12px">
           {{ active.subject }} · {{ active.email }}<span v-if="active.order_no"> · 订单 {{ active.order_no }}</span> · 创建 {{ fmtTime(active.created_at) }}
           <span v-if="active.assignee_admin_id"> · {{ assigneeText(active) }}</span>
         </div>
 
+        <div class="dhead" style="margin-bottom:6px">
+          <div class="dtitle">对话记录</div>
+          <span v-if="thread" class="item-cnt">{{ (thread.messages || []).length }} 条</span>
+        </div>
         <div style="display:grid;gap:10px;max-height:320px;overflow-y:auto;margin-bottom:14px">
           <div v-if="!thread" style="color:var(--gray);font-size:13px;text-align:center;padding:20px 0">加载对话…</div>
           <template v-else>
             <div v-for="(m, i) in thread.messages || []" :key="i"
                  style="max-width:85%;padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.6;white-space:pre-wrap"
-                 :class="m.sender === 1 ? '' : 'staff'"
                  :style="{
                     background: m.sender === 1 ? 'var(--gray-light)' : 'var(--rose-pale)',
                     justifySelf: m.sender === 1 ? 'start' : 'end',
@@ -234,7 +267,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
               <div>{{ m.content }}</div>
               <div style="font-size:10.5px;color:var(--gray);margin-top:4px">{{ fmtTime(m.created_at) }}<span v-if="m.sender === 3" style="margin-left:4px">· 系统</span></div>
             </div>
-            <div v-if="!(thread.messages || []).length && !thread.loadErr" style="color:var(--gray);font-size:13px;text-align:center">（无消息记录）</div>
+            <div v-if="!(thread.messages || []).length && !thread.loadErr" class="empty-line" style="text-align:center">（无消息记录）</div>
             <div v-if="thread.loadErr" style="text-align:center;padding:10px 0">
               <div style="color:var(--error);font-size:13px;margin-bottom:8px">对话加载失败</div>
               <button class="btn btn-secondary btn-sm" @click="openTicket(active)">重试</button>
@@ -243,6 +276,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
         </div>
 
         <div v-if="!isClosed">
+          <div class="dtitle" style="margin-bottom:10px">回复工单</div>
           <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
             <select class="input" style="height:34px;font-size:12.5px;flex:1" @focus="loadTemplates" @change="applyTemplate">
               <option value="">{{ templatesLoaded ? (templates.length ? '快捷模板…' : '暂无模板') : '加载快捷模板…' }}</option>
@@ -251,17 +285,38 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
             <button class="btn btn-secondary btn-sm" style="height:34px" title="指派给当前登录管理员" @click="assignMe">指派给我</button>
           </div>
           <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…（Ctrl+Enter 发送）" style="margin-bottom:10px" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send"></textarea>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-primary" style="flex:1" :class="{ loading: busy }" :disabled="busy" @click="send">发送回复</button>
-            <button v-if="isResolved" class="btn btn-secondary" title="已解决 → 确认关闭（3→4）" @click="close">确认关闭</button>
-            <button v-else class="btn btn-ghost" style="color:var(--error)" @click="close">关闭</button>
+            <template v-if="active.status === 1">
+              <button class="btn btn-secondary" :disabled="busy" title="处理中 → 等待客户（1→2）" @click="setStatus(2)">等待客户</button>
+              <button class="btn btn-secondary" :disabled="busy" title="处理中 → 已解决（1→3）" @click="setStatus(3)">标记解决</button>
+            </template>
+            <button class="btn btn-ghost" style="color:var(--error)" :title="isResolved ? '已解决 → 确认关闭（3→4）' : '关闭后不可重开'" @click="openClose">{{ isResolved ? '确认关闭' : '关闭' }}</button>
           </div>
-          <p v-if="isResolved" style="font-size:11.5px;color:var(--gray);margin-top:8px">工单已解决但未关闭，点击「确认关闭」完成 3→4 流转（关闭后不再接受回复）。</p>
         </div>
         <div v-else style="padding:12px 14px;background:var(--gray-light);border-radius:10px;font-size:12.5px;color:var(--gray);text-align:center">
           🔒 工单已关闭<span v-if="active.closed_at"> · {{ fmtTime(active.closed_at) }}</span>，不再接受回复
         </div>
       </template>
+    </div>
+  </div>
+
+  <!-- 关闭工单弹窗：危险确认 + 关闭原因下拉（随 close_reason 数字提交，status=4） -->
+  <div class="modal" :class="{ open: closeDlg }" @click.self="!closeBusy && (closeDlg = false)">
+    <div class="modal-box" style="max-width:420px">
+      <button class="modal-x" :disabled="closeBusy" @click="closeDlg = false">×</button>
+      <h3 style="font-family:var(--font-title);font-size:17px;font-weight:700;margin-bottom:8px">关闭工单 {{ active?.ticket_no }}</h3>
+      <p style="color:var(--gray);font-size:13px;line-height:1.6;white-space:pre-line">关闭后客户将无法继续回复，工单不可重新打开；如问题未解决请改用回复。</p>
+      <div class="field" style="margin:14px 0 2px">
+        <label>关闭原因</label>
+        <select v-model.number="closeReason" class="input" :disabled="closeBusy">
+          <option v-for="[v, label] in CLOSE_REASON" :key="v" :value="v">{{ label }}</option>
+        </select>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:20px">
+        <button class="btn btn-secondary btn-sm" :disabled="closeBusy" @click="closeDlg = false">取消</button>
+        <button class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="closeBusy" @click="doClose">{{ closeBusy ? '处理中…' : '确认关闭' }}</button>
+      </div>
     </div>
   </div>
 </template>

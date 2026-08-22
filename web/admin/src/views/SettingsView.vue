@@ -26,7 +26,7 @@ const EDITABLE = {
 const drafts = reactive({})   /* key → 编辑值（数字） */
 
 async function load() {
-  loaded.value = false
+  /* loaded 置位后不再重置：重试/保存后刷新走旧数据模式，不闪骨架 */
   settingsErr.value = false
   try {
     const rows = (await req('GET', '/api/admin/ops/settings')).items || []
@@ -59,6 +59,34 @@ async function saveKey(key) {
   finally { saving.value = '' }
 }
 
+/* 保存全部：顺序 PUT 仅 dirty 的 key，完成后 toast + 静默重载 */
+const savingAll = ref(false)
+const dirtyKeys = computed(() => Object.keys(EDITABLE).filter((k) => Number(drafts[k]) !== (k in settings ? settings[k].value : EDITABLE[k].def)))
+async function saveAll() {
+  if (settingsErr.value) { toast('配置加载失败，已禁用保存（防止默认值覆盖线上配置），请先重试加载', 'error'); return }
+  const keys = [...dirtyKeys.value]
+  if (!keys.length) { toast('没有未保存的修改', 'error'); return }
+  for (const k of keys) {
+    const n = Number(drafts[k])
+    if (!Number.isFinite(n) || n < 0) { toast(`「${EDITABLE[k].label}」需为有效的非负数字`, 'error'); return }
+  }
+  savingAll.value = true
+  let done = 0
+  try {
+    for (const k of keys) {
+      const n = Number(drafts[k])
+      await req('PUT', '/api/admin/ops/settings', { key: k, value: n })
+      settings[k] = { value: n, description: settings[k]?.description }
+      done++
+    }
+    toast(`已保存 ${done} 项修改 ✓`, 'success')
+    load()
+  } catch (e) {
+    toast(`保存中断（${done}/${keys.length} 已保存）：` + (e.data?.detail || e.message), 'error')
+    load()
+  } finally { savingAll.value = false }
+}
+
 const previewTpl = ref(null)
 function showTpl(t) { previewTpl.value = t }
 const tplList = () => (Array.isArray(templates.value) ? templates.value : [])
@@ -76,39 +104,46 @@ const rawRows = computed(() => {
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">系统设置</h1>
-      <span style="font-size:12.5px;color:var(--gray)">运费 / 税率 / 捆绑 / 运营参数 / 邮件模板</span>
+      <h1 class="page-title">系统设置</h1>
+      <span class="page-sub">运费 / 税率 / 捆绑 / 运营参数 / 邮件模板</span>
     </div>
   </div>
 
-  <div class="otab" style="display:flex;gap:4px;border-bottom:1.5px solid var(--gray-light);margin-bottom:14px">
+  <div class="otab">
     <button
       v-for="[k, label] in [['shipping', '运费与运营'], ['email', '邮件模板'], ['raw', '全部参数']]"
       :key="k"
-      style="padding:9px 16px;font-size:13.5px;font-weight:600;border:none;background:none;cursor:pointer"
-      :style="{ color: tab === k ? 'var(--plum)' : 'var(--gray)', borderBottom: tab === k ? '2.5px solid var(--plum)' : '2.5px solid transparent' }"
+      :class="{ on: tab === k }"
       @click="tab = k"
     >{{ label }}</button>
   </div>
 
   <!-- 运费与运营（常用 key 表单化；保存即 upsert，未初始化的 key 用默认值占位） -->
-  <div v-if="tab === 'shipping'" class="card" style="padding:20px;max-width:620px">
+  <div v-if="tab === 'shipping'" class="card" style="padding:20px">
+    <div class="dhead">
+      <div class="dtitle">运营参数</div>
+      <button class="btn btn-primary btn-sm" :class="{ loading: savingAll }" :disabled="savingAll || settingsErr" @click="saveAll">
+        保存全部修改{{ dirtyKeys.length ? '（' + dirtyKeys.length + '）' : '' }}
+      </button>
+    </div>
     <div v-if="settingsErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin-bottom:16px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
       <span>⚠️ 配置加载失败，保存已禁用——防止默认值覆盖线上配置</span>
       <button class="btn btn-secondary btn-sm" @click="load">重试加载</button>
     </div>
-    <template v-for="(meta, key) in EDITABLE" :key="key">
-      <div class="field">
-        <label>{{ meta.label }} <small style="color:var(--gray)">（{{ key }}）</small>
-          <span v-if="!settingsErr && !(key in settings)" class="tag tag-pending" style="margin-left:4px;font-size:10px">未设置·存默认</span>
-        </label>
-        <div style="display:flex;gap:8px">
-          <input v-model.number="drafts[key]" class="input" :type="meta.type" :step="meta.step || 1" style="width:180px" :disabled="settingsErr">
-          <button class="btn btn-secondary btn-sm" :class="{ loading: saving === key }" :disabled="saving === key || settingsErr" @click="saveKey(key)">保存</button>
+    <div class="set-grid">
+      <template v-for="(meta, key) in EDITABLE" :key="key">
+        <div class="field">
+          <label>{{ meta.label }} <small style="color:var(--gray)">（{{ key }}）</small>
+            <span v-if="!settingsErr && !(key in settings)" class="tag tag-pending" style="margin-left:4px;font-size:10px">未设置·存默认</span>
+          </label>
+          <div style="display:flex;gap:8px">
+            <input v-model.number="drafts[key]" class="input" :type="meta.type" :step="meta.step || 1" style="width:180px" :disabled="settingsErr">
+            <button class="btn btn-secondary btn-sm" :class="{ loading: saving === key }" :disabled="saving === key || settingsErr" @click="saveKey(key)">保存</button>
+          </div>
+          <p v-if="settings[key]?.description" style="font-size:11.5px;color:var(--gray)">{{ settings[key].description }}</p>
         </div>
-        <p v-if="settings[key]?.description" style="font-size:11.5px;color:var(--gray)">{{ settings[key].description }}</p>
-      </div>
-    </template>
+      </template>
+    </div>
     <div v-if="loaded && !settingsErr && !Object.keys(settings).length" style="color:var(--gray);font-size:13px;margin-top:6px">
       服务端暂无预置参数，上方表单保存后将写入并即时生效。
     </div>
@@ -125,7 +160,7 @@ const rawRows = computed(() => {
 
   <!-- 全部参数（raw k-v，支持关键字过滤） -->
   <div v-else class="card tbl-wrap">
-    <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--gray-light);flex-wrap:wrap">
+    <div class="filter-bar" style="padding:12px 14px;border-bottom:1px solid var(--gray-light)">
       <input v-model="rawFilter" class="input" style="width:260px" placeholder="按 Key / 说明关键字过滤">
       <span style="font-size:12px;color:var(--gray)">匹配 {{ rawRows.length }} / {{ Object.keys(settings).length }} 项</span>
     </div>
@@ -152,3 +187,9 @@ const rawRows = computed(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 参数表单两列栅格（窄屏单列），替代单列 max-width 布局 */
+.set-grid{display:grid;grid-template-columns:1fr 1fr;column-gap:28px;align-items:start}
+@media(max-width:768px){.set-grid{grid-template-columns:1fr}}
+</style>

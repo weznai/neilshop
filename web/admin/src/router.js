@@ -3,26 +3,26 @@ import { useSessionStore } from './stores/session'
 
 const router = createRouter({
   history: createWebHistory('/admin/'),
-  scrollBehavior: () => ({ top: 0 }),
+  scrollBehavior: (to, from, savedPosition) => savedPosition || { top: 0 },
   routes: [
-    { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true } },
+    { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true, title: '登录' } },
     {
       path: '/',
       component: () => import('./layouts/AdminLayout.vue'),
       children: [
-        { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue') },
-        { path: 'orders', name: 'orders', component: () => import('./views/OrdersView.vue') },
-        { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue') },
-        { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue') },
-        { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue') },
-        { path: 'products', name: 'products', component: () => import('./views/ProductsView.vue') },
-        { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue') },
-        { path: 'inventory', name: 'inventory', component: () => import('./views/InventoryView.vue') },
-        { path: 'marketing', name: 'marketing', component: () => import('./views/MarketingView.vue') },
-        { path: 'content', name: 'content', component: () => import('./views/ContentView.vue') },
-        { path: 'members', name: 'members', component: () => import('./views/MembersView.vue') },
-        { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue') },
-        { path: 'settings', name: 'settings', component: () => import('./views/SettingsView.vue') },
+        { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { title: '数据看板' } },
+        { path: 'orders', name: 'orders', component: () => import('./views/OrdersView.vue'), meta: { title: '订单管理' } },
+        { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情' } },
+        { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue'), meta: { title: '退换货' } },
+        { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue'), meta: { title: '工单' } },
+        { path: 'products', name: 'products', component: () => import('./views/ProductsView.vue'), meta: { title: '商品管理' } },
+        { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue'), meta: { title: '商品编辑' } },
+        { path: 'inventory', name: 'inventory', component: () => import('./views/InventoryView.vue'), meta: { title: '库存中心' } },
+        { path: 'marketing', name: 'marketing', component: () => import('./views/MarketingView.vue'), meta: { title: '营销工具' } },
+        { path: 'content', name: 'content', component: () => import('./views/ContentView.vue'), meta: { title: '内容管理' } },
+        { path: 'members', name: 'members', component: () => import('./views/MembersView.vue'), meta: { title: '会员' } },
+        { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { title: '操作日志' } },
+        { path: 'settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '系统设置' } },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
@@ -54,6 +54,11 @@ router.beforeEach((to) => {
     return { path: '/login', query: { next: to.fullPath } }
   }
   return true
+})
+
+/* 浏览器标签标题 */
+router.afterEach((to) => {
+  document.title = to.meta.title ? 'GLOWMAG 后台 · ' + to.meta.title : 'GLOWMAG 后台'
 })
 
 export default router

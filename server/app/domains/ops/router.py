@@ -21,12 +21,13 @@ def dashboard(admin: User = Depends(require_admin), db: Session = Depends(get_db
 def list_members(
     q: str | None = Query(None),
     tier: int | None = Query(None),
+    sort: str | None = Query(None, description="points/-points/total_spent/-total_spent，非法值走默认排序"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.list_members(db, q, tier, page, size)
+    return service.list_members(db, q, tier, page, size, sort)
 
 
 @router.get("/api/admin/ops/members/{user_id}")

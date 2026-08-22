@@ -112,8 +112,11 @@ def dashboard(db: Session) -> dict:
 # ===== 会员管理 =====
 
 
-def list_members(db: Session, q: str | None, tier: int | None, page: int, size: int) -> dict:
-    query = repo.members_query(db, q, tier)
+def list_members(
+    db: Session, q: str | None, tier: int | None, page: int, size: int,
+    sort: str | None = None,
+) -> dict:
+    query = repo.members_query(db, q, tier, sort)
     rows, total = repo.page(query, page, size)
     return {
         "items": [

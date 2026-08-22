@@ -103,7 +103,6 @@ th.sortable:hover{color:var(--plum)}
 .otab button.on,.rtab button.on{color:var(--plum);border-color:var(--plum)}
 /* pill tab 悬停反馈（marketing/content/settings/tickets） */
 .mtab:hover,.ctab:hover,.stab:hover,.ttab:hover{border-color:var(--rose)}
-.mtab.on,.ctab.on,.stab.on,.ttab.on{border-color:var(--plum);background:var(--plum);color:#fff}
 
 /* ===== 全局体验层（v14）：骨架屏 / 表格 / 弹窗 / 焦点态 / 滚动条 ===== */
 /* 骨架屏：此前 .skeleton 类被多页引用但从未定义 */
@@ -140,3 +139,18 @@ th.sortable:hover{color:var(--plum)}
 ::-webkit-scrollbar-thumb{background:#D8D2D5;border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:#C4BCC0}
 ::-webkit-scrollbar-track{background:transparent}
+
+/* ===== v15 全站基建:页面标题/数据表/筛选栏/dtitle 全局化 ===== */
+.page-title{font-family:var(--font-title);font-size:22px;font-weight:700;letter-spacing:-.3px}
+.page-sub{font-size:12.5px;color:var(--gray)}
+.dhead{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.dtitle{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}
+.dtitle::before{content:"";width:4px;height:16px;border-radius:2px;background:linear-gradient(180deg,var(--rose),var(--plum));flex:none}
+.item-cnt{font-size:12px;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:2px 10px;white-space:nowrap}
+.kv{display:grid;gap:2px}
+.kv-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.kv-row:last-child{border-bottom:none}
+.kv-row>span:first-child{color:var(--gray);flex:none}
+.kv-val{text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.empty-line{color:var(--gray);font-size:13px;padding:8px 0}
+.filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}

@@ -39,14 +39,17 @@ async function submit() {
       return
     }
     toast('登录成功，进入管理控制台…', 'success')
-    router.push(route.query.next ? String(route.query.next) : '/')
+    /* next 白名单校验：仅接受站内单斜杠路径，拒绝 //evil.com 类协议相对跳转 */
+    const n = String(route.query.next || '/')
+    router.push(/^\/[^/]/.test(n) ? n : '/')
   } catch (e) {
     console.error('[admin] 登录失败：', e)
     toast(
       e.status === 422 ? '邮箱格式无效——请用半角 @' + (DEV ? '（或直接填 ops / admin 快捷名）' : '')
         : e.status === 401 ? '邮箱或密码错误' + (DEV ? '（密码统一 glowmag123）' : '')
           : e.status === 403 ? '该账号无后台权限（需管理员账号）'
-            : '登录失败：' + (e.message || '请稍后重试'),
+            : e.status === 429 ? '尝试过于频繁，请稍后再试'
+              : '登录失败：' + (e.message || '请稍后重试'),
       'error',
     )
   } finally { busy.value = false }
@@ -55,7 +58,7 @@ async function submit() {
 
 <template>
   <div class="alogin-page">
-    <div class="alogin card" style="max-width:400px;width:100%;padding:34px 32px">
+    <div class="card" style="max-width:400px;width:100%;padding:34px 32px">
       <div style="text-align:center;margin-bottom:22px">
         <div class="logo" style="font-size:26px;color:var(--ink)">GLOW<span style="color:var(--rose)">MAG</span></div>
         <div style="font-size:11px;letter-spacing:3px;color:var(--gray);margin-top:6px">管理控制台 · ADMIN</div>
@@ -83,7 +86,7 @@ async function submit() {
       <div style="margin-top:14px;text-align:center;font-size:12px;color:var(--gray)">
         HttpOnly Cookie 会话 · 后台专用短时效令牌（需 role ≥ 2）
       </div>
-      <div class="login-back" style="text-align:center;margin-top:16px">
+      <div style="text-align:center;margin-top:16px">
         ← <a href="/" style="color:var(--plum)">返回店铺前台</a>
       </div>
     </div>
