@@ -115,8 +115,8 @@ function heroFallback(e) {
   </section>
 
   <!-- ============ 价值条 ============ -->
-  <section style="background:var(--ink);color:#fff;padding:22px 0">
-    <div class="container grid-m-2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center;font-size:13px">
+  <section style="background:linear-gradient(120deg,var(--rose-light),var(--rose-pale) 55%,var(--white));color:var(--plum);padding:22px 0">
+    <div class="container grid-m-2" style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center;font-size:13px;font-weight:600">
       <span v-for="[ico, key] in VALUES" :key="key" class="value-item">
         <GmIcon :name="ico" :size="15" />{{ i18n.t(key) }}
       </span>
@@ -255,9 +255,9 @@ function heroFallback(e) {
 /* hero 浮动徽标/卡片 hover 上浮 */
 .hero-float{transition:transform .2s ease-out,box-shadow .2s ease-out}
 .hero-float:hover{transform:translateY(-4px)}
-/* 价值条：GmIcon + 文案（深底上 rose 描边图标） */
-.value-item{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:0}
-.value-item svg{stroke:var(--rose);flex:none}
+  /* 价值条：GmIcon + 文案（浅粉渐变底上珊瑚色描边图标） */
+  .value-item{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:0}
+  .value-item svg{stroke:var(--coral);flex:none}
 /* REVIEWS 头像渐变描边 */
 .rev-ava{width:38px;height:38px;padding:2px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--plum));flex:none}
 .rev-ava span{width:100%;height:100%;border-radius:50%;background:var(--plum);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
