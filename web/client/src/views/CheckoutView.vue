@@ -337,13 +337,13 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" placeholder="you@example.com" autocomplete="email">
               <div class="field-msg">{{ i18n.t('co.emailErr') }}</div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="co-2col">
               <div class="field" :class="{ error: errors.fname }"><label>{{ i18n.t('co.fname') }} *</label><input v-model="form.fname" class="input" :class="{ error: errors.fname }" autocomplete="given-name"></div>
               <div class="field"><label>{{ i18n.t('co.lname') }}</label><input v-model="form.lname" class="input" autocomplete="family-name"></div>
             </div>
             <div class="field" :class="{ error: errors.addr1 }"><label>{{ i18n.t('co.addr') }} *</label><input v-model="form.addr1" class="input" :class="{ error: errors.addr1 }" autocomplete="address-line1" :placeholder="i18n.t('co.addrPh')"></div>
             <div class="field"><label>{{ i18n.t('co.addr2') }}</label><input v-model="form.addr2" class="input" autocomplete="address-line2"></div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 0.7fr;gap:12px">
+            <div class="co-3col">
               <div class="field" :class="{ error: errors.city }"><label>{{ i18n.t('co.city') }} *</label><input v-model="form.city" class="input" :class="{ error: errors.city }" autocomplete="address-level2"></div>
               <div class="field">
                 <label>{{ country === 'US' ? i18n.t('co.state') : i18n.t('co.stateProv') }}</label>
@@ -355,7 +355,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               </div>
               <div class="field" :class="{ error: errors.zip }"><label>{{ i18n.t('co.zip') }} *</label><input v-model="form.zip" class="input" :class="{ error: errors.zip }" autocomplete="postal-code"></div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="co-2col">
               <div class="field">
                 <label>{{ i18n.t('co.country') }}</label>
                 <select v-model="country" class="input">
@@ -448,7 +448,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
         </div>
 
         <!-- 摘要 -->
-        <div class="card" style="padding:22px;position:sticky;top:20px">
+        <div class="card co-summary">
           <h3 style="font-size:16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">
             {{ i18n.t('co.summary') }}
             <span v-if="pvBusy" style="font-size:11px;color:var(--gray)">⟳ {{ i18n.t('co.updating') }}</span>
@@ -520,6 +520,15 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
 .pay-row { display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--gray-light); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; transition: all .15s; }
 .pay-row:hover { border-color: var(--rose); }
 .pay-row.on { border-color: var(--plum); background: var(--rose-pale); box-shadow: inset 3px 0 0 var(--plum); }
+/* v19 移动端补漏：地址行栅格收编为类（原 inline 3 列在 375px 每列仅约 85px，state/zip 挤压）；
+   ≤640px 折单列，661–768px 三列仍可容纳（~200px/列） */
+.co-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.co-3col { display: grid; grid-template-columns: 1fr 1fr .7fr; gap: 12px; }
+@media (max-width: 640px) { .co-2col, .co-3col { grid-template-columns: 1fr; } }
+/* 摘要卡吸顶：原 top:20px 会钻到 64px 吸顶头部之下（标题被遮半截）——对齐 .acct-nav/.policy-side 的 84px；
+   移动端单列时摘要在表单下方，吸顶只会半截露在头部下，取消 */
+.co-summary { position: sticky; top: 84px; padding: 22px; }
+@media (max-width: 768px) { .co-summary { position: static; } }
 /* 三步骤号：28px 圆形徽标（rose-pale 底 plum 字） */
 .co-step { display: flex; align-items: center; gap: 10px; font-size: 16px; margin-bottom: 14px; }
 .step-b { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--rose-pale); color: var(--plum); font-style: normal; font-size: 14px; font-weight: 700; flex: none; }

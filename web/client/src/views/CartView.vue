@@ -212,7 +212,7 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
           </div>
         </div>
 
-        <div class="card" style="padding:22px;position:sticky;top:20px">
+        <div class="card cart-summary">
           <div
             class="ship-bar"
             :class="[{ 'gwp-bar': freeShip }, freePop ? 'free-pop' : '']"
@@ -266,6 +266,9 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
 </template>
 
 <style scoped>
+/* v19 移动端补漏：摘要卡吸顶对齐头部（原 top:20px 钻到 64px 吸顶头部下）；移动端单列取消吸顶 */
+.cart-summary { position: sticky; top: 84px; padding: 22px; }
+@media (max-width: 768px) { .cart-summary { position: static; } }
 .qbtn { width: 30px; height: 30px; border: none; background: none; color: var(--plum); font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer; border-radius: 6px; transition: background .15s; }
 .qbtn:hover:not(:disabled) { background: var(--rose-pale); }
 .qbtn:disabled { opacity: .35; cursor: not-allowed; }

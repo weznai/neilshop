@@ -31,14 +31,17 @@ function printPage() { window.print() }
         </aside>
         <article class="prose">
           <h2 id="rates" style="scroll-margin-top:90px">Rates &amp; speeds</h2>
-          <table class="card" style="width:100%;border-collapse:collapse;padding:12px;font-size:13.5px">
-            <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Region</th><th>Method</th><th>ETA</th><th>Fee</th></tr></thead>
-            <tbody>
-              <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>USPS Standard</td><td>3–6 business days</td><td>$4.99 — <b>free over $35</b></td></tr>
-              <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>UPS Express</td><td>1–3 business days</td><td>$14.99</td></tr>
-              <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🌍 International</td><td>DHL Standard</td><td>6–12 business days</td><td>$12.99</td></tr>
-            </tbody>
-          </table>
+          <!-- v19 移动端补漏：4 列费率表在 375px 强行压列换行难读——外套横滑容器 + min-width（对齐 SizeGuide 表做法） -->
+          <div class="rates-wrap">
+            <table class="card" style="width:100%;border-collapse:collapse;padding:12px;font-size:13.5px">
+              <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Region</th><th>Method</th><th>ETA</th><th>Fee</th></tr></thead>
+              <tbody>
+                <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>USPS Standard</td><td>3–6 business days</td><td>$4.99 — <b>free over $35</b></td></tr>
+                <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>UPS Express</td><td>1–3 business days</td><td>$14.99</td></tr>
+                <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🌍 International</td><td>DHL Standard</td><td>6–12 business days</td><td>$12.99</td></tr>
+              </tbody>
+            </table>
+          </div>
           <p>Rates above are our standard quotes — the exact fee and free-shipping threshold shown at <b>checkout always apply</b> (they can be updated by our ops team). Duties and taxes for international orders are the recipient's responsibility.</p>
 
           <h2 id="process" style="scroll-margin-top:90px">Processing &amp; tracking</h2>
@@ -58,6 +61,9 @@ function printPage() { window.print() }
 }
 /* TOC 命中态（Scrollspy）：plum + 左侧指示条 */
 .toc-link.on { color: var(--plum); font-weight: 700; border-left: 3px solid var(--plum); padding-left: 10px; margin-left: -13px; }
+/* 费率表横滑（窄屏）：容器出血滚动，表体保 460px 最小可读宽度 */
+.rates-wrap { overflow-x: auto; }
+.rates-wrap table { min-width: 460px; }
 /* 正文排版补全：68ch 行宽 + h3/h4 层级 + 品牌链接/圆角图片 */
 .prose { max-width: 68ch; }
 .prose h3 { font-family: var(--font-title); font-size: 18px; margin: 26px 0 10px; }
