@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import RouteProgress from '../components/RouteProgress.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const session = useSessionStore()
 const route = useRoute()
@@ -70,27 +71,34 @@ function toggleSide() {
 }
 
 /* 宽表右缘渐隐提示条件化：.can-scroll（横向可滚）/.at-end（已滚到右缘）由这里切换，
- * admin.css 据此套/撤 mask。MutationObserver 兼顾路由切换后新增的表格（childList 不含输入类改动，开销可控） */
+ * admin.css 据此套/撤 mask。MutationObserver 兼顾路由切换后新增的表格（childList 不含输入类改动，开销可控）；
+ * 两个 observer 保存引用，onBeforeUnmount 时 disconnect（防布局切换后泄漏） */
+let tblMo = null
+let tblRo = null
 function watchTblWrap() {
   const sync = (el) => {
     el.classList.toggle('can-scroll', el.scrollWidth > el.clientWidth + 1)
     el.classList.toggle('at-end', el.scrollLeft + el.clientWidth >= el.scrollWidth - 1)
   }
-  const ro = new ResizeObserver((entries) => { for (const en of entries) sync(en.target) })
+  tblRo = new ResizeObserver((entries) => { for (const en of entries) sync(en.target) })
   const attach = (el) => {
     if (!el.dataset.tblWatched) {
       el.dataset.tblWatched = '1'
       el.addEventListener('scroll', () => sync(el), { passive: true })
-      ro.observe(el)
+      tblRo.observe(el)
     }
     sync(el)
   }
   const scan = () => document.querySelectorAll('.tbl-wrap').forEach(attach)
   /* 挂 body 而非 .main：守卫通过前 .main 尚未渲染，路由切换/表格新增都能捕获 */
-  new MutationObserver(scan).observe(document.body, { childList: true, subtree: true })
+  tblMo = new MutationObserver(scan)
+  tblMo.observe(document.body, { childList: true, subtree: true })
   scan()
 }
+/* 退出登录：先确认再执行（ConfirmDialog 非 danger，body 说明需重新登录） */
+const logoutDlg = ref(false)
 async function logout() {
+  logoutDlg.value = false
   await session.logout()
   router.push('/login')
 }
@@ -141,7 +149,11 @@ onMounted(async () => {
   watchTblWrap()
   window.addEventListener('keydown', onGlobalKey)
 })
-onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKey)
+  tblMo?.disconnect()
+  tblRo?.disconnect()
+})
 </script>
 
 <template>
@@ -170,7 +182,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
           <span class="abadge">{{ roleBadge }}</span>
         </div>
         <div class="sep"></div>
-        <button type="button" class="side-row side-link" title="退出登录" @click="logout">
+        <button type="button" class="side-row side-link" title="退出登录" @click="logoutDlg = true">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P.logout" />
           <span>退出登录</span>
         </button>
@@ -192,6 +204,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
       </div>
       <router-view />
     </main>
+    <!-- 退出登录确认（非危险操作，说明退出后需重新登录） -->
+    <ConfirmDialog :open="logoutDlg" title="退出登录" body="退出后需重新登录才能继续管理后台。" confirm-text="退出登录" @confirm="logout" @close="logoutDlg = false" />
   </div>
   <div v-else class="admin" style="align-items:center;justify-content:center">
     <div style="text-align:center;color:var(--gray)">

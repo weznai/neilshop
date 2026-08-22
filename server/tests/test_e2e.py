@@ -217,13 +217,15 @@ with TestClient(app) as client:
     check("place 库存预扣 120→119 / 50→49",
           stock_bare == 119 and stock_glue == 49, (stock_bare, stock_glue))
 
-    r = client.post("/api/payments/create-intent", json={"order_no": main_no})
+    r = client.post("/api/payments/create-intent", headers=u2_auth,
+                    json={"order_no": main_no})
     d = r.json()
     check("create-intent PI_ 35 位 / amount 3110", r.status_code == 200
           and str(d.get("payment_intent", "")).startswith("PI_")
           and len(d.get("payment_intent", "")) == 35 and d.get("amount") == 3110, d)
 
-    r = client.post("/api/payments/mock-pay", json={"order_no": main_no, "succeed": True})
+    r = client.post("/api/payments/mock-pay", headers=u2_auth,
+                    json={"order_no": main_no, "succeed": True})
     d = r.json()
     check("mock-pay succeed → 订单 PAID / Payment SUCCESS", r.status_code == 200
           and d.get("order_status") == 1 and d.get("payment_status") == 1, d)
@@ -280,8 +282,10 @@ with TestClient(app) as client:
     check("B 下小单 201（glue 1399 + 运费 499 + 税 140）", r.status_code == 201
           and b_no.startswith("NS") and d.get("grand_total") == 2038, r.text[:300])
 
-    r = client.post("/api/payments/create-intent", json={"order_no": b_no})
-    r = client.post("/api/payments/mock-pay", json={"order_no": b_no, "succeed": True})
+    r = client.post("/api/payments/create-intent", headers=b_auth,
+                    json={"order_no": b_no})
+    r = client.post("/api/payments/mock-pay", headers=b_auth,
+                    json={"order_no": b_no, "succeed": True})
     check("B 支付成功 → PAID", r.status_code == 200 and r.json().get("order_status") == 1, r.text[:200])
 
     s.expire_all()
@@ -422,8 +426,11 @@ with TestClient(app) as client:
     check("礼品卡购买 5000 → GC code", r.status_code == 201
           and gc_code.startswith("GC-") and d.get("status") == 0
           and d.get("order_no", "").startswith("NS"), d)
-    client.post("/api/payments/create-intent", json={"order_no": d["order_no"]})
-    client.post("/api/payments/mock-pay", json={"order_no": d["order_no"], "succeed": True})
+    client.post("/api/payments/create-intent",
+                json={"order_no": d["order_no"], "email": "ops@glowmag.com"})
+    client.post("/api/payments/mock-pay",
+                json={"order_no": d["order_no"], "email": "ops@glowmag.com",
+                      "succeed": True})
 
     r = client.post("/api/checkout/preview", headers=b_auth,
                     json={"items": [{"variant_id": v_glue, "qty": 1}],

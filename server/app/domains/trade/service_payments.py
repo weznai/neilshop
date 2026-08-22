@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
-from app.models import Order, Payment
+from app.models import Order, Payment, User
 from app.services import points as points_svc
 from app.services.payment_provider import (
     InvalidSignatureError, MockProvider, ProviderUnavailable,
@@ -41,6 +41,19 @@ def _get_payment(db: Session, order_id: int) -> Payment:
     return payment
 
 
+def ensure_order_owner(
+    order: Order, user: User | None, email: str | None,
+) -> None:
+    """订单归属校验：会员单必须登录本人；游客单 body.email 须与订单 email
+    归一化（strip+lower）相等，否则 403 not_order_owner（create-intent/mock-pay 共用，
+    置于幂等复用与业务动作之前）。"""
+    if order.user_id:
+        if user is None or user.id != order.user_id:
+            raise HTTPException(status_code=403, detail="not_order_owner")
+    elif not email or email.strip().lower() != (order.email or "").strip().lower():
+        raise HTTPException(status_code=403, detail="not_order_owner")
+
+
 def _timeline(
     db: Session, order_id: int, event: str,
     actor: str = "system", detail: dict | None = None,
@@ -53,6 +66,41 @@ def _code_discount_of(db: Session, order: Order) -> int:
     if tl and tl.detail and "code_discount" in tl.detail:
         return int(tl.detail["code_discount"])
     return int(order.discount_total)
+
+
+def _refund_late_success(db: Session, order: Order, payment: Payment) -> None:
+    """迟到成功回调的自动退款：订单已取消(8)/已退款(9)时用户在 provider 侧已真实扣款
+    —— payment 记 SUCCESS 后全额退（payment→3，订单按退款语义推到 9），仅退资金：
+    取消路径已回补库存/积分/礼品卡，不再重复补偿；幂等（已退款/部分退款不二次退）。"""
+    if payment.status in (3, 4) or payment.refunded_amount >= payment.amount:
+        return
+    if payment.status != 1:
+        payment.status = 1
+        _timeline(db, order.id, "payment_succeeded", detail={
+            "payment_intent": payment.stripe_payment_intent,
+            "amount": payment.amount, "source": "webhook",
+            "late": True, "order_status": order.status,
+        })
+    refund_amount = payment.amount - payment.refunded_amount
+    payment.refunded_amount += refund_amount
+    payment.status = 3
+    order.status = 9
+    repo.add_outbox_event(
+        db, aggregate_type="order", aggregate_id=order.id,
+        event_type="order.refunded",
+        payload={
+            "order_no": order.order_no, "amount": refund_amount,
+            "full": True, "reason": "late_success_auto_refund",
+        },
+    )
+    _timeline(db, order.id, "refund_issued", detail={
+        "amount": refund_amount, "reason": "late_success_auto_refund", "full": True,
+    })
+    log.warning(
+        "late webhook success on canceled/refunded order=%s auto-refunded: "
+        "payment=%s amount=%s",
+        order.order_no, payment.id, refund_amount,
+    )
 
 
 def mark_order_paid(
@@ -136,8 +184,12 @@ def mark_order_paid(
     return True
 
 
-def create_intent(db: Session, order_no: str) -> dict:
+def create_intent(
+    db: Session, order_no: str, *, user: User | None = None,
+    email: str | None = None,
+) -> dict:
     order = _get_order(db, order_no)
+    ensure_order_owner(order, user, email)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
     provider = get_provider()
@@ -179,17 +231,27 @@ def create_intent(db: Session, order_no: str) -> dict:
     }
 
 
-def mock_pay(db: Session, order_no: str, succeed: bool) -> dict:
+def mock_pay(
+    db: Session, order_no: str, succeed: bool, *,
+    user: User | None = None, email: str | None = None,
+) -> dict:
     # 环境门禁：mock 支付仅 dev 开放（默认 dev，测试套件不受影响）
     if settings.env != "dev":
         raise HTTPException(status_code=404, detail="not_found")
     provider = get_provider()
     order = _get_order(db, order_no)
+    ensure_order_owner(order, user, email)
     payment = _get_payment(db, order.id)
     if provider.name != "mock":
         raise HTTPException(status_code=409, detail="use_webhook")
     if payment.status == 1:
-        raise HTTPException(status_code=409, detail="already_paid")
+        db.expire(order)
+        return {
+            "ok": True,
+            "order_no": order.order_no,
+            "order_status": order.status,
+            "payment_status": payment.status,
+        }
     if provider.confirm(order, payment, succeed):
         # CAS 抢占失败（并发回调已处理/订单已取消）→ 直接按现状返回成功响应（幂等）
         mark_order_paid(db, order, payment, source="mock")
@@ -271,7 +333,13 @@ def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) ->
         elif event_type == "payment_intent.succeeded":
             if payment.status != 1:
                 if order.status != 1:
-                    mark_order_paid(db, order, payment, source="webhook")
+                    paid = mark_order_paid(db, order, payment, source="webhook")
+                    if not paid:
+                        # CAS 输者：订单已被取消/关单(8)或已退款(9) → 迟到成功自动退款；
+                        # 其余（并发已处理）保持幂等不报错
+                        db.expire(order)
+                        if order.status in (8, 9):
+                            _refund_late_success(db, order, payment)
                 else:
                     payment.status = 1
         elif event_type == "charge.refunded":

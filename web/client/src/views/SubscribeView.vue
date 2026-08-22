@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '../api/client'
+import { fmtDate, zulu } from '../composables/datetime'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
@@ -29,13 +30,6 @@ const picked = ref(2)
 const styleMode = ref(1)
 
 const money = (c) => (c == null ? '—' : '$' + (c / 100).toFixed(2))
-function fmtDate(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
 
 /* 生效/暂停中订阅视为“已有订阅”；仅剩已取消(5)等历史记录时允许重新订阅 */
 const hasLive = computed(() => subs.value.some((s) => s.status === 1 || s.status === 2))

@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { req } from '../../api/client'
+import { req, intentNoChannel } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
+import { fmtDateTime } from '../../composables/datetime'
 import { i18n } from '../../i18n'
 
 const auth = useAuthStore()
@@ -31,16 +32,7 @@ const TIER = { 0: 'Glow', 1: 'Shimmer', 2: 'Diva' }
 const TIER_NEXT = { 0: 10000, 1: 30000 }
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-function fmt(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
-  return d.getFullYear() === new Date().getFullYear()
-    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-}
+const fmt = fmtDateTime
 
 onMounted(async () => {
   syncWl()
@@ -76,7 +68,11 @@ async function reload() {
 async function pay(o) {
   payingNo.value = o.order_no
   try {
-    await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    const intent = await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    if (intentNoChannel(intent)) {
+      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })
     ui.toast(d.order_status === 1 ? tt('Payment successful — points will be credited after confirmation', '支付成功，积分将在确认后发放') : tt('Payment processing', '支付处理中'), 'success')
     await reload()

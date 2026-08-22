@@ -42,7 +42,6 @@ const LEGACY = {
   '/shipping-policy.html': '/shipping-policy',
   '/returns-policy.html': '/returns-policy',
   '/unsubscribe.html': '/unsubscribe',
-  '/404.html': '/404',
 }
 
 const BASE_TITLE = 'GLOWMAG · Press-On Nails & Magnetic Lashes'
@@ -64,6 +63,8 @@ const router = createRouter({
       children: [
         { path: '', name: 'home', component: () => import('./views/HomeView.vue'), meta: { title: '' } },
         { path: 'store', name: 'store', component: () => import('./views/StoreView.vue'), meta: { title: 'Shop All' } },
+        { path: 'collections', name: 'collections', component: () => import('./views/CollectionsView.vue'), meta: { title: 'Collections' } },
+        { path: 'collection/:slug', name: 'collection', component: () => import('./views/CollectionView.vue'), meta: { title: 'Collection' } },
         { path: 'product', name: 'product', component: () => import('./views/ProductView.vue'), meta: { title: 'Product Details' } },
         { path: 'cart', name: 'cart', component: () => import('./views/CartView.vue'), meta: { title: 'Your Cart' } },
         { path: 'checkout', name: 'checkout', component: () => import('./views/CheckoutView.vue'), meta: { title: 'Checkout' } },

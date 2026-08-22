@@ -9,9 +9,9 @@ from app.models import User
 
 from app.domains.catalog import service
 from app.domains.catalog.schemas import (
-    CategoryCreateIn, CollectionCreateIn, CollectionProductsIn, CollectionUpdateIn,
-    ProductBulkIn, ProductCreateIn, ProductUpdateIn, TranslationUpsertIn,
-    VariantCreateIn, VariantUpdateIn,
+    CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn, CollectionProductsIn,
+    CollectionUpdateIn, ProductBulkIn, ProductCreateIn, ProductUpdateIn,
+    TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
 )
 
 router = APIRouter(prefix="/api/admin/catalog", tags=["admin-catalog"])
@@ -138,6 +138,25 @@ def admin_create_category(
     db: Session = Depends(get_db),
 ):
     return service.admin_create_category(db, admin, body)
+
+
+@router.put("/categories/{category_id}")
+def admin_update_category(
+    category_id: int,
+    body: CategoryUpdateIn,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.admin_update_category(db, admin, category_id, body)
+
+
+@router.delete("/categories/{category_id}")
+def admin_delete_category(
+    category_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.admin_delete_category(db, admin, category_id)
 
 
 @router.get("/collections")

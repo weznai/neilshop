@@ -3,7 +3,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -18,9 +18,25 @@ from app.models import User
 router = APIRouter(prefix="/api/admin/trade", tags=["admin-trade"])
 
 
+def _parse_order_status(raw: Optional[str]) -> tuple[Optional[int], Optional[list[int]]]:
+    """订单状态过滤解析：含逗号拆分转 int 列表（任一段非法 422 invalid status），
+    单值保持 int 语义（与旧 status: int 行为一致）；空/未传 → 不过滤"""
+    if raw is None or raw.strip() == "":
+        return None, None
+    if "," in raw:
+        try:
+            return None, [int(x) for x in raw.split(",")]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid status")
+    try:
+        return int(raw), None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid status")
+
+
 @router.get("/orders")
 def list_orders(
-    status: Optional[int] = None,
+    status: Optional[str] = None,
     q: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
@@ -30,7 +46,11 @@ def list_orders(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_orders(db, status, q, page, per_page, date_from, date_to, sort)
+    status_eq, status_in = _parse_order_status(status)
+    return service_admin.list_orders(
+        db, status_eq, q, page, per_page, date_from, date_to, sort,
+        status_in=status_in,
+    )
 
 
 @router.get("/orders/{order_no}")

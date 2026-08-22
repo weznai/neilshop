@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,10 @@ _SPEND_SQL = text(
 )
 _ADD_POINTS_SQL = text("UPDATE users SET points = points + :amt WHERE id = :uid")
 _POINTS_OF_SQL = text("SELECT points FROM users WHERE id = :uid")
+# 管理员人工扣减（delta 为负）：余额守卫进 WHERE，并发下不会扣成负数
+_ADMIN_DEBIT_SQL = text(
+    "UPDATE users SET points = points + :delta WHERE id = :uid AND points + :delta >= 0"
+)
 # 作废扣减（下限 0）：raw SQL 与 _ADD_POINTS_SQL 同通道，避免同事务内 ORM 脏值
 # 在 commit flush 时覆盖 refund_return 的回补；CASE 下限写法 MySQL/SQLite 通用
 _VOID_POINTS_SQL = text(
@@ -100,6 +105,24 @@ def spend(db: Session, user_id: int, points: int, order_id: int | None = None) -
     balance = int(db.execute(_POINTS_OF_SQL, {"uid": user_id}).scalar())
     _write_ledger(db, user_id, -points, PointsReason.SPEND, balance,
                   ref_type="order", ref_id=order_id)
+    return balance
+
+
+def admin_adjust(db: Session, user_id: int, delta: int, *, admin_id: int) -> int:
+    """管理员人工调整积分（delta>0 加 / delta<0 减），返回调整后余额。
+    加分走 _ADD_POINTS_SQL 通道；扣分走余额守卫的原子 UPDATE（rowcount=0 → 409 余额不足）；
+    流水 reason=ADMIN_ADJUST(11)、ref_type="admin"、ref_id=操作管理员 id。
+    事务边界与 spend/grant_for_order 一致：只写不 commit，由调用方统一提交。"""
+    if db.get(User, user_id) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if delta > 0:
+        db.execute(_ADD_POINTS_SQL, {"uid": user_id, "amt": delta})
+    else:
+        if db.execute(_ADMIN_DEBIT_SQL, {"uid": user_id, "delta": delta}).rowcount == 0:
+            raise HTTPException(status_code=409, detail="insufficient points")
+    balance = int(db.execute(_POINTS_OF_SQL, {"uid": user_id}).scalar())
+    _write_ledger(db, user_id, delta, PointsReason.ADMIN_ADJUST, balance,
+                  ref_type="admin", ref_id=admin_id)
     return balance
 
 

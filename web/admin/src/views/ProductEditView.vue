@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { API_BASE, fmtDetail, req } from '../api/client'
 import { toast } from '../composables/toast'
+import { money } from '../composables/format'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -185,7 +186,7 @@ async function loadVariants(id) {
   const lack = all.filter((v) => v.id && v.images === undefined)
   if (lack.length) {
     try {
-      const det = await req('GET', '/api/products-by-id/' + id)
+      const det = await req('GET', '/api/catalog/products-by-id/' + id)
       const m = Object.fromEntries((det.variants || []).map((x) => [x.id, x.images || []]))
       lack.forEach((v) => { if (m[v.id]) v.images = m[v.id] })
     } catch (_) {}
@@ -433,7 +434,6 @@ async function saveEdit() {
     toast('变体已更新 ✓', 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 /* SKU 生成：slug-option1[-option2]（option2 有值才拼，防同 option1 不同 option2 撞码）；parts join 避免拼出 undefined
  * rawSku 保留全长用于超长提示，调用处 slice(0,64) 截断（与后端一致） */
 const rawSku = (...parts) => parts.filter((p) => p && String(p).trim()).join('-').toUpperCase().replace(/\s+/g, '-')

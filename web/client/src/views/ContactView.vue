@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { req } from '../api/client'
+import { fmtDateTime } from '../composables/datetime'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { i18n } from '../i18n'
@@ -59,7 +60,7 @@ function catLabel(c) {
   const row = CATEGORIES.find((x) => x[0] === c)
   return row ? tt(row[1], row[2]) : tt('Other', '其他')
 }
-function fmtTime(s) { return (s || '').replace('T', ' ').slice(0, 16) }
+const fmtTime = (s) => (s ? fmtDateTime(s, '') : '')
 
 async function loadTemplates(cat) {
   tplLoading.value = true

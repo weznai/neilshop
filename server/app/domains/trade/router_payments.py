@@ -6,14 +6,17 @@ provider 字段（stripe|paypal，缺省走默认链；非默认且不可用 →
 MockProvider 下任何取值回落 mock 并在响应标注 provider=mock）。
 无密钥或缺包时回落 MockProvider，行为与原 mock 版完全一致。核心事务在 service_payments。"""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.deps import get_current_user_optional
 from app.domains.trade import service_payments
 from app.domains.trade.schemas import CreateIntentRequest, MockPayRequest, WebhookRequest
-from app.models import Payment
+from app.models import Payment, User
 from app.services import payment_provider
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
@@ -56,12 +59,14 @@ def _resolve_provider(provider: str) -> payment_provider.PaymentProvider:
 
 def _create_intent_via(
     db: Session, order_no: str, provider: payment_provider.PaymentProvider,
+    *, user: Optional[User] = None, email: Optional[str] = None,
 ) -> dict:
     from app.domains.trade import repository as repo
 
     if provider.name == "mock" and settings.env != "dev":
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     order = service_payments._get_order(db, order_no)
+    service_payments.ensure_order_owner(order, user, email)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
     # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
@@ -97,15 +102,22 @@ def _create_intent_via(
 
 
 @router.post("/create-intent")
-def create_intent(body: CreateIntentBody, db: Session = Depends(get_db)):
+def create_intent(
+    body: CreateIntentBody,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
     if body.provider:
         chosen = _resolve_provider(body.provider)
         if chosen.name == "mock":
-            result = service_payments.create_intent(db, body.order_no)
+            result = service_payments.create_intent(
+                db, body.order_no, user=user, email=body.email)
             result["provider"] = "mock"
             return result
-        return _create_intent_via(db, body.order_no, chosen)
-    return service_payments.create_intent(db, body.order_no)
+        return _create_intent_via(
+            db, body.order_no, chosen, user=user, email=body.email)
+    return service_payments.create_intent(
+        db, body.order_no, user=user, email=body.email)
 
 
 @router.get("/methods")
@@ -124,8 +136,13 @@ def payment_methods():
 
 
 @router.post("/mock-pay")
-def mock_pay(body: MockPayRequest, db: Session = Depends(get_db)):
-    return service_payments.mock_pay(db, body.order_no, body.succeed)
+def mock_pay(
+    body: MockPayRequest,
+    db: Session = Depends(get_db),
+    user: Optional[User] = Depends(get_current_user_optional),
+):
+    return service_payments.mock_pay(
+        db, body.order_no, body.succeed, user=user, email=body.email)
 
 
 @router.post("/webhook")

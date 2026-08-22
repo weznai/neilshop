@@ -3,6 +3,38 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.5] · 管理后台全面体检：契约对齐 + 流程闭环 + UI 修复
+
+### Fixed（前后端契约对齐）
+- **接口路径错误**：ProductEdit 变体图片兜底回显补 `/catalog` 前缀（原 404 被静默吞掉成死代码）。
+- **403 拦截收窄**：admin client 仅对 `/api/admin/` 前缀 403 执行"踢回登录"，工单线程等公开端点的业务型 403（not ticket owner）不再误登出管理员。
+- **集合 banner 校验统一**：后端 `CollectionUpdateIn` 补与创建同款 `_check_banner_image`（必须 http(s)://）；前端 placeholder/提交前校验同步改完整 URL 口径（创建/编辑原先两套标准）。
+- **错误码翻译补全**：新增 `EXCH_ERR`（8 个换货错误码）；`TICKET_ERR` 补 ticket closed / not ticket owner / ticket not found；分类管理 CAT_ERR 与后端 detail 精确串对齐（category in use / has children / parent is self）。
+- **死枚举清理**：删除 RMA「部分退款(7)」永空筛选 tab（后端 refund 只落 5）；礼品卡流水直接消费 `delta_cents` 契约字段；LogsView admin_id NaN 守卫（杜绝 `admin_id=NaN` → 422）。
+
+### Added（流程闭环 / 功能补全）
+- **工单协作闭环**：`GET /api/admin/ops/admins` 管理账号列表 + 工单面板「指派给他人」下拉（原来只能指派给自己）；状态机补 **4→1 重开**（清空 closed_at/close_reason，TicketStatusIn 放行 status=1）；用户在「等待客户」态追加回复自动回流「处理中」（2→1），等待客户工单不再沉底。
+- **积分人工调整**：`POST /api/admin/ops/members/{id}/points`（points.admin_adjust 公共通道：原子增减 + 余额守卫 + ADMIN_ADJUST(11) 流水 + 审计），会员详情弹窗内 delta/原因表单直达。
+- **分类管理补全**：PUT/DELETE `/api/admin/catalog/categories/{id}`（slug 查重排除自身、parent=self 拦截、删除被商品/子分类引用 409），前端分类弹窗升级编辑模式 + 危险删除确认。
+- **订单组合状态过滤**：`GET /orders?status=1,2` 逗号语法（repository status_in）；订单页新增「待发货」组合 tab，与看板 pending_orders(1+2) 口径对齐，深链不再漏单。
+- **批量发货逐单进度**（n/total）、单发弹窗回车提交、批量导入防呆（busy 守卫 + 行数校验 + 确认弹窗）。
+
+### Fixed（页面流程 / 防呆 / 状态同步）
+- **看板口径**：待发货深链 `status=1,2`、待审退货深链带 `rs=s0` 落地待审队列。
+- **会员详情失败残留**：openDetail 失败清空 active（防 A 会员画像上误操作 B 风控）；调整积分换人清草稿。
+- **邮件模板静默失败**：SettingsView 模板区错误横幅 + 重试（原来把接口失败伪装成"暂无模板"）。
+- **URL 状态同步补缺**：Tickets page、Members tier/sort、Inventory sort/threshold 入 query（刷新/分享/回退不丢）；已登录访问 /login 自动回首页；LEGACY 补 `/admin-logs.html`。
+- **AdminLayout 泄漏与误触**：MutationObserver/ResizeObserver 卸载 disconnect；退出登录加确认弹窗。
+
+### Fixed（UI / 一致性）
+- **系统性表格修复**：admin.css 全局补 `td/th{padding:10px 12px}`（修复 6 个视图主数据区单元格互相粘连），删除 Products/Inventory 冗余 scoped 规则。
+- **时区口径统一**：新增 `format.dDate()`（本地日期），Members/Content/Marketing 各处 UTC `slice(0,10)` 直切全部替换（UTC+8 晚间数据差一天）；Marketing popup 有效期统一「本地输入→UTC 提交」口径（原与折扣码两套语义并存）。
+- **一致性收敛**：money() 6 处本地副本收敛 import format；Inventory 两处 Pagination 补 :total；工单指派/重开/关闭文案与状态机对齐。
+
+### 测试与文档
+- 新增 `test_admin_ops_ext`（41 断言：组合状态过滤/管理账号列表/积分调整正负与 409/分类更新删除与 409/工单重开与用户回复回流/banner 编辑校验），run_all 纳入。
+- API.md 重新生成（164→**204** 端点，admin 97）；admin SPA 构建通过；test_a/b/c、admin_ext、exchanges、catalog_ext、refsub、worker、payments、e2e 全绿。
+
 ## [0.3.4] · SEO 基建 + AI 域加固 + 无障碍与数据真实感
 
 ### Added（SEO 基建）

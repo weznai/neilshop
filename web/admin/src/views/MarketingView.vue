@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
-import { dt, money } from '../composables/format'
+import { dt, money, dDate } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -61,10 +61,9 @@ const sceneLabel = (s) => POPUP_SCENES[s] || s
 const sceneOptions = computed(() => [...Object.keys(POPUP_SCENES), ...[...new Set(popups.value.map((p) => p.scene).filter((s) => s && !(s in POPUP_SCENES)))]])
 const popupDlg = ref(false)
 const popupForm = reactive({ id: null, scene: 'welcome', title: '', content_md: '', coupon_code: '', delaySec: 7, exitIntent: false, mobileOnly: false, start_at: '', end_at: '', active: 0 })
-/* datetime-local 值 YYYY-MM-DDTHH:mm ↔ 后端 naive ISO（YYYY-MM-DDTHH:mm:ss）直通，避免时区二次偏移 */
-const dtIn = (iso) => (iso || '').slice(0, 16)
-const dtOut = (v) => (v ? v + ':00' : null)
-/* 折扣码时间：naive UTC → 本地 datetime-local（提交时 new Date().toISOString() 转回 UTC，与新建口径一致） */
+/* 弹窗有效期：与折扣码同一套「本地输入 → 提交转 UTC」口径——编辑回填走 dtLocalIn，提交 dtOut 统一 new Date().toISOString() */
+const dtOut = (v) => (v ? new Date(v).toISOString().slice(0, 19) : null)
+/* naive UTC → 本地 datetime-local（提交时 new Date().toISOString() 转回 UTC，与新建口径一致） */
 const pad2 = (n) => String(n).padStart(2, '0')
 const dtLocalIn = (iso) => {
   if (!iso) return ''
@@ -122,8 +121,8 @@ const utcMs = (iso) => {
 }
 const isExpired = (c) => { const t = utcMs(c.ends_at); return !isNaN(t) && t <= Date.now() }
 const isNotStarted = (c) => { const t = utcMs(c.starts_at); return !isNaN(t) && t > Date.now() }
-/* 弹窗 tab 到期判定：仍按天级比较（end_at 仅日期粒度展示） */
-const todayUtc = () => new Date().toISOString().slice(0, 10)
+/* 弹窗 tab 到期判定：end_at 转本地日期后与本地今天比较（仍为天级粒度） */
+const todayStr = () => dDate(new Date().toISOString())
 
 async function toggleCode(c) {
   try {
@@ -374,7 +373,8 @@ const ledPage = ref(1)
 const ledTotal = ref(0)
 const ledPages = computed(() => Math.max(1, Math.ceil(ledTotal.value / LED_SIZE)))
 const ledNeg = (l) => [2, 3, 6].includes(l.change_type)
-const ledAmt = (l) => (l.amount != null ? l.amount : Math.abs(l.delta_cents || 0))
+/* 流水金额：后端契约字段 delta_cents（恒正值展示，符号由 change_type 决定） */
+const ledAmt = (l) => Math.abs(l.delta_cents || 0)
 async function loadLedger() {
   const g = ledgerCard.value
   if (!g) return
@@ -407,8 +407,8 @@ function editPopup(p) {
     delaySec: p.trigger_rules?.delaySec ?? 7,
     exitIntent: !!p.trigger_rules?.exitIntent,
     mobileOnly: !!p.trigger_rules?.mobileOnly,
-    start_at: dtIn(p.start_at),
-    end_at: dtIn(p.end_at),
+    start_at: dtLocalIn(p.start_at),
+    end_at: dtLocalIn(p.end_at),
     active: p.active ? 1 : 0,
   })
   popupDlg.value = true
@@ -556,6 +556,8 @@ function newCollection() {
 async function createCollection() {
   const slug = colForm.slug.trim().toLowerCase()
   if (!slug || !colForm.title.trim()) { toast('slug 与标题必填', 'error'); return }
+  /* banner 必须是完整 http(s) 地址（新建与编辑同口径校验） */
+  if (colForm.banner.trim() && !/^https?:\/\//i.test(colForm.banner.trim())) { toast('Banner 图地址需为 http(s):// 开头的完整 URL', 'error'); return }
   let rule = {}
   const s = colForm.ruleStr.trim()
   if (s) {
@@ -586,6 +588,8 @@ function editCollection(c) {
 }
 async function saveColEdit() {
   if (!colEdit.title.trim()) { toast('标题必填', 'error'); return }
+  /* banner 必须是完整 http(s) 地址（新建与编辑同口径校验） */
+  if (colEdit.banner.trim() && !/^https?:\/\//i.test(colEdit.banner.trim())) { toast('Banner 图地址需为 http(s):// 开头的完整 URL', 'error'); return }
   try {
     await req('PUT', `/api/admin/catalog/collections/${colEdit.id}`, {
       title: colEdit.title.trim(),
@@ -755,7 +759,7 @@ async function doDelCollection() {
               <span v-if="c.first_order_only">· 仅首单</span>
             </td>
             <td style="color:var(--gray)">{{ c.used_count ?? 0 }}<span v-if="c.usage_limit">/{{ c.usage_limit }}</span></td>
-            <td style="color:var(--gray);font-size:12px">{{ (c.starts_at || '').slice(0, 10) }} ~ {{ c.ends_at ? c.ends_at.slice(0, 10) : '∞' }}</td>
+            <td style="color:var(--gray);font-size:12px">{{ dDate(c.starts_at) || '—' }} ~ {{ c.ends_at ? dDate(c.ends_at) : '∞' }}</td>
             <td style="white-space:nowrap">
               <span v-if="c.is_active && isExpired(c)" class="tag tag-error">已过期</span>
               <span v-else-if="c.is_active && isNotStarted(c)" class="tag tag-done">未生效</span>
@@ -1109,10 +1113,10 @@ async function doDelCollection() {
             <td style="color:var(--gray);font-size:12px">
               {{ p.trigger_rules?.delaySec ?? '—' }}s 延迟<span v-if="p.trigger_rules?.exitIntent"> · 离开触发</span><span v-if="p.trigger_rules?.mobileOnly"> · 仅移动端</span>
             </td>
-            <td style="color:var(--gray);font-size:12px">{{ p.start_at ? p.start_at.slice(0, 10) : '—' }} ~ {{ p.end_at ? p.end_at.slice(0, 10) : '长期' }}</td>
+            <td style="color:var(--gray);font-size:12px">{{ p.start_at ? dDate(p.start_at) : '—' }} ~ {{ p.end_at ? dDate(p.end_at) : '长期' }}</td>
             <td style="color:var(--gray);font-size:12px">{{ p.stats_shown ?? 0 }} / {{ p.stats_converted ?? 0 }}<span v-if="p.stats_shown">（{{ Math.round((p.stats_converted || 0) * 100 / p.stats_shown) }}%）</span></td>
             <td style="white-space:nowrap">
-              <span v-if="p.active && p.end_at && p.end_at.slice(0, 10) < todayUtc()" class="tag tag-error">已到期</span>
+              <span v-if="p.active && p.end_at && dDate(p.end_at) < todayStr()" class="tag tag-error">已到期</span>
               <span v-else class="tag" :class="p.active ? 'tag-paid' : 'tag-pending'">{{ p.active ? '启用' : '停用' }}</span>
             </td>
             <td style="text-align:right;white-space:nowrap">
@@ -1146,8 +1150,8 @@ async function doDelCollection() {
           <div class="field" style="grid-column:1/-1"><label>标题 *</label><input v-model="popupForm.title" class="input" placeholder="Get 20% off your first set"></div>
           <div class="field" style="grid-column:1/-1"><label>内容（Markdown）</label><textarea v-model="popupForm.content_md" class="input" rows="3"></textarea></div>
           <div class="field"><label>延迟秒数</label><input v-model.number="popupForm.delaySec" class="input" type="number" min="0"></div>
-          <div class="field"><label>有效期开始 (UTC)（空=立即）</label><input v-model="popupForm.start_at" class="input" type="datetime-local"></div>
-          <div class="field"><label>有效期结束 (UTC)（空=长期）</label><input v-model="popupForm.end_at" class="input" type="datetime-local"></div>
+          <div class="field"><label>有效期开始（空=立即）</label><input v-model="popupForm.start_at" class="input" type="datetime-local"></div>
+          <div class="field"><label>有效期结束（空=长期）</label><input v-model="popupForm.end_at" class="input" type="datetime-local"></div>
         </div>
         <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:13.5px">
           <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
@@ -1221,8 +1225,8 @@ async function doDelCollection() {
             <input v-model="colForm.slug" class="input" placeholder="summer-picks" style="text-transform:lowercase"></div>
           <div class="field"><label>标题 *</label><input v-model="colForm.title" class="input" placeholder="夏日精选"></div>
           <div class="field"><label>Banner 图 URL（可选）</label>
-            <input v-model="colForm.banner" class="input" placeholder="/static/banners/summer.jpg">
-            <p style="font-size:11px;color:var(--gray);margin-top:4px">创建后可在编辑中补充图片。</p>
+            <input v-model="colForm.banner" class="input" placeholder="https://cdn.example.com/banners/summer.jpg">
+            <p style="font-size:11px;color:var(--gray);margin-top:4px">需 http(s):// 完整地址；创建后可在编辑中补充。</p>
           </div>
           <div class="field"><label>高级规则 rule_json（JSON 对象，可选）</label>
             <textarea v-model="colForm.ruleStr" class="input" rows="3" placeholder='{} 或 {"category":"new"}'></textarea>
@@ -1243,7 +1247,7 @@ async function doDelCollection() {
         <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">slug 与商品组成请在「配商品」/删除重建中维护。</p>
         <div style="display:grid;gap:12px">
           <div class="field"><label>标题 *</label><input v-model="colEdit.title" class="input"></div>
-          <div class="field"><label>Banner 图 URL（清空 = 移除）</label><input v-model="colEdit.banner" class="input" placeholder="/static/banners/summer.jpg"></div>
+          <div class="field"><label>Banner 图 URL（清空 = 移除）</label><input v-model="colEdit.banner" class="input" placeholder="https://cdn.example.com/banners/summer.jpg"></div>
           <div class="field"><label>排序权重（小者靠前）</label><input v-model.number="colEdit.sort_order" class="input" type="number"></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">

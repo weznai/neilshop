@@ -4,6 +4,7 @@ import { req } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { fmtDate } from '../../composables/datetime'
 import { i18n } from '../../i18n'
 
 const auth = useAuthStore()
@@ -129,14 +130,6 @@ async function exportData() {
     ui.toast(tt('Data exported', '数据导出成功'), 'success')
   } catch (_) { ui.toast(tt('Export failed — please retry later', '导出失败，请稍后再试'), 'error') }
   finally { exporting.value = false }
-}
-
-function fmtDate(iso) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (isNaN(d)) return ''
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
 async function deleteAccount() {

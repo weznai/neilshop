@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { req } from '../api/client'
+import { req, intentNoChannel } from '../api/client'
 import { i18n } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
@@ -189,12 +189,16 @@ async function applyGiftCard() {
     ui.toast(giftCardText(pv.value.gift_card_error), 'error')
   } else if (pv.value && pv.value.gift_card) {
     ui.toast(i18n.t('co.gcApplied', money(pv.value.gift_card.balance)), 'success')
+  } else if (pv.value) {
+    ui.toast(i18n.t('co.gcCheckFail'), 'error')
   }
 }
 function removeGiftCard() { appliedGc.value = null; gcInput.value = ''; runPreview() }
 
 function useMaxPoints() {
-  const coverable = pv.value ? Math.max(0, pv.value.subtotal - pv.value.discount_total) : cart.subtotalC
+  const coverable = pv.value
+    ? Math.max(0, pv.value.subtotal - pv.value.discount_total - (pv.value.giftcard_discount || 0))
+    : cart.subtotalC
   pointsInput.value = String(Math.max(0, Math.min(pointsUsable.value, coverable)))
   schedulePreview()
 }
@@ -338,13 +342,20 @@ async function place() {
     const utm = utmOf()
     if (utm) body.utm = utm
     const d = await req('POST', '/api/checkout/place', body)
+    /* 下单成功即清折扣码残留（与 SuccessView 同一 key/方式），避免弃单后旧码被自动带上 */
+    try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
     if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) await saveAddrBook()
     /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock） */
     const useMock = paySel.value === 'mock'
     try {
-      const ib = { order_no: d.order_no }
+      const ib = { order_no: d.order_no, email: f.email.trim() }
       if (paySel.value && paySel.value !== 'mock' && paySel.value !== payDefault.value) ib.provider = paySel.value
       const intent = await req('POST', '/api/payments/create-intent', ib)
+      /* 真实通道仅返回 client_secret 而无 redirect_url：本页无法完成支付，提示并留在当前页 */
+      if (intentNoChannel(intent)) {
+        ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+        return
+      }
       /* hosted checkout：非 mock 通道返回 redirect_url 时跳转 provider 收银台；
          跳转后 3s 未离页则兜底恢复按钮并提示（/success 页有待支付按钮可手动重试） */
       if (!useMock && intent && intent.redirect_url) {
@@ -355,7 +366,7 @@ async function place() {
         router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
         return
       }
-      if (useMock) await req('POST', '/api/payments/mock-pay', { order_no: d.order_no, succeed: true })
+      if (useMock) await req('POST', '/api/payments/mock-pay', { order_no: d.order_no, email: f.email.trim(), succeed: true })
     } catch (e) {
       const m = (e.data && e.data.detail) || e.message || ''
       ui.toast((m ? m + ' · ' : '') + tt('Payment not completed — you can pay from your order', '支付未完成，可到订单中手动支付'), 'error')

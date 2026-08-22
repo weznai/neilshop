@@ -12,8 +12,9 @@ from app.domains.content import service as content_service
 from app.domains.content.schemas import ReasonIn
 from app.domains.ops import repository as repo
 from app.domains.ops.schemas import (
-    REASON_TEXT, ReviewBulkIn, RiskIn, UgcBulkIn,
+    REASON_TEXT, PointsAdjustIn, ReviewBulkIn, RiskIn, UgcBulkIn,
 )
+from app.services import points as points_svc
 
 logger = logging.getLogger("glowmag.ops")
 
@@ -182,6 +183,32 @@ def member_risk(db: Session, admin: User, user_id: int, body: RiskIn) -> dict:
     db.commit()
     db.refresh(u)
     return {"id": u.id, "risk_flag": u.risk_flag}
+
+
+def list_admins(db: Session) -> dict:
+    """管理账号列表（供工单指派选择器）：role>=2 且启用中，按 id 升序"""
+    rows = (
+        db.query(User)
+        .filter(User.role >= 2, User.status == 1)
+        .order_by(User.id.asc())
+        .all()
+    )
+    return {
+        "items": [
+            {"id": u.id, "name": u.name, "email": u.email, "role": u.role}
+            for u in rows
+        ]
+    }
+
+
+def member_points_adjust(db: Session, admin: User, user_id: int, body: PointsAdjustIn) -> dict:
+    """积分人工调整：走 points.admin_adjust 公共通道（原子增减 + ADMIN_ADJUST 流水），
+    此处仅补审计日志并统一提交"""
+    balance = points_svc.admin_adjust(db, user_id, body.delta, admin_id=admin.id)
+    log_admin(db, admin, "points_adjust", "member", user_id,
+              {"delta": body.delta, "reason": body.reason})
+    db.commit()
+    return {"ok": True, "balance": balance}
 
 
 # ===== 评价/UGC 审核（/api/admin/ops，复用 content 域单条 approve/reject） =====

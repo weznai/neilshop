@@ -59,8 +59,9 @@ export async function req(method, path, body, opts) {
       window.dispatchEvent(new CustomEvent('gm-admin-401'))
       setTimeout(() => { fired401 = false }, 3000)
     }
-    /* 权限不足/角色已变更（登录接口自身除外）：提示 + 广播 + 回登录页带 next 续位（与 401 同构） */
-    if (r.status === 403 && !path.includes('/login') && !fired403) {
+    /* 权限不足/角色已变更：仅 /api/admin/ 前缀提示 + 广播 + 回登录页带 next（与 401 同构）；
+     * 其余路径（如 /api/support/*）403 不 toast 不跳转，只抛错给调用方自行处理 */
+    if (r.status === 403 && path.startsWith('/api/admin/') && !path.includes('/login') && !fired403) {
       fired403 = true
       toast('权限不足或已变更，请重新登录', 'error')
       window.dispatchEvent(new CustomEvent('gm-admin-403'))

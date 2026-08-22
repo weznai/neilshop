@@ -43,6 +43,7 @@ const LEGACY = {
   '/admin-marketing.html': '/marketing',
   '/admin-content.html': '/content',
   '/admin-members.html': '/members',
+  '/admin-logs.html': '/logs',
   '/admin-settings.html': '/settings',
 }
 

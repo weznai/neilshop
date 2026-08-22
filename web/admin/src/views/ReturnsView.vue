@@ -7,7 +7,7 @@ import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
-import { RMA_STATUS, ESTATUS, RMA_REASON, RMA_ERR, mapErr } from '../constants/trade'
+import { RMA_STATUS, ESTATUS, RMA_REASON, RMA_ERR, EXCH_ERR, mapErr } from '../constants/trade'
 
 const rmas = ref([])
 const exch = ref([])
@@ -33,7 +33,7 @@ const rmaPages = ref(1)
 const rmaTotal = ref(0)
 const RTABS = [
   ['all', '全部', null], ['s0', '待审核', [0]], ['s23', '待收货', [2, 3]],
-  ['s4', '已收货', [4]], ['s5', '已退款', [5]], ['s6', '已拒绝', [6]], ['s7', '部分退款', [7]],
+  ['s4', '已收货', [4]], ['s5', '已退款', [5]], ['s6', '已拒绝', [6]],
 ]
 /* 高亮按 key 字符串比较（修数组引用比较 R9），筛选值由 key 派生避免双份状态 */
 const rmaFilter = computed(() => RTABS.find(([k]) => k === state.rs)?.[2] ?? null)
@@ -252,7 +252,7 @@ async function doConfirm(reason) {
     toast(`${label} ✓`, 'success')
     cfm.open = false
     load()
-  } catch (e) { toast(`${label}失败：` + (mapErr(e.data?.detail, RMA_ERR) || e.data?.detail || e.message), 'error') }
+  } catch (e) { toast(`${label}失败：` + (mapErr(e.data?.detail, kind === 'rma' ? RMA_ERR : EXCH_ERR) || e.data?.detail || e.message), 'error') }
   submitting.value = false
 }
 
@@ -273,7 +273,7 @@ async function exShipConfirm() {
     toast(`${shipDlg.value.exchange_no} 已重发 ✓`, 'success')
     shipDlg.value = null
     load()
-  } catch (e) { toast('重发失败：' + (e.data?.detail || e.message), 'error') }
+  } catch (e) { toast('重发失败：' + (mapErr(e.data?.detail, EXCH_ERR) || e.data?.detail || e.message), 'error') }
   shipSubmitting.value = false
 }
 </script>

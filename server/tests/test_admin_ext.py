@@ -35,7 +35,7 @@ from app.core.security import create_token, hash_password  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     Category, Collection, CollectionProduct, Exchange, Order, OrderItem, Payment,
-    PopupConfig, Product, Rma, Ticket, User, Variant,
+    PopupConfig, Product, Rma, Shipment, Ticket, User, Variant,
 )
 
 PASSED = 0
@@ -294,12 +294,12 @@ with TestClient(app) as client:
                           json={"slug": "ext-coll-bad", "title": "Bad", "rule_json": {},
                                 "banner_image": "javascript:alert(1)"}).status_code == 422)
     r = client.put(f"/api/admin/catalog/collections/{cid}", headers=H_OPS,
-                   json={"title": "Ext Coll v2", "banner_image": "/img/banner.jpg",
-                         "sort_order": 5, "is_active": False})
+                    json={"title": "Ext Coll v2", "banner_image": "https://img/banner.jpg",
+                          "sort_order": 5, "is_active": False})
     d = r.json()
     check("集合 PUT 部分更新（未传 rule_json 保持原值）",
           r.status_code == 200 and d["title"] == "Ext Coll v2"
-          and d["banner_image"] == "/img/banner.jpg" and d["sort_order"] == 5
+          and d["banner_image"] == "https://img/banner.jpg" and d["sort_order"] == 5
           and d["is_active"] == 0 and d["rule_json"] == {}, d)
     r = client.put(f"/api/admin/catalog/collections/{cid}/products", headers=H_OPS,
                    json={"products": [{"product_id": p.id, "sort_order": 1}]})
@@ -358,6 +358,26 @@ with TestClient(app) as client:
           r.status_code == 200 and d["refund_amount"] == 1451 and d["full"] is True
           and payment.status == 3 and payment.refunded_amount == 3110
           and o_cl_db.status == 9, d)
+
+    # ===== 6d. ship CAS：重复发货 409 + 不重复建 Shipment =====
+    o_sh = make_order(s, "EXT260820SHIP1")
+    s.add(OrderItem(order_id=o_sh.id, variant_id=v.id, product_slug="ext-gel",
+                    title_snapshot="Ext Gel", qty=1, unit_price=1000, subtotal=1000))
+    s.commit()
+    ship_body = {"carrier": "usps", "tracking_no": "9400110200880"}
+    r = client.post("/api/admin/trade/orders/EXT260820SHIP1/ship", headers=H_OPS,
+                    json=ship_body)
+    check("首次发货 200 → 状态 3 / shipping_status=2 / shipped_at 落库",
+          r.status_code == 200 and r.json()["order_status"] == 3, r.text[:120])
+    r = client.post("/api/admin/trade/orders/EXT260820SHIP1/ship", headers=H_OPS,
+                    json=ship_body)
+    s.expire_all()
+    o_sh = s.query(Order).filter(Order.order_no == "EXT260820SHIP1").first()
+    check("重复发货 → 409 not_shippable:3 且仅一条 Shipment（CAS 防并发重复发货）",
+          r.status_code == 409
+          and str(r.json()["detail"]).startswith("not_shippable")
+          and s.query(Shipment).filter(Shipment.order_id == o_sh.id).count() == 1,
+          r.text[:120])
 
     s.close()
 

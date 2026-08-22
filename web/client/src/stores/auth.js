@@ -22,6 +22,8 @@ export const useAuthStore = defineStore('auth', {
       const d = await req('POST', '/api/account/login', { email, password })
       this._cache(d.user)
       await this.fetchPoints().catch(() => {})
+      /* 登录后同步心愿单角标（沿用 gm_wl_count + gm:wl-changed 机制） */
+      this.syncWishlist().catch(() => {})
       return d.user
     },
     async register(email, password, name, refCode) {
@@ -43,9 +45,9 @@ export const useAuthStore = defineStore('auth', {
       /* 会话 Cookie 已清：拉平为游客购物车（覆盖本地渲染缓存，响应头回写新 token） */
       await useCartStore().refresh().catch(() => {})
     },
-    async me() {
+    async me(silent) {
       try {
-        const u = await req('GET', '/api/account/me')
+        const u = await req('GET', '/api/account/me', undefined, silent ? { silent401: true } : undefined)
         this._cache(u)
         return u
       } catch (e) {
@@ -53,6 +55,11 @@ export const useAuthStore = defineStore('auth', {
         if (e && e.status === 401) this._cache(null)
         throw e
       }
+    },
+    async syncWishlist() {
+      const items = await req('GET', '/api/account/wishlist')
+      try { localStorage.setItem('gm_wl_count', String((items || []).length)) } catch (_) { /* 隐私模式 */ }
+      window.dispatchEvent(new Event('gm:wl-changed'))
     },
     async fetchPoints() {
       this.points = await req('GET', '/api/points')

@@ -3,10 +3,10 @@
 > 本文件由 `scripts/gen_api_docs.py` 自动生成（`from app.main import app` 展平路由），请勿手编；
 > CI 可用 `python scripts/gen_api_docs.py --check` 校验是否陈旧（不一致 exit 1）。
 
-- 生成时间：2026-08-21 15:21:20
-- 端点总数：**172**（展平后路由 178 条，含 6 个尾斜杠双路由已合并；方法×路径去重口径）
-- 分组数：**19**
-- 鉴权分布：🔒 admin 76 · 👤 user 33 · 🌐 public 63
+- 生成时间：2026-08-22 23:46:16
+- 端点总数：**197**（展平后路由 204 条，含 7 个尾斜杠双路由已合并；方法×路径去重口径）
+- 分组数：**22**
+- 鉴权分布：🔒 admin 97 · 👤 user 37 · 🌐 public 63
 
 ## 运行与交互文档
 
@@ -52,12 +52,14 @@ cd server
 | `POST` | `/api/account/wishlist/{product_id}` | 👤 user | account | 加入愿望单 |
 | `DELETE` | `/api/account/wishlist/{product_id}` | 👤 user | account | 移出愿望单 |
 
-## /api/admin/catalog · 后台 · 商品目录（21 个端点）
+## /api/admin/catalog · 后台 · 商品目录（23 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
 | `GET` | `/api/admin/catalog/categories` | 🔒 admin | admin-catalog | 分类列表 |
 | `POST` | `/api/admin/catalog/categories` | 🔒 admin | admin-catalog | 创建分类 |
+| `PUT` | `/api/admin/catalog/categories/{category_id}` | 🔒 admin | admin-catalog | 更新分类 |
+| `DELETE` | `/api/admin/catalog/categories/{category_id}` | 🔒 admin | admin-catalog | 删除分类 |
 | `GET` | `/api/admin/catalog/collections` | 🔒 admin | admin-catalog | 合集列表 |
 | `POST` | `/api/admin/catalog/collections` | 🔒 admin | admin-catalog | 创建合集 |
 | `PUT` | `/api/admin/catalog/collections/{collection_id}` | 🔒 admin | admin-catalog | 集合更新（部分字段，含 banner） |
@@ -78,10 +80,17 @@ cd server
 | `GET` | `/api/admin/catalog/variants` | 🔒 admin | admin-catalog | 变体列表 |
 | `PUT` | `/api/admin/catalog/variants/{variant_id}` | 🔒 admin | admin-catalog | 更新变体 |
 
-## /api/admin/ops · 后台 · 运营（34 个端点）
+## /api/admin/media（1 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
+| `POST` | `/api/admin/media/upload` | 🔒 admin | admin-media | 创建upload |
+
+## /api/admin/ops · 后台 · 运营（40 个端点）
+
+| 方法 | 路径 | 鉴权 | tags | 说明 |
+|---|---|---|---|---|
+| `GET` | `/api/admin/ops/admins` | 🔒 admin | admin-ops | admins列表 |
 | `GET` | `/api/admin/ops/articles` | 🔒 admin | admin-ops | 博客文章列表 |
 | `POST` | `/api/admin/ops/articles` | 🔒 admin | admin-ops | 创建博客文章 |
 | `PUT` | `/api/admin/ops/articles/{article_id}` | 🔒 admin | admin-ops | 更新博客文章 |
@@ -99,14 +108,17 @@ cd server
 | `GET` | `/api/admin/ops/logs` | 🔒 admin | admin-ops | 操作日志列表 |
 | `GET` | `/api/admin/ops/members` | 🔒 admin | admin-ops | 会员列表 |
 | `GET` | `/api/admin/ops/members/{user_id}` | 🔒 admin | admin-ops | 会员详情 |
+| `POST` | `/api/admin/ops/members/{user_id}/points` | 🔒 admin | admin-ops | 创建points |
 | `POST` | `/api/admin/ops/members/{user_id}/risk` | 🔒 admin | admin-ops | 标记会员风控 |
 | `GET` | `/api/admin/ops/popups` | 🔒 admin | admin-ops | 弹窗列表 |
 | `POST` | `/api/admin/ops/popups` | 🔒 admin | admin-ops | 创建弹窗 |
 | `PUT` | `/api/admin/ops/popups/{popup_id}` | 🔒 admin | admin-ops | 更新弹窗 |
 | `POST` | `/api/admin/ops/popups/{popup_id}/toggle` | 🔒 admin | admin-ops | 启停弹窗 |
-| `GET` | `/api/admin/ops/reviews` | 🔒 admin | admin-ops | 评价列表 |
+| `GET` | `/api/admin/ops/reviews`（`/api/admin/ops/reviews/` 双路由） | 🔒 admin | admin-ops | 评价列表 |
+| `POST` | `/api/admin/ops/reviews/bulk` | 🔒 admin | admin-ops | 创建bulk |
 | `POST` | `/api/admin/ops/reviews/{review_id}/approve` | 🔒 admin | admin-ops | 批准评价 |
 | `POST` | `/api/admin/ops/reviews/{review_id}/reject` | 🔒 admin | admin-ops | 拒绝评价 |
+| `POST` | `/api/admin/ops/reviews/{review_id}/unapprove` | 🔒 admin | admin-ops | 创建unapprove |
 | `GET` | `/api/admin/ops/settings` | 🔒 admin | admin-ops | 运营配置列表 |
 | `PUT` | `/api/admin/ops/settings` | 🔒 admin | admin-ops | 更新运营配置 |
 | `GET` | `/api/admin/ops/tickets` | 🔒 admin | admin-ops | 工单列表 |
@@ -114,10 +126,30 @@ cd server
 | `POST` | `/api/admin/ops/tickets/{ticket_no}/close` | 🔒 admin | admin-ops | 关闭工单 |
 | `POST` | `/api/admin/ops/tickets/{ticket_no}/reply` | 🔒 admin | admin-ops | 回复工单 |
 | `GET` | `/api/admin/ops/ugc` | 🔒 admin | admin-ops | UGC列表 |
+| `POST` | `/api/admin/ops/ugc/bulk` | 🔒 admin | admin-ops | 创建bulk |
 | `POST` | `/api/admin/ops/ugc/{ugc_id}/approve` | 🔒 admin | admin-ops | 批准UGC |
 | `POST` | `/api/admin/ops/ugc/{ugc_id}/reject` | 🔒 admin | admin-ops | 拒绝UGC |
+| `POST` | `/api/admin/ops/ugc/{ugc_id}/unapprove` | 🔒 admin | admin-ops | 创建unapprove |
 
-## /api/admin/trade · 后台 · 交易/履约（21 个端点）
+## /api/admin/promo（7 个端点）
+
+| 方法 | 路径 | 鉴权 | tags | 说明 |
+|---|---|---|---|---|
+| `DELETE` | `/api/admin/promo/discounts/{discount_id}` | 🔒 admin | admin-ops | 删除折扣码 |
+| `GET` | `/api/admin/promo/discounts/{discount_id}/usages` | 🔒 admin | admin-ops | usages详情 |
+| `GET` | `/api/admin/promo/giftcards` | 🔒 admin | admin-ops | giftcards列表 |
+| `POST` | `/api/admin/promo/giftcards` | 🔒 admin | admin-ops | 创建giftcards |
+| `PUT` | `/api/admin/promo/giftcards/{gift_card_id}/freeze` | 🔒 admin | admin-ops | 更新freeze |
+| `GET` | `/api/admin/promo/giftcards/{gift_card_id}/ledger` | 🔒 admin | admin-ops | 流水详情 |
+| `PUT` | `/api/admin/promo/giftcards/{gift_card_id}/unfreeze` | 🔒 admin | admin-ops | 更新unfreeze |
+
+## /api/admin/support（1 个端点）
+
+| 方法 | 路径 | 鉴权 | tags | 说明 |
+|---|---|---|---|---|
+| `PUT` | `/api/admin/support/tickets/{ticket_no}/status` | 🔒 admin | admin-ops | 更新status |
+
+## /api/admin/trade · 后台 · 交易/履约（25 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -129,16 +161,20 @@ cd server
 | `POST` | `/api/admin/trade/exchanges/{exchange_no}/ship` | 🔒 admin | admin-trade | 换货单发货（回填运单号） |
 | `GET` | `/api/admin/trade/orders` | 🔒 admin | admin-trade | 订单列表 |
 | `GET` | `/api/admin/trade/orders/{order_no}` | 🔒 admin | admin-trade | 订单详情 |
+| `POST` | `/api/admin/trade/orders/{order_no}/cancel` | 🔒 admin | admin-trade | 取消订单 |
 | `POST` | `/api/admin/trade/orders/{order_no}/mark-delivered` | 🔒 admin | admin-trade | 标记订单送达 |
+| `POST` | `/api/admin/trade/orders/{order_no}/note` | 🔒 admin | admin-trade | 创建note |
 | `POST` | `/api/admin/trade/orders/{order_no}/refund` | 🔒 admin | admin-trade | 订单退款 |
 | `POST` | `/api/admin/trade/orders/{order_no}/ship` | 🔒 admin | admin-trade | 订单发货（回填运单号） |
 | `GET` | `/api/admin/trade/rmas` | 🔒 admin | admin-trade | RMA列表 |
 | `POST` | `/api/admin/trade/rmas/{rma_no}/approve` | 🔒 admin | admin-trade | 批准RMA |
 | `POST` | `/api/admin/trade/rmas/{rma_no}/receive` | 🔒 admin | admin-trade | RMA 收货（回补库存） |
 | `POST` | `/api/admin/trade/rmas/{rma_no}/refund` | 🔒 admin | admin-trade | RMA退款 |
+| `POST` | `/api/admin/trade/rmas/{rma_no}/reject` | 🔒 admin | admin-trade | 拒绝RMA |
 | `GET` | `/api/admin/trade/shipping-rates` | 🔒 admin | admin-trade | shipping-rates列表 |
 | `POST` | `/api/admin/trade/shipping-rates` | 🔒 admin | admin-trade | 创建shipping-rates |
 | `PUT` | `/api/admin/trade/shipping-rates/{rate_id}` | 🔒 admin | admin-trade | 更新shipping-rates |
+| `DELETE` | `/api/admin/trade/shipping-rates/{rate_id}` | 🔒 admin | admin-trade | 删除shipping-rates |
 | `POST` | `/api/admin/trade/stock/adjust` | 🔒 admin | admin-trade | 手工调整库存（写 stock_movements 流水） |
 | `GET` | `/api/admin/trade/stock/low` | 🔒 admin | admin-trade | 低库存预警列表 |
 | `GET` | `/api/admin/trade/stock/movements` | 🔒 admin | admin-trade | 库存流水查询（唯一真相） |
@@ -200,13 +236,16 @@ cd server
 | `GET` | `/api/content/ugc` | 🌐 public | content | UGC 公开上墙（status=1，id 倒序） |
 | `POST` | `/api/content/ugc` | 🌐 public | content | 投稿 UGC（匿名可投，采用奖 100 积分） |
 
-## /api/exchanges · 换货（3 个端点）
+## /api/exchanges · 换货（6 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
 | `GET` | `/api/exchanges`（`/api/exchanges/` 双路由） | 🌐 public | exchanges | 我的换货单列表 |
 | `POST` | `/api/exchanges`（`/api/exchanges/` 双路由） | 🌐 public | exchanges | 创建换货（窗口/可换量校验，差价三态） |
 | `GET` | `/api/exchanges/{exchange_no}` | 🌐 public | exchanges | 换货单详情（差价/状态） |
+| `POST` | `/api/exchanges/{exchange_no}/cancel` | 👤 user | exchanges | 取消换货单 |
+| `POST` | `/api/exchanges/{exchange_no}/mock-pay` | 👤 user | exchanges | 创建mock-pay |
+| `POST` | `/api/exchanges/{exchange_no}/pay-intent` | 👤 user | exchanges | 创建pay-intent |
 
 ## /api/health · 健康检查（1 个端点）
 
@@ -214,7 +253,7 @@ cd server
 |---|---|---|---|---|
 | `GET` | `/api/health` | 🌐 public | - | 健康检查（服务名/版本） |
 
-## /api/orders · 订单（4 个端点）
+## /api/orders · 订单（5 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -222,6 +261,7 @@ cd server
 | `GET` | `/api/orders/track` | 🌐 public | orders | 订单物流轨迹（免登录） |
 | `GET` | `/api/orders/{order_no}` | 🌐 public | orders | 订单详情（登录本人，或订单号+邮箱双因子） |
 | `POST` | `/api/orders/{order_no}/cancel` | 👤 user | orders | 取消订单 |
+| `POST` | `/api/orders/{order_no}/confirm-received` | 👤 user | orders | 创建confirm-received |
 
 ## /api/payments · 支付（4 个端点）
 

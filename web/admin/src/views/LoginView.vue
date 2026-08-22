@@ -20,7 +20,11 @@ const formErr = ref('')
 /* 演示账号/密码提示仅 DEV 出现，生产构建不泄露种子账号 */
 const DEV = import.meta.env.DEV
 
-onMounted(() => nextTick(() => emailEl.value?.focus()))
+/* 已登录访问 /login：直接回后台首页，免去重复登录 */
+onMounted(() => {
+  if (session.user) { router.replace('/'); return }
+  nextTick(() => emailEl.value?.focus())
+})
 
 /* 输入即清除对应字段错误 */
 watch(email, () => { emailErr.value = '' })

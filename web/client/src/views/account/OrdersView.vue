@@ -1,10 +1,11 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { req } from '../../api/client'
+import { req, intentNoChannel } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { fmtDateTime } from '../../composables/datetime'
 import { i18n } from '../../i18n'
 
 const ui = useUiStore()
@@ -28,10 +29,10 @@ const cancelArm = useArmConfirm()
 const recvArm = useArmConfirm()
 
 const SHIP = { 0: '', 1: [' · partially shipped', ' · 部分发货'], 2: [' · all shipped', ' · 全部发货'] }
-/* 服务端筛选（GET /api/orders?status=&page=，每页 10 条）；标签 tt 双语 [en, zh] */
+/* 服务端筛选（GET /api/orders?status=&page=，每页 10 条）；标签 tt 双语 [en, zh]；后端无置 2 路径，无备货中 tab */
 const TABS = [
   ['all', ['All', '全部'], null], ['s0', ['Unpaid', '待付款'], 0], ['s1', ['Paid', '已支付'], 1],
-  ['s2', ['Packing', '备货中'], 2], ['s3', ['Shipped', '已发货'], 3], ['s4', ['Delivered', '已送达'], 4],
+  ['s3', ['Shipped', '已发货'], 3], ['s4', ['Delivered', '已送达'], 4],
   ['s5', ['Completed', '已完成'], 5], ['s8', ['Cancelled', '已取消'], 8], ['s9', ['Refunded', '已退款'], 9],
 ]
 function tabFromQuery(q) {
@@ -45,16 +46,7 @@ function keyFromTab(sv) {
 const tab = ref(null)
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-function fmt(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
-  return d.getFullYear() === new Date().getFullYear()
-    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-}
+const fmt = fmtDateTime
 
 async function load() {
   loading.value = true
@@ -110,7 +102,11 @@ function go(p) {
 async function pay(o) {
   payingNo.value = o.order_no
   try {
-    await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    const intent = await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    if (intentNoChannel(intent)) {
+      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })
     ui.toast(d.order_status === 1 ? tt('Payment successful — points will be credited after confirmation', '支付成功，积分将在确认后发放') : tt('Payment processing', '支付处理中'), 'success')
     await load()

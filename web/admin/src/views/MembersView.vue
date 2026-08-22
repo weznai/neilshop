@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { money, dDate } from '../composables/format'
 import { useQuerySync } from '../composables/useQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -9,7 +10,6 @@ import Pagination from '../components/Pagination.vue'
 
 const members = ref([])
 const total = ref(0)
-const tier = ref('')          /* '' = 全部等级（后端 tier 为精确匹配，null 不过滤） */
 const SIZE = 50
 const active = ref(null)
 const loaded = ref(false)
@@ -17,16 +17,20 @@ const loadErr = ref(false)
 const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 const detailBusy = ref(0)      /* 按行隔离：存正在加载的行 id（0=空闲），仅该行 loading */
 
-/* 筛选/分页 URL 同步（risk：'' 全部 / 0 正常 / 1 关注 / 2 黑名单，见 models/user.py） */
-const st = reactive({ q: '', page: 1, risk: '' })
-useQuerySync(st, { nums: ['page'], defaults: { page: 1, risk: '' } })
+/* 筛选/分页/排序 URL 同步（risk：'' 全部 / 0 正常 / 1 关注 / 2 黑名单，见 models/user.py；
+ * tier '' 全部等级；sort 白名单 points/-points/total_spent/-total_spent） */
+const SORTABLE = ['points', '-points', 'total_spent', '-total_spent']
+const st = reactive({ q: '', page: 1, risk: '', tier: '', sort: '' })
+useQuerySync(st, { nums: ['page'], defaults: { page: 1, risk: '', tier: '', sort: '' } })
+/* 回填清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
+if (!SORTABLE.includes(st.sort)) st.sort = ''
+if (!['', '0', '1', '2'].includes(st.tier)) st.tier = ''
 
 /* 等级口径与后端一致：tier 0普通(Glow) / 1银卡(Silver) / 2金卡(Gold)，值域 0-2 */
 const TIER = ['Glow', 'Silver', 'Gold']
 /* 等级视觉分档：Glow 淡玫瑰、Silver 银灰、Gold 金 */
 const tierCls = (t) => ''
 const tierStyle = (t) => (t === 2 ? 'background:#C9A227;color:#fff' : t === 1 ? 'background:#E8ECF2;color:#4A5568' : 'background:var(--rose-pale);color:var(--plum)')
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
 async function load(p = 1) {
@@ -37,9 +41,9 @@ async function load(p = 1) {
     const params = new URLSearchParams({ page: p, size: SIZE })
     const s = st.q.trim()
     if (s) params.set('q', s)
-    if (tier.value !== '') params.set('tier', tier.value)
+    if (st.tier !== '') params.set('tier', st.tier)
     if (st.risk !== '') params.set('risk', st.risk)
-    if (sort.key) params.set('sort', (sort.dir === -1 ? '-' : '') + sort.key)   /* 服务端白名单排序 */
+    if (st.sort) params.set('sort', st.sort)   /* 服务端白名单排序 */
     const d = await req('GET', '/api/admin/ops/members?' + params)
     members.value = d.items || []
     total.value = d.total ?? 0
@@ -54,28 +58,51 @@ async function load(p = 1) {
 onMounted(() => load(st.page))
 
 function search() { load(1) }
-function setTier(v) { tier.value = v; load(1) }
+function setTier(v) { st.tier = v; load(1) }
 function setRiskFilter(v) { st.risk = v; load(1) }
 /* 表格空态文案：搜索/等级/风控任一筛选生效→未匹配，否则暂无 */
-const filtered = computed(() => st.q.trim() !== '' || tier.value !== '' || st.risk !== '')
+const filtered = computed(() => st.q.trim() !== '' || st.tier !== '' || st.risk !== '')
 
-/* 服务端排序（积分/累计消费）：点击列头 asc/desc 循环，sort 传后端白名单（points/-points/total_spent/-total_spent） */
-const sort = reactive({ key: '', dir: 1 })
+/* 服务端排序（积分/累计消费）：同列点击 asc/desc 循环，sort 传后端白名单；切换回第一页 */
 function sortBy(k) {
-  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
-  else { sort.dir = -sort.dir }
-  load(1)   /* 全量排序后回第一页；翻页时 load 继续携带排序参数 */
+  st.sort = st.sort === k ? '-' + k : k
+  load(1)
 }
-const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
+const sortInd = (k) => (st.sort === k ? '▲' : st.sort === '-' + k ? '▼' : '')
 
 async function openDetail(m) {
   detailBusy.value = m.id
   try {
     active.value = await req('GET', '/api/admin/ops/members/' + m.id)
     riskDraft.value = String(active.value.risk_flag || 0)
+    Object.assign(ptsForm, { delta: 0, reason: '' })   /* 换人后清空调整积分草稿 */
   }
-  catch (e) { toast('加载失败：' + (e.message || ''), 'error') }
+  catch (e) {
+    active.value = null   /* 失败清空：防残留上一位会员画像导致误操作风控/积分 */
+    toast('加载失败：' + (e.message || ''), 'error')
+  }
   finally { detailBusy.value = 0 }
+}
+
+/* ===== 调整积分：delta 非零整数 + reason 必填 → POST /ops/members/{id}/points（成功返回新余额） ===== */
+const ptsForm = reactive({ delta: 0, reason: '' })
+const ptsBusy = ref(false)
+async function submitPoints() {
+  if (ptsBusy.value || !active.value) return
+  const d = Number(ptsForm.delta)
+  if (!Number.isInteger(d) || d === 0) { toast('积分调整量需为非零整数', 'error'); return }
+  if (!ptsForm.reason.trim()) { toast('请填写调整原因', 'error'); return }
+  ptsBusy.value = true
+  try {
+    const r = await req('POST', `/api/admin/ops/members/${active.value.id}/points`, { delta: d, reason: ptsForm.reason.trim() })
+    toast(`积分已调整（${d > 0 ? '+' : ''}${d}），新余额 ${(r.balance ?? 0).toLocaleString()} 分 ✓`, 'success')
+    Object.assign(ptsForm, { delta: 0, reason: '' })
+    openDetail(active.value)   /* 重拉详情：积分余额与流水同步刷新 */
+  } catch (e) {
+    const msg = e.data?.detail
+    toast('调整失败：' + (msg === 'insufficient points' ? '会员当前积分不足' : msg === 'user not found' ? '会员不存在' : (msg || e.message)), 'error')
+  }
+  ptsBusy.value = false
 }
 
 /* 风控下拉：受控 v-model（riskDraft），确认/取消/失败都回写草稿值驱动视图复位 */
@@ -116,7 +143,7 @@ async function applyRisk(flag = 2) {
       <span class="page-sub">共 {{ total }} 位会员</span>
     </div>
     <div class="filter-bar">
-      <select class="input" :value="tier" style="width:auto;height:38px;font-size:13px" @change="setTier($event.target.value)">
+      <select class="input" :value="st.tier" style="width:auto;height:38px;font-size:13px" @change="setTier($event.target.value)">
         <option value="">全部等级</option>
         <option v-for="(t, i) in TIER" :key="i" :value="String(i)">{{ t }}</option>
       </select>
@@ -164,7 +191,7 @@ async function applyRisk(flag = 2) {
           <td><span class="tag" :class="tierCls(m.tier || 0)" :style="tierStyle(m.tier || 0)">{{ TIER[m.tier || 0] || '—' }}</span></td>
           <td><b style="color:var(--plum)">{{ (m.points || 0).toLocaleString() }}</b></td>
           <td>{{ money(m.total_spent) }}</td>
-          <td style="color:var(--gray)">{{ m.last_order_at ? m.last_order_at.slice(0, 10) : '—' }}</td>
+          <td style="color:var(--gray)">{{ dDate(m.last_order_at) || '—' }}</td>
           <td><span class="tag" :class="m.risk_flag === 2 ? 'tag-error' : m.risk_flag === 1 ? 'tag-pending' : 'tag-done'">
             {{ ['正常', '关注', '黑名单'][m.risk_flag || 0] }}</span></td>
           <td style="text-align:right">
@@ -187,10 +214,21 @@ async function applyRisk(flag = 2) {
       </div>
       <div class="kv" style="margin-bottom:14px">
         <div class="kv-row"><span>邮箱</span><span class="kv-val">{{ active.email }}</span></div>
-        <div class="kv-row"><span>加入时间</span><span class="kv-val">{{ (active.created_at || '').slice(0, 10) || '—' }}</span></div>
+        <div class="kv-row"><span>加入时间</span><span class="kv-val">{{ dDate(active.created_at) || '—' }}</span></div>
         <div class="kv-row"><span>积分</span><span class="kv-val" style="color:var(--plum);font-weight:700">{{ (active.points || 0).toLocaleString() }}</span></div>
         <div class="kv-row"><span>累计消费</span><span class="kv-val">{{ money(active.total_spent) }}</span></div>
-        <div class="kv-row"><span>最近下单</span><span class="kv-val">{{ active.last_order_at ? active.last_order_at.slice(0, 10) : '—' }}</span></div>
+        <div class="kv-row"><span>最近下单</span><span class="kv-val">{{ dDate(active.last_order_at) || '—' }}</span></div>
+      </div>
+
+      <!-- 调整积分：delta 非零整数 + 原因必填（成功显示新余额并刷新详情） -->
+      <div class="field">
+        <label>调整积分</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input v-model.number="ptsForm.delta" class="input" type="number" step="1" style="width:110px" placeholder="如 100 / -50">
+          <input v-model="ptsForm.reason" class="input" style="flex:1;min-width:140px" placeholder="原因（必填，如：售后补偿）" @keydown.enter.prevent="submitPoints">
+          <button class="btn btn-secondary" :class="{ loading: ptsBusy }" :disabled="ptsBusy" @click="submitPoints">提交</button>
+        </div>
+        <p style="font-size:11.5px;color:var(--gray);margin-top:6px">正数增加、负数扣减；扣减超过当前余额将被拒绝。</p>
       </div>
 
       <div class="field">
@@ -210,7 +248,7 @@ async function applyRisk(flag = 2) {
         <div class="dtitle" style="margin-bottom:8px">积分流水（近 {{ Math.min(10, active.ledger.length) }} 条）</div>
         <div v-for="(l, i) in active.ledger.slice(0, 10)" :key="l.id || i" style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--gray-light)">
           <span style="color:var(--gray);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-            {{ (l.created_at || '').slice(0, 10) }} · {{ l.reason || '—' }}<span v-if="l.frozen" class="tag tag-pending" style="font-size:10px;margin-left:4px">冻结中</span>
+            {{ dDate(l.created_at) }} · {{ l.reason || '—' }}<span v-if="l.frozen" class="tag tag-pending" style="font-size:10px;margin-left:4px">冻结中</span>
           </span>
           <span style="flex:none;text-align:right">
             <b :style="{ color: (l.change ?? 0) >= 0 ? 'var(--success)' : 'var(--error)' }">{{ (l.change ?? 0) >= 0 ? '+' : '' }}{{ l.change ?? 0 }}</b>

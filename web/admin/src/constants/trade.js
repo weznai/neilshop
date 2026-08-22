@@ -86,7 +86,7 @@ export const ORDER_ERR = {
   variant_out_of_stock: '库存不足',
 }
 
-/* RMA / 换货写操作 */
+/* RMA 写操作 */
 export const RMA_ERR = {
   rma_not_rejectable: '仅待审核申请可拒绝',
   rma_not_approvable: '该申请不在待审核状态',
@@ -94,10 +94,25 @@ export const RMA_ERR = {
   rma_not_refundable: '当前状态不可退款',
 }
 
+/* 换货写操作（detail 精确串采集自 service_exchanges.py，冒号后带当前状态码按前缀匹配） */
+export const EXCH_ERR = {
+  exchange_not_approvable: '当前状态不允许批准该换货',
+  exchange_not_rejectable: '当前状态不允许拒绝该换货',
+  exchange_not_awaiting_diff: '该换货不在待付差价状态',
+  exchange_not_shippable: '当前状态不允许重发新商品',
+  exchange_not_completable: '当前状态不可完成该换货',
+  diff_already_paid: '差价已支付，请勿重复操作',
+  variant_out_of_stock: '新变体库存不足',
+  exchange_not_found: '换货单不存在',
+}
+
 /* 工单操作 */
 export const TICKET_ERR = {
   invalid_status_transition: '非法状态流转',
   ticket_already_closed: '工单已关闭',
+  'ticket closed': '工单已关闭，如需继续处理请先重开',
+  'not ticket owner': '无权操作该工单（非工单所有者）',
+  'ticket not found': '工单不存在',
 }
 
 /* 错误 detail 前缀匹配 → 映射文案（无匹配返回 ''，调用方回退原始 detail/message） */

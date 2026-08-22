@@ -511,12 +511,32 @@ def all_categories(db: Session) -> list[Category]:
     )
 
 
-def category_slug_taken(db: Session, slug: str) -> bool:
-    return db.query(Category.id).filter(Category.slug == slug).first() is not None
+def category_slug_taken(db: Session, slug: str, *, exclude_id: int | None = None) -> bool:
+    """slug 查重：exclude_id 用于更新时排除自身（保持创建路径行为不变）"""
+    query = db.query(Category.id).filter(Category.slug == slug)
+    if exclude_id is not None:
+        query = query.filter(Category.id != exclude_id)
+    return query.first() is not None
 
 
 def add_category(db: Session, c: Category) -> None:
     db.add(c)
+
+
+def product_count_by_category(db: Session, category_id: int) -> int:
+    """分类下商品引用数（删除保护用）"""
+    return (
+        db.query(func.count()).select_from(Product)
+        .filter(Product.category_id == category_id).scalar()
+    ) or 0
+
+
+def child_category_count(db: Session, category_id: int) -> int:
+    """直接子分类数（删除保护用）"""
+    return (
+        db.query(func.count()).select_from(Category)
+        .filter(Category.parent_id == category_id).scalar()
+    ) or 0
 
 
 def all_collections(db: Session) -> list[Collection]:

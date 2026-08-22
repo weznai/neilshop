@@ -1,11 +1,8 @@
-"""购物车请求模型（Pydantic v2）。"""
+"""购物车请求模型（Pydantic v2）；CartItemIn 统一由 trade 域定义 re-export。"""
 
 from pydantic import BaseModel, Field
 
-
-class CartItemIn(BaseModel):
-    variant_id: int
-    qty: int = Field(ge=1, le=99)
+from app.domains.trade.schemas import CartItemIn  # noqa: F401
 
 
 class CartBatchIn(BaseModel):

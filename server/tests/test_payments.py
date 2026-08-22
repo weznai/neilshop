@@ -147,13 +147,43 @@ try:
         o2 = make_order(s, "NS260815PAY02", 1500, [(v1.id, 1, 1500)], user_id=emma.id)
         o3 = make_order(s, "NS260815PAY03", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
         s.commit()
+        emma_auth = {"Authorization": f"Bearer {create_token(emma.id, emma.role)}"}
 
         def order_by_no(no):
             s.expire_all()
             return s.query(Order).filter(Order.order_no == no).first()
 
+        # ===== 订单归属校验：会员单必须登录本人，游客单 body.email 必须相等 =====
+        r = client.post("/api/payments/create-intent",
+                        json={"order_no": "NS260815PAY02"})
+        check("会员单未登录 create-intent → 403 not_order_owner",
+              r.status_code == 403 and r.json()["detail"] == "not_order_owner", r.text)
+        og = make_order(s, "NS260815PAYG1", 1000, [(v1.id, 1, 1000)],
+                        email="guestpay@glow.test")
+        s.commit()
+        r = client.post("/api/payments/create-intent",
+                        json={"order_no": "NS260815PAYG1"})
+        check("游客单缺 email → 403 not_order_owner",
+              r.status_code == 403 and r.json()["detail"] == "not_order_owner", r.text)
+        r = client.post("/api/payments/create-intent",
+                        json={"order_no": "NS260815PAYG1", "email": "GUESTPAY@glow.test"})
+        pi_g = r.json().get("payment_intent", "")
+        check("游客单 email 归一化相等（大写 trim）→ 200 建单",
+              r.status_code == 200 and pi_g.startswith("PI_"), r.text)
+        r = client.post("/api/payments/mock-pay",
+                        json={"order_no": "NS260815PAYG1", "succeed": True,
+                              "email": "wrong@glow.test"})
+        check("游客单 email 不符 mock-pay → 403 not_order_owner",
+              r.status_code == 403 and r.json()["detail"] == "not_order_owner", r.text)
+        r = client.post("/api/payments/mock-pay",
+                        json={"order_no": "NS260815PAYG1", "succeed": True,
+                              "email": " GuestPay@Glow.Test "})
+        check("游客单 email 归一化相符 mock-pay → 200",
+              r.status_code == 200 and r.json()["order_status"] == 1, r.text)
+
         # ===== mock 默认模式：create-intent / mock-pay 回归 =====
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY01"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY01"})
         d = r.json()
         check("mock create-intent → PI_+32hex / secret_mock / amount 2000",
               r.status_code == 200 and d["payment_intent"].startswith("PI_")
@@ -164,9 +194,11 @@ try:
         check("create-intent 订单不存在 → 404", r.status_code == 404, r.text)
 
         # ===== create-intent 幂等复用：二次调用返回同一 PENDING payment，不堆新行 =====
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY02"})
         pi_reuse_a = r.json()["payment_intent"]
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY02"})
         pi_reuse_b = r.json()["payment_intent"]
         s.expire_all()
         check("create-intent 二次调用复用同一 PENDING payment",
@@ -191,10 +223,11 @@ try:
         check("GM_ENV=prod 无真实凭据 → methods providers=[] / default=none",
               r.status_code == 200
               and d == {"providers": [], "default": "none"}, d)
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY02"})
         check("GM_ENV=prod 默认链 mock → create-intent 409 mock_provider_disabled",
               r.status_code == 409 and r.json()["detail"] == "mock_provider_disabled", r.text)
-        r = client.post("/api/payments/create-intent",
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
                         json={"order_no": "NS260815PAY02", "provider": "stripe"})
         check("GM_ENV=prod 显式 provider 回落 mock 分支 → 409 mock_provider_disabled",
               r.status_code == 409 and r.json()["detail"] == "mock_provider_disabled", r.text)
@@ -204,7 +237,7 @@ try:
                           json={"order_no": "NS_NOPE", "succeed": True}).json().get("detail")
               == "order_not_found")
 
-        r = client.post("/api/payments/mock-pay",
+        r = client.post("/api/payments/mock-pay", headers=emma_auth,
                         json={"order_no": "NS260815PAY01", "succeed": False})
         d = r.json()
         pay1 = (s.query(Payment).filter(Payment.order_id == o1.id)
@@ -215,8 +248,9 @@ try:
               and s.query(OrderTimeline).filter(OrderTimeline.order_id == o1.id,
                                                 OrderTimeline.event == "payment_failed").count() == 1, d)
 
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY01"})
-        r = client.post("/api/payments/mock-pay",
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY01"})
+        r = client.post("/api/payments/mock-pay", headers=emma_auth,
                         json={"order_no": "NS260815PAY01", "succeed": True})
         d = r.json()
         o1 = order_by_no("NS260815PAY01")
@@ -247,21 +281,25 @@ try:
               redemption is not None and redemption.discount_amount == 500
               and dc_db.used_count == 1)
         check("mock-pay DEDUCT 实扣确认 2 条且库存不变",
-              s.query(StockMovement).filter(StockMovement.type == 3).count() == 2
+              s.query(StockMovement).filter(StockMovement.type == 3,
+                                            StockMovement.ref_id == o1.id).count() == 2
               and s.get(Variant, v1.id).stock == 10 and s.get(Variant, v2.id).stock == 10)
 
-        r = client.post("/api/payments/mock-pay",
+        r = client.post("/api/payments/mock-pay", headers=emma_auth,
                         json={"order_no": "NS260815PAY01", "succeed": True})
-        check("mock-pay 已付 → 409 already_paid", r.status_code == 409, r.text)
+        check("mock-pay 已付 → 幂等 200（order_status=1 / payment_status=1）",
+              r.status_code == 200 and r.json()["order_status"] == 1
+              and r.json()["payment_status"] == 1, r.text)
 
-        # ===== 赢者语义：已取消订单的迟到回调不把 payment 置 SUCCESS =====
+        # ===== 取消后迟到成功回调 → 自动退款（用户已真实扣款，全额原路退回）=====
         o9 = make_order(s, "NS260815PAY09", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
         s.commit()
-        emma_auth = {"Authorization": f"Bearer {create_token(emma.id, emma.role)}"}
-        pi9 = client.post("/api/payments/create-intent",
+        pi9 = client.post("/api/payments/create-intent", headers=emma_auth,
                           json={"order_no": "NS260815PAY09"}).json()["payment_intent"]
         r = client.post("/api/orders/NS260815PAY09/cancel", headers=emma_auth)
         check("迟到回调前置：待付单取消 → 200 CANCELED", r.status_code == 200, r.text)
+        s.expire_all()
+        stock_after_cancel = s.get(Variant, v1.id).stock
         r = client.post("/api/payments/webhook", json={
             "id": "evt_late_1", "type": "payment_intent.succeeded",
             "data": {"payment_intent": pi9}})
@@ -269,16 +307,31 @@ try:
         s.expire_all()
         pay9 = (s.query(Payment).filter(Payment.order_id == o9.id)
                 .order_by(Payment.id.desc()).first())
-        check("已取消订单的迟到 webhook → 订单仍 8 / payment 保持 PENDING（防假支付）",
-              r.status_code == 200 and o9.status == 8 and pay9.status == 0
-              and pay9.refunded_amount == 0
+        tl9 = s.query(OrderTimeline).filter(OrderTimeline.order_id == o9.id).all()
+        check("已取消订单的迟到成功回调 → 订单 9 / payment 全退 3（自动退款）",
+              r.status_code == 200 and o9.status == 9 and pay9.status == 3
+              and pay9.refunded_amount == 1000
+              and any(t.event == "refund_issued"
+                      and t.detail.get("reason") == "late_success_auto_refund"
+                      for t in tl9),
+              (r.status_code, o9.status, pay9.status, pay9.refunded_amount))
+        check("自动退款不重复补偿：库存不再回补 / 积分不发不退",
+              s.get(Variant, v1.id).stock == stock_after_cancel
               and s.query(PointsLedger).filter(
-                  PointsLedger.ref_id == o9.id,
-                  PointsLedger.reason == int(PointsReason.ORDER_EARN_FROZEN)).count() == 0,
-              (o9.status, pay9.status))
+                  PointsLedger.ref_id == o9.id).count() == 0,
+              (s.get(Variant, v1.id).stock, stock_after_cancel))
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_late_2", "type": "payment_intent.succeeded",
+            "data": {"payment_intent": pi9}})
+        s.expire_all()
+        pay9 = (s.query(Payment).filter(Payment.stripe_payment_intent == pi9).first())
+        check("重复迟到成功回调（新 event_id）→ 幂等不二次退款",
+              r.status_code == 200 and pay9.status == 3
+              and pay9.refunded_amount == 1000, (r.status_code, pay9.refunded_amount))
 
         # ===== mock 默认模式：webhook 回归 =====
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY02"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY02"})
         pi2 = r.json()["payment_intent"]
         r = client.post("/api/payments/webhook", json={
             "id": "evt_p_1", "type": "payment_intent.succeeded",
@@ -316,10 +369,11 @@ try:
         # ===== webhook 不可恢复：全额退款后重发 charge.refunded → 200 skipped + status=2 =====
         o10 = make_order(s, "NS260815PAY10", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
         s.commit()
-        pi10 = client.post("/api/payments/create-intent",
+        pi10 = client.post("/api/payments/create-intent", headers=emma_auth,
                            json={"order_no": "NS260815PAY10"}).json()["payment_intent"]
-        assert client.post("/api/payments/mock-pay",
-                           json={"order_no": "NS260815PAY10", "succeed": True}).status_code == 200
+        assert client.post("/api/payments/mock-pay", headers=emma_auth,
+                           json={"order_no": "NS260815PAY10",
+                                 "succeed": True}).status_code == 200
         r = client.post("/api/payments/webhook", json={
             "id": "evt_ref_1", "type": "charge.refunded",
             "data": {"payment_intent": pi10, "amount": 1000}})
@@ -424,7 +478,8 @@ try:
               ne2 == {"id": "evt_m", "type": "t", "data": {"payment_intent": "PI_abc"}}, ne2)
 
         # ===== stripe 模式 API =====
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY03"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY03"})
         d = r.json()
         check("stripe 模式 create-intent → 走 SDK 返回 pi_fake_123",
               r.status_code == 200 and d["payment_intent"] == "pi_fake_123"
@@ -432,7 +487,8 @@ try:
               and (s.query(Payment).filter(Payment.stripe_payment_intent == "pi_fake_123")
                    .count() == 1), d)
 
-        r = client.post("/api/payments/mock-pay", json={"order_no": "NS260815PAY03"})
+        r = client.post("/api/payments/mock-pay", headers=emma_auth,
+                        json={"order_no": "NS260815PAY03"})
         check("stripe 模式 mock-pay → 409 use_webhook",
               r.status_code == 409 and r.json()["detail"] == "use_webhook", r.text)
 
@@ -633,7 +689,7 @@ try:
         app_settings.paypal_client_id = ""
         app_settings.paypal_secret = ""
         pp._provider = None
-        r = client.post("/api/payments/create-intent",
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
                         json={"order_no": "NS260815PAY05", "provider": "stripe"})
         d = r.json()
         check("B create-intent mock 默认 + provider=stripe → 回落 mock + 响应 provider=mock",
@@ -643,7 +699,8 @@ try:
         # ===== create-intent 幂等复用区分 provider：mock PENDING 在 → paypal 不复用建新；同 provider 二次复用 =====
         o7 = make_order(s, "NS260815PAY07", 1500, [(v1.id, 1, 1500)], user_id=emma.id)
         s.commit()
-        r = client.post("/api/payments/create-intent", json={"order_no": "NS260815PAY07"})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY07"})
         d = r.json()
         check("mock intent 响应含 redirect_url 空串（前端无 pay-mock 页，不跳转维持现状）",
               r.status_code == 200 and d["redirect_url"] == ""
@@ -655,7 +712,7 @@ try:
         _orig_client3 = pp.PayPalProvider._client
         pp.PayPalProvider._client = lambda self: fake_http3
         try:
-            r = client.post("/api/payments/create-intent",
+            r = client.post("/api/payments/create-intent", headers=emma_auth,
                             json={"order_no": "NS260815PAY07", "provider": "paypal"})
             d = r.json()
             s.expire_all()
@@ -665,7 +722,7 @@ try:
                   and d["redirect_url"] == "https://pp.example/approve"
                   and s.query(Payment).filter(Payment.order_id == o7.id).count() == 2
                   and len(fake_http3.calls) == 2, d)
-            r = client.post("/api/payments/create-intent",
+            r = client.post("/api/payments/create-intent", headers=emma_auth,
                             json={"order_no": "NS260815PAY07", "provider": "paypal"})
             d = r.json()
             s.expire_all()
@@ -696,7 +753,7 @@ try:
         _orig_client = pp.PayPalProvider._client
         pp.PayPalProvider._client = lambda self: fake_http2
         try:
-            r = client.post("/api/payments/create-intent",
+            r = client.post("/api/payments/create-intent", headers=emma_auth,
                             json={"order_no": "NS260815PAY04", "provider": "paypal"})
             d = r.json()
         finally:

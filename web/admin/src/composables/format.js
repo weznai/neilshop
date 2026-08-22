@@ -12,3 +12,8 @@ export function dt(iso) {
   const p = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
+
+/* 仅日期（YYYY-MM-DD）：复用 dt 的补 Z 本地化口径，供列表“日期粒度”列使用（替代 UTC 直切 slice(0,10)） */
+export function dDate(iso) {
+  return dt(iso).slice(0, 10)
+}

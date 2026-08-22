@@ -210,7 +210,8 @@ watch(galIdx, syncGalScroll)
 const notifyHasCache = {}
 watch(variant, async (v) => {
   notifyState.value = 0
-  notifyEmail.value = ''
+  /* 仅清自动填充形态的邮箱（空 / 等于当前登录用户 email），保留用户手输的其它邮箱 */
+  if (!notifyEmail.value || notifyEmail.value === (auth.user && auth.user.email)) notifyEmail.value = ''
   const em = auth.user && auth.user.email
   if (v && v.stock_status === 'out' && em) {
     if (!notifyHasCache[v.id]) {
@@ -224,6 +225,8 @@ watch(variant, async (v) => {
 
 const basePrice = computed(() => (p.value?.variants?.[0]?.price ?? 0) / 100)
 const unit = computed(() => variant.value ? variant.value.price / 100 : basePrice.value)
+/* 组合折扣后端仅统计 press-on-nails 类目：字段缺失时缺省不显示按钮 */
+const bundleable = computed(() => p.value?.category_slug === 'press-on-nails')
 
 function mdHtml(mdText) {
   /* 先整体转义再做 markdown 替换：后台录入的 HTML 不进入 v-html（参考 MarketingPopups） */
@@ -534,7 +537,7 @@ const gmEta = () => {
               @click="toggleWishlist"
             ><span aria-hidden="true">{{ wlDone ? '♥' : '♡' }}</span></button>
           </div>
-          <button class="btn btn-secondary btn-block" :disabled="bundling" :class="{ loading: bundling }" @click="bundleAdd">
+          <button v-if="bundleable" class="btn btn-secondary btn-block" :disabled="bundling" :class="{ loading: bundling }" @click="bundleAdd">
             🎁 {{ zh ? '买 2 件享 85 折' : 'Buy 2 & save 15%' }}（{{ zh ? '省' : 'save' }} ${{ (unit * 2 * 0.15).toFixed(2) }}）— {{ zh ? '结算自动生效' : 'applied in cart' }}
           </button>
 

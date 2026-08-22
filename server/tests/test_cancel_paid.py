@@ -106,9 +106,11 @@ with TestClient(app) as client:
                               "points": points, "gift_card_code": gc_code})
         assert r.status_code == 201, r.text
         no = r.json()["order_no"]
-        r = client.post("/api/payments/create-intent", json={"order_no": no})
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": no})
         assert r.status_code == 200, r.text
-        r = client.post("/api/payments/mock-pay", json={"order_no": no, "succeed": True})
+        r = client.post("/api/payments/mock-pay", headers=emma_auth,
+                        json={"order_no": no, "succeed": True})
         assert r.status_code == 200 and r.json()["order_status"] == 1, r.text
         return no
 

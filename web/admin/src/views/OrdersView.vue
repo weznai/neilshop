@@ -1,12 +1,12 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
-import { dt } from '../composables/format'
+import { money, dt } from '../composables/format'
 import { OSTATUS, OSHIP, ORDER_ERR, mapErr } from '../constants/trade'
 
 const route = useRoute()
@@ -25,12 +25,13 @@ const loaded = ref(false)
 const refreshing = ref(false)
 /* O2 错误空态：首载失败且无数据时表格区渲染「加载失败+重试」；有旧数据仍走 toast 提示 */
 const loadErr = ref('')
-/* 状态映射统一走 constants/trade.js：OSTATUS 订单状态 / OSHIP 履约（Order.shipping_status 0/1/2） */
+/* 状态映射统一走 constants/trade.js：OSTATUS 订单状态 / OSHIP 履约（Order.shipping_status 0/1/2）
+ * s12 组合 tab「待发货」：后端 status=1,2 逗号组合过滤（status ref 此时存字符串 '1,2'） */
 const TABS = [
-  ['all', '全部', null], ['s0', '待支付', 0], ['s1', '已支付', 1], ['s2', '备货中', 2],
+  ['all', '全部', null], ['s12', '待发货', '1,2'], ['s0', '待支付', 0], ['s1', '已支付', 1], ['s2', '备货中', 2],
   ['s3', '已发货', 3], ['s4', '已送达', 4], ['s5', '已完成', 5], ['s8', '已取消', 8], ['s9', '已退款', 9],
 ]
-const statusLabel = computed(() => (status.value == null ? '' : OSTATUS[status.value]?.label || ''))
+const statusLabel = computed(() => (status.value == null ? '' : status.value === '1,2' ? '待发货' : OSTATUS[status.value]?.label || ''))
 
 /* URL 筛选同步：初始化读 route.query（dashboard 深链 ?status=1 等），变化 router.replace（可分享/可回退） */
 function initFromQuery() {
@@ -40,8 +41,11 @@ function initFromQuery() {
   if (/^\d{4}-\d{2}-\d{2}$/.test(rq.date_from || '')) dateFrom.value = rq.date_from
   if (/^\d{4}-\d{2}-\d{2}$/.test(rq.date_to || '')) dateTo.value = rq.date_to
   if (rq.status !== undefined && rq.status !== '') {
-    const n = Number(rq.status)
-    if (OSTATUS[n]) status.value = n
+    /* 支持组合状态：逗号串（如 1,2）每段都须是合法 OSTATUS 键；单值仍存数字 */
+    const parts = String(rq.status).split(',')
+    if (parts.every((p) => p !== '' && OSTATUS[Number(p)])) {
+      status.value = parts.length > 1 ? String(rq.status) : Number(rq.status)
+    }
   }
   const p = parseInt(rq.page, 10)
   if (Number.isInteger(p) && p >= 1) page.value = p
@@ -118,8 +122,6 @@ function tab(sv) { status.value = sv; page.value = 1; load() }
 function clearDates() { dateFrom.value = ''; dateTo.value = ''; page.value = 1; load() }
 function clearSearch() { q.value = ''; page.value = 1; load() }
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-/* 时间统一走 format.js 的 dt（补 Z 修时区） */
 
 /* 服务端排序：sort 直传后端（placed_at/total，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码 */
 const SORTABLE = ['placed_at', '-placed_at', 'total', '-total']
@@ -185,11 +187,12 @@ function toggleAll() {
 function toggleOne(no, checked) {
   selected.value = checked ? [...selected.value, no] : selected.value.filter((n) => n !== no)
 }
-/* 批量发货弹窗：textarea 每行一个单号，行序对应勾选序 */
+/* 批量发货弹窗：textarea 每行一个单号，行序对应勾选序；执行中按钮显示逐单进度 n/total */
 const batchDlg = ref(false)
 const batchCarrier = ref('USPS')
 const batchTrackings = ref('')
 const batchSubmitting = ref(false)
+const batchProg = reactive({ done: 0, total: 0 })
 function openBatchShip() { batchCarrier.value = 'USPS'; batchTrackings.value = ''; batchDlg.value = true }
 /* 批量发货结果弹窗：失败明细（单号+已翻译原因）列表 */
 const batchResult = ref(null) /* { ok, fails: [string] } */
@@ -199,6 +202,8 @@ async function batchShipConfirm() {
   const lines = batchTrackings.value.split('\n').map((s) => s.trim()).filter(Boolean)
   if (lines.length !== nos.length) { toast(`物流单号 ${lines.length} 行，与勾选 ${nos.length} 单不一致`, 'error'); return }
   batchSubmitting.value = true
+  batchProg.total = nos.length
+  batchProg.done = 0
   /* 逐单串行 POST，单笔失败不中断；失败明细（单号+错误码翻译文案）汇总进结果弹窗 */
   let ok = 0
   const fails = []
@@ -209,6 +214,7 @@ async function batchShipConfirm() {
     } catch (e) {
       fails.push(`${nos[i]}：${mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message}`)
     }
+    batchProg.done = i + 1
   }
   batchSubmitting.value = false
   batchDlg.value = false
@@ -378,7 +384,7 @@ async function exportCsv() {
       </div>
       <div class="field">
         <label>物流单号</label>
-        <input v-model="tracking" class="input" placeholder="9400…">
+        <input v-model="tracking" class="input" placeholder="9400…" @keydown.enter.prevent="shipConfirm">
       </div>
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="shipSubmitting" @click="shipConfirm">{{ shipSubmitting ? '发货中…' : '确认发货' }}</button>
     </div>
@@ -400,7 +406,7 @@ async function exportCsv() {
         <label>物流单号（每行一个）</label>
         <textarea v-model="batchTrackings" class="input" style="height:auto;min-height:120px;padding:10px 14px;resize:vertical;font-family:inherit" :placeholder="'每行一个单号，顺序对应勾选顺序，共 ' + selected.length + ' 行'"></textarea>
       </div>
-      <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="batchSubmitting" @click="batchShipConfirm">{{ batchSubmitting ? '发货中…' : '确认发货' }}</button>
+      <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="batchSubmitting" @click="batchShipConfirm">{{ batchSubmitting ? '发货中 ' + batchProg.done + '/' + batchProg.total + '…' : '确认发货' }}</button>
     </div>
   </div>
 

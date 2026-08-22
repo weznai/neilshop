@@ -1,6 +1,6 @@
 """运营域 Pydantic 输入模型与静态映射表（就近存放）"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 REASON_TEXT = {
     1: "下单获得（冻结中）",
@@ -34,3 +34,16 @@ class ReviewBulkIn(BulkModerationIn):
 
 class UgcBulkIn(BulkModerationIn):
     pass
+
+
+class PointsAdjustIn(BaseModel):
+    """积分人工调整入参：delta 非零且 |delta| ≤ 100 万；reason 必填（审计留痕）"""
+    delta: int = Field(ge=-1_000_000, le=1_000_000)
+    reason: str = Field(min_length=1, max_length=200)
+
+    @field_validator("delta")
+    @classmethod
+    def _delta_not_zero(cls, v: int) -> int:
+        if v == 0:
+            raise ValueError("delta must not be zero")
+        return v

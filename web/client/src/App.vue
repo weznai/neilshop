@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useUiStore } from './stores/ui'
 import { useCartStore } from './stores/cart'
 import { useAuthStore } from './stores/auth'
+import { i18n } from './i18n'
 import ToastHost from './components/ToastHost.vue'
 
 const ui = useUiStore()
@@ -29,7 +30,7 @@ function onAuthExpired() {
   _authExpiredAt = now
   const cur = router.currentRoute.value
   if (cur.path !== '/login' && cur.path !== '/register') {
-    ui.toast('Session expired — please sign in again', 'error')
+    ui.toast(i18n.t('err.session'), 'error')
     router.push({ path: '/login', query: { next: cur.fullPath } })
   }
 }
@@ -61,7 +62,8 @@ onMounted(() => {
   else if (mq.addListener) mq.addListener(onMq)
   onMq()
   cart.refresh().catch(() => { /* 服务端不可达时保留本地快照 */ })
-  if (auth.isLoggedIn) auth.me().catch(() => {})
+  /* 启动探测静默 401：过期会话冷启动只清缓存降级游客，不 toast 不跳登录（操作中过期仍广播） */
+  if (auth.isLoggedIn) auth.me(true).catch(() => {})
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', onKey)

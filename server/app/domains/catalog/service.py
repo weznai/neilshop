@@ -18,9 +18,9 @@ from app.services.cache import _cache, cached
 
 from app.domains.catalog import repository as repo
 from app.domains.catalog.schemas import (
-    CategoryCreateIn, CollectionCreateIn, CollectionProductsIn, CollectionUpdateIn,
-    ProductBulkIn, ProductCreateIn, ProductUpdateIn, TranslationUpsertIn,
-    VariantCreateIn, VariantUpdateIn,
+    CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn, CollectionProductsIn,
+    CollectionUpdateIn, ProductBulkIn, ProductCreateIn, ProductUpdateIn,
+    TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
 )
 _SORTS = ("new", "best", "price_asc", "price_desc")
 
@@ -153,12 +153,14 @@ def _detail_out(db: Session, p: Product, locale: str | None = None) -> dict:
     vimgs = repo.variant_images_map(db, [v.id for v in variants])
     related_prods = repo.related_products(db, p)
     related_smap = repo.stock_map(db, [r.id for r in related_prods])
+    category = repo.get_category(db, p.category_id) if p.category_id else None
     data = _card(p, _stock_summary(variants))
     data.update({
         "description_md": p.description_md,
         "video_url": p.video_url,
         "images": p.images or [],
         "category_id": p.category_id,
+        "category_slug": category.slug if category else None,
         "variants": [_variant_out(v, vimgs.get(v.id)) for v in variants],
         "related": [_card(r, related_smap.get(r.id, _EMPTY_STOCK)) for r in related_prods],
     })
@@ -679,6 +681,17 @@ def admin_list_categories(db: Session) -> list[dict]:
     ]
 
 
+def _category_out(c: Category) -> dict:
+    return {
+        "id": c.id,
+        "parent_id": c.parent_id,
+        "slug": c.slug,
+        "name": c.name,
+        "sort_order": c.sort_order,
+        "is_active": c.is_active,
+    }
+
+
 def admin_create_category(db: Session, admin: User, body: CategoryCreateIn) -> dict:
     if repo.category_slug_taken(db, body.slug):
         raise HTTPException(status_code=409, detail="slug already exists")
@@ -689,14 +702,53 @@ def admin_create_category(db: Session, admin: User, body: CategoryCreateIn) -> d
     db.commit()
     _invalidate_cache()
     db.refresh(c)
-    return {
-        "id": c.id,
-        "parent_id": c.parent_id,
-        "slug": c.slug,
-        "name": c.name,
-        "sort_order": c.sort_order,
-        "is_active": c.is_active,
-    }
+    return _category_out(c)
+
+
+def admin_update_category(db: Session, admin: User, category_id: int, body: CategoryUpdateIn) -> dict:
+    c = repo.get_category(db, category_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="category not found")
+    data = body.model_dump(exclude_unset=True)
+    if data.get("slug") and data["slug"] != c.slug:
+        # slug 变更才查重（排除自身），未变/未传不触发唯一冲突
+        if repo.category_slug_taken(db, data["slug"], exclude_id=c.id):
+            raise HTTPException(status_code=409, detail="slug already exists")
+    if data.get("parent_id") is not None:
+        if data["parent_id"] == c.id:
+            raise HTTPException(status_code=400, detail="parent is self")
+        if not repo.get_category(db, data["parent_id"]):
+            raise HTTPException(status_code=400, detail="parent category not found")
+    if data.get("is_active") is not None:
+        data["is_active"] = int(data["is_active"])
+    diff: dict = {}
+    for field, new in data.items():
+        old = getattr(c, field)
+        if old != new:
+            setattr(c, field, new)
+            diff[field] = {"before": old, "after": new}
+    if diff:
+        _log(db, admin, "update", "category", c.id, diff)
+        db.commit()
+        _invalidate_cache()
+        db.refresh(c)
+    return _category_out(c)
+
+
+def admin_delete_category(db: Session, admin: User, category_id: int) -> dict:
+    c = repo.get_category(db, category_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="category not found")
+    # 删除保护：有商品引用 / 有子分类均拒绝（先把商品挪走、子分类挂走再删）
+    if repo.product_count_by_category(db, category_id) > 0:
+        raise HTTPException(status_code=409, detail="category in use")
+    if repo.child_category_count(db, category_id) > 0:
+        raise HTTPException(status_code=409, detail="category has children")
+    _log(db, admin, "delete", "category", c.id, {"slug": c.slug, "name": c.name})
+    db.delete(c)
+    db.commit()
+    _invalidate_cache()
+    return {"ok": True}
 
 
 def admin_list_collections(db: Session) -> dict:

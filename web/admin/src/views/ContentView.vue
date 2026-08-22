@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { dDate } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -665,7 +666,7 @@ async function saveArticle() {
       <div style="flex:1;min-width:0">
         <b>{{ a.title }}</b>
         <span v-for="t in (a.tags || []).slice(0, 3)" :key="t" class="cat-chip" style="margin-left:6px">{{ t }}</span>
-        <div style="color:var(--gray);margin-top:3px">{{ (a.published_at || '未发布').slice(0, 10) }} · {{ a.slug }} · {{ a.author || '—' }}</div>
+        <div style="color:var(--gray);margin-top:3px">{{ a.published_at ? dDate(a.published_at) : '未发布' }} · {{ a.slug }} · {{ a.author || '—' }}</div>
       </div>
       <span class="tag" :class="a.status === 1 ? 'tag-paid' : 'tag-pending'">{{ a.status === 1 ? '已发布' : '草稿' }}</span>
       <a v-if="a.status === 1" class="btn btn-ghost btn-sm" :href="artUrl(a)" target="_blank" rel="noopener" title="在前台查看">↗</a>

@@ -50,6 +50,12 @@ _CLAIM_COMPLETED_SQL = text(
     "UPDATE orders SET status = 5, completed_at = :now "
     "WHERE id = :oid AND status = 4"
 )
+# 发货 CAS：仅已支付/待差价(1/2)可发货（置 3/发货中/发货时间/物流单号），
+# 与已付取消（shipping_status 守卫）/重复发货并发互斥，rowcount=0 即不可发货
+_CLAIM_SHIPPED_SQL = text(
+    "UPDATE orders SET status = 3, shipping_status = 2, shipped_at = :now, "
+    "tracking_no = :tracking WHERE id = :oid AND status IN (1, 2)"
+)
 # 换货差价支付核销 CAS：仅待差价(2)可推进批准(1)，mock-pay/webhook/mark-paid 三方互斥
 _CLAIM_EXCHANGE_DIFF_PAID_SQL = text(
     "UPDATE exchanges SET status = 1 WHERE id = :eid AND status = 2"
@@ -103,6 +109,12 @@ def claim_order_paid_canceled(db: Session, order_id: int, now, reason: str) -> i
 
 def claim_order_completed(db: Session, order_id: int, now) -> int:
     return db.execute(_CLAIM_COMPLETED_SQL, {"oid": order_id, "now": now}).rowcount
+
+
+def claim_order_shipped(db: Session, order_id: int, now, tracking_no: str) -> int:
+    return db.execute(_CLAIM_SHIPPED_SQL, {
+        "oid": order_id, "now": now, "tracking": tracking_no,
+    }).rowcount
 
 
 def claim_exchange_diff_paid(db: Session, exchange_id: int) -> int:
@@ -161,6 +173,15 @@ def rma_by_no(db: Session, rma_no: str) -> Optional[Rma]:
     return db.query(Rma).filter(Rma.rma_no == rma_no).first()
 
 
+def blacklisted_email(db: Session, email: str) -> bool:
+    """下单 email 命中黑名单用户（risk_flag=2，email 已归一 strip+lower 等值匹配）"""
+    return (
+        db.query(User.id)
+        .filter(User.email == email, User.risk_flag == 2)
+        .first() is not None
+    )
+
+
 # ---------- 商品/变体批量读（购物车视图） ----------
 def variants_by_ids(db: Session, vids: list[int]) -> dict[int, Variant]:
     if not vids:
@@ -193,6 +214,7 @@ _ORDER_SORTS = {
 
 def paginate_orders(
     db: Session, *, user_id: Optional[int] = None, status: Optional[int] = None,
+    status_in: Optional[list[int]] = None,
     q: Optional[str] = None, page: int = 1, per_page: int = 10,
     date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
     sort: Optional[str] = None,
@@ -202,6 +224,8 @@ def paginate_orders(
         query = query.filter(Order.user_id == user_id)
     if status is not None:
         query = query.filter(Order.status == status)
+    if status_in is not None:
+        query = query.filter(Order.status.in_(status_in))
     if q:
         like = f"%{q.strip()}%"
         query = query.filter((Order.order_no.like(like)) | (Order.email.like(like)))

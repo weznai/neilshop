@@ -12,7 +12,9 @@ import httpx
 import pymysql
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-PY = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+_VENV_PY = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+# 仓库无 .venv（系统解释器直跑）时回退 sys.executable，保证 seed/uvicorn 子进程可拉起
+PY = _VENV_PY if _VENV_PY.exists() else Path(sys.executable)
 PORT = 8019
 BASE_URL = f"http://127.0.0.1:{PORT}"
 DB_NAME = "glowmag_test_cc"
@@ -370,19 +372,31 @@ def case_same_user(tokens: list[str], vid: int):
     return not errs, metrics, errs
 
 
-def case_payment_concurrency(order_nos: list[str]):
+def case_payment_concurrency(order_nos: list[str], tokens: list[str]):
     if not order_nos:
         return False, {"orders": 0}, ["case 1 produced no orders"]
+    tok_of = dict(zip(EMAILS, tokens))
+    ph = ",".join(["%s"] * len(order_nos))
+    tok_of.update({
+        no: tok_of[email]
+        for no, email in q(
+            f"SELECT order_no, email FROM orders WHERE order_no IN ({ph})",
+            tuple(order_nos),
+        )
+    })
     c = httpx.Client(base_url=BASE_URL, timeout=60.0)
     for no in order_nos:
-        r = c.post("/api/payments/create-intent", json={"order_no": no})
+        r = c.post("/api/payments/create-intent", json={"order_no": no},
+                   headers=auth(tok_of[no]))
         if r.status_code != 200:
             c.close()
             return False, {"create_intent": f"{no} -> {r.status_code}"}, [r.text[:200]]
     c.close()
 
     def fire(i: int):
-        r = cli().post("/api/payments/mock-pay", json={"order_no": order_nos[i], "succeed": True})
+        r = cli().post("/api/payments/mock-pay", json={"order_no": order_nos[i],
+                                                      "succeed": True},
+                       headers=auth(tok_of[order_nos[i]]))
         try:
             body = r.json()
         except ValueError:
@@ -562,7 +576,7 @@ def main() -> int:
         ok2, m2, e2 = case_same_user(tokens, idem_vid)
         record("same-user-idempotency", ok2, m2, e2)
 
-        ok3, m3, e3 = case_payment_concurrency(order_nos)
+        ok3, m3, e3 = case_payment_concurrency(order_nos, tokens)
         record("payment-concurrency", ok3, m3, e3)
 
         ok4, m4, e4 = case_rate_limit()

@@ -85,6 +85,15 @@ class CategoryCreateIn(BaseModel):
     parent_id: int | None = None
 
 
+class CategoryUpdateIn(BaseModel):
+    """分类部分更新：仅传需要改的字段（parent_id 显式传 null 可挂回根级）"""
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    slug: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_id: int | None = None
+    sort_order: int | None = Field(default=None, ge=0)
+    is_active: bool | None = None
+
+
 class CollectionCreateIn(BaseModel):
     slug: str = Field(min_length=1, max_length=100)
     title: str = Field(min_length=1, max_length=150)
@@ -103,11 +112,21 @@ class CollectionCreateIn(BaseModel):
 
 
 class CollectionUpdateIn(BaseModel):
-    """集合部分更新：仅传需要改的字段（未传保持原值）"""
+    """集合部分更新：仅传需要改的字段（未传保持原值）；banner_image 与创建同口径校验"""
     title: str | None = Field(default=None, min_length=1, max_length=150)
     banner_image: str | None = Field(default=None, max_length=500)
     sort_order: int | None = None
     is_active: bool | None = None
+
+    @field_validator("banner_image")
+    @classmethod
+    def _check_banner_image(cls, v):
+        if v is None or not v.strip():
+            return v
+        parsed = urlparse(v.strip())
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("banner_image must be an http(s) URL")
+        return v
 
 
 class CollectionProductIn(BaseModel):

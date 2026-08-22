@@ -307,8 +307,12 @@ def product_detail(client, fx):
     assert vs["BG-LS-LONG"]["stock_status"] == "low"
     assert vs["BG-SA-SHORT"]["safety_stock"] == 5
     assert d["related"][0]["slug"] == "velvet-matte" and len(d["related"]) == 1
+    assert d["category_slug"] == "french-nails"
+    by_id = client.get(f"/api/catalog/products-by-id/{d['id']}").json()
+    assert by_id["category_slug"] == "french-nails"
     cherry = client.get("/api/catalog/products/cherry-pop").json()
     assert cherry["variants"][0]["stock_status"] == "out"
+    assert cherry["category_slug"] == "press-on-nails"
     assert client.get("/api/catalog/products/ghost-set").status_code == 404
     assert client.get("/api/catalog/products/no-such").status_code == 404
 

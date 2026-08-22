@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { zulu } from '../../composables/datetime'
 import { i18n } from '../../i18n'
 
 const ui = useUiStore()
@@ -57,7 +58,7 @@ const RSTEP_IDX = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
 const money = (c) => (c === null || c === undefined) ? tt('TBD', '待定') : '$' + (c / 100).toFixed(2)
 function fmt(iso) {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const d = new Date(zulu(iso))
   if (isNaN(d)) return '—'
   const p = (n) => String(n).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`

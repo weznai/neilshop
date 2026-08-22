@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 class CartItemIn(BaseModel):
     variant_id: int
-    qty: int = Field(default=1, ge=1)
+    qty: int = Field(default=1, ge=1, le=99)
 
 
 class PreviewRequest(BaseModel):
@@ -51,11 +51,13 @@ class PlaceRequest(BaseModel):
 
 class CreateIntentRequest(BaseModel):
     order_no: str
+    email: Optional[str] = None
 
 
 class MockPayRequest(BaseModel):
     order_no: str
     succeed: bool = True
+    email: Optional[str] = None
 
 
 class WebhookRequest(BaseModel):

@@ -132,11 +132,12 @@ _expected = {
     "/api/returns": 20,
     "/api/exchanges": 20,
     "/api/orders/track": 30,
+    "/api/orders/": 30,
     "/api/catalog/stock-notify": 10,
     "/api/support/tickets": 30,
 }
 _rules = dict(obs.RATE_RULES)
-check("20 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
+check("21 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
 check("全局规则不含 /api/ai（域内 30/min 自治，避免双重 429）",
       not any(p.startswith("/api/ai") for p, _ in obs.RATE_RULES))
 check("admin/login 规则排在宽前缀 login 之前",
@@ -154,8 +155,10 @@ check("/api/promo/giftcard/purchase 先命中 purchase 规则（更具体前缀�
       obs._check_rate_limit("u3b", "/api/promo/giftcard/purchase")[0]
       == "/api/promo/giftcard/purchase")
 check("/api/orders/track 全路径规则不覆盖 /api/orders 列表端点",
-      obs._check_rate_limit("u3c", "/api/orders") == (None, 0)
-      and obs._check_rate_limit("u3d", "/api/orders/NS123") == (None, 0))
+      obs._check_rate_limit("u3c", "/api/orders") == (None, 0))
+check("/api/orders/{order_no} 详情命中 /api/orders/ 前缀规则（防撞库枚举泄露地址）",
+      obs._check_rate_limit("u3d", "/api/orders/NS123")[0] == "/api/orders/"
+      and obs._check_rate_limit("u3e", "/api/orders/NS456/cancel")[0] == "/api/orders/")
 check("/api/account/password-reset 覆盖 /request 与 /confirm 两子路径",
       obs._check_rate_limit("u4", "/api/account/password-reset/request")[0]
       == "/api/account/password-reset"
@@ -172,6 +175,11 @@ drain("/api/account/newsletter", 30,
 drain("/api/promo/validate", 60,
       {"code": "GUESS123", "subtotal_cents": 1000})
 obs._RATE_BUCKETS.clear()
+
+print("== 后台会话探测：未登录 401（而非 500）==")
+r = client.get("/api/account/admin/me")
+check("admin/me 无 Cookie → 401 Not authenticated",
+      r.status_code == 401 and r.json().get("detail") == "Not authenticated", r.text[:120])
 
 print("== Cookie：前台 gm_token 属性 ==")
 r = client.post("/api/account/login",

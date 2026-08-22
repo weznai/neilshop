@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { i18n } from '../i18n'
+import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
 
 const ui = useUiStore()
@@ -36,8 +37,25 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onEsc)
 })
 
+/* 后台上报同意记录（POST /api/account/consent）：fire-and-forget，失败静默不打扰 UI */
+function reportConsent(c) {
+  let sid = ''
+  try { sid = localStorage.getItem('gm_consent_sid') || '' } catch (_) { /* 隐私模式 */ }
+  if (!sid) {
+    sid = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : 'gm-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10)
+    try { localStorage.setItem('gm_consent_sid', sid) } catch (_) { /* 隐私模式 */ }
+  }
+  req('POST', '/api/account/consent', {
+    session_id: sid.slice(0, 36),
+    necessary: true,
+    analytics: !!c.ana,
+    marketing: !!c.mar,
+  }).catch(() => {})
+}
+
 function save(c) {
   try { localStorage.setItem('gm_consent', JSON.stringify({ ...c, at: Date.now() })) } catch (_) { /* 隐私模式等写入失败即弃 */ }
+  reportConsent(c)
   banner.value = false
   settings.value = false
   window.dispatchEvent(new CustomEvent('gm:consent-saved'))

@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
-import { dt } from '../composables/format'
+import { dt, money } from '../composables/format'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -13,7 +13,8 @@ const low = ref([])
 const movements = ref([])
 const loaded = ref(false)
 const pages = ref(1)
-const threshold = ref(8)
+const varTotal = ref(0)        /* SKU 列表总数（Pagination total） */
+const movTotal = ref(0)        /* 流水总数（Pagination total） */
 const mPages = ref(1)
 const adjust = ref(null)
 const adjChange = ref(0)
@@ -30,14 +31,18 @@ const MTYPE = { 1: '采购', 2: '预扣', 3: '实扣', 4: '释放', 5: '回补',
 const MTYPES = [[null, '全部'], ...Object.entries(MTYPE).map(([k, v]) => [Number(k), v])]
 const ADJ_ERR = { variant_not_found: '变体不存在', zero_change: '调整量不能为 0', stock_adjust_conflict: '库存并发冲突，请刷新重试' }
 
-/* ===== URL 同步：q/page（SKU 列表）+ mv（流水选中 SKU id）/mt（类型）/mfrom/mto（日期）/mp（流水页） ===== */
-const state = reactive({ q: '', page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1 })
-useQuerySync(state, { nums: ['page', 'mv', 'mp'], defaults: { q: '', page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1 } })
+/* ===== URL 同步：q/page/sort/threshold（SKU 列表）+ mv（流水选中 SKU id）/mt（类型）/mfrom/mto（日期）/mp（流水页） ===== */
+const SORTABLE = ['sku', '-sku', 'stock', '-stock']
+const state = reactive({ q: '', page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 })
+useQuerySync(state, { nums: ['page', 'mv', 'mp'], defaults: { q: '', page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 } })
 /* 回填清洗：非法值回落默认 */
 if (!['all', ...Object.keys(MTYPE)].includes(state.mt)) state.mt = 'all'
+if (!SORTABLE.includes(state.sort)) state.sort = ''
 if (!(state.page >= 1)) state.page = 1
 if (!(state.mp >= 1)) state.mp = 1
 if (!(state.mv >= 1)) state.mv = ''
+const thrNum = Number(state.threshold)
+state.threshold = Number.isInteger(thrNum) && thrNum >= 0 && thrNum <= 9999 ? thrNum : 8
 /* 流水选中 SKU：URL 存 id，展示 sku 从已加载变体列表解析；未命中时用点击时带来的 skuHint（URL 直开暂以 #id 占位，列表载入后自动替换） */
 const skuHint = ref(null)
 const mVar = computed(() => {
@@ -58,18 +63,19 @@ async function loadVariants() {
   varErr.value = ''
   try {
     const params = { page: state.page, size: 50, q: state.q.trim() }
-    if (sort.value) params.sort = sort.value
+    if (state.sort) params.sort = state.sort
     const d = await req('GET', '/api/admin/catalog/variants?' + new URLSearchParams(params))
     if (t !== varSeq) return
     variants.value = d.items || []
-    pages.value = Math.max(1, Math.ceil((d.total ?? 0) / 50))
+    varTotal.value = d.total ?? 0
+    pages.value = Math.max(1, Math.ceil(varTotal.value / 50))
   } catch (e) { if (t !== varSeq) return; varErr.value = e.message || '请求失败'; toast('SKU 列表加载失败：' + (e.message || ''), 'error') }
 }
 async function loadLow() {
   const t = ++lowSeq
   lowErr.value = ''
   try {
-    const d = await req('GET', '/api/admin/trade/stock/low?threshold=' + threshold.value)
+    const d = await req('GET', '/api/admin/trade/stock/low?threshold=' + state.threshold)
     if (t !== lowSeq) return
     low.value = d.items || []
   }
@@ -87,6 +93,7 @@ async function loadMovements() {
     const d = await req('GET', '/api/admin/trade/stock/movements?' + p)
     if (t !== movSeq) return
     movements.value = d.items || []
+    movTotal.value = d.total ?? 0
     mPages.value = Math.max(1, d.pages || 1)
   } catch (e) { if (t !== movSeq) return; movErr.value = e.message || '请求失败'; toast('变动流水加载失败：' + (e.message || ''), 'error') }
 }
@@ -97,8 +104,6 @@ async function load() {
 }
 onMounted(load)
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-
 /* 水位条：按 stock / max(safety_stock,1) 相对着色（≤0.25 红 / ≤0.6 橙 / 其余绿），宽度随比值 */
 const stockRatio = (v) => (v.stock || 0) / Math.max(v.safety_stock ?? 0, 1)
 const stockCls = (v) => { const r = stockRatio(v); return r <= 0.25 ? 'low' : r <= 0.6 ? 'mid' : 'ok' }
@@ -108,17 +113,16 @@ const specLabel = (v) => (v.option2_value && v.option2_value !== 'Default' ? v.o
 function search() { state.page = 1; loadVariants() }
 function clearSearch() { state.q = ''; state.page = 1; loadVariants() }
 
-/* 服务端排序：sort 直传后端（sku/stock，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码 */
-const sort = ref('')
+/* 服务端排序：sort 直传后端（sku/stock，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码（URL 同步） */
 function sortBy(k) {
-  sort.value = sort.value === k ? '-' + k : (sort.value === '-' + k ? '' : k)
+  state.sort = state.sort === k ? '-' + k : (state.sort === '-' + k ? '' : k)
   state.page = 1
   loadVariants()
 }
-const sortInd = (k) => (sort.value === k ? '▲' : sort.value === '-' + k ? '▼' : '')
-const ariaSort = (k) => (sort.value === k ? 'ascending' : sort.value === '-' + k ? 'descending' : 'none')
+const sortInd = (k) => (state.sort === k ? '▲' : state.sort === '-' + k ? '▼' : '')
+const ariaSort = (k) => (state.sort === k ? 'ascending' : state.sort === '-' + k ? 'descending' : 'none')
 function applyThreshold() {
-  threshold.value = Math.max(0, Math.min(9999, parseInt(threshold.value, 10) || 0))
+  state.threshold = Math.max(0, Math.min(9999, parseInt(state.threshold, 10) || 0))
   loadLow()
 }
 function filterVar(v) { skuHint.value = v.sku || null; state.mv = v.id; state.mp = 1; loadMovements() }
@@ -221,7 +225,7 @@ async function doAdjust() {
   <div class="topbar">
     <div>
       <h1 class="page-title">库存中心</h1>
-      <span class="page-sub">SKU 概览 · 低库存 {{ low.length }}（阈值 ≤{{ threshold }}）· 变动流水</span>
+      <span class="page-sub">SKU 概览 · 低库存 {{ low.length }}（阈值 ≤{{ state.threshold }}）· 变动流水</span>
     </div>
     <div style="display:flex;gap:10px">
       <div style="position:relative">
@@ -277,16 +281,16 @@ async function doAdjust() {
       </tbody>
       </table>
       <EmptyState v-if="!variants.length" :icon="state.q.trim() ? '🔍' : '📦'" :title="state.q.trim() ? '未找到匹配的 SKU' : '暂无 SKU'" :sub="state.q.trim() ? '试试调整或清除筛选' : '商品变体将显示在这里'" />
-      <Pagination embed :page="state.page" :pages="pages" @go="state.page = $event; loadVariants()" />
+      <Pagination embed :page="state.page" :pages="pages" :total="varTotal" unit="条" @go="state.page = $event; loadVariants()" />
     </template>
   </div>
 
   <div class="grid-2" style="align-items:start">
     <div class="card" style="padding:18px">
       <div class="dhead">
-        <h3 class="dtitle">⚠️ 低库存预警<span class="item-cnt">{{ low.length }} 项 · 阈值 ≤{{ threshold }}</span></h3>
+        <h3 class="dtitle">⚠️ 低库存预警<span class="item-cnt">{{ low.length }} 项 · 阈值 ≤{{ state.threshold }}</span></h3>
         <div style="display:flex;gap:6px">
-          <input v-model.number="threshold" class="input" type="number" min="0" style="width:64px;padding:5px 8px" @keydown.enter="applyThreshold">
+          <input v-model.number="state.threshold" class="input" type="number" min="0" style="width:64px;padding:5px 8px" @keydown.enter="applyThreshold">
           <button class="btn btn-secondary btn-sm" @click="applyThreshold">应用</button>
         </div>
       </div>
@@ -342,7 +346,7 @@ async function doAdjust() {
           <b :style="{ color: m.change >= 0 ? 'var(--success)' : 'var(--error)' }">{{ m.change >= 0 ? '+' : '' }}{{ m.change }} → {{ m.stock_after }}</b>
         </div>
         <EmptyState v-if="!movements.length" :icon="movFiltered ? '🔍' : '📜'" :title="movFiltered ? '未找到匹配的流水' : '暂无流水'" :sub="movFiltered ? '试试调整或清除筛选' : '库存变动记录将显示在这里'" />
-        <Pagination embed :page="state.mp" :pages="mPages" @go="state.mp = $event; loadMovements()" />
+        <Pagination embed :page="state.mp" :pages="mPages" :total="movTotal" unit="条" @go="state.mp = $event; loadMovements()" />
       </template>
     </div>
   </div>
@@ -371,7 +375,6 @@ async function doAdjust() {
 </template>
 
 <style scoped>
-td,th{padding:10px 12px}
 /* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
 .err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
 .mchip{padding:3px 11px;border-radius:999px;border:1px solid var(--gray-light);background:#fff;color:var(--gray);font-size:12px;cursor:pointer}

@@ -1,5 +1,7 @@
-/* GLOWMAG 前台 API 客户端（SPA 版：恒为 API 模式，Cookie 会话 + 服务端权威购物车）
- * 拆独立 API 域时：window.GM_API_BASE = 'https://api.glowmag.com'（需服务端 CORS 白名单）。 */
+ /* GLOWMAG 前台 API 客户端（SPA 版：恒为 API 模式，Cookie 会话 + 服务端权威购物车）
+  * 拆独立 API 域时：window.GM_API_BASE = 'https://api.glowmag.com'（需服务端 CORS 白名单）。 */
+
+import { i18n } from '../i18n'
 
 const API_BASE = window.GM_API_BASE || ''
 const DEFAULT_TIMEOUT = 15000
@@ -52,8 +54,8 @@ function d_msg(o) { return o.msg || o.detail || '' }
 
 /* 页面通用错误文案：catch (e) → ui.toast(errMessage(e), 'error') */
 export function errMessage(e) {
-  if (!e) return 'Request failed'
-  return fmtDetail(e.data && e.data.detail) || e.message || 'Request failed'
+  if (!e) return i18n.t('err.default')
+  return fmtDetail(e.data && e.data.detail) || e.message || i18n.t('err.default')
 }
 
 export async function req(method, path, body, opts) {
@@ -71,8 +73,8 @@ export async function req(method, path, body, opts) {
     r = await fetch(API_BASE + path, o)
   } catch (netErr) {
     const e = netErr && netErr.name === 'AbortError'
-      ? new Error('Request timed out — please retry')
-      : new Error('Network unreachable — please check your connection')
+      ? new Error(i18n.t('err.timeout'))
+      : new Error(i18n.t('err.network'))
     e.status = 0
     throw e
   } finally {
@@ -90,13 +92,21 @@ export async function req(method, path, body, opts) {
     const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
     e.status = r.status
     e.data = data
-    /* 会话过期统一广播（HttpOnly Cookie 失效）：App.vue 收口清 gm_user 缓存并跳登录 */
-    if (r.status === 401 && !AUTH_401_SKIP.includes(path)) {
+    /* 会话过期统一广播（HttpOnly Cookie 失效）：App.vue 收口清 gm_user 缓存并跳登录；
+       opts.silent401（启动探测）不广播——冷启动 401 静默降级游客，不打扰 */
+    if (r.status === 401 && !AUTH_401_SKIP.includes(path) && !(o.silent401)) {
       window.dispatchEvent(new Event('gm:auth-expired'))
     }
     throw e
   }
   return data
+}
+
+/* create-intent 响应守卫：真实 provider 返回 client_secret 而无 redirect_url 时，
+   本页无卡组件可完成支付（mock 通道 client_secret 恒以 _secret_mock 结尾，放行） */
+export function intentNoChannel(intent) {
+  const secret = intent && intent.client_secret
+  return !!secret && !intent.redirect_url && !String(secret).endsWith('_secret_mock')
 }
 
 /* 商品动态解析（内存缓存 + 60s TTL，替代旧 SLUGS 硬编码表）；

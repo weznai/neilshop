@@ -255,20 +255,24 @@ with TestClient(app) as client:
     check("cancel 非待付单 → 409", r.status_code == 409, r.text)
 
     # ===== payments =====
-    r = client.post("/api/payments/create-intent", json={"order_no": main_no})
+    r = client.post("/api/payments/create-intent", headers=emma_auth,
+                    json={"order_no": main_no})
     d = r.json()
     check("create-intent → PI_+32hex / amount 3110 / 模拟 client_secret",
           r.status_code == 200 and d["payment_intent"].startswith("PI_")
           and len(d["payment_intent"]) == 35 and d["amount"] == 3110
           and d["client_secret"].endswith("_secret_mock"), d)
 
-    r = client.post("/api/payments/mock-pay", json={"order_no": main_no, "succeed": False})
+    r = client.post("/api/payments/mock-pay", headers=emma_auth,
+                    json={"order_no": main_no, "succeed": False})
     d = r.json()
     check("mock-pay 失败 → Payment FAILED 订单保持 PENDING",
           r.status_code == 200 and d["payment_status"] == 2 and d["order_status"] == 0, d)
 
-    r = client.post("/api/payments/create-intent", json={"order_no": main_no})
-    r = client.post("/api/payments/mock-pay", json={"order_no": main_no, "succeed": True})
+    r = client.post("/api/payments/create-intent", headers=emma_auth,
+                    json={"order_no": main_no})
+    r = client.post("/api/payments/mock-pay", headers=emma_auth,
+                    json={"order_no": main_no, "succeed": True})
     d = r.json()
     main = order_by_no(main_no)
     s.expire_all()
@@ -330,7 +334,8 @@ with TestClient(app) as client:
           and gc.balance == 0 and gc.status == 3
           and gc_ledger is not None and gc_ledger.change_type == 3, d)
 
-    r = client.post("/api/payments/create-intent", json={"order_no": order2_no})
+    r = client.post("/api/payments/create-intent",
+                    json={"order_no": order2_no, "email": "mia@glow.test"})
     pi2 = r.json()["payment_intent"]
     r = client.post("/api/payments/webhook", json={
         "id": "evt_gc_1", "type": "payment_intent.succeeded", "data": {"payment_intent": pi2}})
@@ -568,6 +573,12 @@ with TestClient(app) as client:
     r = client.post("/api/checkout/place", headers={**guest_main, **emma_auth}, json={
         "email": "emma@glow.test", "address": addr})
     check("place risk_flag=2 → 403 account_blocked",
+          r.status_code == 403 and r.json().get("detail") == "account_blocked", r.text)
+    # 黑名单用户登出后同 email 游客下单（含大小写/空白差异）同拦
+    set_cart_items(cart_gc.id, [{"variantId": v_cherry.id, "qty": 1}])
+    r = client.post("/api/checkout/place", headers=guest_gc, json={
+        "email": "  Emma@Glow.Test ", "address": addr})
+    check("place 游客 email 命中黑名单用户（归一化）→ 403 account_blocked",
           r.status_code == 403 and r.json().get("detail") == "account_blocked", r.text)
     s.expire_all()
     s.get(User, emma.id).risk_flag = 0

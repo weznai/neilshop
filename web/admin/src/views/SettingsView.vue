@@ -13,6 +13,7 @@ useQuerySync(st, { defaults: { tab: 'shipping' } })
 if (!TABS.some(([k]) => k === st.tab)) st.tab = 'shipping'
 const settings = reactive({})   /* key → {value, description} */
 const templates = ref([])
+const tplErr = ref(false)       /* 邮件模板加载失败：模板区横幅 + 重试（不再静默当空列表） */
 const loaded = ref(false)
 const settingsErr = ref(false)  /* 配置加载失败：禁用保存，防止默认值覆盖线上配置 */
 
@@ -53,10 +54,19 @@ async function load() {
   for (const [key, meta] of Object.entries(EDITABLE)) {
     drafts[key] = key in settings ? settings[key].value : meta.def
   }
-  try { templates.value = (await req('GET', '/api/admin/ops/email-templates')).items || [] } catch (_) { /* */ }
+  tplErr.value = false
+  try { templates.value = (await req('GET', '/api/admin/ops/email-templates')).items || [] }
+  catch (_) { tplErr.value = true }
   loaded.value = true
 }
 onMounted(load)
+
+/* 模板区重试：单独重拉邮件模板（失败横幅保留） */
+async function retryTemplates() {
+  tplErr.value = false
+  try { templates.value = (await req('GET', '/api/admin/ops/email-templates')).items || [] }
+  catch (_) { tplErr.value = true }
+}
 
 const saving = ref('')
 async function saveKey(key) {
@@ -172,11 +182,16 @@ const rawRows = computed(() => {
 
   <!-- 邮件模板 -->
   <div v-else-if="st.tab === 'email'" class="card" style="padding:0">
+    <!-- 加载失败：错误横幅 + 重试（对齐 settingsErr 横幅模式），旧数据（若有）保留 -->
+    <div v-if="tplErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
+      <span>⚠️ 邮件模板加载失败，展示的可能不是最新列表</span>
+      <button class="btn btn-secondary btn-sm" @click="retryTemplates">重试</button>
+    </div>
     <div v-for="t in tplList()" :key="t.name" class="setrow" style="padding:14px 18px;border-bottom:1px solid var(--gray-light)">
       <div><b>{{ t.name }}</b><div style="font-size:12px;color:var(--gray)">主题：{{ t.subject }}</div></div>
       <button class="btn btn-secondary btn-sm" @click="showTpl(t)">👁 预览</button>
     </div>
-    <EmptyState v-if="loaded && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
+    <EmptyState v-if="loaded && !tplErr && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
   </div>
 
   <!-- 全部参数（raw k-v，支持关键字过滤） -->

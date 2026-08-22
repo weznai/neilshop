@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../../api/client'
+import { fmtDate, fmtDateTime } from '../../composables/datetime'
 import { i18n } from '../../i18n'
 
 const route = useRoute()
@@ -41,23 +42,7 @@ const ledgerFailed = ref(false)
 const page = ref(Math.max(1, Number(route.query.page) || 1))
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-function fmt(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
-  return d.getFullYear() === new Date().getFullYear()
-    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-}
-function fmtDate(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
+const fmt = fmtDateTime
 
 async function load() {
   ptsFailed.value = false

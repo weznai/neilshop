@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { i18n } from '../i18n'
-import { errMessage, req } from '../api/client'
+import { errMessage, intentNoChannel, req } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
+import { fmtDate } from '../composables/datetime'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -58,24 +59,48 @@ async function buy() {
   } finally { busy.value = false }
 }
 
-/* 礼品卡订单为待支付订单：mock 支付演示通道（支付成功后后端自动激活 status 0→1） */
+/* 礼品卡订单为待支付订单：mock 支付演示通道（支付成功后后端自动激活 status 0→1）；游客单带购买人 email 过归属校验 */
 async function payAndActivate() {
   if (paying.value || !result.value) return
   paying.value = true
+  const em = purchaser.value.trim()
   try {
-    await req('POST', '/api/payments/create-intent', { order_no: result.value.order_no })
+    const intent = await req('POST', '/api/payments/create-intent', { order_no: result.value.order_no, email: em })
+    if (intentNoChannel(intent)) {
+      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
     try {
-      await req('POST', '/api/payments/mock-pay', { order_no: result.value.order_no, succeed: true })
+      await req('POST', '/api/payments/mock-pay', { order_no: result.value.order_no, email: em, succeed: true })
       paid.value = true
       ui.toast(t('Paid — gift card activated', '支付成功 · 礼品卡已激活'), 'success')
     } catch (e) {
       const m = (e.data && e.data.detail) || ''
       if (m === 'already_paid') { paid.value = true; ui.toast(t('Already paid', '已支付'), 'success') }
-      else ui.toast(m === 'use_webhook' ? t('Complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || 'Pay failed', 'error')
+      else ui.toast(m === 'use_webhook' ? t('Complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || i18n.t('pay.failed'), 'error')
     }
   } catch (e) {
-    ui.toast((e.data && e.data.detail) || 'Pay failed', 'error')
+    ui.toast((e.data && e.data.detail) || i18n.t('pay.failed'), 'error')
   } finally { paying.value = false }
+}
+
+/* 余额查询：POST /api/promo/giftcard {code} → {balance_cents, status, expires_at}；404 invalid_card 等 */
+const balCode = ref('')
+const balBusy = ref(false)
+const balResult = ref(null)
+const balErr = ref('')
+async function checkBalance() {
+  const c = balCode.value.trim().toUpperCase()
+  balErr.value = ''
+  if (!c) { balErr.value = i18n.t('gc.check.enter'); return }
+  balBusy.value = true
+  balResult.value = null
+  try {
+    balResult.value = await req('POST', '/api/promo/giftcard', { code: c })
+  } catch (e) {
+    const m = e && e.data && e.data.detail
+    balErr.value = m === 'invalid_card' ? i18n.t('gc.check.invalid') : i18n.t('gc.check.fail')
+  } finally { balBusy.value = false }
 }
 
 async function copyCode() {
@@ -173,6 +198,28 @@ const mailto = computed(() => {
           <p style="font-size:11.5px;color:var(--gray);margin-top:10px;text-align:center">
             {{ t('Instant email delivery · no expiry · stackable with points', '即时发送 · 永久有效 · 可与积分同享') }}
           </p>
+        </div>
+      </div>
+
+      <!-- 余额查询 -->
+      <div class="card" style="padding:22px;margin-top:22px">
+        <h2 style="font-family:var(--font-title);font-size:20px;margin-bottom:4px">🔍 {{ i18n.t('gc.check.t') }}</h2>
+        <p style="font-size:13px;color:var(--gray);margin-bottom:14px">{{ i18n.t('gc.check.d') }}</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input
+            v-model="balCode" class="input" style="flex:1;min-width:200px;text-transform:uppercase"
+            :placeholder="i18n.t('co.gcPh')" @keyup.enter="checkBalance"
+          >
+          <button class="btn btn-secondary" :class="{ loading: balBusy }" :disabled="balBusy" @click="checkBalance">
+            {{ i18n.t('gc.check.btn') }}
+          </button>
+        </div>
+        <p v-if="balErr" style="font-size:13px;color:var(--error);margin-top:10px">{{ balErr }}</p>
+        <div v-if="balResult" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px;font-size:14px">
+          <b>{{ balCode.trim().toUpperCase() }}</b>
+          <span>· {{ i18n.t('gc.check.balance') }} <b style="color:var(--plum)">{{ money(balResult.balance_cents) }}</b></span>
+          <span>· {{ i18n.t('gc.check.status') }} <span class="tag tag-paid">{{ i18n.t('gc.check.active') }}</span></span>
+          <span>· {{ balResult.expires_at ? i18n.t('gc.check.expires', fmtDate(balResult.expires_at, '')) : i18n.t('gc.check.noExpiry') }}</span>
         </div>
       </div>
     </div>

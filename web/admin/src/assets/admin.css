@@ -128,6 +128,9 @@ th.sortable:hover{color:var(--plum)}
 /* 表格：行悬停 + 数字列弱化边框 */
 .main table tbody tr{transition:background .12s}
 .main table tbody tr:hover{background:var(--row-hover)}
+/* 单元格内边距：style.css 的 *{padding:0} 重置会清空 td/th，此前仅 Products/Inventory 两页 scoped 补齐，
+ * 其余视图表格单元格互相粘连——全局统一 10px 12px（口径同原两页 scoped 副本；行内 style 与更具体的 scoped 规则仍可覆盖） */
+.main table td,.main table th{padding:10px 12px}
 /* 斑马纹（偶数行浅底）+ sticky 表头（长表滚动时表头常驻于 tbl-wrap 容器顶部） */
 .main table thead th{position:sticky;top:0;background:#fff;z-index:1;box-shadow:inset 0 -1px 0 var(--gray-light)}
 .main table tbody tr:nth-child(even){background:var(--row-alt)}

@@ -1,11 +1,12 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { req } from '../../api/client'
+import { req, intentNoChannel } from '../../api/client'
 import { useCartStore } from '../../stores/cart'
 import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { fmtDateTime, zulu } from '../../composables/datetime'
 import { i18n } from '../../i18n'
 
 const route = useRoute()
@@ -55,16 +56,7 @@ function eventLabel(t) {
 }
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-function fmt(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
-  return d.getFullYear() === new Date().getFullYear()
-    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
-}
+const fmt = fmtDateTime
 function detailText(ev) {
   const d = ev.detail
   if (!d) return ''
@@ -111,7 +103,7 @@ const inReturnWindow = computed(() => {
   if (!ov) return false
   const base = ov.paid_at || ov.placed_at
   if (!base) return true
-  const t = new Date(base).getTime()
+  const t = new Date(zulu(base)).getTime()
   return isNaN(t) ? true : Date.now() - t <= 30 * 86400000
 })
 const returnable = computed(() => statusReturnable.value && inReturnWindow.value)
@@ -123,12 +115,18 @@ const canBuyAgain = computed(() => !!o.value && ![0, 8].includes(o.value.status)
 /* 已送达待确认：可自助确认收货（4→5 已完成） */
 const canConfirmRecv = computed(() => !!o.value && o.value.status === 4)
 
-/* 待付订单：支付（create-intent → mock-pay）/ 取消 */
+/* 待付订单：支付（create-intent → mock-pay）/ 取消；游客双因子 ?email= 透传过归属校验 */
+const guestEmail = computed(() => String(route.query.email || '').trim())
 async function payNow() {
   busy.value = true
+  const em = guestEmail.value || undefined
   try {
-    await req('POST', '/api/payments/create-intent', { order_no: o.value.order_no })
-    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, succeed: true })
+    const intent = await req('POST', '/api/payments/create-intent', { order_no: o.value.order_no, email: em })
+    if (intentNoChannel(intent)) {
+      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
+    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, email: em, succeed: true })
     ui.toast(d.order_status === 1 ? tt('Payment successful 🎉', '支付成功 🎉') : tt('Payment processing', '支付处理中'), 'success')
     await load()
   } catch (e) {

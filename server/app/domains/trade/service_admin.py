@@ -151,6 +151,7 @@ def list_orders(
     db: Session, status: Optional[int], q: Optional[str], page: int,
     per_page: Optional[int] = None, date_from: Optional[str] = None,
     date_to: Optional[str] = None, sort: Optional[str] = None,
+    status_in: Optional[list[int]] = None,
 ) -> dict:
     # 可选每页条数：缺省 10 兼容；显式传值时钳制到 10-100
     pp = PER_PAGE_ORDERS if per_page is None else min(max(per_page, 10), 100)
@@ -160,7 +161,7 @@ def list_orders(
     if date_to:
         end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
     orders, total = repo.paginate_orders(
-        db, status=status, q=q, page=page, per_page=pp,
+        db, status=status, status_in=status_in, q=q, page=page, per_page=pp,
         date_from=start, date_to=end, sort=sort,
     )
     return {
@@ -233,10 +234,16 @@ def order_detail(db: Session, order_no: str) -> dict:
 
 def ship_order(db: Session, admin: User, order_no: str, body: ShipRequest) -> dict:
     order = _get_order(db, order_no)
-    if order.status not in (1, 2):
-        raise HTTPException(status_code=409, detail=f"not_shippable:{order.status}")
+    prev_status = order.status
+    if prev_status not in (1, 2):
+        raise HTTPException(status_code=409, detail=f"not_shippable:{prev_status}")
     items = repo.order_items(db, order.id)
     now = utcnow()
+    # 发货 CAS（WHERE status IN (1,2)）：并发重复发货/已付取消竞态时 rowcount=0 → 409
+    if repo.claim_order_shipped(db, order.id, now, body.tracking_no) == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail=f"not_shippable:{order.status}")
     shipment = Shipment(
         shipment_no="SP" + now.strftime("%y%m%d") + uuid.uuid4().hex[:4].upper(),
         order_id=order.id,
@@ -247,7 +254,6 @@ def ship_order(db: Session, admin: User, order_no: str, body: ShipRequest) -> di
         shipped_at=now,
     )
     db.add(shipment)
-    prev_status = order.status
     order.status = 3
     order.shipped_at = now
     order.shipping_status = 2

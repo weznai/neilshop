@@ -13,7 +13,7 @@ const zh = () => i18n.lang === 'zh'
  * 页面按同一口径展示，实际以购物车/结算为准 */
 const items = ref([])
 const loaded = ref(false)
-const busy = ref(0)
+const busy = ref({})
 
 onMounted(async () => {
   try { items.value = (await req('GET', '/api/catalog/products?size=9&sort=best&category=press-on-nails')).items || [] }
@@ -45,20 +45,32 @@ const bundles = computed(() => {
     })
 })
 
+/* 加购失败单项提示（详情拉取失败 / 无有货规格 / POST 失败统一走此文案风格） */
+function failToast(title) {
+  ui.toast(zh() ? `「${title}」加购失败，请稍后再试` : `Could not add ${title} — try again later`, 'error')
+}
+
 async function addBundle(b) {
-  if (b.soldOut || busy.value) return
-  busy.value = 1
+  if (b.soldOut || busy.value[b.name]) return
+  busy.value = { ...busy.value, [b.name]: true }
   /* 三个商品详情并行请求（allSettled：单品失败不影响其余） */
-  const results = await Promise.allSettled(b.sets.map((s) => req('GET', '/api/catalog/products-by-id/' + s.id)))
-  let ok = 0
-  for (const r of results) {
-    if (r.status !== 'fulfilled') continue
+  const details = await Promise.allSettled(b.sets.map((s) => req('GET', '/api/catalog/products-by-id/' + s.id)))
+  const picks = []
+  details.forEach((r, i) => {
+    if (r.status !== 'fulfilled') { failToast(b.sets[i].title); return }
     const v = (r.value.variants || []).find((x) => x.stock > 0)
-    if (!v) continue
-    try { await req('POST', '/api/cart/items', { variant_id: v.id, qty: 1 }); ok++ } catch (_) { /* 单品失败继续 */ }
-  }
+    if (v) picks.push({ title: b.sets[i].title, v })
+    else failToast(b.sets[i].title)
+  })
+  /* 加购并行（allSettled），单项失败单独提示 */
+  const adds = await Promise.allSettled(picks.map((x) => req('POST', '/api/cart/items', { variant_id: x.v.id, qty: 1 })))
+  let ok = 0
+  adds.forEach((r, i) => {
+    if (r.status === 'fulfilled') ok++
+    else failToast(picks[i].title)
+  })
   await cart.refresh().catch(() => {})
-  busy.value = 0
+  busy.value = { ...busy.value, [b.name]: false }
   if (ok) {
     ui.toast(
       zh()
@@ -67,8 +79,6 @@ async function addBundle(b) {
       'success',
     )
     ui.openCart()
-  } else {
-    ui.toast(zh() ? '加购失败，请稍后再试' : 'Could not add bundle, try again', 'error')
   }
 }
 </script>
@@ -100,7 +110,7 @@ async function addBundle(b) {
               <span style="color:var(--gray);text-decoration:line-through;font-size:13px">${{ b.total.toFixed(2) }}</span>
               <span class="save-pill">{{ zh() ? '省' : 'SAVE' }} ${{ b.save.toFixed(2) }}</span>
             </div>
-            <button class="btn btn-primary btn-block" :disabled="b.soldOut || busy" @click="addBundle(b)">
+            <button class="btn btn-primary btn-block" :disabled="b.soldOut || busy[b.name]" :class="{ loading: busy[b.name] }" @click="addBundle(b)">
               {{ b.soldOut ? (zh() ? '含售罄商品' : 'Contains sold-out set') : (zh() ? '整组加购' : 'Add bundle to cart') }}
             </button>
           </div>

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.ops import service
-from app.domains.ops.schemas import ReviewBulkIn, RiskIn, UgcBulkIn
+from app.domains.ops.schemas import PointsAdjustIn, ReviewBulkIn, RiskIn, UgcBulkIn
 from app.models import User
 
 router = APIRouter(tags=["admin-ops"])
@@ -41,6 +41,19 @@ def member_detail(user_id: int, admin: User = Depends(require_admin), db: Sessio
 @router.post("/api/admin/ops/members/{user_id}/risk")
 def member_risk(user_id: int, body: RiskIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return service.member_risk(db, admin, user_id, body)
+
+
+@router.get("/api/admin/ops/admins")
+def list_admins(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.list_admins(db)
+
+
+@router.post("/api/admin/ops/members/{user_id}/points")
+def member_points_adjust(
+    user_id: int, body: PointsAdjustIn,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service.member_points_adjust(db, admin, user_id, body)
 
 
 @router.get("/api/admin/ops/logs")

@@ -45,8 +45,8 @@ class CloseIn(BaseModel):
 
 
 class TicketStatusIn(BaseModel):
-    """工单状态流转：status 仅允许 2/3/4（0/1 态只能经回复进入处理流）"""
-    status: int = Field(ge=2, le=4)
+    """工单状态流转：status 允许 1/2/3/4（0/1 态只能经回复进入；1 仅用于 4→1 重开）"""
+    status: int = Field(ge=1, le=4)
     close_reason: int | str | None = None
 
     @model_validator(mode="after")

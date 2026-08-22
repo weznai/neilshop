@@ -96,6 +96,7 @@ with TestClient(app) as client:
 
     H_rita = {"Authorization": f"Bearer {create_token(rita.id, 0)}"}
     H_tina = {"Authorization": f"Bearer {create_token(tina.id, 0)}"}
+    H_nia = {"Authorization": f"Bearer {create_token(nia.id, 0)}"}
     expected_code = "GLOW-" + hashlib.sha256(
         f"{rita.id}:{app_settings.jwt_secret}".encode()).hexdigest()[:8].upper()
 
@@ -224,8 +225,9 @@ with TestClient(app) as client:
     s.commit()
     o3 = make_order(s, "NS260816R03", user_id=nia.id, email="nia@glowmag.com")
     s.commit()
-    client.post("/api/payments/create-intent", json={"order_no": "NS260816R03"})
-    r = client.post("/api/payments/mock-pay",
+    client.post("/api/payments/create-intent", headers=H_nia,
+                json={"order_no": "NS260816R03"})
+    r = client.post("/api/payments/mock-pay", headers=H_nia,
                     json={"order_no": "NS260816R03", "succeed": True})
     s.expire_all()
     nia_ref_ledger = s.query(PointsLedger).filter(
@@ -572,8 +574,11 @@ with TestClient(app) as client:
           r.status_code == 201 and d["status"] == 0 and card.status == 0
           and card.purchaser_order_id is not None and gc_order.startswith("NS"), d)
 
-    client.post("/api/payments/create-intent", json={"order_no": gc_order})
-    client.post("/api/payments/mock-pay", json={"order_no": gc_order, "succeed": True})
+    client.post("/api/payments/create-intent",
+                json={"order_no": gc_order, "email": "buy@glowmag.com"})
+    client.post("/api/payments/mock-pay",
+                json={"order_no": gc_order, "email": "buy@glowmag.com",
+                      "succeed": True})
     s.expire_all()
     card = s.query(GiftCard).filter(GiftCard.code == d["code"]).one()
     gledger = s.query(GiftCardLedger).filter(

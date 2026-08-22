@@ -28,7 +28,9 @@ _SAMPLES: deque[tuple[str, float]] = deque(maxlen=10000)
 RATE_WINDOW = 60.0
 # 前缀匹配（startswith）且先命中先生效：更具体的前缀必须排在更宽的前缀之前；
 # /api/ai 前缀刻意不加（ai/router.py 域内 30/min 滑动窗自治，避免双重 429）；
-# /api/orders/track 用全路径形式，避免 /api/orders 宽前缀覆盖订单列表/详情端点
+# /api/orders/track 用全路径形式，避免 /api/orders 宽前缀覆盖订单列表端点；
+# /api/orders/ 前缀（排在 track 之后）覆盖 /api/orders/{order_no} 详情与子动作，
+# 防订单号+邮箱撞库枚举泄露收货地址（track 同款阈值）
 RATE_RULES: list[tuple[str, int]] = [
     ("/api/account/admin/login", 20),
     ("/api/account/login", 60),
@@ -48,6 +50,7 @@ RATE_RULES: list[tuple[str, int]] = [
     ("/api/returns", 20),
     ("/api/exchanges", 20),
     ("/api/orders/track", 30),
+    ("/api/orders/", 30),
     ("/api/catalog/stock-notify", 10),
     ("/api/support/tickets", 30),
 ]

@@ -1,3 +1,20 @@
+<script>
+/* 模块级：编辑精选卡商品详情内存缓存（布局重建不重复请求）；{ok:true,d}|{ok:false}，404 视为下架缓存命中 */
+const _picksCache = {}
+function pickDetail(slug) {
+  if (!_picksCache[slug]) {
+    _picksCache[slug] = req('GET', '/api/catalog/products/' + slug)
+      .then((d) => ({ ok: true, d }))
+      .catch((e) => {
+        if (e && e.status === 404) return { ok: true, d: null }
+        delete _picksCache[slug]
+        return { ok: false }
+      })
+  }
+  return _picksCache[slug]
+}
+</script>
+
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -37,11 +54,23 @@ const NAV = [
 const zh = computed(() => i18n.lang === 'zh')
 const MEGA_SHAPE = [['almond', 'Short Almond', '短杏仁'], ['square', 'Square', '方形'], ['stiletto', 'Stiletto', '尖头'], ['coffin', 'Coffin', '棺形']]
 const MEGA_STYLE = [['french', 'French', '法式'], ['glitter', 'Glitter', '亮片'], ['solid', 'Solid', '纯色'], ['art', 'Nail Art', '美甲艺术']]
-/* 编辑精选卡链到真实商品（slug 直达 PDP），价格与种子一致 */
-const MEGA_PICKS = [
-  { slug: 'bare-gems', title: 'Bare Gems', titleZh: '裸钻', price: 15.99, img: 'https://placehold.co/120x120/F5D8DA/6D2E46?text=Bare+Gems' },
-  { slug: 'french-kiss', title: 'French Kiss', titleZh: '法式之吻', price: 14.99, img: 'https://placehold.co/120x120/E8C5D8/552338?text=French+Kiss' },
-]
+/* 编辑精选卡链到真实商品（slug 直达 PDP）：挂载时按 slug 拉详情回填标题/价格/图，
+   404 或下架隐藏对应卡，请求失败保留硬编码兜底 */
+const MEGA_PICKS = ref([
+  { slug: 'bare-gems', title: 'Bare Gems', titleZh: '裸钻', price: 15.99, img: 'https://placehold.co/120x120/F5D8DA/6D2E46?text=Bare+Gems', show: true },
+  { slug: 'french-kiss', title: 'French Kiss', titleZh: '法式之吻', price: 14.99, img: 'https://placehold.co/120x120/E8C5D8/552338?text=French+Kiss', show: true },
+])
+const picksShown = computed(() => MEGA_PICKS.value.filter((p) => p.show))
+async function hydratePicks() {
+  await Promise.all(MEGA_PICKS.value.map(async (p) => {
+    const r = await pickDetail(p.slug)
+    if (!r.ok) return
+    if (!r.d || (r.d.status != null && r.d.status !== 1)) { p.show = false; return }
+    p.title = r.d.title
+    if (r.d.price_min != null) p.price = r.d.price_min / 100
+    if (r.d.hero_image) p.img = r.d.hero_image
+  }))
+}
 
 /* 滚动驱动：顶栏收缩 + 返回顶部（单监听器） */
 const showBackTop = ref(false)
@@ -95,14 +124,28 @@ const tabSearch = computed(() => route.path === '/search')
 const tabWish = computed(() => route.path === '/account/wishlist')
 const tabMe = computed(() => route.path.startsWith('/account') && route.path !== '/account/wishlist')
 
+/* 购物车角标一次性脉冲：仅 cart.count 数值变化时触发（瞬时类，对齐 CartView freePop）；静止有货不加持续动画 */
+const tabPulse = ref(false)
+let tabPulseT = null
+watch(() => cart.count, () => {
+  clearTimeout(tabPulseT)
+  tabPulse.value = false
+  tabPulseT = setTimeout(() => {
+    tabPulse.value = true
+    setTimeout(() => { tabPulse.value = false }, 1700)
+  }, 30)
+})
+
 onMounted(() => {
   startAnn()
   syncWl()
+  hydratePicks()
   window.addEventListener('gm:wl-changed', onWlChanged)
   window.addEventListener('scroll', onScroll, { passive: true })
 })
 onUnmounted(() => {
   clearInterval(annTimer)
+  clearTimeout(tabPulseT)
   window.removeEventListener('gm:wl-changed', onWlChanged)
   window.removeEventListener('scroll', onScroll)
 })
@@ -134,7 +177,7 @@ onUnmounted(() => {
               </div>
               <div class="mega-col">
                 <h5>{{ zh ? '编辑精选' : "Editors' Picks" }}</h5>
-                <router-link v-for="p in MEGA_PICKS" :key="p.title" class="mega-card" :to="`/product?slug=${p.slug}`">
+                <router-link v-for="p in picksShown" :key="p.slug" class="mega-card" :to="`/product?slug=${p.slug}`">
                   <img :src="p.img" :alt="p.title">
                   <span><b>{{ zh ? p.titleZh : p.title }}</b><i>${{ p.price.toFixed(2) }}</i></span>
                 </router-link>
@@ -240,6 +283,7 @@ onUnmounted(() => {
             <h4>{{ i18n.t('footer.shop') }}</h4>
             <div class="footer-links">
               <router-link to="/store">{{ i18n.t('footer.all') }}</router-link>
+              <router-link to="/collections">{{ i18n.t('footer.collections') }}</router-link>
               <router-link to="/store?sort=new">{{ i18n.t('footer.new') }}</router-link>
               <router-link to="/sale">{{ i18n.t('footer.sale') }}</router-link>
               <router-link to="/gift-cards">{{ i18n.t('footer.gift') }}</router-link>
@@ -288,7 +332,7 @@ onUnmounted(() => {
     <router-link to="/store" :class="{ on: tabShop }"><GmIcon name="bag" :size="22" /><span>{{ i18n.t('tab.shop') }}</span></router-link>
     <button type="button" :class="{ on: tabSearch }" @click="ui.openSearch()"><GmIcon name="search" :size="22" /><span>{{ i18n.t('tab.search') }}</span></button>
     <router-link to="/account/wishlist" :class="{ on: tabWish }"><GmIcon name="heart" :size="22" /><span>{{ i18n.t('tab.wishlist') }}</span></router-link>
-    <button type="button" :class="{ 'tab-pulse': cart.count > 0 }" @click="ui.openCart()">
+    <button type="button" :class="{ 'tab-pulse': tabPulse }" @click="ui.openCart()">
       <GmIcon name="cart" :size="22" /><span v-show="cart.count" class="cart-badge">{{ cart.count > 99 ? '99+' : cart.count }}</span>
       <span>{{ i18n.t('tab.cart') }}</span>
     </button>

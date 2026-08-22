@@ -55,11 +55,15 @@ def get_current_user_optional(
 def get_admin_session_user(
     gm_admin_token: Optional[str] = Cookie(None),
     db: Session = Depends(get_db),
-) -> Optional[User]:
-    """后台专用会话解析：严格只认 gm_admin_token（与前台会话完全隔离）。"""
+) -> User:
+    """后台专用会话解析：严格只认 gm_admin_token（与前台会话完全隔离）；
+    无 Cookie / 解析失败一律 401（与 get_current_user 同构，未登录不再返回 None）。"""
     if not settings.cookie_auth or not gm_admin_token:
-        return None
-    return _user_from_token(db, gm_admin_token)
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = _user_from_token(db, gm_admin_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 
 def set_auth_cookie(response: Response, token: str, admin: bool = False) -> None:

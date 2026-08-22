@@ -104,6 +104,9 @@ def append_message(db: Session, ticket_no: str, body: TicketMessageIn) -> dict:
     if t.status == 4:
         raise HTTPException(status_code=409, detail="ticket closed")
     db.add(TicketMessage(ticket_id=t.id, sender=1, content=body.content))
+    if t.status == 2:
+        # 等待客户(2) 下客户追加回复 → 自动回流处理中(1)，免客服手动捞单
+        t.status = 1
     db.commit()
     return {"ok": True}
 
@@ -211,18 +214,23 @@ def _norm_close_reason(value) -> int | None:
     return int(s) if s.lstrip("-").isdigit() else 9
 
 
-# 状态机：仅允许 1→2/3/4、2→3/4、3→4（0/1 态只能经回复进入，4 已关闭为终态）
-_ALLOWED_TRANSITIONS = {(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)}
+# 状态机：1→2/3/4、2→3/4、3→4；4→1 为重开（0/1 态只能经回复进入）
+_ALLOWED_TRANSITIONS = {(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4), (4, 1)}
 
 
 def admin_set_status(db: Session, admin: User, ticket_no: str, body: TicketStatusIn) -> dict:
     t = _get_ticket(db, ticket_no)
-    if (t.status, body.status) not in _ALLOWED_TRANSITIONS:
+    prev = t.status
+    if (prev, body.status) not in _ALLOWED_TRANSITIONS:
         raise HTTPException(status_code=409, detail="invalid_status_transition")
     t.status = body.status
     if body.status == 4:
         t.closed_at = utcnow()
         t.close_reason = _norm_close_reason(body.close_reason)
+    elif prev == 4 and body.status == 1:
+        # 重开：清空关单时间与原因，避免残留误导后续报表/筛选
+        t.closed_at = None
+        t.close_reason = None
     log_admin(db, admin, "status", "ticket", t.id, {"status": body.status, "close_reason": t.close_reason})
     db.commit()
     db.refresh(t)

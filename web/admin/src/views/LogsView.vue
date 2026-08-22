@@ -78,7 +78,9 @@ function buildUrl(p) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (f.entity) params.set('entity', f.entity)
   if (f.action.trim()) params.set('action', f.action.trim())
-  if (f.admin_id) params.set('admin_id', Math.round(Number(f.admin_id)))
+  /* admin_id 空串/非法输入（NaN）不带参数（即清除筛选），防后端 422 */
+  const aid = Math.round(Number(f.admin_id))
+  if (f.admin_id && Number.isInteger(aid)) params.set('admin_id', aid)
   if (f.start) params.set('start', f.start)
   /* end 为日期选择器值：补当天末时刻，含边界日全天 */
   if (f.end) params.set('end', f.end + 'T23:59:59')

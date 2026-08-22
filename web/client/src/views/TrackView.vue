@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { req } from '../api/client'
 import { statusLabel } from '../composables/orderStatus'
+import { zulu } from '../composables/datetime'
 import { i18n } from '../i18n'
 
 const route = useRoute()
@@ -61,7 +62,7 @@ function eventLabel(ev) {
 }
 function fmtTime(iso) {
   if (!iso) return ''
-  const d = new Date(iso)
+  const d = new Date(zulu(iso))
   return isNaN(d) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 function shipState(s) {

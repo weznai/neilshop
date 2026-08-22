@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { req } from '../api/client'
+import { req, intentNoChannel } from '../api/client'
 import { i18n } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
+import { statusLabel, statusTag } from '../composables/orderStatus'
 
 const route = useRoute()
 const cart = useCartStore()
@@ -23,21 +24,6 @@ const loaded = ref(false)
 const orderError = ref(false)
 const paying = ref(false)
 const copied = ref(false)
-
-const OSTATUS = [
-  ['Pending payment', '待支付'], ['Paid', '已支付'], ['Packing', '打包中'], ['Shipped', '已发货'],
-  ['Delivered', '已送达'], ['Done', '已完成'], ['Cancelled', '已取消'], ['Refunded', '已退款'],
-  ['Cancelled', '已取消'], ['Refunded', '已退款'],
-]
-const statusText = (s) => {
-  const p = OSTATUS[s]
-  return p ? t(p[0], p[1]) : '—'
-}
-const statusTag = (s) => {
-  if (s === 0) return 'tag-pending'
-  if (s >= 1 && s <= 5) return 'tag-paid'
-  return 'tag-error'
-}
 
 async function fetchOrder() {
   if (!orderNo.value) return
@@ -73,24 +59,29 @@ async function refreshStatus() {
 }
 onUnmounted(stopPolling)
 
-/* 待支付订单：创建支付意向 + mock 支付（演示通道；真实 provider 走 webhook） */
+/* 待支付订单：创建支付意向 + mock 支付（演示通道；真实 provider 走 webhook）；游客单带下单 email 过归属校验 */
 async function payNow() {
   if (paying.value || !orderNo.value) return
   paying.value = true
+  const em = email.value || undefined
   try {
-    await req('POST', '/api/payments/create-intent', { order_no: orderNo.value })
+    const intent = await req('POST', '/api/payments/create-intent', { order_no: orderNo.value, email: em })
+    if (intentNoChannel(intent)) {
+      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
     try {
-      await req('POST', '/api/payments/mock-pay', { order_no: orderNo.value, succeed: true })
+      await req('POST', '/api/payments/mock-pay', { order_no: orderNo.value, email: em, succeed: true })
     } catch (e) {
       const m = (e.data && e.data.detail) || ''
       if (m === 'already_paid') ui.toast(t('Already paid', '已支付'), 'success')
-      else ui.toast(m === 'use_webhook' ? t('Please complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || 'Pay failed', 'error')
+      else ui.toast(m === 'use_webhook' ? t('Please complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || i18n.t('pay.failed'), 'error')
     }
     await fetchOrder()
   } catch (e) {
     const m = (e.data && e.data.detail) || ''
     if (/order_not_pending/.test(m)) { ui.toast(t('This order is already paid', '该订单已支付'), 'success'); await fetchOrder() }
-    else ui.toast(m || 'Pay failed', 'error')
+    else ui.toast(m || i18n.t('pay.failed'), 'error')
   } finally { paying.value = false }
 }
 
@@ -167,7 +158,7 @@ onMounted(async () => {
         <div v-if="order.points_earned" style="display:flex;justify-content:space-between;color:var(--success)"><span>🎁 {{ t('Points earned (frozen till delivery)', '本单获得积分（确认收货后解冻）') }}</span><b style="color:var(--gold)">+{{ order.points_earned }} pts</b></div>
         <div v-if="order.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>💳 {{ t('Gift card', '礼品卡') }}</span><span>−{{ money(order.giftcard_discount) }}</span></div>
         <div style="display:flex;justify-content:space-between"><span>{{ t('Status', '状态') }}</span>
-          <span class="tag" :class="statusTag(order.status)">{{ statusText(order.status) }}</span>
+          <span class="tag" :class="statusTag(order.status)">{{ statusLabel(order.status) }}</span>
         </div>
         <div v-if="order.items && order.items.length" style="border-top:1px solid var(--gray-light);padding-top:10px;display:grid;gap:8px">
           <div v-for="it in order.items" :key="it.id" style="display:flex;gap:10px;align-items:center;font-size:13px">

@@ -101,11 +101,14 @@ def _dedup_pending_order(
 
 
 def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dict:
-    # 风控：黑名单用户拒绝下单
-    if user is not None and user.risk_flag == 2:
-        raise HTTPException(status_code=403, detail="account_blocked")
     # 下单 email 归一（strip+lower）落库：游客防重/弃购召回/ Redemption 查询统一大小写口径
     email_norm = body.email.strip().lower()
+    # 风控：黑名单用户拒绝下单；登出后用同 email 游客下单同拦（单次查询）
+    if user is not None:
+        if user.risk_flag == 2:
+            raise HTTPException(status_code=403, detail="account_blocked")
+    elif repo.blacklisted_email(db, email_norm):
+        raise HTTPException(status_code=403, detail="account_blocked")
     cart_items = cart_items_of(cart)
     if not cart_items:
         # 清车后的重复提交（双击重放）：窗口内已有该用户/邮箱的 PENDING 单则幂等返回

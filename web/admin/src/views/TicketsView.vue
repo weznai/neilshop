@@ -13,15 +13,14 @@ import Pagination from '../components/Pagination.vue'
 const session = useSessionStore()
 const tickets = ref([])
 const total = ref(0)
-const page = ref(1)
 const SIZE = 50
 const loaded = ref(false)
 const loadErr = ref(false)
 const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 
-/* 筛选 URL 同步：tab/q/priority/cat/mine 回填与写回（priority '0'=仅紧急；cat ''=全部分类；mine '1'=我的工单） */
-const st = reactive({ tab: 'all', q: '', priority: '', cat: '', mine: '' })
-useQuerySync(st, { defaults: { tab: 'all', priority: '', cat: '', mine: '' } })
+/* 筛选 URL 同步：tab/q/priority/cat/mine/page 回填与写回（priority '0'=仅紧急；cat ''=全部分类；mine '1'=我的工单） */
+const st = reactive({ tab: 'all', q: '', priority: '', cat: '', mine: '', page: 1 })
+useQuerySync(st, { nums: ['page'], defaults: { tab: 'all', priority: '', cat: '', mine: '', page: 1 } })
 
 /* 状态映射统一走 constants/trade.js（TSTATUS）
  * 状态机：0 新工单 → 1 处理中（回复后）→ 2 等待客户 / 3 已解决 → 4 已关闭（带 close_reason） */
@@ -71,7 +70,7 @@ async function load(p = 1) {
     const d = await req('GET', buildUrl(stt, p))
     tickets.value = d.items || []
     total.value = d.total ?? 0
-    page.value = p
+    st.page = p
     /* 刷新后按 ticket_no 重绑 active 到新数组中的行（旧引用已与列表脱钩；被筛掉则清空） */
     if (active.value) active.value = tickets.value.find((t) => t.ticket_no === active.value.ticket_no) || null
   } catch (e) {
@@ -129,6 +128,7 @@ function applyTemplate(e) {
 async function openTicket(t) {
   active.value = t
   thread.value = null
+  loadAdmins()   /* 懒加载指派候选人（首次打开工单时拉取一次，缓存） */
   if (t.category) loadCatTemplates(t.category)   /* 预取该分类快捷模板（不阻塞线程加载） */
   try {
     const d = await req('GET', `/api/support/tickets?email=${encodeURIComponent(t.email)}&ticket_no=${encodeURIComponent(t.ticket_no)}`, undefined, { credentials: 'omit' })
@@ -148,7 +148,7 @@ async function send() {
     toast('回复已发送 ✓', 'success')
     Object.assign(active.value, t)   /* 同步右侧面板状态（0→1 处理中） */
     await openTicket(active.value)
-    load(page.value)
+    load(st.page)
   } catch (e) { toast('回复失败：' + terr(e), 'error') }
   finally { busy.value = false }
 }
@@ -160,7 +160,7 @@ async function setStatus(status) {
     const t = await req('PUT', `/api/admin/support/tickets/${active.value.ticket_no}/status`, { status })
     toast(status === 2 ? '已标记等待客户 ✓' : '已标记解决 ✓', 'success')
     Object.assign(active.value, t)
-    load(page.value)
+    load(st.page)
   } catch (e) { toast('操作失败：' + terr(e), 'error') }
   finally { busy.value = false }
 }
@@ -177,7 +177,7 @@ async function doClose(reason) {
     toast('工单已关闭 ✓', 'success')
     closeDlg.value = false
     Object.assign(active.value, t)
-    load(page.value)
+    load(st.page)
   } catch (e) { toast('关闭失败：' + terr(e), 'error') }
   finally { busy.value = false }
 }
@@ -186,6 +186,16 @@ async function doClose(reason) {
 const assigneeText = (t) => t.assignee_admin_id
   ? (t.assignee_name || `#${t.assignee_admin_id}`)
   : '未指派'
+/* 指派候选人：GET /ops/admins（role≥2 且启用的管理账号），首次打开工单时拉取一次缓存，失败下次重试 */
+const admins = ref([])
+const adminsLoaded = ref(false)
+async function loadAdmins() {
+  if (adminsLoaded.value) return
+  try {
+    admins.value = (await req('GET', '/api/admin/ops/admins')).items || []
+    adminsLoaded.value = true
+  } catch (_) { /* 失败保持空列表，指派下拉仅剩占位项 */ }
+}
 /* 指派给我：AssignIn 需 admin_id（取当前登录管理员 id），接入 busy 防重复提交 */
 async function assignMe() {
   if (busy.value) return
@@ -196,8 +206,35 @@ async function assignMe() {
     const t = await req('POST', `/api/admin/ops/tickets/${active.value.ticket_no}/assign`, { admin_id: adminId })
     Object.assign(active.value, t)
     toast('已指派给你 ✓', 'success')
-    load(page.value)
+    load(st.page)
   } catch (e) { toast('指派失败：' + terr(e), 'error') }
+  finally { busy.value = false }
+}
+/* 指派给其他管理员：下拉选择即提交（选项文案「姓名 email前缀」，当前指派人标记） */
+async function assignTo(idStr) {
+  if (busy.value) return
+  const adminId = Number(idStr)
+  if (!adminId || !active.value) return
+  busy.value = true
+  try {
+    const t = await req('POST', `/api/admin/ops/tickets/${active.value.ticket_no}/assign`, { admin_id: adminId })
+    Object.assign(active.value, t)
+    toast('已指派给 ' + (admins.value.find((a) => a.id === adminId)?.name || '#' + adminId) + ' ✓', 'success')
+    load(st.page)
+  } catch (e) { toast('指派失败：' + terr(e), 'error') }
+  finally { busy.value = false }
+}
+
+/* 重开已关闭工单：PUT status=1（后端支持 4→1），成功后面板回到可回复态并刷新行 */
+async function reopen() {
+  if (busy.value || !active.value) return
+  busy.value = true
+  try {
+    const t = await req('PUT', `/api/admin/support/tickets/${active.value.ticket_no}/status`, { status: 1 })
+    toast('工单已重新打开 ✓', 'success')
+    Object.assign(active.value, t)
+    load(st.page)
+  } catch (e) { toast('重开失败：' + terr(e), 'error') }
   finally { busy.value = false }
 }
 </script>
@@ -230,7 +267,7 @@ async function assignMe() {
 
   <!-- 首屏失败（无旧数据）：错误空态置顶，隐藏列表 -->
   <EmptyState v-else-if="loadErr && !tickets.length" icon="⚠️" title="工单列表加载失败" :sub="errMsg || '服务端可能未启动或会话已过期'">
-    <template #action><button class="btn btn-secondary btn-sm" @click="load(page)">重试</button></template>
+    <template #action><button class="btn btn-secondary btn-sm" @click="load(st.page)">重试</button></template>
   </EmptyState>
 
   <div v-else class="grid-2" style="align-items:start">
@@ -238,7 +275,7 @@ async function assignMe() {
       <!-- 刷新失败（有旧数据）：卡内顶部横幅，旧数据保留 -->
       <div v-if="loadErr" class="err-banner">
         <span>⚠️ 刷新失败：{{ errMsg || '网络异常，下方为旧数据' }}</span>
-        <button class="btn btn-secondary btn-sm" @click="load(page)">重试</button>
+        <button class="btn btn-secondary btn-sm" @click="load(st.page)">重试</button>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">工单号</th><th>主题</th><th>客户</th><th>首次回复</th><th>指派</th><th>状态</th></tr></thead>
@@ -270,7 +307,7 @@ async function assignMe() {
         </tbody>
       </table>
       <EmptyState v-if="!tickets.length" :icon="filtered ? '🔍' : '💬'" :title="filtered ? '未找到匹配的工单' : '暂无工单'" :sub="filtered ? '试试调整或清除筛选' : '客户提交工单后将显示在这里'" />
-      <Pagination embed :page="page" :pages="pages" :total="total" unit="张" @go="load" />
+      <Pagination embed :page="st.page" :pages="pages" :total="total" unit="张" @go="load" />
     </div>
 
     <div class="card" style="padding:20px;position:sticky;top:16px">
@@ -321,6 +358,10 @@ async function assignMe() {
               <option v-for="t in tplOptions" :key="t.id" :value="t.id">{{ t.title }}</option>
             </select>
             <button class="btn btn-secondary btn-sm" style="height:34px" :disabled="busy" title="指派给当前登录管理员" @click="assignMe">指派给我</button>
+            <select class="input" style="height:34px;font-size:12.5px;flex:1;min-width:130px" title="指派给其他管理员" :value="active.assignee_admin_id || ''" @change="assignTo($event.target.value)">
+              <option value="" disabled>指派给…</option>
+              <option v-for="a in admins" :key="a.id" :value="a.id">{{ a.name }} {{ (a.email || '').split('@')[0] }}{{ a.id === active.assignee_admin_id ? '（当前）' : '' }}</option>
+            </select>
           </div>
           <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…（Ctrl+Enter 发送）" style="margin-bottom:10px" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send"></textarea>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
@@ -330,11 +371,12 @@ async function assignMe() {
               <button class="btn btn-secondary" :disabled="busy" title="处理中 → 已解决（1→3）" @click="setStatus(3)">标记解决</button>
             </template>
             <button v-else-if="active.status === 2" class="btn btn-secondary" :disabled="busy" title="等待客户 → 已解决（2→3）" @click="setStatus(3)">标记解决</button>
-            <button class="btn btn-ghost" style="color:var(--error)" :disabled="busy" :title="isResolved ? '已解决 → 确认关闭（3→4）' : '关闭后不可重开'" @click="openClose">{{ isResolved ? '确认关闭' : '关闭' }}</button>
+            <button class="btn btn-ghost" style="color:var(--error)" :disabled="busy" :title="isResolved ? '已解决 → 确认关闭（3→4）' : '关闭后可随时重新打开'" @click="openClose">{{ isResolved ? '确认关闭' : '关闭' }}</button>
           </div>
         </div>
         <div v-else style="padding:12px 14px;background:var(--gray-light);border-radius:10px;font-size:12.5px;color:var(--gray);text-align:center">
           🔒 工单已关闭<span v-if="active.closed_at"> · {{ dt(active.closed_at) }}</span>，不再接受回复
+          <button class="btn btn-secondary btn-sm" style="margin-left:8px" :disabled="busy" title="已关闭 → 处理中（4→1）" @click="reopen">重新打开</button>
         </div>
       </template>
     </div>
@@ -344,7 +386,7 @@ async function assignMe() {
   <ConfirmDialog
     :open="closeDlg"
     title="关闭工单"
-    :body="`关闭 ${active?.ticket_no} 后客户将无法继续回复，工单不可重新打开；如问题未解决请改用回复。`"
+    :body="`关闭 ${active?.ticket_no} 后客户将无法继续回复，关闭后可随时重新打开；如问题未解决请改用回复。`"
     confirm-text="确认关闭"
     danger
     reason-label="关闭原因"

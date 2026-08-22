@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { req } from '../api/client'
+import { zulu } from '../composables/datetime'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { i18n } from '../i18n'
@@ -38,7 +39,7 @@ function refStatus(r) {
 
 function fmt(iso) {
   if (!iso) return '—'
-  const d = new Date(iso)
+  const d = new Date(zulu(iso))
   if (isNaN(d)) return '—'
   const p = (n) => String(n).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())}`

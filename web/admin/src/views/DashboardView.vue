@@ -175,7 +175,7 @@ const reconcile = computed(() => d.value?.reconcile)
       <div class="card card-lift" style="padding:20px">
         <div class="dhead"><h3 class="dtitle">待处理事项</h3></div>
         <div class="todo-list">
-          <router-link class="todo-row" to="/orders?status=1">
+          <router-link class="todo-row" to="/orders?status=1,2">
             <span class="todo-ico">📦</span>
             <span class="todo-txt">待发货订单<i class="todo-arrow">→</i></span>
             <b class="todo-cnt" :class="(d.pending_orders ?? 0) > 0 ? 'c-on' : ''">{{ d.pending_orders ?? 0 }}</b>
@@ -204,7 +204,7 @@ const reconcile = computed(() => d.value?.reconcile)
         <!-- 快捷入口（待支付用看板 unpaid_orders 计数；待审退货直达预填筛选） -->
         <div class="quick-row">
           <router-link class="quick-chip" to="/orders?status=0">待支付订单 {{ d.unpaid_orders ?? 0 }} →</router-link>
-          <router-link class="quick-chip" to="/returns?tab=rma">待审退货 →</router-link>
+          <router-link class="quick-chip" to="/returns?tab=rma&rs=s0">待审退货 →</router-link>
         </div>
         <div v-if="lowStockTop.length" class="lstock">
           <div class="lstock-title">最缺货 Top {{ lowStockTop.length }}（库存 ≤ 8）</div>
