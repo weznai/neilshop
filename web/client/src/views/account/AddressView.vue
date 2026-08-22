@@ -13,6 +13,8 @@ const arm = useArmConfirm()
 
 const list = ref([])
 const loaded = ref(false)
+/* 表单默认收起：点「新增地址 / 编辑」才展开，保存/取消后收起 */
+const showForm = ref(false)
 /* 编辑态存地址 id（null 新建）——防删除后索引错位覆盖 */
 const editing = ref(null)
 const form = reactive({ full_name: '', line1: '', line2: '', city: '', state: '', zip: '', country: 'US', phone: '', is_default: false })
@@ -51,6 +53,7 @@ onMounted(load)
 function reset() {
   Object.assign(form, { full_name: '', line1: '', line2: '', city: '', state: '', zip: '', country: 'US', phone: '', is_default: false })
   editing.value = null
+  showForm.value = false
 }
 function edit(a) {
   Object.assign(form, {
@@ -59,6 +62,7 @@ function edit(a) {
     country: a.country || 'US', phone: a.phone || '', is_default: !!a.is_default,
   })
   editing.value = a.id
+  showForm.value = true
 }
 
 const editingAddr = computed(() => (editing.value === null ? null : list.value.find((a) => a.id === editing.value) || null))
@@ -112,6 +116,12 @@ async function save() {
   } catch (e) {
     ui.toast(e && e.status === 404 ? tt('This address no longer exists — please refresh', '该地址不存在，请刷新') : tt('Save failed — please check the fields', '保存失败，请检查填写'), 'error')
   } finally { busy.value = false }
+}
+
+/* 打开新增表单：清空残留编辑态 */
+function startAdd() {
+  reset()
+  showForm.value = true
 }
 
 /* 快捷设为默认：整份 AddressIn 体重放，仅翻转 is_default */
@@ -178,9 +188,12 @@ async function remove(a) {
       <div v-else class="card" style="padding:26px;text-align:center;color:var(--gray);font-size:14px">
         📍 {{ tt('No saved addresses yet — add one here for faster checkout.', '还没有保存地址 —— 结账时填写或在此新增，下单更快。') }}
       </div>
+      <div v-if="!showForm" style="display:flex;justify-content:center">
+        <button class="btn btn-secondary" @click="startAdd">➕ {{ tt('Add address', '新增地址') }}</button>
+      </div>
     </template>
 
-    <div class="card addr-form" :class="{ 'addr-editing': editing !== null }" style="padding:20px">
+    <div v-if="showForm" class="card addr-form" :class="{ 'addr-editing': editing !== null }" style="padding:20px">
       <h3 style="font-size:15px;margin-bottom:14px">
         <template v-if="editing === null">➕ {{ tt('Add address', '新增地址') }}</template>
         <template v-else>✏️ {{ tt('Edit address', '编辑地址') }}<span v-if="editingAddr" style="color:var(--plum)"> · {{ editingAddr.full_name }}</span></template>
@@ -214,7 +227,7 @@ async function remove(a) {
         <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="save">
           {{ editing === null ? tt('Add address', '添加地址') : tt('Save changes', '保存修改') }}
         </button>
-        <button v-if="editing !== null" class="btn btn-ghost" @click="reset">{{ tt('Cancel', '取消编辑') }}</button>
+        <button class="btn btn-ghost" @click="reset">{{ tt('Cancel', '取消') }}</button>
       </div>
     </div>
   </div>

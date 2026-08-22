@@ -91,7 +91,7 @@ onMounted(load)
 /* 进度条仅用于正常履约流（0-5）；取消/退款单独展示 */
 const steps = computed(() => {
   if (!o.value) return []
-  const labels = ['下单', '支付', '备货', '发货', '送达']
+  const labels = [tt('Placed', '下单'), tt('Paid', '支付'), tt('Packing', '备货'), tt('Shipped', '发货'), tt('Delivered', '送达')]
   const s = o.value.status
   if (![0, 1, 2, 3, 4, 5].includes(s)) return []
   const upto = Math.min(s, 4)
@@ -122,12 +122,12 @@ async function payNow() {
   try {
     await req('POST', '/api/payments/create-intent', { order_no: o.value.order_no })
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, succeed: true })
-    ui.toast(d.order_status === 1 ? '支付成功 🎉' : '支付处理中', 'success')
+    ui.toast(d.order_status === 1 ? tt('Payment successful 🎉', '支付成功 🎉') : tt('Payment processing', '支付处理中'), 'success')
     await load()
   } catch (e) {
     const d = e && e.data && e.data.detail || ''
-    if (String(d).startsWith('order_not_pending') || d === 'already_paid') { ui.toast('订单状态已变化，已刷新', 'error'); await load() }
-    else ui.toast('支付失败，请稍后再试', 'error')
+    if (String(d).startsWith('order_not_pending') || d === 'already_paid') { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); await load() }
+    else ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
   } finally { busy.value = false }
 }
 /* 两段式确认（useArmConfirm：5s 复位；按钮 arm 态红字 + 二段文案） */
@@ -138,11 +138,11 @@ async function cancelOrder() {
   busy.value = true
   try {
     await req('POST', '/api/orders/' + encodeURIComponent(o.value.order_no) + '/cancel', { reason: 'user' })
-    ui.toast('订单已取消', 'success')
+    ui.toast(tt('Order cancelled', '订单已取消'), 'success')
     await load()
   } catch (e) {
     const d = e && e.data && e.data.detail || ''
-    ui.toast(String(d).startsWith('not_cancellable') ? '该订单当前状态不可取消' : '取消失败，请稍后再试', 'error')
+    ui.toast(String(d).startsWith('not_cancellable') ? tt('This order cannot be cancelled in its current status', '该订单当前状态不可取消') : tt('Cancel failed — please retry later', '取消失败，请稍后再试'), 'error')
   } finally { busy.value = false }
 }
 /* 已支付未发货：自助取消并全额原路退款（POST cancel 扩展；409 no_refundable_payment 需转人工） */
@@ -252,15 +252,15 @@ async function submitRma() {
       reason: rma.reason,
       reason_detail: rma.detail || null,
     })
-    ui.toast(`退货申请已提交（${d.rma_no}），请耐心等待审核`, 'success')
+    ui.toast(tt(`Return request submitted (${d.rma_no}) — pending review`, `退货申请已提交（${d.rma_no}），请耐心等待审核`), 'success')
     rma.open = false
     await load()
   } catch (e) {
     const d = (e && e.data && e.data.detail) || ''
-    if (String(d).startsWith('not_returnable')) ui.toast('该订单当前状态不可退货', 'error')
-    else if (d === 'return_window_closed') ui.toast('退货窗口已关闭（下单后 30 天内可退）', 'error')
-    else if (String(d).startsWith('qty_exceeds_available')) ui.toast('退货数量超出可退数量', 'error')
-    else ui.toast('退货申请失败，请稍后再试', 'error')
+    if (String(d).startsWith('not_returnable')) ui.toast(tt('This order is not returnable in its current status', '该订单当前状态不可退货'), 'error')
+    else if (d === 'return_window_closed') ui.toast(tt('Return window closed (30 days after payment)', '退货窗口已关闭（下单后 30 天内可退）'), 'error')
+    else if (String(d).startsWith('qty_exceeds_available')) ui.toast(tt('Return quantity exceeds available quantity', '退货数量超出可退数量'), 'error')
+    else ui.toast(tt('Return request failed — please retry later', '退货申请失败，请稍后再试'), 'error')
   } finally { rma.busy = false }
 }
 
@@ -318,17 +318,17 @@ async function submitExchange() {
       new_variant_id: ex.picked,
       qty: ex.qty,
     })
-    ui.toast(`换货申请已提交（${d.exchange_no}）`, 'success')
+    ui.toast(tt(`Exchange request submitted (${d.exchange_no})`, `换货申请已提交（${d.exchange_no}）`), 'success')
     ex.open = false
     await load()
   } catch (e) {
     const d = (e && e.data && e.data.detail) || ''
-    if (String(d).startsWith('not_exchangeable')) ui.toast('该订单当前状态不可换货', 'error')
-    else if (d === 'return_window_closed') ui.toast('换货窗口已关闭', 'error')
+    if (String(d).startsWith('not_exchangeable')) ui.toast(tt('This order is not exchangeable in its current status', '该订单当前状态不可换货'), 'error')
+    else if (d === 'return_window_closed') ui.toast(tt('Exchange window closed', '换货窗口已关闭'), 'error')
     else if (String(d).startsWith('qty_exceeds_available')) ui.toast(tt('Insufficient quantity available for exchange', '可换数量不足'), 'error')
-    else if (d === 'variant_out_of_stock') ui.toast('新规格库存不足，请重选', 'error')
-    else if (d === 'variant_not_found') ui.toast('所选规格不存在，请重选', 'error')
-    else ui.toast('换货申请失败，请稍后再试', 'error')
+    else if (d === 'variant_out_of_stock') ui.toast(tt('That variant is out of stock — pick another', '新规格库存不足，请重选'), 'error')
+    else if (d === 'variant_not_found') ui.toast(tt('That variant no longer exists — pick another', '所选规格不存在，请重选'), 'error')
+    else ui.toast(tt('Exchange request failed — please retry later', '换货申请失败，请稍后再试'), 'error')
   } finally { ex.busy = false }
 }
 
@@ -439,7 +439,7 @@ async function submitReview(it) {
   <div>
     <div v-if="err" class="card" style="padding:30px;text-align:center;color:var(--gray)">
       {{ err }}
-      <div style="margin-top:10px"><router-link class="btn btn-secondary btn-sm" to="/account/orders">← 返回订单列表</router-link></div>
+      <div style="margin-top:10px"><router-link class="btn btn-secondary btn-sm" to="/account/orders">{{ tt('← Back to orders', '← 返回订单列表') }}</router-link></div>
     </div>
     <div v-else-if="loading" style="display:grid;gap:16px">
       <div class="skeleton" style="height:110px;border-radius:14px" />
@@ -452,12 +452,12 @@ async function submitReview(it) {
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="font-family:var(--font-title);font-size:22px">{{ o.order_no }}</h2>
-            <div style="font-size:12.5px;color:var(--gray)">下单 {{ fmt(o.placed_at) }}<span v-if="o.paid_at"> · 支付 {{ fmt(o.paid_at) }}</span></div>
+            <div style="font-size:12.5px;color:var(--gray)">{{ tt('Placed', '下单') }} {{ fmt(o.placed_at) }}<span v-if="o.paid_at"> · {{ tt('Paid', '支付') }} {{ fmt(o.paid_at) }}</span></div>
           </div>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
             <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
             <template v-if="o.status === 0">
-              <button class="btn btn-primary btn-sm" :class="{ loading: busy }" :disabled="busy" @click="payNow">去支付 {{ money(o.grand_total) }}</button>
+              <button class="btn btn-primary btn-sm" :class="{ loading: busy }" :disabled="busy" @click="payNow">{{ tt('Pay', '去支付') }} {{ money(o.grand_total) }}</button>
               <button
                 class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is('pending'), loading: busy }"
                 :disabled="busy" @click="cancelArm.hit('pending', cancelOrder)"
@@ -481,7 +481,7 @@ async function submitReview(it) {
           </div>
         </div>
         <div v-else style="margin-top:14px;padding:10px 14px;border-radius:10px;background:var(--pale-error);color:var(--error);font-size:13.5px;font-weight:600">
-          {{ o.status === 8 ? '订单已取消' : '订单已退款' }}
+          {{ o.status === 8 ? tt('Order cancelled', '订单已取消') : tt('Order refunded', '订单已退款') }}
         </div>
       </div>
 
@@ -489,7 +489,7 @@ async function submitReview(it) {
         <div style="display:grid;gap:16px">
           <!-- 商品 -->
           <div class="card" style="padding:20px">
-            <h3 style="font-size:15px;margin-bottom:12px">商品</h3>
+            <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Items', '商品') }}</h3>
             <div v-for="it in o.items || []" :key="it.id" style="padding:12px 0;border-bottom:1px solid var(--gray-light)">
               <div style="display:flex;gap:12px;align-items:center">
                 <img :src="it.image" :alt="it.title" style="width:56px;height:56px;border-radius:9px;object-fit:cover">
@@ -497,16 +497,16 @@ async function submitReview(it) {
                   <b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ it.title }}</b>
                   <div style="color:var(--gray);font-size:12px">
                     {{ money(it.unit_price) }} × {{ it.qty }}
-                    <span v-if="it.refunded_qty" class="tag tag-error" style="margin-left:6px">已退 {{ it.refunded_qty }}</span>
-                    <span v-if="it.exchanged_qty" class="tag tag-ship" style="margin-left:6px">已换 {{ it.exchanged_qty }}</span>
+                    <span v-if="it.refunded_qty" class="tag tag-error" style="margin-left:6px">{{ tt('Refunded', '已退') }} {{ it.refunded_qty }}</span>
+                    <span v-if="it.exchanged_qty" class="tag tag-ship" style="margin-left:6px">{{ tt('Exchanged', '已换') }} {{ it.exchanged_qty }}</span>
                   </div>
                 </div>
                 <b style="font-size:13.5px">{{ money(it.subtotal) }}</b>
               </div>
               <div v-if="(statusReturnable && avail(it) > 0) || reviewableStatus" class="item-actions">
                 <template v-if="statusReturnable && avail(it) > 0 && inReturnWindow">
-                  <button class="btn btn-ghost btn-sm" @click="openRma(it)">↩️ 申请退货（可退 {{ avail(it) }}）</button>
-                  <button class="btn btn-ghost btn-sm" @click="openExchange(it)">🔁 申请换货</button>
+                  <button class="btn btn-ghost btn-sm" @click="openRma(it)">↩️ {{ tt('Request return', '申请退货') }}（{{ tt('max', '可退') }} {{ avail(it) }}）</button>
+                  <button class="btn btn-ghost btn-sm" @click="openExchange(it)">🔁 {{ tt('Request exchange', '申请换货') }}</button>
                 </template>
                 <span v-else-if="statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (30 days after payment)', '已超退货窗口（支付后 30 天）') }}</span>
                 <!-- 评价入口：已发货（3/4/5）展示；提交后置灰 -->
@@ -555,29 +555,29 @@ async function submitReview(it) {
 
             <!-- 金额汇总 -->
             <div style="display:grid;gap:6px;margin-top:12px;font-size:13.5px">
-              <div style="display:flex;justify-content:space-between"><span>小计</span><span>{{ money(o.subtotal) }}</span></div>
-              <div v-if="o.discount_total" style="display:flex;justify-content:space-between;color:var(--success)"><span>折扣优惠</span><span>-{{ money(o.discount_total) }}</span></div>
-              <div v-if="o.points_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>积分抵扣（{{ o.points_used }} 分）</span><span>-{{ money(o.points_discount) }}</span></div>
-              <div v-if="o.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>礼品卡抵扣</span><span>-{{ money(o.giftcard_discount) }}</span></div>
-              <div style="display:flex;justify-content:space-between"><span>运费{{ o.shipping_method === 'express' ? '（快递）' : '' }}</span><span>{{ o.shipping_fee ? money(o.shipping_fee) : '包邮' }}</span></div>
-              <div style="display:flex;justify-content:space-between"><span>税费</span><span>{{ money(o.tax) }}</span></div>
+              <div style="display:flex;justify-content:space-between"><span>{{ tt('Subtotal', '小计') }}</span><span>{{ money(o.subtotal) }}</span></div>
+              <div v-if="o.discount_total" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ tt('Discount', '折扣优惠') }}</span><span>-{{ money(o.discount_total) }}</span></div>
+              <div v-if="o.points_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ tt('Points off', '积分抵扣') }}（{{ o.points_used }}）</span><span>-{{ money(o.points_discount) }}</span></div>
+              <div v-if="o.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ tt('Gift card', '礼品卡抵扣') }}</span><span>-{{ money(o.giftcard_discount) }}</span></div>
+              <div style="display:flex;justify-content:space-between"><span>{{ tt('Shipping', '运费') }}{{ o.shipping_method === 'express' ? tt(' (express)', '（快递）') : '' }}</span><span>{{ o.shipping_fee ? money(o.shipping_fee) : tt('Free', '包邮') }}</span></div>
+              <div style="display:flex;justify-content:space-between"><span>{{ tt('Tax', '税费') }}</span><span>{{ money(o.tax) }}</span></div>
               <div class="od-total">
-                <span>实付总额</span><span>{{ money(o.grand_total) }}</span>
+                <span>{{ tt('Total paid', '实付总额') }}</span><span>{{ money(o.grand_total) }}</span>
               </div>
-              <div v-if="o.points_earned" style="font-size:12.5px;color:var(--gray)">本单获得 {{ o.points_earned }} 积分（确认收货后解冻）</div>
+              <div v-if="o.points_earned" style="font-size:12.5px;color:var(--gray)">{{ tt('You earned', '本单获得') }} {{ o.points_earned }} {{ tt('points (unfrozen after delivery)', '积分（确认收货后解冻）') }}</div>
             </div>
           </div>
 
           <!-- 时间线 -->
           <div class="card" style="padding:20px">
-            <h3 style="font-size:15px;margin-bottom:12px">订单动态</h3>
+            <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Order activity', '订单动态') }}</h3>
             <div class="tl-list">
               <div v-for="(t, i) in o.timeline || []" :key="i" style="display:flex;gap:10px;font-size:13px;padding:7px 0">
                 <span style="color:var(--gray);flex:none;width:88px">{{ fmt(t.created_at) }}</span>
                 <span class="tl-dot" :class="{ now: i === 0 }" :style="{ background: i === 0 ? 'var(--rose)' : 'var(--gray-light)' }"></span>
                 <span><b>{{ eventLabel(t) }}</b><span v-if="detailText(t)" style="color:var(--gray)"> · {{ detailText(t) }}</span></span>
               </div>
-              <div v-if="!(o.timeline || []).length" style="color:var(--gray);font-size:13px">暂无动态</div>
+              <div v-if="!(o.timeline || []).length" style="color:var(--gray);font-size:13px">{{ tt('No activity yet', '暂无动态') }}</div>
             </div>
           </div>
         </div>
@@ -585,7 +585,7 @@ async function submitReview(it) {
         <div style="display:grid;gap:16px;align-content:start">
           <!-- 收货地址 -->
           <div class="card" style="padding:20px">
-            <h3 style="font-size:15px;margin-bottom:10px">收货信息</h3>
+            <h3 style="font-size:15px;margin-bottom:10px">{{ tt('Shipping info', '收货信息') }}</h3>
             <div style="font-size:13.5px;line-height:1.7">
               {{ addr.full_name }}<br>
               {{ addr.line1 }} {{ addr.line2 || '' }}<br>
@@ -596,28 +596,28 @@ async function submitReview(it) {
 
           <!-- 物流 -->
           <div v-if="(o.shipments || []).length || o.tracking_no" class="card" style="padding:20px">
-            <h3 style="font-size:15px;margin-bottom:10px">物流</h3>
+            <h3 style="font-size:15px;margin-bottom:10px">{{ tt('Shipment', '物流') }}</h3>
             <template v-if="(o.shipments || []).length">
               <div v-for="s in o.shipments" :key="s.shipment_no" style="font-size:13.5px;line-height:1.9;padding-bottom:8px;border-bottom:1px dashed var(--gray-light);margin-bottom:8px">
                 <b>{{ (s.carrier || '').toUpperCase() }}</b> · {{ s.shipment_no }}<br>
-                追踪号 <code style="font-size:12.5px">{{ s.tracking_no }}</code><br>
+                {{ tt('Tracking no.', '追踪号') }} <code style="font-size:12.5px">{{ s.tracking_no }}</code><br>
                 <span class="tag" :class="s.status >= 4 ? 'tag-done' : 'tag-ship'">{{ SHIP_ST[s.status] ? tt(SHIP_ST[s.status][0], SHIP_ST[s.status][1]) : s.status }}</span>
               </div>
             </template>
-            <div v-else style="font-size:13.5px;color:var(--gray)">追踪号 {{ o.tracking_no || '—' }}</div>
+            <div v-else style="font-size:13.5px;color:var(--gray)">{{ tt('Tracking no.', '追踪号') }} {{ o.tracking_no || '—' }}</div>
           </div>
 
           <!-- 支付记录 -->
           <div v-if="(o.payments || []).length" class="card" style="padding:20px">
-            <h3 style="font-size:15px;margin-bottom:10px">支付记录</h3>
+            <h3 style="font-size:15px;margin-bottom:10px">{{ tt('Payments', '支付记录') }}</h3>
             <div v-for="p in o.payments" :key="p.id" style="display:flex;justify-content:space-between;align-items:center;font-size:13.5px;padding:6px 0">
-              <span>{{ money(p.amount) }}<span v-if="p.refunded_amount" style="color:var(--gray)">（已退 {{ money(p.refunded_amount) }}）</span></span>
+              <span>{{ money(p.amount) }}<span v-if="p.refunded_amount" style="color:var(--gray)">（{{ tt('refunded', '已退') }} {{ money(p.refunded_amount) }}）</span></span>
               <span class="tag" :class="PAY_ST[p.status]?.[2]">{{ PAY_ST[p.status] ? tt(PAY_ST[p.status][0], PAY_ST[p.status][1]) : p.status }}</span>
             </div>
           </div>
 
           <div class="card" style="padding:20px;font-size:12.5px;color:var(--gray);line-height:1.8">
-            💡 退货/换货需在支付后 30 天内发起；换货永久免费，退货标签由客服审核后发送。
+            💡 {{ tt('Returns & exchanges must be requested within 30 days of payment. Exchanges are always free; return labels are sent after support review.', '退货/换货需在支付后 30 天内发起；换货永久免费，退货标签由客服审核后发送。') }}
           </div>
         </div>
       </div>
@@ -630,22 +630,22 @@ async function submitReview(it) {
         role="dialog" aria-modal="true" :aria-label="tt('Request a return', '申请退货')"
         @keydown="trapKeydown($event, rmaBox)"
       >
-        <h3 style="font-size:16px;margin-bottom:6px">申请退货</h3>
+        <h3 style="font-size:16px;margin-bottom:6px">{{ tt('Request a return', '申请退货') }}</h3>
         <div style="font-size:12.5px;color:var(--gray);margin-bottom:14px">{{ rma.item?.title }}</div>
-        <div class="field"><label>退货数量（最多 {{ avail(rma.item) }}）</label>
+        <div class="field"><label>{{ tt(`Return quantity (max ${avail(rma.item)})`, `退货数量（最多 ${avail(rma.item)}）`) }}</label>
           <input v-model.number="rma.qty" class="input" type="number" min="1" :max="avail(rma.item)">
         </div>
-        <div class="field"><label>退货原因</label>
+        <div class="field"><label>{{ tt('Reason', '退货原因') }}</label>
           <select v-model.number="rma.reason" class="input">
             <option v-for="(label, v) in RMA_REASON" :key="v" :value="Number(v)">{{ tt(label[0], label[1]) }}</option>
           </select>
         </div>
-        <div class="field"><label>补充说明（可选）</label>
-          <textarea v-model="rma.detail" class="input" rows="3" maxlength="500" style="height:auto;padding:10px 14px" placeholder="告诉我们更多细节…"></textarea>
+        <div class="field"><label>{{ tt('Details (optional)', '补充说明（可选）') }}</label>
+          <textarea v-model="rma.detail" class="input" rows="3" maxlength="500" style="height:auto;padding:10px 14px" :placeholder="tt('Tell us more…', '告诉我们更多细节…')"></textarea>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end">
-          <button class="btn btn-ghost" @click="rma.open = false">取消</button>
-          <button class="btn btn-primary" :class="{ loading: rma.busy }" :disabled="rma.busy || rma.qty < 1 || rma.qty > avail(rma.item)" @click="submitRma">提交申请</button>
+          <button class="btn btn-ghost" @click="rma.open = false">{{ tt('Cancel', '取消') }}</button>
+          <button class="btn btn-primary" :class="{ loading: rma.busy }" :disabled="rma.busy || rma.qty < 1 || rma.qty > avail(rma.item)" @click="submitRma">{{ tt('Submit request', '提交申请') }}</button>
         </div>
       </div>
     </div>
@@ -657,7 +657,7 @@ async function submitReview(it) {
         role="dialog" aria-modal="true" :aria-label="tt('Request an exchange', '申请换货')"
         @keydown="trapKeydown($event, exBox)"
       >
-        <h3 style="font-size:16px;margin-bottom:6px">申请换货</h3>
+        <h3 style="font-size:16px;margin-bottom:6px">{{ tt('Request an exchange', '申请换货') }}</h3>
         <div style="font-size:12.5px;color:var(--gray);margin-bottom:14px">
           {{ ex.item?.title }} → {{ tt('pick a new variant of the same style', '选择想要更换的新规格（同款其它尺码/颜色）') }}
         </div>
@@ -692,8 +692,8 @@ async function submitReview(it) {
           </div>
         </template>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
-          <button class="btn btn-ghost" @click="ex.open = false">取消</button>
-          <button class="btn btn-primary" :class="{ loading: ex.busy }" :disabled="ex.busy || !ex.picked" @click="submitExchange">提交换货申请</button>
+          <button class="btn btn-ghost" @click="ex.open = false">{{ tt('Cancel', '取消') }}</button>
+          <button class="btn btn-primary" :class="{ loading: ex.busy }" :disabled="ex.busy || !ex.picked" @click="submitExchange">{{ tt('Submit exchange request', '提交换货申请') }}</button>
         </div>
       </div>
     </div>

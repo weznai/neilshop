@@ -111,9 +111,9 @@ async function pay(o) {
     await load()
   } catch (e) {
     const d = e && e.data && e.data.detail || ''
-    if (String(d).startsWith('order_not_pending')) { ui.toast('订单状态已变化，已刷新', 'error'); load() }
-    else if (d === 'already_paid') { ui.toast('该订单已支付', 'error'); load() }
-    else ui.toast('支付失败，请稍后再试', 'error')
+    if (String(d).startsWith('order_not_pending')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); load() }
+    else if (d === 'already_paid') { ui.toast(tt('This order is already paid', '该订单已支付'), 'error'); load() }
+    else ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
   } finally { payingNo.value = '' }
 }
 
