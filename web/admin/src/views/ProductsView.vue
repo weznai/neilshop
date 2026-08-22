@@ -1,12 +1,14 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { dt } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
+const route = useRoute()
 const router = useRouter()
 const items = ref([])
 const total = ref(0)
@@ -36,8 +38,8 @@ async function loadCategories() {
   catch (_) { /* 拉取失败时导入校验回退为「任意正整数」，后端仍会兜底 */ }
 }
 
-/* 分类筛选：后端列表无 category 参数，纯前端过滤当前页数据 */
-const catFilter = ref('')
+/* 分类筛选：category_id 传后端真过滤（分页生效），选中值与 sort 一并同步 URL */
+const catFilter = ref(Number(route.query.category_id) > 0 ? Number(route.query.category_id) : '')
 
 async function load() {
   /* 刷新保留旧数据，骨架只在首载出现；翻页/切 tab/搜索均经此入口，顺带重置勾选 */
@@ -45,43 +47,46 @@ async function load() {
   try {
     const qs = { page: page.value, size: 50, q: q.value.trim() }
     if (status.value !== null) qs.status = status.value
+    if (catFilter.value !== '') qs.category_id = catFilter.value
+    if (sort.value) qs.sort = sort.value
     const d = await req('GET', '/api/admin/catalog/products?' + new URLSearchParams(qs))
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(total.value / 50))
+    syncSortUrl()
   } catch (e) { if (!loaded.value) items.value = []; toast('加载失败', 'error') }
   loaded.value = true
 }
 onMounted(() => { loadCategories(); load() })
 
 function search() { page.value = 1; load() }
+function clearSearch() { q.value = ''; page.value = 1; load() }
 function tab(sv) { status.value = sv; page.value = 1; load() }
+function filterCat() { page.value = 1; load() }
+/* 空态引导：有搜索/分类筛选时空态文案区分 + 一键清除 */
+const filtered = computed(() => !!(q.value.trim() || catFilter.value !== ''))
+function clearFilters() { q.value = ''; catFilter.value = ''; page.value = 1; load() }
 
-/* 当前页前端排序（价格/销量）：三态切换，空值恒沉底 */
-const sort = reactive({ key: '', dir: 1 })
-function sortBy(k) {
-  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
-  else if (sort.dir === 1) { sort.dir = -1 }
-  else { sort.key = ''; sort.dir = 1 }
+/* 服务端排序：sort 直传后端（title/price/created_at，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码
+ * URL 同步 sort + category_id 两键（其余筛选不进 query，最小侵入） */
+const SORTABLE = ['title', '-title', 'price', '-price', 'created_at', '-created_at']
+const sort = ref(SORTABLE.includes(route.query.sort) ? route.query.sort : '')
+function syncSortUrl() {
+  const query = { ...route.query }
+  if (sort.value) query.sort = sort.value; else delete query.sort
+  if (catFilter.value !== '') query.category_id = catFilter.value; else delete query.category_id
+  if (JSON.stringify(query) !== JSON.stringify(route.query)) router.replace({ query })
 }
-const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
-const shownItems = computed(() => {
-  const base = catFilter.value !== '' ? items.value.filter((p) => p.category_id === catFilter.value) : items.value
-  if (!sort.key) return base
-  const k = sort.key
-  return [...base].sort((a, b) => {
-    const av = a[k], bv = b[k]
-    if (av == null && bv == null) return 0
-    if (av == null) return 1
-    if (bv == null) return -1
-    if (av === bv) return 0
-    return (av > bv ? 1 : -1) * sort.dir
-  })
-})
+function sortBy(k) {
+  sort.value = sort.value === k ? '-' + k : (sort.value === '-' + k ? '' : k)
+  page.value = 1
+  load()
+}
+const sortInd = (k) => (sort.value === k ? '▲' : sort.value === '-' + k ? '▼' : '')
 
-/* ===== 批量上下架：全选作用于当前可见行（含分类过滤）；翻页/筛选后勾选重置 ===== */
+/* ===== 批量上下架：全选作用于当前页可见行；翻页/筛选后勾选重置 ===== */
 const selIds = ref([])
-const visIds = computed(() => shownItems.value.map((p) => p.id))
+const visIds = computed(() => items.value.map((p) => p.id))
 const allChecked = computed(() => visIds.value.length > 0 && visIds.value.every((id) => selIds.value.includes(id)))
 function toggleAll() { selIds.value = allChecked.value ? [] : [...visIds.value] }
 
@@ -106,6 +111,58 @@ async function runBatch(action) {
 }
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
+
+/* ===== CSV 导出：按当前状态tab+搜索+分类+排序循环翻页拉全量（size=50，上限 20 页）；转义/BOM 照抄 OrdersView ===== */
+const exporting = ref(false)
+const EXPORT_PER_PAGE = 50
+const EXPORT_MAX_PAGES = 20
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const params = { page: 1, size: EXPORT_PER_PAGE }
+    if (q.value.trim()) params.q = q.value.trim()
+    if (status.value !== null) params.status = status.value
+    if (catFilter.value !== '') params.category_id = catFilter.value
+    if (sort.value) params.sort = sort.value
+    const first = await req('GET', '/api/admin/catalog/products?' + new URLSearchParams(params))
+    const all = [...(first.items || [])]
+    const totalMatch = first.total ?? all.length
+    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_PER_PAGE) || 1, EXPORT_MAX_PAGES)
+    /* 第 2 页起每 5 页一批 Promise.all 并发（批间 await 控压，结果按页序拼接） */
+    for (let s = 2; s <= maxPage; s += 5) {
+      const end = Math.min(s + 4, maxPage)
+      const batch = await Promise.all(
+        Array.from({ length: end - s + 1 }, (_, i) =>
+          req('GET', '/api/admin/catalog/products?' + new URLSearchParams({ ...params, page: s + i })))
+      )
+      for (const d of batch) all.push(...(d.items || []))
+    }
+    if (Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES) {
+      toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 款，仅导出前 ${all.length} 款`, 'error')
+    }
+    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号 */
+    const cell = (v) => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const catName = (p) => categories.value.find((c) => c.id === p.category_id)?.name || ''
+    const rows = [['ID', '标题', 'slug', '状态', '分类', '价格区间', '变体数', '创建时间'],
+      ...all.map((p) => [p.id, p.title, p.slug, SMeta[p.status]?.[0] || p.status, catName(p),
+        p.price_max > p.price_min ? money(p.price_min) + '~' + money(p.price_max) : money(p.price_min),
+        p.variant_count ?? '', dt(p.created_at)])]
+    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
+    const stLabel = TABS.find(([sv]) => sv === status.value)?.[1] || '全部'
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `products-${stLabel}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('已导出 ' + all.length + ' 款 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
 
 /* 上架/归档确认弹窗：归档为危险操作；定时商品上架按计划时间生效（后端不再覆盖定时） */
 const dlg = reactive({ open: false, busy: false, p: null, action: 'publish' })
@@ -195,10 +252,14 @@ async function createCat() {
       <span class="page-sub">共 {{ total }} 款</span>
     </div>
     <div style="display:flex;gap:10px">
-      <input v-model="q" class="input" style="width:220px" placeholder="搜标题 / slug" @keydown.enter="search">
+      <div style="position:relative">
+        <input v-model="q" class="input" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
+        <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
+      </div>
       <button class="btn btn-secondary" @click="search">搜索</button>
       <button class="btn btn-secondary" @click="catDlg = true">🏷 分类管理</button>
       <button class="btn btn-secondary" @click="bulk = true">📦 批量导入</button>
+      <button class="btn btn-secondary btn-sm" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
       <router-link to="/product-edit" class="btn btn-primary">＋ 新建商品</router-link>
     </div>
   </div>
@@ -206,11 +267,10 @@ async function createCat() {
   <div class="otab">
     <button v-for="[sv, label] in TABS" :key="String(sv)" :class="{ on: status === sv }" @click="tab(sv)">{{ label }}</button>
     <div style="margin-left:auto;align-self:center;display:flex;align-items:center;gap:6px">
-      <select v-model="catFilter" class="input" style="width:auto;padding:6px 10px;font-size:12.5px" @change="selIds = []">
+      <select v-model="catFilter" class="input" style="width:auto;max-width:180px;padding:6px 10px;font-size:12.5px" title="按分类筛选（作用于全部页）" @change="filterCat">
         <option :value="''">全部分类</option>
         <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
-      <span v-if="catFilter !== ''" style="font-size:11px;color:var(--gray)">仅当前页</span>
     </div>
   </div>
 
@@ -224,17 +284,19 @@ async function createCat() {
       <button class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="batchBusy" @click="batchDlg = true">归档</button>
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" :disabled="batchBusy" @click="selIds = []">取消</button>
     </div>
-    <table v-if="shownItems.length" style="width:100%;border-collapse:collapse;font-size:13px">
+    <table v-if="items.length" style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
         <th style="width:28px"><input type="checkbox" :checked="allChecked" :disabled="!visIds.length" title="全选本页" @change="toggleAll"></th>
-        <th>商品</th>
-        <th class="sortable" title="点击排序（当前页）" @click="sortBy('price_min')">价格<span v-if="sortInd('price_min')" class="sort-ind">{{ sortInd('price_min') }}</span></th>
+        <th class="sortable" title="点击排序" @click="sortBy('title')">商品<span v-if="sortInd('title')" class="sort-ind">{{ sortInd('title') }}</span></th>
+        <th class="sortable" title="点击排序" @click="sortBy('price')">价格<span v-if="sortInd('price')" class="sort-ind">{{ sortInd('price') }}</span></th>
         <th>库存</th>
-        <th class="sortable" title="点击排序（当前页）" @click="sortBy('sold_count')">销量<span v-if="sortInd('sold_count')" class="sort-ind">{{ sortInd('sold_count') }}</span></th>
-        <th>评分</th><th>状态</th><th style="text-align:right">操作</th>
+        <th>销量</th>
+        <th>评分</th>
+        <th class="sortable" title="点击排序" @click="sortBy('created_at')">创建时间<span v-if="sortInd('created_at')" class="sort-ind">{{ sortInd('created_at') }}</span></th>
+        <th>状态</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
-        <tr v-for="p in shownItems" :key="p.id" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="p in items" :key="p.id" style="border-top:1px solid var(--gray-light)">
           <td><input type="checkbox" :value="p.id" v-model="selIds"></td>
           <td>
             <div style="display:flex;gap:10px;align-items:center">
@@ -258,6 +320,7 @@ async function createCat() {
           </td>
           <td style="color:var(--gray)">{{ p.sold_count ?? 0 }}</td>
           <td style="color:var(--gray)">{{ ((p.rating_avg || 0) / 100).toFixed(1) }} <small v-if="p.rating_count">({{ p.rating_count }})</small></td>
+          <td style="color:var(--gray)">{{ dt(p.created_at) || '—' }}</td>
           <td>
             <span class="tag" :class="SMeta[p.status]?.[1] || 'tag'">{{ SMeta[p.status]?.[0] || p.status }}</span>
             <span v-if="p.scheduled" class="tag tag-sched" style="margin-left:4px" title="到点自动在前台可见">定时</span>
@@ -270,11 +333,15 @@ async function createCat() {
         </tr>
       </tbody>
     </table>
-    <EmptyState v-else icon="🔍" title="没有匹配商品" sub="试试其他关键词、状态或分类筛选" />
+    <EmptyState v-else icon="🔍" :title="filtered ? '未找到匹配的商品' : '暂无商品'" :sub="filtered ? '试试清除筛选' : '点击右上角「新建商品」创建第一个'">
+      <template #action>
+        <button v-if="filtered" class="btn btn-secondary btn-sm" @click="clearFilters">清除筛选</button>
+        <router-link to="/product-edit" class="btn btn-primary btn-sm">➕ 新建商品</router-link>
+      </template>
+    </EmptyState>
   </div>
 
   <Pagination v-if="loaded" :page="page" :pages="pages" :total="total" unit="款" @go="page = $event; load()" />
-  <div v-if="sort.key" style="margin-top:6px;text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
 
   <!-- 批量导入弹窗 -->
   <div v-if="bulk" class="modal open" @click.self="closeBulk">
@@ -338,4 +405,7 @@ async function createCat() {
 td,th{padding:10px 12px}
 .otab button{background:none;border:none;border-bottom:2.5px solid transparent;cursor:pointer}
 .otab button.on{color:var(--plum);border-color:var(--plum)}
+/* 搜索框清空钮：悬浮输入框右侧 */
+.q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
+.q-clear:hover{background:var(--gray)}
 </style>

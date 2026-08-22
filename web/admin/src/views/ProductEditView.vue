@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { req } from '../api/client'
+import { API_BASE, fmtDetail, req } from '../api/client'
 import { toast } from '../composables/toast'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
@@ -22,7 +22,7 @@ const variants = ref([])
 const cats = ref([])
 const catsFailed = ref(false)
 const busy = ref(false)
-const newVar = reactive({ option1: '', option2: 'Default', price: 1599, stock: 10, weight_gram: 30 })
+const newVar = reactive({ option1: '', option2: 'Default', price: 1599, stock: 10, weight_gram: 30, imgs: '' })
 const schedAt = ref('')
 const loadedSchedISO = ref(null)
 const prodSched = ref(false)
@@ -73,6 +73,61 @@ const brokenImgs = reactive({})
 watch(() => form.hero_image, () => { brokenHero.value = false })
 watch(() => form.images.join('\n'), () => { Object.keys(brokenImgs).forEach((k) => delete brokenImgs[k]) })
 
+/* ===== 图片上传（POST /api/admin/media/upload：multipart 字段 file，png/jpg/jpeg/webp/gif ≤5MB）
+ * 单隐藏 input + 目标槽复用：pickImage 记来源后弹选择框，成功按目标回填；各入口共用一个 uploading ===== */
+const fileInput = ref(null)
+const upTarget = ref(null) /* 'hero' | 'gallery' | 'newVar' | 'editVar' */
+const uploading = ref(false)
+function pickImage(t) { if (uploading.value) return; upTarget.value = t; fileInput.value?.click() }
+/* 鉴权照 client.js 现有取法：API_BASE 前缀 + cookie 会话（credentials include，后台无 Authorization 头）；
+ * 不设 Content-Type，multipart 边界由浏览器生成；30s 超时同 req */
+async function uploadFile(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 30000)
+  let r
+  try { r = await fetch(API_BASE + '/api/admin/media/upload', { method: 'POST', credentials: 'include', body: fd, signal: ctrl.signal }) }
+  catch (err) { throw new Error(err && err.name === 'AbortError' ? '上传超时，请稍后重试' : '网络错误，请检查连接') }
+  finally { clearTimeout(timer) }
+  const data = await r.json().catch(() => null)
+  if (!r.ok) {
+    const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
+    e.status = r.status
+    throw e
+  }
+  if (!data || !data.url) throw new Error('响应缺少 url')
+  return data.url
+}
+async function onPickFile(e) {
+  const f = e.target.files && e.target.files[0]
+  e.target.value = '' /* 复位 value，否则重选同一文件不触发 change */
+  if (!f) return
+  uploading.value = true
+  try { applyUpUrl(await uploadFile(f)) }
+  catch (err) {
+    const s = err.status
+    toast(s === 413 ? '图片不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
+  }
+  finally { uploading.value = false }
+}
+/* 回填：主图覆盖；图集/变体图片为追加一行（各守上限，文案与保存校验一致） */
+function applyUpUrl(url) {
+  const t = upTarget.value
+  if (t === 'hero') form.hero_image = url
+  else if (t === 'gallery') {
+    if (form.images.length >= 8) { toast('图集最多 8 张', 'error'); return }
+    form.images = [...form.images, url]
+  } else if (t === 'newVar') {
+    if (imgLines(newVar.imgs).length >= 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
+    newVar.imgs = appendLine(newVar.imgs, url)
+  } else if (t === 'editVar' && editing.value) {
+    if (imgLines(editing.value.imgs).length >= 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
+    editing.value.imgs = appendLine(editing.value.imgs, url)
+  }
+}
+const appendLine = (t, url) => (t && t.trim() ? t.replace(/\s+$/, '') + '\n' + url : url)
+
 /* 长表单锚点导航 */
 const SECTIONS = [
   { id: 'sec-base', label: '基本信息' },
@@ -100,6 +155,16 @@ async function loadVariants(id) {
     total = d.total ?? all.length
     if (!(d.items || []).length) break
     p++
+  }
+  /* 变体图片：优先用列表 item 的 images 字段（新契约）；老后端未回传（undefined）时
+   * fallback 借前台 by-id 详情补齐（角标/编辑回显用），草稿商品或停用变体取不到则静默降级 */
+  const lack = all.filter((v) => v.id && v.images === undefined)
+  if (lack.length) {
+    try {
+      const det = await req('GET', '/api/products-by-id/' + id)
+      const m = Object.fromEntries((det.variants || []).map((x) => [x.id, x.images || []]))
+      lack.forEach((v) => { if (m[v.id]) v.images = m[v.id] })
+    } catch (_) {}
   }
   return all
 }
@@ -163,6 +228,7 @@ async function loadCopy(id) {
     const src = await loadVariants(id)
     copyVars.value = src.map((v) => ({
       option1_value: v.option1_value, option2_value: v.option2_value || 'Default', price: v.price, stock: v.stock,
+      images: (v.images || []).slice(0, 6),
     }))
     variants.value = src.map((v) => ({ ...v, id: null, sku: '', is_active: true })) /* 仅作预览，操作按钮已按 id 隐藏 */
     try { copyTrs.value = ((await req('GET', `/api/admin/catalog/products/${id}/translations`)) || []).map((t) => ({ locale: t.locale, title: t.title, subtitle: t.subtitle || null, description_md: t.description_md || null })) }
@@ -214,8 +280,8 @@ async function save() {
         const newSlug = p.slug || form.slug
         let vok = 0, vfail = 0, tok = 0, tfail = 0
         for (const v of copyVars.value) {
-          const sku = (newSlug + '-' + v.option1_value).toUpperCase().replace(/\s+/g, '-').slice(0, 64)
-          try { await req('POST', `/api/admin/catalog/products/${p.id}/variants`, { sku, option1_value: v.option1_value, option2_value: v.option2_value, price: v.price, stock: v.stock }); vok++ }
+          const sku = buildSku(newSlug, v.option1_value, v.option2_value)
+          try { await req('POST', `/api/admin/catalog/products/${p.id}/variants`, { sku, option1_value: v.option1_value, option2_value: v.option2_value, price: v.price, stock: v.stock, images: v.images || [] }); vok++ }
           catch (_) { vfail++ }
         }
         for (const t of copyTrs.value) {
@@ -240,14 +306,17 @@ async function addVariant() {
   if (!Number.isInteger(newVar.price) || newVar.price < 0) { toast('价格需为非负整数（单位：分）', 'error'); return }
   if (!Number.isInteger(newVar.stock) || newVar.stock < 0) { toast('库存需为非负整数（单位：件）', 'error'); return }
   if (!Number.isInteger(newVar.weight_gram) || newVar.weight_gram < 0) { toast('重量需为非负整数（单位：克）', 'error'); return }
-  const sku = (form.slug + '-' + newVar.option1).toUpperCase().replace(/\s+/g, '-').slice(0, 64)
+  const imgs = imgLines(newVar.imgs)
+  if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
+  const sku = buildSku(form.slug, newVar.option1, newVar.option2)
   try {
     /* weight_gram 仅创建时支持（VariantUpdateIn 无此字段） */
     await req('POST', `/api/admin/catalog/products/${pid.value}/variants`, {
       sku, option1_value: newVar.option1, option2_value: newVar.option2,
-      price: newVar.price, stock: newVar.stock, weight_gram: newVar.weight_gram,
+      price: newVar.price, stock: newVar.stock, weight_gram: newVar.weight_gram, images: imgs,
     })
     newVar.option1 = ''
+    newVar.imgs = ''
     variants.value = await loadVariants(pid.value)
     markVarsClean()
     toast('变体已添加 ✓', 'success')
@@ -265,21 +334,30 @@ async function toggleVar(v) {
     toast(v.is_active ? '已启用' : '已停用', 'success')
   } catch (e) { toast('操作失败', 'error') }
 }
-function startEdit(v) { editing.value = { id: v.id, price: v.price, safety: v.safety_stock ?? 0 } }
+function startEdit(v) { editing.value = { id: v.id, price: v.price, safety: v.safety_stock ?? 0, imgs: (v.images || []).join('\n'), hadImgs: (v.images || []).length > 0 } }
 async function saveEdit() {
   const ed = editing.value
   if (!ed) return
   if (!Number.isFinite(ed.price) || !Number.isFinite(ed.safety) || ed.price < 0 || ed.safety < 0) { toast('价格与安全库存需为非负数字', 'error'); return }
+  const imgs = imgLines(ed.imgs)
+  if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
   try {
-    await req('PUT', '/api/admin/catalog/variants/' + ed.id, { price: ed.price, safety_stock: ed.safety })
+    /* images 仅在有输入或原有图时提交：后端缺省/null=保持原值、[]=清空，避免改价时误清图 */
+    const body = { price: ed.price, safety_stock: ed.safety }
+    if (imgs.length || ed.hadImgs) body.images = imgs
+    const d = await req('PUT', '/api/admin/catalog/variants/' + ed.id, body)
     const v = variants.value.find((x) => x.id === ed.id)
-    if (v) { v.price = ed.price; v.safety_stock = ed.safety }
+    if (v) { v.price = ed.price; v.safety_stock = ed.safety; v.images = d.images || [] }
     editing.value = null
     markVarsClean()
     toast('变体已更新 ✓', 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
+/* 变体图片 textarea 解析：非空行 → URL 数组（契约 images ≤6 张） */
+const imgLines = (t) => (t || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)
+/* SKU 生成：slug-option1[-option2]（option2 有值才拼，防同 option1 不同 option2 撞码）；parts join 避免拼出 undefined */
+const buildSku = (...parts) => parts.filter((p) => p && String(p).trim()).join('-').toUpperCase().replace(/\s+/g, '-').slice(0, 64)
 
 /* ===== 多语言翻译（GET/PUT /products/{id}/translations、DELETE /{locale}；GET 返回裸数组）
  * 契约：locale 须匹配 ^[a-z]{2}-[A-Z]{2}$，title 必填，subtitle/description_md 可选 ===== */
@@ -395,6 +473,7 @@ async function doDelTr() {
             <b>{{ v.option1_value }}</b>
             <span v-if="v.sku" style="color:var(--gray);font-size:12px">{{ v.sku }}</span>
             <span v-else class="tag tag-sched" style="font-size:10px" title="SKU 将依新 slug 自动生成">保存后创建</span>
+            <span v-if="v.images && v.images.length" class="tag" style="font-size:10px" :title="v.images.join('\n')">🖼×{{ v.images.length }}</span>
             <template v-if="editing && editing.id === v.id">
               <div class="field" style="margin:0 0 0 auto">
                 <label style="font-size:11px">价格（分）</label>
@@ -403,6 +482,13 @@ async function doDelTr() {
               <div class="field" style="margin:0">
                 <label style="font-size:11px">安全库存</label>
                 <input v-model.number="editing.safety" class="input" type="number" style="width:90px;padding:6px 8px">
+              </div>
+              <div class="field" style="margin:0;flex:1;min-width:170px;max-width:320px">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                  <label style="margin:0;flex:1;font-size:11px">变体图片 URL（每行一张，≤6）</label>
+                  <button class="btn btn-secondary btn-sm" style="flex:none;height:26px;padding:0 10px;font-size:11px" :disabled="uploading" @click="pickImage('editVar')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+                </div>
+                <textarea v-model="editing.imgs" class="input" rows="2" style="padding:6px 8px;font-size:12px" placeholder="https://…"></textarea>
               </div>
               <button class="btn btn-primary btn-sm" @click="saveEdit">保存</button>
               <button class="btn btn-ghost btn-sm" @click="editing = null">取消</button>
@@ -426,6 +512,13 @@ async function doDelTr() {
           <div class="field"><label>库存（件）</label><input v-model.number="newVar.stock" class="input" type="number" min="0" step="1"></div>
           <div class="field"><label>重量（克）</label><input v-model.number="newVar.weight_gram" class="input" type="number" min="0" step="1" placeholder="30"></div>
           <button class="btn btn-secondary" @click="addVariant">＋ 添加</button>
+          <div class="field" style="grid-column:1/-1">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <label style="margin:0;flex:1">变体图片 URL（可选，每行一张，≤6）</label>
+              <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('newVar')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+            </div>
+            <textarea v-model="newVar.imgs" class="input" rows="2" placeholder="https://…"></textarea>
+          </div>
         </div>
       </div>
     </div>
@@ -435,14 +528,20 @@ async function doDelTr() {
         <div class="dhead"><h3 class="dtitle">媒体</h3></div>
         <div class="field">
           <label>主图 URL</label>
-          <input v-model="form.hero_image" class="input" placeholder="https://…">
+          <div style="display:flex;gap:8px">
+            <input v-model="form.hero_image" class="input" style="flex:1;min-width:0" placeholder="https://…">
+            <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('hero')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+          </div>
           <div style="margin-top:10px;border-radius:12px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);max-width:200px">
             <img v-if="form.hero_image && !brokenHero" :src="form.hero_image" alt="主图预览" style="width:100%;height:100%;object-fit:cover" @error="brokenHero = true">
             <div v-else-if="brokenHero" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--gray-light);color:var(--gray);font-size:12px">图片加载失败</div>
           </div>
         </div>
         <div class="field">
-          <label>图集（每行一个 URL，最多 8 张）</label>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <label style="margin:0;flex:1">图集（每行一个 URL，最多 8 张）</label>
+            <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('gallery')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+          </div>
           <textarea :value="form.images.join('\n')" class="input" rows="4"
                     @input="form.images = $event.target.value.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 8)"></textarea>
           <p style="font-size:11.5px;color:var(--gray)">{{ form.images.length }}/8</p>
@@ -529,6 +628,9 @@ async function doDelTr() {
       <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveTr">保存</button>
     </div>
   </div>
+
+  <!-- 图片上传共用隐藏 input（主图/图集/变体三入口，见 pickImage） -->
+  <input ref="fileInput" type="file" accept=".png,.jpg,.jpeg,.webp,.gif" style="display:none" @change="onPickFile">
 
   <!-- 离开确认（SPA 内未保存拦截） -->
   <ConfirmDialog :open="leaveDlg" title="未保存的修改" body="有未保存的修改，确认离开？" danger confirm-text="离开" @confirm="confirmLeave" @close="cancelLeave" />
