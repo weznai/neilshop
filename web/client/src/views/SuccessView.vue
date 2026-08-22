@@ -24,8 +24,15 @@ const orderError = ref(false)
 const paying = ref(false)
 const copied = ref(false)
 
-const OSTATUS = ['Pending payment', 'Paid', 'Packing', 'Shipped', 'Delivered', 'Done', 'Cancelled', 'Refunded', 'Cancelled', 'Refunded']
-const statusText = (s) => OSTATUS[s] || '—'
+const OSTATUS = [
+  ['Pending payment', '待支付'], ['Paid', '已支付'], ['Packing', '打包中'], ['Shipped', '已发货'],
+  ['Delivered', '已送达'], ['Done', '已完成'], ['Cancelled', '已取消'], ['Refunded', '已退款'],
+  ['Cancelled', '已取消'], ['Refunded', '已退款'],
+]
+const statusText = (s) => {
+  const p = OSTATUS[s]
+  return p ? t(p[0], p[1]) : '—'
+}
 const statusTag = (s) => {
   if (s === 0) return 'tag-pending'
   if (s >= 1 && s <= 5) return 'tag-paid'
@@ -42,20 +49,27 @@ async function fetchOrder() {
   } catch (_) { order.value = null; orderError.value = true }
 }
 
-/* 待支付轮询：每 5s 拉一次订单，状态到 1（已支付）或满 12 次（1 分钟）即停；卸载清理 */
+/* 待支付轮询：每 5s 拉一次订单，状态到 1（已支付）或满 12 次（1 分钟）即停；超时停后展示手动刷新按钮；卸载清理 */
 let pollTimer = null
 let pollCount = 0
+const pollTimedOut = ref(false)
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 function startPolling() {
   stopPolling()
   pollCount = 0
+  pollTimedOut.value = false
   pollTimer = setInterval(async () => {
     pollCount++
     await fetchOrder()
-    if (!order.value || order.value.status !== 0 || pollCount >= 12) stopPolling()
+    if (!order.value || order.value.status !== 0) stopPolling()
+    else if (pollCount >= 12) { pollTimedOut.value = true; stopPolling() }
   }, 5000)
+}
+async function refreshStatus() {
+  await fetchOrder()
+  if (order.value && order.value.status === 0) startPolling()
 }
 onUnmounted(stopPolling)
 
@@ -131,9 +145,12 @@ onMounted(async () => {
         <p style="font-size:13.5px;color:var(--ink);margin-bottom:12px">
           {{ t(`Complete payment (${money(order.grand_total)}) to start packing your glam.`, `完成支付（${money(order.grand_total)}）后我们立即开始打包。`) }}
         </p>
-        <button class="btn btn-primary" :class="{ loading: paying }" :disabled="paying" @click="payNow">
-          {{ t(`Pay now · ${money(order.grand_total)}`, `立即支付 · ${money(order.grand_total)}`) }}
-        </button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" :class="{ loading: paying }" :disabled="paying" @click="payNow">
+            {{ t(`Pay now · ${money(order.grand_total)}`, `立即支付 · ${money(order.grand_total)}`) }}
+          </button>
+          <button v-if="pollTimedOut" class="btn btn-secondary" @click="refreshStatus">⟳ {{ t('Refresh status', '刷新状态') }}</button>
+        </div>
       </div>
 
       <div v-if="order" class="card" style="padding:18px;margin:20px 0;text-align:left;display:grid;gap:8px;font-size:14px">
@@ -171,7 +188,8 @@ onMounted(async () => {
         </div>
       </div>
       <div v-else-if="loaded" class="card" style="padding:18px;margin:20px 0;font-size:14px">
-        {{ t('Order', '订单') }} <b>{{ orderNo }}</b> {{ t('received. Track it anytime from your account.', '已收到。可随时在账户中心查看。') }}
+        <template v-if="orderNo">{{ t('Order', '订单') }} <b>{{ orderNo }}</b> {{ t('received. Track it anytime from your account.', '已收到。可随时在账户中心查看。') }}</template>
+        <template v-else>{{ t('Thanks for your order — you can track it anytime from your account.', '感谢下单——可随时在账户中心查看订单。') }}</template>
       </div>
 
       <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:10px">

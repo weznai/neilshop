@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { money, dt } from '../composables/format'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { OSTATUS, PAY, SHIP, RMA_REASON, ORDER_ERR, mapErr } from '../constants/trade'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,24 +16,7 @@ function backToList() {
 }
 const o = ref(null)
 const err = ref('')
-/* OrderStatus 真值：0待付 1已付 2履约中 3已发货 4已送达 5已完成 8已取消 9已退款(全额) */
-const OSTATUS = {
-  0: ['待支付', 'tag-pending'], 1: ['已支付', 'tag-paid'], 2: ['备货中', 'tag-pending'],
-  3: ['已发货', 'tag-ship'], 4: ['已送达', 'tag-ship'], 5: ['已完成', 'tag-done'],
-  8: ['已取消', 'tag-error'], 9: ['已退款', 'tag-error'],
-}
-/* PaymentStatus：0待支付 1成功 2失败 3已退款 4部分退款（退款语义统一红） */
-const PSTATUS = {
-  0: ['待支付', 'tag-pending'], 1: ['支付成功', 'tag-paid'], 2: ['支付失败', 'tag-error'],
-  3: ['已退款', 'tag-error'], 4: ['部分退款', 'tag-ship'],
-}
-/* ShipmentStatus：0待打单 1已打单待拣货 2待交接 3运输中 4送达 5异常 6面单作废 */
-const SHSTATUS = {
-  0: ['待打单', 'tag-pending'], 1: ['已打单待拣货', 'tag-pending'], 2: ['待交接', 'tag-pending'],
-  3: ['运输中', 'tag-ship'], 4: ['已送达', 'tag-done'], 5: ['异常', 'tag-error'], 6: ['面单作废', 'tag-error'],
-}
-/* RmaReason：1尺码不合 2质量 3不喜欢 4损坏 5发错货 6其他 */
-const RMA_REASON = { 1: '尺码不合', 2: '质量问题', 3: '不喜欢', 4: '损坏', 5: '发错货', 6: '其他' }
+/* 状态映射统一走 constants/trade.js：OSTATUS 订单 / PAY 支付 / SHIP 物流包裹 / RMA_REASON 退货原因 */
 const ACTOR = { system: '系统', admin: '管理员', user: '用户' }
 /* 时间线事件码 → 中文（以 OrderTimeline 注释与各 service add_timeline 调用为准） */
 const EVENT_LABEL = {
@@ -41,6 +25,7 @@ const EVENT_LABEL = {
   tracking_updated: '物流更新', note_added: '备注', email_sent: '邮件发送',
   ticket_linked: '关联工单', label_voided: '面单作废',
   rma_created: '退货申请', rma_label_sent: '退货标签已发送', rma_received: '退货已收货',
+  rma_canceled: '退货申请已取消', rma_rejected: '退货申请已拒绝',
   exchange_created: '换货申请', exchange_approved: '换货已批准', exchange_rejected: '换货已拒绝',
   exchange_diff_paid: '换货差价已付', exchange_shipped: '换货已重发', exchange_completed: '换货完成',
   giftcard_created: '礼品卡购卡', points_granted: '积分发放',
@@ -62,12 +47,18 @@ const tlItems = computed(() => {
   return t.length > TL_LIMIT && !tlOpen.value ? t.slice(0, TL_LIMIT) : t
 })
 
-onMounted(async () => {
-  const no = route.query.no
-  if (!no) { err.value = '缺少订单号'; return }
+/* 按订单号加载详情（初载/深链切换共用） */
+async function fetchOrder(no) {
+  if (!no) { err.value = '缺少订单号'; o.value = null; return }
+  err.value = ''
+  o.value = null
+  tlOpen.value = false
   try { o.value = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(no)) }
   catch (e) { err.value = (e.status === 404 ? '订单不存在' : '加载失败 ' + (e.message || '')) }
-})
+}
+onMounted(() => fetchOrder(route.query.no))
+/* 深链响应：已停留在 /order-detail 时 no 变化（列表跳转另一单）重新加载 */
+watch(() => route.query.no, (no) => fetchOrder(no))
 
 /* money/dt 统一走 format.js（dt 补 Z 修时区） */
 const reload = async () => { o.value = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(route.query.no)) }
@@ -107,9 +98,11 @@ function eventText(t) {
   const d = t.detail || {}
   switch (t.event) {
     case 'status_changed': {
-      let s = `状态 ${OSTATUS[d.from]?.[0] ?? d.from} → ${OSTATUS[d.to]?.[0] ?? d.to}`
+      let s = `状态 ${OSTATUS[d.from]?.label ?? d.from} → ${OSTATUS[d.to]?.label ?? d.to}`
       if (d.reason === 'timeout') s += '（超时未支付自动关闭）'
       else if (d.reason === 'user') s += '（用户取消）'
+      else if (d.reason === 'admin') s += '（管理员操作）'
+      else if (d.reason === 'user_cancel_paid') s += '（用户支付后取消）'
       return s
     }
     case 'refund_issued':
@@ -219,9 +212,10 @@ async function refundConfirm() {
   } catch (e) {
     let msg = e.data?.detail || e.message
     if (typeof msg === 'string' && msg.startsWith('invalid_refund_amount:')) {
-      msg = `金额超出可退余额（剩余 ${money(Number(msg.split(':')[1]))}）`
-    } else if (msg === 'no_refundable_payment') msg = '无成功支付记录可退款'
-    else if (msg === 'already_fully_refunded') msg = '该订单已全额退款'
+      msg = `退款金额超出可退余额（剩余 ${money(Number(msg.split(':')[1]))}）`
+    } else {
+      msg = mapErr(msg, ORDER_ERR) || msg
+    }
     toast('退款失败：' + msg, 'error')
   }
   submitting.value = false
@@ -238,7 +232,7 @@ async function cancelConfirm() {
     cancelDlg.value = false
     await reload()
   } catch (e) {
-    toast(e.status === 409 ? '仅待支付订单可取消' : '取消失败：' + (e.data?.detail || e.message), 'error')
+    toast(mapErr(e.data?.detail, ORDER_ERR) || (e.status === 409 ? '仅待支付订单可取消' : '取消失败：' + (e.data?.detail || e.message)), 'error')
   }
   submitting.value = false
 }
@@ -285,7 +279,7 @@ async function noteConfirm() {
           <button class="hero-no" title="点击复制订单号" @click="copyNo">
             <b>{{ o.order_no }}</b><i>⧉</i>
           </button>
-          <span class="tag hero-tag" :class="OSTATUS[o.status]?.[1] || 'tag-error'">{{ OSTATUS[o.status]?.[0] ?? o.status }}</span>
+          <span class="tag hero-tag" :class="OSTATUS[o.status]?.cls || 'tag-error'">{{ OSTATUS[o.status]?.label ?? o.status }}</span>
         </div>
         <div class="hero-amount">
           <span>订单总计</span>
@@ -299,7 +293,7 @@ async function noteConfirm() {
         </div>
       </div>
       <div v-else class="closed-banner">
-        {{ OSTATUS[o.status]?.[0] }} · {{ o.status === 9 ? '本单已全额退款' : '本单已取消，无可用操作' }}
+        {{ OSTATUS[o.status]?.label }} · {{ o.status === 9 ? '本单已全额退款' : '本单已取消，无可用操作' }}
       </div>
 
       <div class="hero-meta">
@@ -401,7 +395,7 @@ async function noteConfirm() {
               尾号 {{ (p.payment_intent || '').slice(-8) || '—' }}<span v-if="p.refunded_amount"> · 已退 {{ money(p.refunded_amount) }}</span>
             </div>
           </div>
-          <span class="tag" :class="PSTATUS[p.status]?.[1]">{{ PSTATUS[p.status]?.[0] ?? p.status }}</span>
+          <span class="tag" :class="PAY[p.status]?.cls">{{ PAY[p.status]?.label ?? p.status }}</span>
         </div>
         <div v-if="!(o.payments || []).length" class="empty-line">📭 暂无支付记录</div>
         <div v-else class="ref-box" :class="{ on: refundable > 0 }">
@@ -419,7 +413,7 @@ async function noteConfirm() {
               {{ s.tracking_no || '无单号' }} · 发货 {{ dt(s.shipped_at) || '—' }}<span v-if="s.delivered_at"> · 送达 {{ dt(s.delivered_at) }}</span>
             </div>
           </div>
-          <span class="tag" :class="SHSTATUS[s.status]?.[1]">{{ SHSTATUS[s.status]?.[0] ?? s.status }}</span>
+          <span class="tag" :class="SHIP[s.status]?.cls">{{ SHIP[s.status]?.label ?? s.status }}</span>
         </div>
         <div v-if="!(o.shipments || []).length" class="empty-line">📭 暂无物流包裹</div>
       </div>
@@ -450,10 +444,10 @@ async function noteConfirm() {
     </div>
   </template>
 
-  <!-- 发货弹窗 -->
-  <div v-if="shipDlg" class="modal open" @click.self="shipDlg = false">
+  <!-- 发货弹窗：提交中遮罩与 ✕ 不可关闭 -->
+  <div v-if="shipDlg" class="modal open" @click.self="!submitting && (shipDlg = false)">
     <div class="modal-box" style="max-width:420px">
-      <button class="modal-x" @click="shipDlg = false">×</button>
+      <button class="modal-x" @click="!submitting && (shipDlg = false)">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">📦 发货 {{ o.order_no }}</h3>
       <p style="font-size:13px;color:var(--gray);margin-bottom:14px">发货后扣库存并向客户发送物流邮件。</p>
       <div class="field">
@@ -493,10 +487,10 @@ async function noteConfirm() {
     @close="cancelDlg = false"
   />
 
-  <!-- 退款弹窗 -->
-  <div v-if="refundDlg" class="modal open" @click.self="refundDlg = false">
+  <!-- 退款弹窗：提交中遮罩与 ✕ 不可关闭 -->
+  <div v-if="refundDlg" class="modal open" @click.self="!submitting && (refundDlg = false)">
     <div class="modal-box" style="max-width:420px">
-      <button class="modal-x" @click="refundDlg = false">×</button>
+      <button class="modal-x" @click="!submitting && (refundDlg = false)">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">💸 退款 {{ o.order_no }}</h3>
       <p style="font-size:13px;color:var(--gray);margin-bottom:14px">
         订单总额 {{ money(o.grand_total) }} · 可退余额 <b style="color:var(--plum)">{{ money(refundable) }}</b>

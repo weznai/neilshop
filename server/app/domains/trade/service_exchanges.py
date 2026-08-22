@@ -1,18 +1,22 @@
 """换货 Exchange 服务 —— 用户侧申请/列表/详情（登录本人或 email 双因子）+ 后台队列与状态机
 （0→approve 分流 2 待差价/1 直批 · 2→mark-paid→1 · 1→ship→3 新变体原子扣库存+shipment ·
-3→complete→4 旧变体回补+exchanged_qty · 0→reject→5）；金额美分，naive UTC。"""
+3→complete→4 旧变体回补+exchanged_qty · 0→reject→5）；用户侧撤销（0→CAS 删除）与
+差价支付（diff_payment_id 挂 Payment 行，mock-pay/webhook 双通道核销）；金额美分，naive UTC。"""
 
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.domains.trade.schemas import ExchangeCreateRequest, ShipRequest
-from app.models import Exchange, Order, OrderItem, Shipment, User
+from app.models import Exchange, Order, OrderItem, Payment, Shipment, User
+from app.services.payment_provider import get_provider
 from app.services.pricing import _setting
 
 EXCHANGEABLE_STATUSES = {1, 2, 3, 4, 5}
@@ -143,6 +147,138 @@ def _get_exchange(db: Session, exchange_no: str) -> Exchange:
     return ex
 
 
+def _owned_exchange(db: Session, user: User, exchange_no: str) -> Exchange:
+    """用户侧归属校验：非本人换货一律 404（不泄露存在性）。"""
+    ex = _get_exchange(db, exchange_no)
+    order = repo.get_order(db, ex.order_id)
+    if not order or order.user_id != user.id:
+        raise HTTPException(status_code=404, detail="exchange_not_found")
+    return ex
+
+
+def cancel_exchange(db: Session, user: User, exchange_no: str) -> dict:
+    """误建换货撤销：仅 status=0（申请中）可 CAS 删除，删后可重新申请；非申请中 409。"""
+    ex = _owned_exchange(db, user, exchange_no)
+    deleted = (
+        db.query(Exchange)
+        .filter(Exchange.id == ex.id, Exchange.status == 0)
+        .delete(synchronize_session=False)
+    )
+    if deleted == 0:
+        db.rollback()
+        db.expire(ex)
+        raise HTTPException(status_code=409, detail=f"exchange_not_cancellable:{ex.status}")
+    repo.add_timeline(db, ex.order_id, "exchange_withdrawn", actor="user", detail={
+        "exchange_no": ex.exchange_no,
+    })
+    db.commit()
+    return {"exchange_no": ex.exchange_no, "status": "canceled"}
+
+
+def settle_diff_paid(db: Session, ex: Exchange, payment: Payment, *, actor: str) -> bool:
+    """差价支付核销（调用方 commit）：CAS 2→1 与 mock-pay/webhook/admin mark-paid 三方互斥；
+    抢占成功才推进 payment 为 SUCCESS 并落 timeline，输者幂等返回 False 不重复记账。"""
+    if repo.claim_exchange_diff_paid(db, ex.id) == 0:
+        return False
+    repo.claim_payment_paid(db, payment.id)
+    ex.status = 1
+    payment.status = 1
+    repo.add_timeline(db, ex.order_id, "exchange_diff_paid", actor=actor, detail={
+        "exchange_no": ex.exchange_no, "price_diff": ex.price_diff,
+        "payment_intent": payment.stripe_payment_intent,
+    })
+    return True
+
+
+def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
+    """换货差价支付 intent：status=2 专属；Payment 行挂在原订单（amount=price_diff），
+    diff_payment_id 双向关联 —— webhook 据此路由到换货核销而非订单 mark_paid。
+    mock provider 非 dev 409（与订单 create-intent 同门禁）。"""
+    ex = _owned_exchange(db, user, exchange_no)
+    if ex.price_diff <= 0:
+        raise HTTPException(status_code=409, detail="no_diff_to_pay")
+    if ex.status != 2:
+        raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
+    provider = get_provider()
+    if provider.name == "mock" and settings.env != "dev":
+        raise HTTPException(status_code=409, detail="mock_provider_disabled")
+    # 幂等：已挂 PENDING payment 直接复用（不堆积新行）；已核销 409
+    if ex.diff_payment_id:
+        payment = db.get(Payment, ex.diff_payment_id)
+        if payment is not None:
+            if payment.status == 1:
+                raise HTTPException(status_code=409, detail="diff_already_paid")
+            return {
+                "payment_intent": payment.stripe_payment_intent,
+                "client_secret": (
+                    payment.stripe_checkout_session
+                    or f"{payment.stripe_payment_intent}_secret_mock"
+                ),
+                "amount": payment.amount,
+                "redirect_url": "",
+            }
+    # shim.order_no=exchange_no：Stripe idempotency_key / PayPal request-id 与原订单支付隔离
+    intent = provider.create_intent(SimpleNamespace(order_no=ex.exchange_no), ex.price_diff)
+    payment = Payment(
+        order_id=ex.order_id,
+        stripe_payment_intent=intent["payment_intent"],
+        stripe_checkout_session=(intent.get("client_secret") or "")[:255],
+        amount=ex.price_diff,
+        status=0,
+    )
+    db.add(payment)
+    db.flush()
+    ex.diff_payment_id = payment.id
+    repo.add_timeline(db, ex.order_id, "exchange_diff_intent", actor="user", detail={
+        "exchange_no": ex.exchange_no, "price_diff": ex.price_diff,
+        "payment_intent": payment.stripe_payment_intent,
+    })
+    db.commit()
+    return {
+        "payment_intent": payment.stripe_payment_intent,
+        "client_secret": intent["client_secret"],
+        "amount": payment.amount,
+        "redirect_url": intent.get("redirect_url", ""),
+    }
+
+
+def mock_pay_diff(db: Session, user: User, exchange_no: str, succeed: bool) -> dict:
+    """换货差价 mock 支付（仅 dev）：镜像订单 mock-pay 门禁与失败语义。"""
+    if settings.env != "dev":
+        raise HTTPException(status_code=404, detail="not_found")
+    provider = get_provider()
+    if provider.name != "mock":
+        raise HTTPException(status_code=409, detail="use_webhook")
+    ex = _owned_exchange(db, user, exchange_no)
+    if ex.status == 1:
+        raise HTTPException(status_code=409, detail="diff_already_paid")
+    if ex.status != 2:
+        raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
+    payment = db.get(Payment, ex.diff_payment_id) if ex.diff_payment_id else None
+    if payment is None:
+        raise HTTPException(status_code=404, detail="payment_not_found")
+    if payment.status == 1:
+        raise HTTPException(status_code=409, detail="diff_already_paid")
+    if succeed:
+        settle_diff_paid(db, ex, payment, actor="user")
+    else:
+        payment.status = 2
+        payment.failure_reason = "mock_declined"
+        repo.add_timeline(db, ex.order_id, "payment_failed", actor="user", detail={
+            "payment_intent": payment.stripe_payment_intent,
+            "reason": "mock_declined", "exchange_no": ex.exchange_no,
+        })
+    db.commit()
+    db.expire(ex)
+    db.expire(payment)
+    return {
+        "ok": True,
+        "exchange_no": ex.exchange_no,
+        "exchange_status": ex.status,
+        "payment_status": payment.status,
+    }
+
+
 def _admin_log(db: Session, admin: User, action: str, ex: Exchange, diff: dict | None) -> None:
     repo.add_admin_log(
         db, admin_id=admin.id, action=action, entity="exchange",
@@ -194,10 +330,19 @@ def mark_paid_exchange(db: Session, admin: User, exchange_no: str) -> dict:
     ex = _get_exchange(db, exchange_no)
     if ex.status != 2:
         raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
-    ex.status = 1
-    repo.add_timeline(db, ex.order_id, "exchange_diff_paid", actor="admin", detail={
-        "exchange_no": ex.exchange_no, "price_diff": ex.price_diff,
-    })
+    payment = db.get(Payment, ex.diff_payment_id) if ex.diff_payment_id else None
+    if payment is not None:
+        # 用户已自助建差价 payment：走共享核销（CAS 互斥 + payment 推进 + timeline）
+        settle_diff_paid(db, ex, payment, actor="admin")
+        db.expire(ex)
+        if ex.status != 1:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
+    else:
+        ex.status = 1
+        repo.add_timeline(db, ex.order_id, "exchange_diff_paid", actor="admin", detail={
+            "exchange_no": ex.exchange_no, "price_diff": ex.price_diff,
+        })
     _admin_log(db, admin, "exchange_mark_paid", ex, {"price_diff": ex.price_diff, "to": 1})
     db.commit()
     return {"exchange_no": ex.exchange_no, "status": ex.status, "price_diff": ex.price_diff}

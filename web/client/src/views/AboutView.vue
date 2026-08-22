@@ -13,7 +13,7 @@ import { i18n } from '../i18n'
         <!-- 两段含 <b> 强调，走 v-html（文案来自 i18n 字典） -->
         <p v-html="i18n.t('about.p1')" />
         <p>{{ i18n.t('about.p2') }}</p>
-        <div class="grid grid-3" style="margin:8px 0">
+        <div class="grid grid-3 grid-m-1" style="margin:8px 0">
           <div class="card" style="padding:18px;text-align:center"><b class="stat-num">40k+</b><div style="font-size:12.5px;color:var(--gray)">{{ i18n.t('about.stat1') }}</div></div>
           <div class="card" style="padding:18px;text-align:center"><b class="stat-num">4.8/5</b><div style="font-size:12.5px;color:var(--gray)">{{ i18n.t('about.stat2') }}</div></div>
           <div class="card" style="padding:18px;text-align:center"><b class="stat-num">70+</b><div style="font-size:12.5px;color:var(--gray)">{{ i18n.t('about.stat3') }}</div></div>

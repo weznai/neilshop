@@ -1,6 +1,7 @@
 /* 会话 store：HttpOnly Cookie 承载鉴权，本地仅缓存认证后的用户概要 */
 import { defineStore } from 'pinia'
 import { req } from '../api/client'
+import { useCartStore } from './cart'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -36,7 +37,11 @@ export const useAuthStore = defineStore('auth', {
       this.points = null
       /* 心愿单角标缓存随会话一起清，避免下个游客看到上个账号的数字 */
       try { localStorage.removeItem('gm_wl_count') } catch (_) { /* 隐私模式 */ }
+      /* 丢弃上个账号的游客车 token，让服务端建全新游客车 */
+      try { localStorage.removeItem('gm_cart_token') } catch (_) { /* 隐私模式 */ }
       try { await req('POST', '/api/account/logout') } catch (_) { /* 幂等 */ }
+      /* 会话 Cookie 已清：拉平为游客购物车（覆盖本地渲染缓存，响应头回写新 token） */
+      await useCartStore().refresh().catch(() => {})
     },
     async me() {
       try {

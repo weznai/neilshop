@@ -1,13 +1,19 @@
 /* GLOWMAG 后台共享样式（10 个 admin*.html 公共布局/组件）
    依赖 assets/style.css 的 Design Tokens，页面引入顺序：style.css → admin.css
-   不重复 style.css 已有的 .btn/.table/.tag/.modal/.toast 等 */
+   不重复 style.css 已有的 .btn/.tag/.modal 等（.table 体系已从 style.css 删除）
+   z-index 刻度表（新增浮层请入档，勿用随意值）：
+     100   顶栏（前台 .header；后台侧栏无 z）
+     200/201 抽屉遮罩与抽屉（前台 .overlay/.drawer/.mnav）
+     300   弹窗 .modal / ConfirmDialog（style.css）
+     400   cookie 横幅（前台 .consent-banner）
+     1000  路由进度条 RouteProgress（scoped）
+     1200  全局 toast .gm-toast-wrap（App.vue） */
 /* 语义 token（收敛本文件裸 hex；--pale-error 已由 style.css v13 同值定义，不再双写） */
 :root{--bg-page:#F6F4F5;--row-hover:#F7EEF0;--row-alt:#FBF9FA;--skeleton:#EDEAEB;--scroll:#D8D2D5;--scroll-hover:#C4BCC0;--sched-bg:#FBF3DC;--sched-ink:#8A6D1B}
+/* 控件高度两档 + 字号四档（供后续表单/按钮收敛引用） */
+:root{--ctl-h:38px;--ctl-h-sm:34px;--fs-xs:11px;--fs-sm:12px;--fs-md:13.5px;--fs-lg:15px}
 body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 .main{font-size:13.5px}
-.main .table{font-size:13px}
-.main .table th{font-size:11px}
-.main .table td{padding:10px 12px}
 .main .panel h3{font-size:14.5px}
 .main .stat .vl{font-size:22px}
 .admin{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
@@ -15,15 +21,20 @@ body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 .aside .logo{color:var(--plum);font-size:20px;padding:0 12px 18px;display:block}
 .aside .logo span{color:var(--rose)}
 .anav{display:flex;flex-direction:column;gap:2px}
-.anav a{padding:10px 12px;border-radius:8px;font-size:13.5px;color:var(--gray);display:flex;gap:11px;align-items:center}
-.anav a.on,.anav a:hover{background:var(--rose-pale);color:var(--plum)}
-.anav a.on svg,.anav a:hover svg{stroke:var(--plum)}
+.anav a,.anav .side-row{padding:10px 12px;border-radius:8px;font-size:13.5px;color:var(--gray);display:flex;gap:11px;align-items:center}
+.anav a.on,.anav a:hover,.anav .side-link:hover{background:var(--rose-pale);color:var(--plum)}
+.anav a.on svg,.anav a:hover svg,.anav .side-link:hover svg{stroke:var(--plum)}
+/* .side-row：侧栏非路由行共用基样式——.side-user 当前登录人（div，非交互，default 光标）、.side-link 退出登录（button） */
+.anav .side-user{cursor:default}
 /* 激活态：左侧 3px 指示条 + 加粗（置于 hover 之后保证 on 优先） */
 .anav a.on{box-shadow:inset 3px 0 0 var(--plum);font-weight:600}
 .anav .sep{border-top:1px solid var(--gray-light);margin:10px 12px}
-/* 分组小节标题（交易/商品/运营）：小号字距标签，折叠态隐藏 */
+/* 分组小节标题（交易/商品/运营/系统）：小号字距标签，折叠态隐藏 */
 .anav .group{font-size:10.5px;letter-spacing:2.5px;color:var(--gray);padding:14px 12px 4px;user-select:none;white-space:nowrap}
 .main{padding:24px 28px;min-width:0}
+/* 超宽屏内容宽度约束：主区每个顶层块限 1440px（左对齐），避免表格/卡片在超宽屏无限拉伸；
+   .modal（fixed 全屏遮罩）排除在外 */
+.main>*:not(.modal){max-width:1440px}
 .panel{background:#fff;border-radius:12px;box-shadow:var(--shadow-card);padding:20px;margin-bottom:20px}
 .panel h3{font-size:15px;margin-bottom:14px}
 .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
@@ -50,8 +61,8 @@ body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 /* 后台响应式：≤900px 侧栏折叠为图标栏 + 主区边距收紧 */
 @media(max-width:900px){
   .admin{grid-template-columns:64px 1fr}
-  .aside .logo span,.anav a span,.anav .group,.aside div[style*="letter-spacing"]{display:none}
-  .anav a{justify-content:center;padding:10px 8px}
+  .aside .logo span,.anav a span,.anav .group,.aside div[style*="letter-spacing"],.aside .side-sub,.anav .side-row span{display:none}
+  .anav a,.anav .side-row{justify-content:center;padding:10px 8px}
   .stat-grid{grid-template-columns:1fr 1fr}
   .cols{grid-template-columns:1fr}
   .main{padding:16px}
@@ -66,8 +77,10 @@ body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 .admin.side-min .aside .logo span,
 .admin.side-min .anav a span,
 .admin.side-min .anav .group,
-.admin.side-min .aside div[style*="letter-spacing"]{display:none}
-.admin.side-min .anav a{justify-content:center;padding:10px 8px}
+.admin.side-min .aside div[style*="letter-spacing"],
+.admin.side-min .aside .side-sub,
+.admin.side-min .anav .side-row span{display:none}
+.admin.side-min .anav a,.admin.side-min .anav .side-row{justify-content:center;padding:10px 8px}
 .side-toggle{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);width:36px;height:36px;border-radius:10px;background:var(--rose-pale);color:var(--plum);display:flex;align-items:center;justify-content:center;transition:background .2s}
 .side-toggle:hover{background:var(--rose);color:#fff}
 .admin.side-min .side-toggle svg{transform:scaleX(-1)}
@@ -136,11 +149,12 @@ th.sortable:hover{color:var(--plum)}
 .btn{transition:transform .12s,box-shadow .2s,background .15s,opacity .15s}
 .btn:not(:disabled):hover{transform:translateY(-1px)}
 .btn:not(:disabled):active{transform:none}
-/* 细滚动条（列表/弹窗长内容） */
+/* 细滚动条（列表/弹窗长内容）；Firefox 走 scrollbar-width/color（原 style.css 规则已删，此处补位同语义） */
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:var(--scroll-hover)}
 ::-webkit-scrollbar-track{background:transparent}
+html{scrollbar-width:thin;scrollbar-color:var(--scroll) transparent}
 
 /* ===== v15 全站基建:页面标题/数据表/筛选栏/dtitle 全局化 ===== */
 .page-title{font-family:var(--font-title);font-size:22px;font-weight:700;letter-spacing:-.3px}
@@ -156,3 +170,19 @@ th.sortable:hover{color:var(--plum)}
 .kv-val{text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
 .empty-line{color:var(--gray);font-size:13px;padding:8px 0}
 .filter-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+/* ===== v16 公共类（跨视图复用，各视图 scoped 副本同视觉可陆续删除） ===== */
+/* 危险按钮：红底白字（.btn 变体，需与 .btn 同用；disabled/过渡继承 .btn 既有规则） */
+.btn-danger{background:var(--error);color:#fff}
+.btn-danger:hover{background:#C93A3F}
+/* 顶栏操作行：按钮/筛选并排，窄屏自动换行 */
+.topbar-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+/* 错误横幅：浅红底红字（同 Tickets/Logs/Inventory/Members 各视图 scoped 副本） */
+.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+/* 搜索框清除小按钮（同 Orders/Products/Inventory scoped 副本） */
+.q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
+.q-clear:hover{background:var(--gray)}
+/* 列表卡：去掉 .panel/.card 内边距，内部头/体自行 padding */
+.card-flush{padding:0!important}
+/* 复选框统一：品牌色 + 15px（行内 width/height 覆盖仍生效） */
+input[type=checkbox]{accent-color:var(--plum);width:15px;height:15px}

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { i18n } from '../i18n'
@@ -17,6 +17,9 @@ const loaded = ref(false)
 const pages = ref(1)
 const cats = ref([])
 const recent = ref([])
+const pendingScroll = ref(false)
+const gridEl = ref(null)
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 /* 排序白名单（对齐 StoreView）：缺省 best，非法值回落 best */
 const SORTS = [
@@ -77,9 +80,13 @@ async function search() {
     cats.value = (s && s.categories) || []
   } catch (_) {
     if (seq !== sSeq) return
-    items.value = []; total.value = 0; pages.value = 1
+    items.value = []; total.value = 0; pages.value = 1; cats.value = []
   }
   loaded.value = true
+  if (pendingScroll.value) {
+    pendingScroll.value = false
+    nextTick(() => gridEl.value && gridEl.value.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }))
+  }
 }
 
 /* sort/size 走 URL query（replace 同步，不产生历史）；切换即回第 1 页 */
@@ -142,6 +149,7 @@ watch(() => [route.query.page, route.query.sort, route.query.size].join('|'), ()
 })
 function goPage(p) {
   if (p < 1 || p > pages.value || p === page.value) return
+  pendingScroll.value = true
   page.value = p
   router.replace({ query: { ...route.query, page: p > 1 ? String(p) : undefined } })
   /* search 由 page/sort/size watcher 统一驱动（避免双请求） */
@@ -202,7 +210,7 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
         {{ zh() ? '匹配' : 'for' }} "<mark class="cnt-mark">{{ q }}</mark>"
       </p>
 
-      <div class="grid grid-4">
+      <div ref="gridEl" class="grid grid-4">
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="sk-card">
             <div class="sk-img sk-shimmer"></div>
@@ -228,14 +236,14 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
       </div>
 
       <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:32px">
-        <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="goPage(page - 1)">←</button>
+        <button class="btn btn-secondary btn-sm" :disabled="page <= 1" :aria-label="zh() ? '上一页' : 'Previous page'" @click="goPage(page - 1)">←</button>
         <button v-if="pageWindow()[0] > 1" class="btn btn-secondary btn-sm" disabled>…</button>
         <button
           v-for="p in pageWindow()" :key="p" class="btn btn-sm"
           :class="p === page ? 'btn-primary' : 'btn-secondary'" @click="goPage(p)"
         >{{ p }}</button>
         <button v-if="pageWindow()[pageWindow().length - 1] < pages" class="btn btn-secondary btn-sm" disabled>…</button>
-        <button class="btn btn-secondary btn-sm" :disabled="page >= pages" @click="goPage(page + 1)">→</button>
+        <button class="btn btn-secondary btn-sm" :disabled="page >= pages" :aria-label="zh() ? '下一页' : 'Next page'" @click="goPage(page + 1)">→</button>
       </div>
     </div>
   </section>

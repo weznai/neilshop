@@ -10,8 +10,8 @@ from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.trade import service_admin, service_exchanges
 from app.domains.trade.schemas import (
-    ExchangeRejectRequest, NoteIn, RefundRequest, ShipRequest, ShippingRateIn,
-    ShippingRateUpdateIn, StockAdjustRequest,
+    ExchangeRejectRequest, NoteIn, RefundRequest, RmaRejectRequest, ShipRequest,
+    ShippingRateIn, ShippingRateUpdateIn, StockAdjustRequest,
 )
 from app.models import User
 
@@ -83,6 +83,16 @@ def list_rmas(
 @router.post("/rmas/{rma_no}/approve")
 def approve_rma(rma_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return service_admin.approve_rma(db, admin, rma_no)
+
+
+@router.post("/rmas/{rma_no}/reject")
+def reject_rma(
+    rma_no: str,
+    body: RmaRejectRequest | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service_admin.reject_rma(db, admin, rma_no, body.reason if body else None)
 
 
 @router.post("/rmas/{rma_no}/receive")

@@ -67,8 +67,8 @@ def admin_logout(response: Response, user: User = Depends(get_current_user_optio
 
 
 @router.get("/me")
-def me(user: User = Depends(get_current_user)):
-    return service_account.profile(user)
+def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return service_account.profile_with_delete_request(db, user)
 
 
 @router.put("/me")

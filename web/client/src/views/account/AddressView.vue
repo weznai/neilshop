@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
@@ -13,6 +13,9 @@ const arm = useArmConfirm()
 
 const list = ref([])
 const loaded = ref(false)
+const failed = ref(false)
+/* 表单滚动定位：新增/编辑展开后滚到可视区 */
+const formCard = ref(null)
 /* 表单默认收起：点「新增地址 / 编辑」才展开，保存/取消后收起 */
 const showForm = ref(false)
 /* 编辑态存地址 id（null 新建）——防删除后索引错位覆盖 */
@@ -45,7 +48,8 @@ const countrySel = computed({
 const countryIsOther = computed(() => countrySel.value === OTHER)
 
 async function load() {
-  try { list.value = await req('GET', '/api/account/addresses') } catch (_) { /* */ }
+  failed.value = false
+  try { list.value = await req('GET', '/api/account/addresses') } catch (_) { failed.value = true }
   loaded.value = true
 }
 onMounted(load)
@@ -63,6 +67,7 @@ function edit(a) {
   })
   editing.value = a.id
   showForm.value = true
+  scrollToForm()
 }
 
 const editingAddr = computed(() => (editing.value === null ? null : list.value.find((a) => a.id === editing.value) || null))
@@ -76,6 +81,7 @@ function fieldCheck() {
   if (!form.city.trim()) return tt('Enter the city', '请填写城市')
   if (!form.zip.trim()) return tt('Enter the ZIP / postal code', '请填写邮编')
   if (!/^[A-Za-z]{2}$/.test(form.country.trim())) return tt('Country must be a 2-letter code (e.g. US)', '国家代码需为 2 位字母（如 US）')
+  if (form.phone.trim() && !/^[+()\-\s\d]{6,20}$/.test(form.phone.trim())) return tt('Enter a valid phone number', '电话格式不正确')
   return ''
 }
 
@@ -122,6 +128,12 @@ async function save() {
 function startAdd() {
   reset()
   showForm.value = true
+  scrollToForm()
+}
+
+async function scrollToForm() {
+  await nextTick()
+  try { formCard.value?.scrollIntoView({ behavior: 'smooth', block: 'center' }) } catch (_) { /* 旧浏览器 */ }
 }
 
 /* 快捷设为默认：整份 AddressIn 体重放，仅翻转 is_default */
@@ -148,6 +160,11 @@ async function makeDefault(a) {
 }
 
 async function remove(a) {
+  if (a.is_default && !list.value.some((x) => x.is_default && x.id !== a.id)) {
+    ui.toast(tt('Please set another address as default before deleting this one', '请先将其他地址设为默认'), 'error')
+    arm.reset()
+    return
+  }
   try {
     await req('DELETE', '/api/account/addresses/' + a.id)
     ui.toast(tt('Address removed', '地址已删除'), 'success')
@@ -163,7 +180,11 @@ async function remove(a) {
       <div v-for="i in 2" :key="i" class="skeleton" style="height:150px;border-radius:14px" />
     </div>
     <template v-else>
-      <div v-if="list.length" class="grid grid-2">
+      <div v-if="failed" class="card" style="padding:30px;text-align:center;color:var(--gray)">
+        {{ tt('Could not load your addresses —', '地址加载失败 ——') }} <a href="javascript:void(0)" style="color:var(--plum)" @click="load">{{ tt('retry', '重试') }}</a>
+      </div>
+      <template v-else>
+        <div v-if="list.length" class="grid grid-2">
         <div v-for="a in list" :key="a.id" class="card" style="padding:18px">
           <div style="display:flex;justify-content:space-between;margin-bottom:8px">
             <span v-if="a.is_default" class="tag tag-paid">{{ tt('Default', '默认地址') }}</span>
@@ -191,9 +212,10 @@ async function remove(a) {
       <div v-if="!showForm" style="display:flex;justify-content:center">
         <button class="btn btn-secondary" @click="startAdd">➕ {{ tt('Add address', '新增地址') }}</button>
       </div>
+      </template>
     </template>
 
-    <div v-if="showForm" class="card addr-form" :class="{ 'addr-editing': editing !== null }" style="padding:20px">
+    <div v-if="showForm" ref="formCard" class="card addr-form" :class="{ 'addr-editing': editing !== null }" style="padding:20px">
       <h3 style="font-size:15px;margin-bottom:14px">
         <template v-if="editing === null">➕ {{ tt('Add address', '新增地址') }}</template>
         <template v-else>✏️ {{ tt('Edit address', '编辑地址') }}<span v-if="editingAddr" style="color:var(--plum)"> · {{ editingAddr.full_name }}</span></template>

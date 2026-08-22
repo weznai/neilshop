@@ -52,3 +52,12 @@ def cancel_order(
     db: Session = Depends(get_db),
 ):
     return service_orders.cancel_order(db, order_no, user)
+
+
+@router.post("/{order_no}/confirm-received")
+def confirm_received(
+    order_no: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return service_orders.confirm_received(db, order_no, user)

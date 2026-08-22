@@ -74,6 +74,10 @@ class RefundRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class RmaRejectRequest(BaseModel):
+    reason: Optional[str] = Field(default=None, max_length=200)
+
+
 class NoteIn(BaseModel):
     text: str = Field(min_length=1, max_length=500)
 
@@ -120,3 +124,7 @@ class ExchangeCreateRequest(BaseModel):
 
 class ExchangeRejectRequest(BaseModel):
     reason: Optional[str] = None
+
+
+class ExchangeMockPayIn(BaseModel):
+    succeed: bool = True

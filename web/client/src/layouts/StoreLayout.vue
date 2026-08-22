@@ -27,12 +27,12 @@ function startAnn() {
 }
 
 const NAV = [
-  ['/store?sort=new', 'nav.new'],
-  ['/store?cat=press-on-nails', 'nav.nails'],
-  ['/store?cat=magnetic-lashes', 'nav.lashes'],
-  ['/collabs', 'nav.collabs'],
-  ['/bundles', 'nav.bundles'],
-  ['/sale', 'nav.sale'],
+  { href: '/store?sort=new', key: 'nav.new', match: (r) => r.path === '/store' && r.query.sort === 'new' },
+  { href: '/store?cat=press-on-nails', key: 'nav.nails', match: (r) => r.path === '/store' && (r.query.cat === 'press-on-nails' || (!r.query.cat && r.query.sort !== 'new')) },
+  { href: '/store?cat=magnetic-lashes', key: 'nav.lashes', match: (r) => r.path === '/store' && r.query.cat === 'magnetic-lashes' },
+  { href: '/collabs', key: 'nav.collabs', match: (r) => r.path === '/collabs' },
+  { href: '/bundles', key: 'nav.bundles', match: (r) => r.path === '/bundles' },
+  { href: '/sale', key: 'nav.sale', match: (r) => r.path === '/sale' },
 ]
 const zh = computed(() => i18n.lang === 'zh')
 const MEGA_SHAPE = [['almond', 'Short Almond', '短杏仁'], ['square', 'Square', '方形'], ['stiletto', 'Stiletto', '尖头'], ['coffin', 'Coffin', '棺形']]
@@ -120,9 +120,9 @@ onUnmounted(() => {
       </button>
       <router-link class="logo" to="/">GLOW<span>MAG</span></router-link>
       <nav class="nav">
-        <template v-for="[href, key] in NAV" :key="key">
-          <span v-if="key === 'nav.nails'" class="nav-item">
-            <router-link :to="href">{{ i18n.t(key) }}</router-link>
+        <template v-for="item in NAV" :key="item.key">
+          <span v-if="item.key === 'nav.nails'" class="nav-item">
+            <router-link :to="item.href" :class="{ on: item.match(route) }" :aria-current="item.match(route) ? 'page' : null">{{ i18n.t(item.key) }}</router-link>
             <div class="mega">
               <div class="mega-col">
                 <h5>{{ zh ? '按甲型选购' : 'Shop by Shape' }}</h5>
@@ -142,13 +142,13 @@ onUnmounted(() => {
               <router-link class="mega-promo" to="/sale">{{ zh ? '季末特惠 · 最高 75 折 →' : 'END OF SEASON · Up to 25% off →' }}</router-link>
             </div>
           </span>
-          <span v-else-if="key === 'nav.lashes'" class="nav-item">
-            <router-link :to="href">{{ i18n.t(key) }}</router-link>
+          <span v-else-if="item.key === 'nav.lashes'" class="nav-item">
+            <router-link :to="item.href" :class="{ on: item.match(route) }" :aria-current="item.match(route) ? 'page' : null">{{ i18n.t(item.key) }}</router-link>
             <div class="mega mega-2">
               <div class="mega-col">
                 <h5>{{ zh ? '选购睫毛' : 'Shop Lashes' }}</h5>
                 <router-link to="/store?cat=magnetic-lashes">{{ zh ? '全部磁吸睫毛' : 'All Magnetic Lashes' }}</router-link>
-                <router-link to="/store?cat=press-on-nails&tag=cat-eye">{{ zh ? '猫眼宝石系列' : 'Cat-Eye Edit' }}</router-link>
+                <router-link to="/store?cat=magnetic-lashes&tag=cat-eye">{{ zh ? '猫眼宝石系列' : 'Cat-Eye Edit' }}</router-link>
                 <router-link to="/how-it-works">{{ zh ? '5 秒佩戴教程' : 'How to apply in 5s' }}</router-link>
               </div>
               <router-link class="mega-promo mega-promo-card" to="/bundles">
@@ -157,7 +157,7 @@ onUnmounted(() => {
               </router-link>
             </div>
           </span>
-          <router-link v-else :to="href" :class="{ sale: key === 'nav.sale' }">{{ i18n.t(key) }}</router-link>
+          <router-link v-else :to="item.href" :class="{ sale: item.key === 'nav.sale', on: item.match(route) }" :aria-current="item.match(route) ? 'page' : null">{{ i18n.t(item.key) }}</router-link>
         </template>
       </nav>
       <div class="header-actions">
@@ -167,12 +167,12 @@ onUnmounted(() => {
         <button class="icon-btn" :aria-label="i18n.t('aria.search')" @click="ui.openSearch()"><GmIcon name="search" /></button>
         <router-link class="icon-btn" to="/account/wishlist" :aria-label="i18n.t('aria.wishlist')">
           <GmIcon name="heart" />
-          <span class="cart-badge" :style="{ display: auth.isLoggedIn && wlCount ? 'flex' : 'none' }">{{ wlCount }}</span>
+          <span v-show="auth.isLoggedIn && wlCount" class="cart-badge">{{ wlCount }}</span>
         </router-link>
         <router-link class="icon-btn" to="/account" :aria-label="i18n.t('aria.account')"><GmIcon name="user" /></router-link>
         <button class="icon-btn" :aria-label="i18n.t('aria.cart')" @click="ui.openCart()">
           <GmIcon name="cart" />
-          <span class="cart-badge" :style="{ display: cart.count ? 'flex' : 'none' }">{{ cart.count > 99 ? '99+' : cart.count }}</span>
+          <span v-show="cart.count" class="cart-badge">{{ cart.count > 99 ? '99+' : cart.count }}</span>
         </button>
       </div>
     </div>
@@ -181,9 +181,10 @@ onUnmounted(() => {
   <main>
     <nav v-if="crumbs.length" class="container crumbs" aria-label="Breadcrumb">
       <router-link to="/">{{ i18n.t('crumb.home') }}</router-link>
-      <template v-for="c in crumbs" :key="c.path">
+      <template v-for="(c, ci) in crumbs" :key="c.path">
         <GmIcon class="crumb-sep" name="chevron-right" :size="13" />
-        <router-link :to="c.path">{{ c.title }}</router-link>
+        <span v-if="ci === crumbs.length - 1" aria-current="page">{{ c.title }}</span>
+        <router-link v-else :to="c.path">{{ c.title }}</router-link>
       </template>
     </nav>
     <router-view v-slot="{ Component }">
@@ -288,7 +289,7 @@ onUnmounted(() => {
     <button type="button" :class="{ on: tabSearch }" @click="ui.openSearch()"><GmIcon name="search" :size="22" /><span>{{ i18n.t('tab.search') }}</span></button>
     <router-link to="/account/wishlist" :class="{ on: tabWish }"><GmIcon name="heart" :size="22" /><span>{{ i18n.t('tab.wishlist') }}</span></router-link>
     <button type="button" :class="{ 'tab-pulse': cart.count > 0 }" @click="ui.openCart()">
-      <GmIcon name="cart" :size="22" /><span class="cart-badge" :style="{ display: cart.count ? 'flex' : 'none' }">{{ cart.count > 99 ? '99+' : cart.count }}</span>
+      <GmIcon name="cart" :size="22" /><span v-show="cart.count" class="cart-badge">{{ cart.count > 99 ? '99+' : cart.count }}</span>
       <span>{{ i18n.t('tab.cart') }}</span>
     </button>
     <router-link to="/account" :class="{ on: tabMe }"><GmIcon name="user" :size="22" /><span>{{ i18n.t('tab.account') }}</span></router-link>
@@ -302,7 +303,7 @@ onUnmounted(() => {
   <aside class="mnav" :class="{ open: ui.mnavOpen }" :aria-label="i18n.t('aria.menuDrawer')">
     <div class="drawer-head">{{ i18n.t('nav.browse') }} <button style="font-size:22px" @click="ui.closeMnav()">×</button></div>
     <nav class="mnav-links">
-      <router-link v-for="[href, key] in NAV" :key="key" :to="href" @click="ui.closeMnav()">{{ i18n.t(key) }}</router-link>
+      <router-link v-for="item in NAV" :key="item.key" :to="item.href" @click="ui.closeMnav()">{{ i18n.t(item.key) }}</router-link>
       <div class="sep"></div>
       <router-link to="/gallery" @click="ui.closeMnav()">{{ i18n.t('footer.gallery') }}</router-link>
       <router-link to="/size-guide" @click="ui.closeMnav()">📐 {{ i18n.t('footer.size') }}</router-link>
@@ -347,30 +348,6 @@ onUnmounted(() => {
 /* v15 全局面包屑 */
 .crumb-sep{stroke:var(--gray);opacity:.7;margin:-2px 2px 0}
 
-/* ===== Newsletter 独立模块 ===== */
-.newsletter-band{background:#fff;padding:24px 0;border-top:1px solid var(--gray-light)}
-.newsletter-band .footer-inner{display:flex;justify-content:space-between;align-items:center;gap:20px}
-.newsletter-band .news-text{display:flex;align-items:center;gap:14px}
-.newsletter-band .news-ico{width:46px;height:46px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--plum));display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 6px 16px rgba(232,180,184,.5)}
-.newsletter-band .news-ico svg{stroke:#fff}
-.newsletter-band .news-text h5{font-family:var(--font-title);font-size:17px;color:var(--plum);margin-bottom:3px;font-weight:700}
-.newsletter-band .news-text p{font-size:12.5px;color:var(--gray)}
-.newsletter-band .news-form{display:flex;gap:8px;flex:none}
-.newsletter-band .news-form input{width:260px;height:40px;border-radius:999px;border:1.5px solid var(--gray-light);background:#fff;color:var(--ink);padding:0 16px;font-size:12.5px;outline:none;transition:border-color .2s,box-shadow .2s}
-.newsletter-band .news-form input::placeholder{color:var(--gray)}
-.newsletter-band .news-form input:focus{border-color:var(--rose);box-shadow:0 0 0 3px rgba(232,180,184,.25)}
-.newsletter-band .news-btn{background:var(--plum);color:#fff;font-weight:600;padding:0 22px;height:40px;border-radius:999px;font-size:12.5px;transition:transform .15s, filter .15s, box-shadow .2s}
-.newsletter-band .news-btn:hover{filter:brightness(1.12);transform:translateY(-1px);box-shadow:0 6px 14px rgba(109,46,70,.25)}
-.newsletter-band .news-btn:active{transform:scale(.98)}
-@media (max-width:768px){
-  .newsletter-band{padding:20px 0}
-  .newsletter-band .footer-inner{flex-direction:column;align-items:stretch;text-align:center;gap:12px}
-  .newsletter-band .news-text{flex-direction:column;gap:8px}
-  .newsletter-band .news-text h5{font-size:16px}
-  .newsletter-band .news-form input{width:auto;flex:1;height:44px;font-size:14px}
-  .newsletter-band .news-btn{height:44px;padding:0 20px}
-}
-
 /* ===== Footer 样式（浅色主题） ===== */
 
 /* 信任徽章行：白卡片 + 梅紫图标圆 */
@@ -391,7 +368,7 @@ onUnmounted(() => {
 /* Footer 主内容区 */
 .footer-main{display:grid;grid-template-columns:1.5fr 2fr;gap:32px;padding:30px 0 26px;border-bottom:1px solid rgba(109,46,70,.14)}
 .footer-logo{color:var(--plum)!important;font-size:21px;margin-bottom:8px;letter-spacing:1px}
-.footer-logo span{color:#fff}
+.footer-logo span{color:var(--rose)}
 .footer-tagline{font-size:12.5px;color:#7D5A64;max-width:250px;line-height:1.55;margin-bottom:0}
 .social-row{display:flex;gap:8px;margin-top:16px}
 .social-btn{width:34px;height:34px;border-radius:50%;background:#fff;border:1px solid rgba(109,46,70,.12);color:var(--plum);display:flex;align-items:center;justify-content:center;transition:all .2s;cursor:pointer;box-shadow:0 2px 8px rgba(109,46,70,.08)}

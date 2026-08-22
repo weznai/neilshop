@@ -39,13 +39,15 @@ class ReplyIn(BaseModel):
 
 
 class CloseIn(BaseModel):
-    close_reason: int | None = None
+    """关单原因：数字枚举（1已解决 2重复 3无效 9其他）或自由文本（服务层归一为 9 其他）；
+    兼容后台 ConfirmDialog 自由文本输入与旧数字枚举两种提交"""
+    close_reason: int | str | None = None
 
 
 class TicketStatusIn(BaseModel):
     """工单状态流转：status 仅允许 2/3/4（0/1 态只能经回复进入处理流）"""
     status: int = Field(ge=2, le=4)
-    close_reason: int | None = None
+    close_reason: int | str | None = None
 
     @model_validator(mode="after")
     def _close_reason_required(self):

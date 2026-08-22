@@ -9,8 +9,7 @@ import { catalogById } from '../data/catalog'
 const cart = useCartStore()
 const ui = useUiStore()
 
-/* 免邮门槛 $35：与后端 settings.free_shipping_threshold 默认 3500 / seed usps standard free_over 一致 */
-const FREE_SHIP = 35
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const zh = computed(() => i18n.lang === 'zh')
 const recs = ref([])
@@ -60,11 +59,8 @@ function undoRemove() {
 }
 
 const subtotalD = computed(() => (cart.subtotalC / 100).toFixed(2))
-const shipHtml = computed(() =>
-  cart.subtotalC >= FREE_SHIP * 100
-    ? i18n.t('ship.unlocked')
-    : i18n.t('ship.away', ((FREE_SHIP * 100 - cart.subtotalC) / 100).toFixed(2)))
-const shipPct = computed(() => Math.min(100, (cart.subtotalC / (FREE_SHIP * 100)) * 100))
+/* 抽屉不跑 preview，无法按折后口径精确计算免邮进度 → 弱化为静态提示，进度条隐藏（以结算页试算为准） */
+const shipHint = computed(() => tt('Free shipping on orders over $35 (calculated on discounted subtotal, final at checkout)', '满 $35 可享免邮（按折后金额计算，以结算页为准）'))
 
 /* 去结算携带已验证折扣码（CartView applyCode 成功时写入 gm_applied_code；CheckoutView 支持 ?code=） */
 function checkoutLink() {
@@ -134,7 +130,7 @@ function drawerKeydown(e) {
       <div v-if="!cart.items.length" style="text-align:center;padding:48px 0;color:var(--gray)">
         <div style="font-size:44px;margin-bottom:12px">🛒</div>
         <p style="margin-bottom:16px">{{ i18n.t('cart.empty') }}</p>
-        <router-link class="btn btn-primary btn-sm" to="/" @click="ui.closeCart()">{{ i18n.t('cart.shop') }}</router-link>
+        <router-link class="btn btn-primary btn-sm" to="/store" @click="ui.closeCart()">{{ i18n.t('cart.shop') }}</router-link>
       </div>
       <template v-else>
         <div v-if="cart.removed" class="undo-bar">
@@ -159,6 +155,7 @@ function drawerKeydown(e) {
               <div style="display:flex;align-items:center;gap:0;border:1px solid var(--gray-light);border-radius:8px">
                 <button
                   class="qbtn"
+                  :disabled="i.qty <= 1"
                   :aria-label="zh ? `减少数量：${i.title}` : `Decrease quantity of ${i.title}`"
                   @click="cart.setQty(i.vid, i.qty - 1, ui)"
                 >−</button>
@@ -199,8 +196,7 @@ function drawerKeydown(e) {
           </div>
         </div>
       </div>
-      <div class="ship-bar" :class="{ 'gwp-bar': cart.subtotalC >= FREE_SHIP * 100 }" v-html="shipHtml"></div>
-      <div class="ship-track" style="margin-bottom:12px"><div class="ship-fill" :style="{ width: shipPct + '%' }"></div></div>
+      <div class="ship-bar" style="font-size:12px">{{ shipHint }}</div>
       <div style="display:flex;justify-content:space-between;margin-bottom:12px;font-size:15px">
         <span>{{ i18n.t('cart.subtotal') }}</span>
         <b style="font-variant-numeric:tabular-nums">${{ subtotalD }}</b>

@@ -45,6 +45,15 @@ _CLAIM_PAID_CANCEL_SQL = text(
     "UPDATE orders SET status = 8, canceled_at = :now, cancel_reason = :reason "
     "WHERE id = :oid AND status = 1 AND shipping_status = 0"
 )
+# 用户确认收货 CAS：仅已送达(4)可推进完成(5)，与后台 mark-completed 并发互斥
+_CLAIM_COMPLETED_SQL = text(
+    "UPDATE orders SET status = 5, completed_at = :now "
+    "WHERE id = :oid AND status = 4"
+)
+# 换货差价支付核销 CAS：仅待差价(2)可推进批准(1)，mock-pay/webhook/mark-paid 三方互斥
+_CLAIM_EXCHANGE_DIFF_PAID_SQL = text(
+    "UPDATE exchanges SET status = 1 WHERE id = :eid AND status = 2"
+)
 # 礼品卡原子扣减：余额守卫进 WHERE，并发双花时 rowcount=0
 _DEBIT_GIFT_CARD_SQL = text(
     "UPDATE gift_cards SET balance = balance - :amt "
@@ -90,6 +99,14 @@ def claim_order_paid_canceled(db: Session, order_id: int, now, reason: str) -> i
     return db.execute(_CLAIM_PAID_CANCEL_SQL, {
         "oid": order_id, "now": now, "reason": reason,
     }).rowcount
+
+
+def claim_order_completed(db: Session, order_id: int, now) -> int:
+    return db.execute(_CLAIM_COMPLETED_SQL, {"oid": order_id, "now": now}).rowcount
+
+
+def claim_exchange_diff_paid(db: Session, exchange_id: int) -> int:
+    return db.execute(_CLAIM_EXCHANGE_DIFF_PAID_SQL, {"eid": exchange_id}).rowcount
 
 
 # ---------- 礼品卡：原子扣减 ----------
@@ -489,6 +506,14 @@ def add_webhook_event(
 # ---------- 换货 Exchange ----------
 def exchange_by_no(db: Session, exchange_no: str) -> Optional[Exchange]:
     return db.query(Exchange).filter(Exchange.exchange_no == exchange_no).first()
+
+
+def exchange_by_diff_payment(db: Session, payment_id: int) -> Optional[Exchange]:
+    return (
+        db.query(Exchange)
+        .filter(Exchange.diff_payment_id == payment_id, Exchange.status == 2)
+        .first()
+    )
 
 
 def list_user_exchanges(db: Session, user_id: int) -> list[tuple[Exchange, OrderItem, Order]]:

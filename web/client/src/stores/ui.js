@@ -12,9 +12,11 @@ export const useUiStore = defineStore('ui', {
     searchOpen: false,
     chatOpen: false,      /* ChatWidget 面板（组件自上报，body 滚动锁统一走 anyOverlay） */
     popupsOpen: false,    /* MarketingPopups welcome/exit（同上） */
+    consentOpen: false,   /* CookieConsent 设置弹窗（同上） */
+    lightboxOpen: false,  /* GalleryView 灯箱/投稿弹窗（同上） */
   }),
   getters: {
-    anyOverlay: (s) => s.openModalId || s.cartDrawer || s.mnavOpen || s.searchOpen || s.chatOpen || s.popupsOpen,
+    anyOverlay: (s) => s.openModalId || s.cartDrawer || s.mnavOpen || s.searchOpen || s.chatOpen || s.popupsOpen || s.consentOpen || s.lightboxOpen,
   },
   actions: {
     toast(msg, type = '', opts) {

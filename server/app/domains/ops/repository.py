@@ -63,6 +63,11 @@ def abandoned_carts_count(db: Session, cutoff: datetime) -> int:
 
 
 def pending_orders_count(db: Session) -> int:
+    """待发货：已支付未发货（1已支付/2备货中）——与后台订单页「待发货」语义一致"""
+    return db.query(func.count(Order.id)).filter(Order.status.in_([1, 2])).scalar() or 0
+
+
+def unpaid_orders_count(db: Session) -> int:
     return db.query(func.count(Order.id)).filter(Order.status == 0).scalar() or 0
 
 

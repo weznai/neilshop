@@ -189,17 +189,17 @@ onMounted(() => {
 <template>
   <section class="section">
     <div class="container" style="max-width:680px">
-      <div class="section-head"><h2 class="section-title">{{ tt('Contact Us 💬', '联系我们 💬') }}</h2></div>
+      <div class="section-head"><h1 class="section-title">{{ tt('Contact Us 💬', '联系我们 💬') }}</h1></div>
 
       <div style="display:flex;gap:8px;margin-bottom:18px">
-        <button class="trend-chip" :aria-pressed="mode === 'new'" :style="mode === 'new' ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''" @click="mode = 'new'">✍️ {{ tt('New ticket', '新建工单') }}</button>
-        <button class="trend-chip" :aria-pressed="mode === 'check'" :style="mode === 'check' ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''" @click="mode = 'check'">💬 {{ tt('Check my ticket', '查询我的工单') }}</button>
+        <button class="trend-chip" :class="{ on: mode === 'new' }" :aria-pressed="mode === 'new'" @click="mode = 'new'">✍️ {{ tt('New ticket', '新建工单') }}</button>
+        <button class="trend-chip" :class="{ on: mode === 'check' }" :aria-pressed="mode === 'check'" @click="mode = 'check'">💬 {{ tt('Check my ticket', '查询我的工单') }}</button>
       </div>
 
       <div v-if="mode === 'new'">
         <div v-if="created" class="card" style="padding:28px;text-align:center">
           <div style="width:56px;height:56px;border-radius:50%;background:var(--rose-pale);color:var(--plum);font-size:26px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:12px">✓</div>
-          <h3 style="font-family:var(--font-title);font-size:20px;margin-bottom:6px">{{ tt('Ticket received!', '工单已收到！') }}</h3>
+          <h2 style="font-family:var(--font-title);font-size:20px;margin-bottom:6px">{{ tt('Ticket received!', '工单已收到！') }}</h2>
           <p style="font-size:13.5px;color:var(--gray);margin-bottom:14px">
             {{ tt('Average first reply: under 4 hours (Mon–Sat). Save your ticket number:', '平均 4 小时内首次回复（周一至周六）。请保存工单号：') }}
           </p>
@@ -269,8 +269,7 @@ onMounted(() => {
         <template v-else-if="activeTicket">
           <div v-if="tickets.length > 1" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:16px">
             <button
-              v-for="t in tickets" :key="t.ticket_no" class="trend-chip" :aria-pressed="activeTicket.ticket_no === t.ticket_no"
-              :style="activeTicket.ticket_no === t.ticket_no ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''"
+              v-for="t in tickets" :key="t.ticket_no" class="trend-chip" :class="{ on: activeTicket.ticket_no === t.ticket_no }" :aria-pressed="activeTicket.ticket_no === t.ticket_no"
               @click="activeNo = t.ticket_no"
             >{{ t.ticket_no }}</button>
           </div>
@@ -320,13 +319,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.skeleton {
-  background: linear-gradient(90deg, var(--gray-light) 25%, #fff 50%, var(--gray-light) 75%);
-  background-size: 200% 100%;
-  animation: gmSk 1.2s ease-in-out infinite;
-  border-radius: 12px;
-}
-@keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
 @media (max-width: 640px) {
   .lk-grid { grid-template-columns: 1fr !important; }
 }

@@ -51,6 +51,7 @@ def dashboard(db: Session) -> dict:
     cutoff = _naive_utcnow() - timedelta(hours=24)
     abandoned = repo.abandoned_carts_count(db, cutoff)
     pending_orders = repo.pending_orders_count(db)
+    unpaid_orders = repo.unpaid_orders_count(db)
     low_stock = repo.low_stock_count(db)
     pending_reviews = repo.pending_reviews_count(db)
     open_tickets = repo.open_tickets_count(db)
@@ -99,6 +100,7 @@ def dashboard(db: Session) -> dict:
             "approximate": True,
         },
         "pending_orders": int(pending_orders),
+        "unpaid_orders": int(unpaid_orders),
         "low_stock": int(low_stock),
         "pending_reviews": int(pending_reviews),
         "open_tickets": int(open_tickets),

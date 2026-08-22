@@ -19,10 +19,11 @@ router = APIRouter(tags=["admin-ops"])
 def list_discounts(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
+    q: str | None = None,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.list_discounts(db, page, size)
+    return service.list_discounts(db, page, size, q)
 
 
 @router.post("/api/admin/ops/discounts")

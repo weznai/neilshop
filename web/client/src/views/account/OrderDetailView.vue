@@ -60,7 +60,10 @@ function fmt(iso) {
   const d = new Date(iso)
   if (isNaN(d)) return '—'
   const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  return d.getFullYear() === new Date().getFullYear()
+    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
+    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
 }
 function detailText(ev) {
   const d = ev.detail
@@ -87,6 +90,8 @@ async function load() {
   } finally { loading.value = false }
 }
 onMounted(load)
+/* 同路由 ?no= 切换（订单间跳转）时重新加载 */
+watch(() => route.query.no, () => load())
 
 /* 进度条仅用于正常履约流（0-5）；取消/退款单独展示 */
 const steps = computed(() => {
@@ -115,6 +120,8 @@ function avail(it) { return (it.qty || 0) - (it.refunded_qty || 0) - (it.exchang
 const canSelfCancel = computed(() => !!o.value && o.value.status === 1 && (o.value.shipping_status || 0) === 0)
 /* 再次购买：非待付/非取消（0/8 之外） */
 const canBuyAgain = computed(() => !!o.value && ![0, 8].includes(o.value.status))
+/* 已送达待确认：可自助确认收货（4→5 已完成） */
+const canConfirmRecv = computed(() => !!o.value && o.value.status === 4)
 
 /* 待付订单：支付（create-intent → mock-pay）/ 取消 */
 async function payNow() {
@@ -132,6 +139,21 @@ async function payNow() {
 }
 /* 两段式确认（useArmConfirm：5s 复位；按钮 arm 态红字 + 二段文案） */
 const cancelArm = useArmConfirm()
+const recvArm = useArmConfirm()
+
+/* 确认收货（仅 status=4 已送达）：CAS 4→5 已完成 */
+async function confirmReceived() {
+  busy.value = true
+  try {
+    await req('POST', '/api/orders/' + encodeURIComponent(o.value.order_no) + '/confirm-received')
+    ui.toast(tt('Thanks! Order completed 🎉', '感谢确认收货，订单已完成 🎉'), 'success')
+    await load()
+  } catch (e) {
+    const d = e && e.data && e.data.detail || ''
+    if (String(d).startsWith('not_confirmable')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); await load() }
+    else ui.toast(tt('Could not confirm — please retry later', '确认失败，请稍后再试'), 'error')
+  } finally { busy.value = false }
+}
 
 /* 待付取消（仅释放库存，无退款） */
 async function cancelOrder() {
@@ -265,7 +287,7 @@ async function submitRma() {
 }
 
 /* ---------- 换货（siblings 一次拉取同款变体，替换旧的 N+1 搜索） ---------- */
-const ex = reactive({ open: false, item: null, loading: false, variants: [], picked: null, qty: 1, busy: false, error: '', netFail: false })
+const ex = reactive({ open: false, item: null, loading: false, variants: [], picked: null, qty: 1, reason: '', busy: false, error: '', netFail: false })
 async function loadSiblings() {
   ex.loading = true
   ex.error = ''
@@ -292,7 +314,7 @@ async function loadSiblings() {
   ex.loading = false
 }
 async function openExchange(it) {
-  Object.assign(ex, { open: true, item: it, loading: true, variants: [], picked: null, qty: 1, busy: false, error: '', netFail: false })
+  Object.assign(ex, { open: true, item: it, loading: true, variants: [], picked: null, qty: 1, reason: '', busy: false, error: '', netFail: false })
   await loadSiblings()
 }
 function exStockText(v) {
@@ -311,12 +333,12 @@ async function submitExchange() {
   if (!ex.picked) return
   ex.busy = true
   try {
-    /* qty 为扩展字段：后端 ExchangeCreateRequest 现无该字段会忽略（安全） */
     const d = await req('POST', '/api/exchanges', {
       order_no: o.value.order_no,
       order_item_id: ex.item.id,
       new_variant_id: ex.picked,
       qty: ex.qty,
+      reason: ex.reason.trim() || null,
     })
     ui.toast(tt(`Exchange request submitted (${d.exchange_no})`, `换货申请已提交（${d.exchange_no}）`), 'success')
     ex.open = false
@@ -464,6 +486,10 @@ async function submitReview(it) {
               >{{ cancelArm.is('pending') ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel order', '取消订单') }}</button>
             </template>
             <template v-else>
+              <button
+                v-if="canConfirmRecv" class="btn btn-primary btn-sm" :class="{ arm: recvArm.is('recv'), loading: busy }"
+                :disabled="busy || rebuying" @click="recvArm.hit('recv', confirmReceived)"
+              >{{ recvArm.is('recv') ? tt('Tap again to confirm', '再点一次确认') : tt('✓ Confirm delivery', '确认收货') }}</button>
               <button
                 v-if="canSelfCancel" class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is('paid'), loading: busy }"
                 :disabled="busy || rebuying" @click="cancelArm.hit('paid', cancelPaidOrder)"
@@ -691,6 +717,9 @@ async function submitReview(it) {
             </label>
           </div>
         </template>
+        <div class="field" style="margin-top:12px"><label>{{ tt('Reason (optional)', '换货原因（可选）') }}</label>
+          <textarea v-model="ex.reason" class="input" rows="2" maxlength="500" style="height:auto;padding:10px 14px" :placeholder="tt('Tell us more…', '告诉我们更多细节…')"></textarea>
+        </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
           <button class="btn btn-ghost" @click="ex.open = false">{{ tt('Cancel', '取消') }}</button>
           <button class="btn btn-primary" :class="{ loading: ex.busy }" :disabled="ex.busy || !ex.picked" @click="submitExchange">{{ tt('Submit exchange request', '提交换货申请') }}</button>

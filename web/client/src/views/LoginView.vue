@@ -138,8 +138,7 @@ async function sendReset() {
           <div style="font-size:40px;text-align:center;margin-bottom:10px">📧</div>
           <h1 style="font-family:var(--font-title);font-size:22px;margin-bottom:8px;text-align:center">{{ tt('Reset email sent', '重置邮件已发送') }}</h1>
           <p style="font-size:13.5px;color:var(--gray);text-align:center;margin-bottom:18px">
-            {{ tt('If that email is registered, a reset link will arrive at', '如果该邮箱已注册，重置邮件将发送至') }} <b>{{ email }}</b>，
-            {{ tt('please follow the link to finish resetting. (Demo environment: the link is printed in the backend logs / demo notes.)', '请按邮件内链接完成重置。（演示环境：链接见后端日志/演示说明。）') }}
+            {{ tt('If that email is registered, a reset link will arrive at ', '如果该邮箱已注册，重置邮件将发送至 ') }}<b>{{ email }}</b>{{ tt(', please follow the link to finish resetting. (Demo environment: the link is printed in the backend logs / demo notes.)', '，请按邮件内链接完成重置。（演示环境：链接见后端日志/演示说明。）') }}
           </p>
           <button class="btn btn-secondary btn-block" @click="mode = 'login'; err = ''">{{ tt('← Back to sign in', '← 返回登录') }}</button>
         </template>

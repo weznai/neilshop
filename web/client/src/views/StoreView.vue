@@ -185,7 +185,7 @@ const HOT_LINKS = [
   <section class="section">
     <div class="container">
       <div class="section-head store-head">
-        <h2 class="section-title">{{ heading() }}</h2>
+        <h1 class="section-title">{{ heading() }}</h1>
         <div class="seg" :aria-label="tt('Sort by', '排序')">
           <router-link
             v-for="[v, label] in SORTS" :key="v"
@@ -298,14 +298,14 @@ const HOT_LINKS = [
       </div>
 
       <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:32px">
-        <button class="btn btn-secondary btn-sm" :disabled="state.page <= 1" @click="goPage(state.page - 1)">←</button>
+        <button class="btn btn-secondary btn-sm" :disabled="state.page <= 1" :aria-label="tt('Previous page', '上一页')" @click="goPage(state.page - 1)">←</button>
         <button v-if="pageWindow()[0] > 1" class="btn btn-secondary btn-sm" disabled>…</button>
         <button
           v-for="p in pageWindow()" :key="p" class="btn btn-sm pg"
           :class="p === state.page ? 'btn-primary' : 'btn-secondary'" @click="goPage(p)"
         >{{ p }}</button>
         <button v-if="pageWindow()[pageWindow().length - 1] < pages" class="btn btn-secondary btn-sm" disabled>…</button>
-        <button class="btn btn-secondary btn-sm" :disabled="state.page >= pages" @click="goPage(state.page + 1)">→</button>
+        <button class="btn btn-secondary btn-sm" :disabled="state.page >= pages" :aria-label="tt('Next page', '下一页')" @click="goPage(state.page + 1)">→</button>
       </div>
     </div>
   </section>

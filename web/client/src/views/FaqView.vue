@@ -83,6 +83,7 @@ function syncUrl() {
 function pickCat(c) { cat.value = c; open.value = -1; syncUrl() }
 let qTimer = null
 watch(q, () => {
+  open.value = -1
   clearTimeout(qTimer)
   qTimer = setTimeout(syncUrl, 400)
 })
@@ -121,7 +122,7 @@ onMounted(async () => {
 <template>
   <section class="section">
     <div class="container" style="max-width:760px">
-      <div class="section-head"><h2 class="section-title">{{ i18n.t('faq.title') }}</h2></div>
+      <div class="section-head"><h1 class="section-title">{{ i18n.t('faq.title') }}</h1></div>
 
       <div style="position:relative;margin-bottom:10px">
         <input v-model="q" class="input" :placeholder="i18n.t('faq.searchPh')" style="padding-left:40px;padding-right:40px">
@@ -132,8 +133,7 @@ onMounted(async () => {
       <div class="faq-cats">
         <button
           v-for="[c, key, icon] in CATS" :key="c"
-          class="trend-chip"
-          :style="cat === c ? 'border-color:var(--plum);background:var(--rose-pale);color:var(--plum)' : ''"
+          class="trend-chip" :class="{ on: cat === c }"
           @click="pickCat(c)"
         >{{ icon }} {{ i18n.t('faq.cat.' + key) }}</button>
       </div>
@@ -182,13 +182,6 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.skeleton {
-  background: linear-gradient(90deg, var(--gray-light) 25%, #fff 50%, var(--gray-light) 75%);
-  background-size: 200% 100%;
-  animation: gmSk 1.2s ease-in-out infinite;
-}
-@keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
-
 /* 搜索框清空钮 */
 .faq-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; border-radius: 50%; color: var(--gray); font-size: 14px; display: flex; align-items: center; justify-content: center; }
 .faq-clear:hover { background: var(--rose-pale); color: var(--plum); }

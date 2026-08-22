@@ -15,8 +15,9 @@ export function useQuerySync(state, opts = {}) {
     if (Array.isArray(v)) v = v[0]
     if (v === undefined || v === '') continue
     if (nums.includes(k)) {
+      /* 页码等数字键仅接受 >=1 的整数（0/负数/NaN/小数忽略，保留默认值） */
       const n = Number(v)
-      if (Number.isFinite(n)) state[k] = n
+      if (Number.isInteger(n) && n >= 1) state[k] = n
     } else {
       state[k] = v
     }

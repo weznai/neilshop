@@ -42,8 +42,8 @@ function imgFallback(e) {
 
 const locale = computed(() => (zh.value ? 'zh-CN' : null))
 const variant = computed(() => (p.value?.variants || [])[vIdx.value] || null)
-const stockStatus = computed(() => variant.value?.stock_status || 'in')
-const maxQty = computed(() => Math.max(1, Math.min(10, variant.value?.stock || 10)))
+const stockStatus = computed(() => (variant.value ? (variant.value.stock_status || 'in') : 'out'))
+const maxQty = computed(() => Math.max(1, Math.min(10, variant.value?.stock ?? 10)))
 
 const media = computed(() => {
   const list = []
@@ -139,7 +139,7 @@ async function load() {
     /* 动态 SEO：OG/JSON-LD（seo.js 监听 gm:seo 事件，路由切换自动复位） */
     try {
       window.dispatchEvent(new CustomEvent('gm:seo', { detail: {
-        title: p.value.title + ' | GLOWMAG',
+        title: p.value.title + ' · GLOWMAG',
         description: (p.value.subtitle || p.value.description_md || '').slice(0, 160),
         image: p.value.hero_image, type: 'product',
         jsonLd: {
@@ -239,8 +239,17 @@ function mdHtml(mdText) {
   }).join('')
 }
 
+function onQtyChange(e) {
+  const n = parseInt(e.target.value, 10)
+  qty.value = Number.isFinite(n) ? Math.max(1, Math.min(maxQty.value, n)) : qty.value
+  e.target.value = qty.value
+}
+
 async function addToCart() {
-  if (!variant.value || variant.value.stock <= 0) return
+  if (!variant.value || variant.value.stock <= 0) {
+    ui.toast(zh.value ? '该商品已售罄' : 'Sold out', 'error')
+    return
+  }
   /* 数量被钳制时明确告知（仅剩 N 件） */
   if (qty.value > maxQty.value) {
     ui.toast(zh.value ? `库存仅剩 ${maxQty.value} 件` : `Only ${maxQty.value} left in stock`, 'error')
@@ -444,11 +453,11 @@ const gmEta = () => {
             <span style="font-size:32px;font-weight:800;color:var(--plum);font-variant-numeric:tabular-nums">
               ${{ unit.toFixed(2) }}
             </span>
-            <span v-if="p.compare_at_price && p.compare_at_price > p.price_min" style="color:var(--gray);text-decoration:line-through">
+            <span v-if="variant && p.compare_at_price && p.compare_at_price > variant.price" style="color:var(--gray);text-decoration:line-through">
               ${{ (p.compare_at_price / 100).toFixed(2) }}
             </span>
-            <span v-if="p.compare_at_price && p.compare_at_price > p.price_min" class="save-pill">
-              {{ tt('SAVE', '省') }} ${{ ((p.compare_at_price - p.price_min) / 100).toFixed(2) }}
+            <span v-if="variant && p.compare_at_price && p.compare_at_price > variant.price" class="save-pill">
+              {{ tt('SAVE', '省') }} ${{ ((p.compare_at_price - variant.price) / 100).toFixed(2) }}
             </span>
             <span v-if="variant?.sku" class="pdp-sku" style="font-size:11.5px;color:var(--gray-light);font-weight:600">SKU {{ variant.sku }}</span>
           </div>
@@ -509,7 +518,10 @@ const gmEta = () => {
           <div style="display:flex;gap:12px;margin-bottom:14px;align-items:stretch">
             <div style="display:flex;align-items:center;border:1.5px solid var(--gray-light);border-radius:12px">
               <button class="qbtn" :disabled="qty <= 1" @click="qty = Math.max(1, qty - 1)">−</button>
-              <span style="width:36px;text-align:center;font-weight:600">{{ qty }}</span>
+              <input
+                class="pdp-qty-input" type="text" inputmode="numeric" :value="qty"
+                :aria-label="zh ? '数量' : 'Quantity'" @change="onQtyChange" @focus="$event.target.select()"
+              >
               <button class="qbtn" :disabled="qty >= maxQty" @click="qty = Math.min(maxQty, qty + 1)">＋</button>
             </div>
             <button class="btn btn-primary btn-lg" style="flex:1" :disabled="stockStatus === 'out' || adding" :class="{ loading: adding }" @click="addToCart">
@@ -617,9 +629,9 @@ const gmEta = () => {
     <div class="pdp-buybar">
       <div class="pdp-buybar-info">
         <Transition name="tick" mode="out-in">
-          <b :key="unit.toFixed(2)" class="pdp-buybar-price">${{ unit.toFixed(2) }}</b>
+          <b :key="unit.toFixed(2) + ':' + qty" class="pdp-buybar-price">{{ qty > 1 ? qty + ' × ' : '' }}${{ unit.toFixed(2) }}</b>
         </Transition>
-        <s v-if="p.compare_at_price && p.compare_at_price > p.price_min">${{ (p.compare_at_price / 100).toFixed(2) }}</s>
+        <s v-if="variant && p.compare_at_price && p.compare_at_price > variant.price">${{ (p.compare_at_price / 100).toFixed(2) }}</s>
         <span class="pdp-buybar-title">{{ p.title }}</span>
       </div>
       <button v-if="stockStatus === 'out'" class="btn btn-secondary" disabled>{{ zh ? '已售罄' : 'Sold out' }}</button>
@@ -658,6 +670,7 @@ const gmEta = () => {
 .vbtn.sel.out { border-color: var(--plum); background: var(--plum); color: #fff; box-shadow: 0 4px 14px rgba(109,46,70,.28); }
 .qbtn { width: 34px; height: 38px; font-size: 17px; font-weight: 600; color: var(--plum); }
 .qbtn:disabled { color: var(--gray-light); cursor: not-allowed; }
+.pdp-qty-input { width: 44px; border: none; background: transparent; text-align: center; font-family: inherit; font-size: 15px; font-weight: 600; color: var(--ink); outline: none; }
 .wl-btn { flex: none; width: 54px; border: 1.5px solid var(--gray-light); border-radius: 12px; background: #fff; color: var(--plum); font-size: 22px; line-height: 1; cursor: pointer; transition: all .15s; }
 .wl-btn:hover:not(:disabled) { border-color: var(--rose); background: var(--rose-pale); }
 .wl-btn.active { color: var(--rose); border-color: var(--rose); background: var(--rose-pale); }
@@ -723,6 +736,7 @@ const gmEta = () => {
   /* 触摸区：规格钮 ≥44px 高、数量器步进钮 44×44、缩放钮 44 */
   .vbtn { min-height: 44px; min-width: 44px; }
   .qbtn { width: 44px; height: 44px; }
+  .pdp-qty-input { font-size: 16px; }
   .pdp-zoom { width: 44px; height: 44px; }
   /* 到货通知：44px 触摸标准 + 16px 防 iOS 聚焦缩放 */
   .pdp-notify { height: 44px; font-size: 16px; }

@@ -7,26 +7,14 @@ import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { RMA_STATUS, ESTATUS, RMA_REASON, RMA_ERR, mapErr } from '../constants/trade'
 
 const rmas = ref([])
 const exch = ref([])
 const loaded = ref(false)
-/* RmaStatus 真值：0申请 1已批准 2标签已发 3在途 4已收货 5已退款 6已拒绝 7部分退款
- * 后台流转：approve 0→2（发退货标签）· receive 1/2/3→4（收货回补库存）· refund 4→5 */
-const RSTATUS = {
-  0: ['待审核', 'tag-pending'], 1: ['已批准', 'tag-paid'], 2: ['标签已发', 'tag-paid'],
-  3: ['退货运送中', 'tag-pending'], 4: ['已收货', 'tag-ship'], 5: ['已退款', 'tag-done'],
-  6: ['已拒绝', 'tag-error'], 7: ['部分退款', 'tag-done'],
-}
-/* RmaReason 真值（models/fulfill.py）：1尺码 2质量 3不喜欢 4损坏 5发错 6其他 */
-const RMA_REASON = { 1: '尺码不合', 2: '质量问题', 3: '不喜欢', 4: '损坏', 5: '发错货', 6: '其他' }
+/* 状态映射统一走 constants/trade.js：RMA_STATUS 退货 / ESTATUS 换货 / RMA_REASON 原因
+ * 后台流转：approve 0→2（生成退货标签）· reject 0→6 · receive 1/2/3→4（收货回补库存）· refund 4→5 */
 const reasonLabel = (r) => RMA_REASON[r.reason] || '—'
-/* Exchange 真值：0申请 1已批准待重发 2待买家补差价 3已重发 4已完成 5已拒绝
- * approve 0→(diff>0?2:1) · mark-paid 2→1 · ship 1→3 · complete 3→4 · reject 0→5 */
-const ESTATUS = {
-  0: ['待审核', 'tag-pending'], 1: ['已批准·待重发', 'tag-paid'], 2: ['待买家付差价', 'tag-pending'],
-  3: ['已重发', 'tag-ship'], 4: ['已完成', 'tag-done'], 5: ['已拒绝', 'tag-error'],
-}
 
 /* URL 同步：tab 主档位 + rs/es 两列表状态筛选（存 tab key 字符串）+ rp/ep 两分页 + 共用搜索词 q */
 const state = reactive({ tab: 'rma', rs: 'all', es: 'all', rp: 1, ep: 1, q: '' })
@@ -78,6 +66,13 @@ async function loadRmas() {
       rmaPages.value = Math.max(1, Math.ceil(all.length / RMA_PER_PAGE))
       rmas.value = all.slice((state.rp - 1) * RMA_PER_PAGE, state.rp * RMA_PER_PAGE)
     }
+    /* 页码越界钳制：筛选/数据收缩后当前页超出 → 回第 1 页重拉一次 */
+    if (state.rp > rmaPages.value && rmaPages.value >= 1) {
+      loadCnt.value--
+      state.rp = 1
+      loadRmas()
+      return
+    }
   } catch (e) { rmas.value = []; rmaTotal.value = 0; rmaPages.value = 1; toast('退货列表加载失败：' + (e.message || ''), 'error') }
   loadCnt.value--
 }
@@ -101,6 +96,13 @@ async function loadExch() {
     exch.value = d.items || []
     exTotal.value = d.total ?? 0
     exPages.value = d.pages ?? 1
+    /* 页码越界钳制：回第 1 页重拉一次 */
+    if (state.ep > exPages.value && exPages.value >= 1) {
+      loadCnt.value--
+      state.ep = 1
+      loadExch()
+      return
+    }
   } catch (e) {
     exch.value = []; exTotal.value = 0; exPages.value = 1
     toast('换货列表加载失败：' + (e.message || ''), 'error')
@@ -141,42 +143,47 @@ async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
   try {
+    /* 固化当前 tab/筛选快照：全部 await 完成后行内容与文件名仍按导出发起时的口径生成 */
+    const curTab = tab.value
+    const curRs = state.rs
+    const curEs = state.es
+    const rf = curTab === 'rma' ? (RTABS.find(([k]) => k === curRs)?.[2] ?? null) : null
+    const ef = curTab === 'exch' ? (ETABS.find(([k]) => k === curEs)?.[2] ?? null) : null
     const kw = state.q.trim()
     let all = [], overflow = false
-    if (tab.value === 'rma') {
-      const f = rmaFilter.value
-      if (f && f.length > 1) {
+    if (curTab === 'rma') {
+      if (rf && rf.length > 1) {
         /* 「待收货」组合筛选：两状态各拉前 100 合并（与列表口径一致，超 100 截断提示） */
         const qp = { per_page: 100 }
         if (kw) qp.q = kw
-        const res = await Promise.all(f.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))))
+        const res = await Promise.all(rf.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))))
         all = res.flatMap((d) => d.items || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
         overflow = res.some((d) => (d.total ?? 0) > (d.items || []).length)
       } else {
         const params = { page: 1, per_page: 100 }
-        if (f) params.status = f[0]
+        if (rf) params.status = rf[0]
         if (kw) params.q = kw
         const r = await fetchAll('/api/admin/trade/rmas', params, 100)
         all = r.all; overflow = r.overflow
       }
     } else {
       const params = { page: 1, size: 50 }
-      if (exFilter.value != null) params.status = exFilter.value
+      if (ef != null) params.status = ef
       if (kw) params.q = kw
       const r = await fetchAll('/api/admin/trade/exchanges', params, 50)
       all = r.all; overflow = r.overflow
     }
     if (overflow) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
     const rows = [['单号', '订单号', '邮箱', '状态', '金额', '原因', '创建时间'],
-      ...all.map((r) => tab.value === 'rma'
-        ? [r.rma_no, r.order_no, r.email, RSTATUS[r.status]?.[0], money(r.refund_amount), reasonLabel(r), dt(r.created_at)]
-        : [r.exchange_no, r.order_no, r.email, ESTATUS[r.status]?.[0], r.price_diff ? money(r.price_diff) : '', '', dt(r.created_at)])]
+      ...all.map((r) => curTab === 'rma'
+        ? [r.rma_no, r.order_no, r.email, RMA_STATUS[r.status]?.label, r.refund_amount != null ? money(r.refund_amount) : '—', reasonLabel(r), dt(r.created_at)]
+        : [r.exchange_no, r.order_no, r.email, ESTATUS[r.status]?.label, r.price_diff ? money(r.price_diff) : '', '', dt(r.created_at)])]
     const csv = rows.map((r) => r.map(csvCell).join(',')).join('\n')
-    const label = (tab.value === 'rma' ? RTABS.find(([k]) => k === state.rs)?.[1] : ETABS.find(([k]) => k === state.es)?.[1]) || '全部'
+    const label = (curTab === 'rma' ? RTABS.find(([k]) => k === curRs)?.[1] : ETABS.find(([k]) => k === curEs)?.[1]) || '全部'
     const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = `${tab.value === 'rma' ? 'rmas' : 'exchanges'}-${label}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `${curTab === 'rma' ? 'rmas' : 'exchanges'}-${label}-${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
     toast('已导出 ' + all.length + ' 条 ✓', 'success')
@@ -184,38 +191,59 @@ async function exportCsv() {
   exporting.value = false
 }
 
-/* 统一确认弹窗（替代原生 confirm）：pending 记录待发请求；refund 危险态、reject 需填拒绝原因 */
-const cfm = reactive({ open: false, title: '', body: '', danger: false, reasonLabel: '', reasonPlaceholder: '', confirmText: '确认', pending: null })
+/* 统一确认弹窗（替代原生 confirm）：pending 记录待发请求；refund/reject 危险态，reject 需填拒绝原因 */
+const cfm = reactive({ open: false, title: '', body: '', danger: false, reasonLabel: '', reasonPlaceholder: '', reasonRequired: false, confirmText: '确认', pending: null })
 const submitting = ref(false)
 function askRma(r, action) {
   let title = '', body = `退货单 ${r.rma_no}`, confirmText = '确认', danger = false
-  if (action === 'approve') { title = '批准退货'; body += ' · 将向客户发送退货标签邮件'; confirmText = '批准' }
+  let reasonLabel = '', reasonPlaceholder = ''
+  if (action === 'approve') { title = '批准退货'; body += ' · 将为该申请生成退货标签'; confirmText = '批准' }
   else if (action === 'receive') { title = '确认收货'; body += ` · 将回补库存 ×${r.qty}` }
   else if (action === 'refund') {
     title = '执行退款'; danger = true; confirmText = '确认退款'
-    body = `退款金额 ${money(r.refund_amount)} · 退货单号 ${r.rma_no} · 将回补库存，操作不可撤销`
+    /* refund_amount 按订单实付比例折算，审核前可能为 null（未折算） */
+    body += ' · 退款按订单实付比例折算（含税/运费/折扣分摊）'
+    if (r.refund_amount != null) body += ` · 本次退款 ${money(r.refund_amount)}`
+    if (r.unit_price != null) body += ` · 参考值 ${money(r.unit_price * r.qty)}`
+    body += ' · 将回补库存，操作不可撤销'
+  } else if (action === 'reject') {
+    title = '拒绝退货'; danger = true; confirmText = '确认拒绝'
+    body += ' · 拒绝后该申请终止，不可恢复'
+    reasonLabel = '拒绝原因'; reasonPlaceholder = '必填，如：超出售后期限 / 不符合退货政策'
   }
   cfm.title = title; cfm.body = body; cfm.danger = danger
-  cfm.reasonLabel = ''; cfm.reasonPlaceholder = ''; cfm.confirmText = confirmText
+  cfm.reasonLabel = reasonLabel; cfm.reasonPlaceholder = reasonPlaceholder
+  cfm.reasonRequired = action === 'reject'
+  cfm.confirmText = confirmText
   cfm.pending = { kind: 'rma', no: r.rma_no, action, label: title }
   cfm.open = true
 }
 function askExch(x, action) {
-  let title = '', confirmText = '确认'
-  if (action === 'approve') { title = '批准换货'; confirmText = '批准' }
-  else if (action === 'mark-paid') { title = '标记已付差价'; confirmText = '标记' }
+  let title = '', confirmText = '确认', body = `换货单 ${x.exchange_no}`
+  if (action === 'approve') {
+    title = '批准换货'; confirmText = '批准'
+    /* 按差价提示流向：>0 买家补差 / <0 退买家差价 / =0 无差价 */
+    const d = x.price_diff || 0
+    body += d > 0 ? ` · 买家需补差价 ${money(d)}` : d < 0 ? ` · 将退买家差价 ${money(-d)}` : ' · 无差价'
+  } else if (action === 'mark-paid') {
+    title = '标记已付差价'; confirmText = '标记'
+    if (x.price_diff > 0) body += ` · 应付差价 ${money(x.price_diff)}`
+  }
   else if (action === 'complete') { title = '完成换货'; confirmText = '完成' }
   else if (action === 'reject') { title = '拒绝换货'; confirmText = '确认拒绝' }
-  cfm.title = title; cfm.body = `换货单 ${x.exchange_no}`; cfm.danger = false
+  cfm.title = title; cfm.body = body; cfm.danger = false
   /* reject 走原因输入模式：confirm 回调把 reason 放进请求 body（ExchangeRejectRequest） */
   cfm.reasonLabel = action === 'reject' ? '拒绝原因' : ''
   cfm.reasonPlaceholder = action === 'reject' ? '如：库存不足 / 不符合换货政策' : ''
+  cfm.reasonRequired = false
   cfm.confirmText = confirmText
   cfm.pending = { kind: 'exch', no: x.exchange_no, action, label: title }
   cfm.open = true
 }
 async function doConfirm(reason) {
   if (submitting.value || !cfm.pending) return
+  /* RMA 拒绝原因必填 */
+  if (cfm.reasonRequired && !reason) { toast('请填写' + cfm.reasonLabel, 'error'); return }
   submitting.value = true
   const { kind, no, action, label } = cfm.pending
   try {
@@ -224,7 +252,7 @@ async function doConfirm(reason) {
     toast(`${label} ✓`, 'success')
     cfm.open = false
     load()
-  } catch (e) { toast(`${label}失败：` + (e.data?.detail || e.message), 'error') }
+  } catch (e) { toast(`${label}失败：` + (mapErr(e.data?.detail, RMA_ERR) || e.data?.detail || e.message), 'error') }
   submitting.value = false
 }
 
@@ -275,19 +303,18 @@ async function exShipConfirm() {
     >{{ label }}</button>
   </div>
 
-  <div v-if="tab === 'rma'" class="otab" style="flex-wrap:wrap">
+  <!-- 次级状态筛选：pill 形态（避免与主 tab 相邻双边框） -->
+  <div v-if="tab === 'rma'" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
     <button
       v-for="[k, label] in RTABS" :key="k"
-      :class="{ on: state.rs === k }"
-      style="background:none;border:none;cursor:pointer"
+      class="mtab" :class="{ on: state.rs === k }"
       @click="rmaTab(k)"
     >{{ label }}</button>
   </div>
-  <div v-else class="otab" style="flex-wrap:wrap">
+  <div v-else style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
     <button
       v-for="[k, label] in ETABS" :key="k"
-      :class="{ on: state.es === k }"
-      style="background:none;border:none;cursor:pointer"
+      class="mtab" :class="{ on: state.es === k }"
       @click="exTab(k)"
     >{{ label }}</button>
   </div>
@@ -312,10 +339,14 @@ async function exShipConfirm() {
               <b>{{ r.item_title }}</b> ×{{ r.qty }}
               <div style="color:var(--gray);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="reasonLabel(r)">{{ reasonLabel(r) }}</div>
             </td>
-            <td><b style="color:var(--plum)">{{ money(r.refund_amount) }}</b></td>
-            <td><span class="tag" :class="RSTATUS[r.status]?.[1]">{{ RSTATUS[r.status]?.[0] || '—' }}</span></td>
+            <td>
+              <b v-if="r.refund_amount != null" style="color:var(--plum)">{{ money(r.refund_amount) }}</b>
+              <span v-else style="color:var(--gray)" title="退款额按订单实付比例折算，审核后生成">—</span>
+            </td>
+            <td><span class="tag" :class="RMA_STATUS[r.status]?.cls">{{ RMA_STATUS[r.status]?.label || '—' }}</span></td>
             <td style="text-align:right;white-space:nowrap">
               <button v-if="r.status === 0" class="btn btn-primary btn-sm" @click="askRma(r, 'approve')">批准</button>
+              <button v-if="r.status === 0" class="btn btn-danger btn-sm" style="margin-left:4px" @click="askRma(r, 'reject')">拒绝</button>
               <button v-if="[1, 2, 3].includes(r.status)" class="btn btn-secondary btn-sm" @click="askRma(r, 'receive')">收货</button>
               <button v-if="r.status === 4" class="btn btn-primary btn-sm" @click="askRma(r, 'refund')">退款</button>
             </td>
@@ -335,14 +366,14 @@ async function exShipConfirm() {
             </td>
             <td><router-link class="ono" :to="{ path: '/order-detail', query: { no: x.order_no } }">{{ x.order_no }}</router-link></td>
             <td style="color:var(--gray)">{{ x.email }}</td>
-            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="x.item?.title">{{ x.item?.title || '—' }}</td>
+            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="x.item?.title">{{ x.item?.title || '—' }}<span v-if="x.qty"> ×{{ x.qty }}</span></td>
             <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="x.new_variant?.title">{{ x.new_variant?.title || '—' }}</td>
             <td>
               <b v-if="x.price_diff > 0" style="color:var(--error)">+{{ money(x.price_diff) }}</b>
               <b v-else-if="x.price_diff < 0" style="color:var(--success)">−{{ money(-x.price_diff) }}</b>
               <span v-else style="color:var(--gray)">—</span>
             </td>
-            <td><span class="tag" :class="ESTATUS[x.status]?.[1]">{{ ESTATUS[x.status]?.[0] || '—' }}</span></td>
+            <td><span class="tag" :class="ESTATUS[x.status]?.cls">{{ ESTATUS[x.status]?.label || '—' }}</span></td>
             <td style="text-align:right;white-space:nowrap">
               <template v-if="x.status === 0">
                 <button class="btn btn-primary btn-sm" @click="askExch(x, 'approve')">批准</button>
@@ -362,12 +393,14 @@ async function exShipConfirm() {
         :title="filtered ? '未找到匹配的' + (tab === 'rma' ? '退货' : '换货') : '暂无' + (tab === 'rma' ? '退货' : '换货') + '申请'"
         :sub="filtered ? '试试调整或清除筛选' : '客户提交后将显示在这里'"
       />
-      <!-- 换货分页：卡内贴表下缘 -->
-      <Pagination v-if="tab === 'exch'" embed :page="state.ep" :pages="exPages" :total="exTotal" unit="条" @go="state.ep = $event; loadExch()" />
+      <!-- 分页统一：两 tab 均卡内底部居中（带分割线） -->
+      <div v-if="tab === 'rma' && rmaPages > 1" class="pg-slot">
+        <Pagination :page="state.rp" :pages="rmaPages" :total="rmaTotal" unit="条" @go="state.rp = $event; loadRmas()" />
+      </div>
+      <div v-else-if="tab === 'exch' && exPages > 1" class="pg-slot">
+        <Pagination :page="state.ep" :pages="exPages" :total="exTotal" unit="条" @go="state.ep = $event; loadExch()" />
+      </div>
     </div>
-
-    <!-- 退货分页：卡片下方居中（与订单列表形态一致） -->
-    <Pagination v-if="tab === 'rma'" :page="state.rp" :pages="rmaPages" :total="rmaTotal" unit="条" @go="state.rp = $event; loadRmas()" />
   </template>
 
   <!-- 换货重发弹窗 -->
@@ -411,4 +444,7 @@ async function exShipConfirm() {
 /* 订单号深链：plum 色 hover 下划线 */
 .ono{color:var(--ink);text-decoration:none}
 .ono:hover{color:var(--plum);text-decoration:underline}
+/* 分页槽：卡内贴底居中（带上分割线） */
+.pg-slot{display:flex;justify-content:center;padding:12px 10px;border-top:1px solid var(--gray-light)}
+.pg-slot :deep(.pg){margin-top:0}
 </style>

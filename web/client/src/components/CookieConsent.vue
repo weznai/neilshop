@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { i18n } from '../i18n'
 import { useUiStore } from '../stores/ui'
 
@@ -25,6 +25,8 @@ function openSettings() {
 }
 function onOpenReq() { openSettings() }
 function onEsc(e) { if (e.key === 'Escape' && settings.value) settings.value = false }
+watch(settings, (v) => { ui.consentOpen = v })
+onUnmounted(() => { ui.consentOpen = false })
 onMounted(() => {
   window.addEventListener('gm:open-consent', onOpenReq)
   window.addEventListener('keydown', onEsc)

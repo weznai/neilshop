@@ -24,7 +24,7 @@ const UGC_STATUS = { 0: ['待审', 'tag-pending'], 1: ['已上架', 'tag-paid'],
 const errs = reactive({ reviews: false, faqs: false, articles: false, ugc: false })
 
 /* 评价分页：后端支持 page/size（size ≤100），响应含 total */
-const REV_SIZE = 100
+const REV_SIZE = 50
 const revPage = ref(1)
 const revTotal = ref(0)
 const revPages = computed(() => Math.max(1, Math.ceil(revTotal.value / REV_SIZE)))
@@ -55,7 +55,7 @@ function artTab(sv) { artStatus.value = sv; artPage.value = 1; loadArticles().ca
 
 /* UGC：服务端 status + page/size 分页（对齐评价模式，后端 admin_ugc 已支持）
  * 「待审 N」角标取响应 total；当前 tab 计数也用 total（后端缺 total 时回退当前页条数） */
-const UGC_SIZE = 100
+const UGC_SIZE = 50
 const ugcStatus = ref(0)          /* 0 待审 / 1 已上架 / 2 已拒绝 / null 全部 */
 const ugcPage = ref(1)
 const ugcTotal = ref(0)
@@ -67,7 +67,7 @@ const ugcAllChecked = computed(() => ugcPendingIds.value.length > 0 && ugcPendin
 function toggleUgcAll() { ugcSel.value = ugcAllChecked.value ? [] : [...ugcPendingIds.value] }
 function toggleUgcSel(id) {
   const i = ugcSel.value.indexOf(id)
-  if (i > -1) ugcSel.value.splice(1, 1)
+  if (i > -1) ugcSel.value.splice(i, 1)
   else ugcSel.value.push(id)
 }
 /* UGC 空态文案：已上架/已拒绝 tab→未匹配（待审保持“处理完”、全部=暂无） */
@@ -105,17 +105,24 @@ function faqGo(n) {
   if (n >= 1 && n <= faqPages.value) { faqPage.value = n; loadFaqs().catch(() => toast('FAQ 加载失败', 'error')) }
 }
 
-/* 商品标题映射：评价/UGC 只有 product_id，用商品列表解析标题（翻页拉全，最多 10 页 × 100，只在首载执行） */
+/* 商品标题映射：评价/UGC 只有 product_id，用商品列表解析标题（翻页拉全，最多 10 页 × 100）；
+ * 结果缓存 sessionStorage（带版本号），避免每次挂载全量拉取 */
+const PT_CACHE_KEY = 'admin.productTitles.v1'
 const productTitles = reactive({})
 const productName = (id) => productTitles[id] || ('商品 #' + id)
 async function loadProductTitles() {
+  try {
+    const cached = sessionStorage.getItem(PT_CACHE_KEY)
+    if (cached) { Object.assign(productTitles, JSON.parse(cached)); return }
+  } catch (_) { /* 缓存损坏则重拉 */ }
   for (let p = 1; p <= 10; p++) {
     let rows
     try { rows = (await req('GET', `/api/admin/catalog/products?page=${p}&size=100`)).items || [] }
     catch (_) { return /* 映射缺失只影响展示名 */ }
     for (const it of rows) productTitles[it.id] = it.title
-    if (rows.length < 100) return
+    if (rows.length < 100) break
   }
+  try { sessionStorage.setItem(PT_CACHE_KEY, JSON.stringify(productTitles)) } catch (_) { /* 存储不可用忽略 */ }
 }
 
 /* 评价图片 lightbox */
@@ -473,12 +480,12 @@ async function saveArticle() {
     </div>
   </div>
 
-  <div class="otab" style="display:flex;gap:4px;border-bottom:1.5px solid var(--gray-light);margin-bottom:14px">
+  <div class="otab">
     <button
       v-for="[k, label] in [['reviews', `评价 (${revTotal})`], ['ugc', `UGC (待审 ${ugcPending})`], ['faqs', `FAQ (${faqTotal})`], ['articles', `博客 (${artTotal})`]]"
       :key="k"
-      style="padding:9px 16px;font-size:13.5px;font-weight:600;border:none;background:none;cursor:pointer"
-      :style="{ color: tab === k ? 'var(--plum)' : 'var(--gray)', borderBottom: tab === k ? '2.5px solid var(--plum)' : '2.5px solid transparent' }"
+      :class="{ on: tab === k }"
+      style="background:none;border:none;cursor:pointer"
       @click="setTab(k)"
     >{{ label }}</button>
   </div>
@@ -503,12 +510,10 @@ async function saveArticle() {
           <option :value="0">全部商品</option>
           <option v-for="(title, id) in productTitles" :key="id" :value="Number(id)">{{ title }}</option>
         </select>
-        <template v-if="revSel.length">
-          <span style="font-size:12.5px;color:var(--plum)">已选 {{ revSel.length }} 条</span>
-          <button class="btn btn-primary btn-sm" @click="bulkReviews('approve')">✓ 批量通过</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="bulkReviews('reject')">✗ 批量驳回</button>
-          <button class="btn btn-ghost btn-sm" @click="revSel = []">取消</button>
-        </template>
+        <span v-if="revSel.length" style="font-size:12.5px;color:var(--plum)">已选 {{ revSel.length }} 条</span>
+        <button class="btn btn-primary btn-sm" :disabled="!revSel.length" @click="bulkReviews('approve')">✓ 批量通过</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="!revSel.length" @click="bulkReviews('reject')">✗ 批量驳回</button>
+        <button class="btn btn-ghost btn-sm" :disabled="!revSel.length" @click="revSel = []">取消</button>
       </div>
     </div>
     <div v-for="r in reviews" :key="r.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
@@ -555,18 +560,16 @@ async function saveArticle() {
       <div class="filter-bar">
         <button
           v-for="[sv, sl] in [[0, '待审'], [1, '已上架'], [2, '已拒绝'], [null, '全部']]" :key="String(sv)"
-          class="btn btn-sm" :class="ugcStatus === sv ? 'btn-primary' : 'btn-ghost'"
+          class="mtab" :class="{ on: ugcStatus === sv }"
           @click="ugcTab(sv)"
         >{{ sl }}<template v-if="ugcStatus === sv">（{{ ugcTotal }}）</template></button>
         <label v-if="ugcStatus === 0" style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--gray);cursor:pointer" title="勾选当前页全部待审 UGC">
           <input type="checkbox" :checked="ugcAllChecked" :disabled="!ugcPendingIds.length" style="width:15px;height:15px" @change="toggleUgcAll"> 全选
         </label>
-        <template v-if="ugcSel.length">
-          <span style="font-size:12.5px;color:var(--plum)">已选 {{ ugcSel.length }} 条</span>
-          <button class="btn btn-primary btn-sm" @click="bulkUgc('approve')">✓ 批量通过</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="bulkUgc('reject')">✗ 批量驳回</button>
-          <button class="btn btn-ghost btn-sm" @click="ugcSel = []">取消</button>
-        </template>
+        <span v-if="ugcSel.length" style="font-size:12.5px;color:var(--plum)">已选 {{ ugcSel.length }} 条</span>
+        <button class="btn btn-primary btn-sm" :disabled="!ugcSel.length" @click="bulkUgc('approve')">✓ 批量通过</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="!ugcSel.length" @click="bulkUgc('reject')">✗ 批量驳回</button>
+        <button class="btn btn-ghost btn-sm" :disabled="!ugcSel.length" @click="ugcSel = []">取消</button>
       </div>
     </div>
     <div v-for="u in ugc" :key="u.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
@@ -651,7 +654,7 @@ async function saveArticle() {
       <div class="filter-bar">
         <button
           v-for="[sv, sl] in [[null, '全部'], ['published', '已发布'], ['draft', '草稿']]" :key="String(sv)"
-          class="btn btn-sm" :class="artStatus === sv ? 'btn-primary' : 'btn-ghost'"
+          class="mtab" :class="{ on: artStatus === sv }"
           @click="artTab(sv)"
         >{{ sl }}</button>
         <span class="item-cnt">{{ artTotal }} 篇</span>

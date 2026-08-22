@@ -13,6 +13,8 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -96,6 +98,7 @@ const placing = ref(false)
 /* 礼物选项（PlaceRequest.gift_flag / gift_message） */
 const gift = ref(false)
 const giftMsg = ref('')
+const saveAddr = ref(true)
 
 const pv = ref(null)
 const pvBusy = ref(false)
@@ -164,16 +167,18 @@ async function applyCode() {
   appliedCode.value = c
   await runPreview()
   if (pv.value && pv.value.code_valid) {
+    try { localStorage.setItem('gm_applied_code', c) } catch (_) { /* 隐私模式 */ }
     ui.toast(pv.value.free_shipping
       ? i18n.t('promo.appliedShip', c)
       : i18n.t('promo.appliedSave', c, money(pv.value.code_discount).slice(1)), 'success')
   } else if (pv.value) {
+    try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
     ui.toast(reasonText(pv.value.code_reason), 'error')
   } else if (!pvError.value) {
     ui.toast(i18n.t('promo.verifyFail'), 'error')
   }
 }
-function removeCode() { appliedCode.value = null; code.value = ''; runPreview() }
+function removeCode() { appliedCode.value = null; code.value = ''; try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ } runPreview() }
 
 async function applyGiftCard() {
   const c = (gcInput.value || '').trim().toUpperCase()
@@ -246,9 +251,16 @@ function validate() {
   if (!f.fname.trim()) e.fname = true
   if (!f.addr1.trim()) e.addr1 = true
   if (!f.city.trim()) e.city = true
+  if (country.value === 'US' && !US_STATES.includes((f.state || '').trim().toUpperCase())) e.state = true
   if (!(f.zip || '').trim()) e.zip = true
+  else if (country.value === 'US' && !/^\d{5}(-\d{4})?$/.test(f.zip.trim())) e.zip = true
   errors.value = e
-  return Object.keys(e).length === 0
+  const ok = Object.keys(e).length === 0
+  if (!ok) {
+    const el = document.querySelector('.field.error')
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+  return ok
 }
 
 function mapPlaceError(e) {
@@ -272,6 +284,23 @@ function utmOf() {
   return Object.keys(out).length ? out : null
 }
 
+async function saveAddrBook() {
+  const f = form.value
+  try {
+    await req('POST', '/api/account/addresses', {
+      full_name: (f.fname + ' ' + f.lname).trim(),
+      line1: f.addr1.trim(),
+      line2: f.addr2.trim() || null,
+      city: f.city.trim(),
+      state: (f.state || '').trim().toUpperCase() || null,
+      zip: (f.zip || '').trim(),
+      country: country.value,
+      phone: f.phone || null,
+      is_default: false,
+    })
+  } catch (_) { /* 保存失败静默：不影响下单 */ }
+}
+
 async function place() {
   if (placing.value) return
   if (!validate()) { ui.toast(i18n.t('co.incomplete'), 'error'); return }
@@ -279,9 +308,13 @@ async function place() {
   if (appliedCode.value && pv.value && !pv.value.code_valid) {
     ui.toast(reasonText(pv.value.code_reason), 'error'); return
   }
+  if (itemsView.value.some((i) => (i.stock || 0) <= 0)) {
+    ui.toast(tt('Some items are out of stock — please remove them first', '部分商品缺货，请先移除后再下单'), 'error')
+    return
+  }
   placing.value = true
   try {
-    await cart.refresh() /* 下单前拉平服务端车 */
+    try { await cart.refresh() } catch (_) { /* 拉取失败：退回本地 items 判空 */ }
     if (!cart.items.length) throw Object.assign(new Error('empty'), { data: { detail: 'empty_cart' } })
     const f = form.value
     const body = {
@@ -305,19 +338,28 @@ async function place() {
     const utm = utmOf()
     if (utm) body.utm = utm
     const d = await req('POST', '/api/checkout/place', body)
+    if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) await saveAddrBook()
     /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock） */
     const useMock = paySel.value === 'mock'
     try {
       const ib = { order_no: d.order_no }
       if (paySel.value && paySel.value !== 'mock' && paySel.value !== payDefault.value) ib.provider = paySel.value
       const intent = await req('POST', '/api/payments/create-intent', ib)
-      /* hosted checkout：非 mock 通道返回 redirect_url 时跳转 provider 收银台（替代直接进 success） */
+      /* hosted checkout：非 mock 通道返回 redirect_url 时跳转 provider 收银台；
+         跳转后 3s 未离页则兜底恢复按钮并提示（/success 页有待支付按钮可手动重试） */
       if (!useMock && intent && intent.redirect_url) {
         window.location.href = intent.redirect_url
-        await new Promise(() => {}) /* 页面即将跳转：挂起以保持下单 loading 态，阻止后续路由跳转 */
+        await new Promise((r) => setTimeout(r, 3000))
+        placing.value = false
+        ui.toast(tt('Redirecting to payment… if nothing happened, please retry', '正在跳转支付…若未打开请重试'), 'error')
+        router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
+        return
       }
       if (useMock) await req('POST', '/api/payments/mock-pay', { order_no: d.order_no, succeed: true })
-    } catch (_) { /* /success 页保留待支付提示 + 支付按钮 */ }
+    } catch (e) {
+      const m = (e.data && e.data.detail) || e.message || ''
+      ui.toast((m ? m + ' · ' : '') + tt('Payment not completed — you can pay from your order', '支付未完成，可到订单中手动支付'), 'error')
+    }
     router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
   } catch (e) {
     ui.toast(mapPlaceError(e), 'error')
@@ -347,12 +389,12 @@ onMounted(async () => {
 const itemsView = computed(() => {
   if (pv.value && pv.value.items) {
     return pv.value.items.map((l) => ({
-      id: l.variant_id, img: l.image, qty: l.qty,
+      id: l.variant_id, img: l.image, qty: l.qty, stock: l.stock,
       title: (l.title || '').split(' · ')[0], variant: (l.title || '').split(' · ')[1] || '',
       lineC: l.line_subtotal,
     }))
   }
-  return cart.items.map((i) => ({ id: i.vid, img: i.img, qty: i.qty, title: i.title, variant: i.variant, lineC: (i.priceC || Math.round(i.price * 100)) * i.qty }))
+  return cart.items.map((i) => ({ id: i.vid, img: i.img, qty: i.qty, stock: i.stock, title: i.title, variant: i.variant, lineC: (i.priceC || Math.round(i.price * 100)) * i.qty }))
 })
 const totalC = computed(() => (pv.value && pv.value.grand_total != null
   ? pv.value.grand_total
@@ -366,8 +408,8 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
 
       <div v-if="!cart.items.length" style="text-align:center;padding:60px 0;color:var(--gray)">
         <div style="font-size:44px;margin-bottom:10px">🛒</div>
-        {{ i18n.t('co.empty') }}
-        <router-link to="/store" style="color:var(--plum)">{{ i18n.t('cart.shop') }}</router-link>
+        <p style="margin-bottom:18px">{{ i18n.t('co.empty') }}</p>
+        <router-link class="btn btn-primary" to="/store">{{ i18n.t('cart.shop') }}</router-link>
       </div>
 
       <div v-else class="grid-m-1" style="display:grid;grid-template-columns:1.5fr 1fr;gap:32px;align-items:start">
@@ -407,25 +449,30 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
             <div class="field"><label>{{ i18n.t('co.addr2') }}</label><input v-model="form.addr2" class="input" autocomplete="address-line2"></div>
             <div class="co-3col">
               <div class="field" :class="{ error: errors.city }"><label>{{ i18n.t('co.city') }} *</label><input v-model="form.city" class="input" :class="{ error: errors.city }" autocomplete="address-level2"></div>
-              <div class="field">
-                <label>{{ country === 'US' ? i18n.t('co.state') : i18n.t('co.stateProv') }}</label>
-                <select v-if="country === 'US'" v-model="form.state" class="input">
+              <div class="field" :class="{ error: errors.state }">
+                <label>{{ country === 'US' ? i18n.t('co.state') : i18n.t('co.stateProv') }}<template v-if="country === 'US'"> *</template></label>
+                <select v-if="country === 'US'" v-model="form.state" class="input" :class="{ error: errors.state }">
                   <option value="">—</option>
                   <option v-for="s in US_STATES" :key="s" :value="s">{{ s }}</option>
                 </select>
                 <input v-else v-model="form.state" class="input" placeholder="ON">
+                <div v-if="country === 'US'" class="field-msg">{{ tt('Select a state', '请选择州') }}</div>
               </div>
               <div class="field" :class="{ error: errors.zip }"><label>{{ i18n.t('co.zip') }} *</label><input v-model="form.zip" class="input" :class="{ error: errors.zip }" autocomplete="postal-code"></div>
             </div>
             <div class="co-2col">
               <div class="field">
                 <label>{{ i18n.t('co.country') }}</label>
-                <select v-model="country" class="input">
+                <select v-model="country" class="input" @change="form.state = ''">
                   <option v-for="c in COUNTRIES" :key="c" :value="c">{{ c }}</option>
                 </select>
               </div>
               <div class="field"><label>{{ i18n.t('co.phone') }}</label><input v-model="form.phone" class="input" type="tel" autocomplete="tel"></div>
             </div>
+            <label v-if="auth.isLoggedIn" style="display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer;margin:-6px 0 0">
+              <input v-model="saveAddr" type="checkbox" style="width:16px;height:16px">
+              {{ tt('Save this address to my address book', '保存到我的地址簿') }}
+            </label>
             </template>
           </div>
 
@@ -523,7 +570,10 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
                   <img :src="i.img" :alt="i.title" style="width:48px;height:48px;border-radius:8px;object-fit:cover" loading="lazy" @error="imgFallback">
                   <span style="position:absolute;top:-6px;right:-6px;background:var(--ink);color:#fff;font-size:10px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center">{{ i.qty }}</span>
                 </div>
-                <div style="flex:1;min-width:0;font-size:13px"><b>{{ i.title }}</b><div style="color:var(--gray);font-size:12px">{{ i.variant }}</div></div>
+                <div style="flex:1;min-width:0;font-size:13px">
+                  <b>{{ i.title }}</b><span v-if="(i.stock || 0) <= 0" style="color:var(--error);font-size:11px;font-weight:700;margin-left:6px">{{ tt('Out of stock', '缺货') }}</span>
+                  <div style="color:var(--gray);font-size:12px">{{ i.variant }}</div>
+                </div>
                 <b style="font-size:13px;font-variant-numeric:tabular-nums">{{ money(i.lineC) }}</b>
               </div>
             </div>
@@ -563,10 +613,12 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
           <div v-if="shipHint" class="ship-bar" style="margin-top:12px;font-size:12.5px" v-html="shipHint"></div>
           <div style="display:flex;justify-content:space-between;font-weight:800;font-size:17px;margin:14px 0;padding-top:12px;border-top:1px solid var(--gray-light)">
             <span>{{ i18n.t('cart.total') }}</span>
-            <span style="color:var(--plum);font-variant-numeric:tabular-nums">{{ money(totalC) }}</span>
+            <span style="color:var(--plum);font-variant-numeric:tabular-nums">
+              {{ money(totalC) }}<span v-if="!pv" style="font-size:11px;color:var(--gray);font-weight:400;margin-left:4px">{{ tt('≈ estimate, final at checkout', '≈ 估算，以下单为准') }}</span>
+            </span>
           </div>
           <button class="btn btn-primary btn-block btn-lg" :class="{ loading: placing }" :disabled="placing" @click="place">
-            {{ placing ? '' : i18n.t('co.place') }}
+            {{ placing ? '' : i18n.t('co.place') + ' · ' + money(totalC) }}
           </button>
           <p style="font-size:11.5px;color:var(--gray);margin-top:10px;text-align:center">
             {{ i18n.t('co.termsPre') }}

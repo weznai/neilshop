@@ -4,12 +4,19 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { API_BASE, fmtDetail, req } from '../api/client'
 import { toast } from '../composables/toast'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const route = useRoute()
 const router = useRouter()
 /* 响应式 pid：新建保存成功后 router.replace 挂 id，此处随之变为编辑态
- * （此前一次性快照导致重复保存会重复建品、变体区不出现） */
-const pid = computed(() => (route.query.id ? parseInt(route.query.id, 10) : null))
+ * （此前一次性快照导致重复保存会重复建品、变体区不出现）
+ * 非法 id（NaN / <1）不静默落入新建模式：onMounted/watch 中 toast 后跳回 /products */
+const pid = computed(() => {
+  if (route.query.id === undefined) return null
+  const n = parseInt(Array.isArray(route.query.id) ? route.query.id[0] : route.query.id, 10)
+  return Number.isFinite(n) && n >= 1 ? n : null
+})
+const idInvalid = computed(() => route.query.id !== undefined && pid.value === null)
 /* 复制模式：?copy={id} 载入源商品作底稿，但保持新建态（不设 id、slug 置空、定时清空） */
 const copyId = computed(() => (route.query.copy ? parseInt(route.query.copy, 10) : null))
 
@@ -28,21 +35,38 @@ const loadedSchedISO = ref(null)
 const prodSched = ref(false)
 const editing = ref(null)
 
-/* ===== 未保存变更跟踪：表单+定时一份基线；变体为即时保存，单独重置基线 ===== */
+/* ===== 图集草稿：textarea 绑定 galText 原文（超 8 行保留不截断），解析结果同步 form.images
+ * 超限仅 toast 警告，保存时才截断到 8 张并提示数量 ===== */
+const imgLines = (t) => (t || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)
+const galText = ref('')
+const galLines = computed(() => imgLines(galText.value))
+function setImages(arr) { form.images = arr; galText.value = arr.join('\n') }
+watch(galText, () => { form.images = imgLines(galText.value) })
+watch(() => galLines.value.length, (n, o) => { if (n > 8 && (o === undefined || o <= 8)) toast('最多 8 张，超出部分将被忽略', 'error') })
+
+/* ===== 未保存变更跟踪：表单+定时一份基线；变体为即时保存，单独重置基线
+ * 草稿亦纳入：newVar / 变体内联编辑中 / 翻译弹窗草稿任一非空即 dirty ===== */
 const dirty = ref(false)
 const formLoaded = ref(false)
 const formSnap = ref('')
 const varSnap = ref('')
 const snapForm = () => JSON.stringify([form, schedAt.value])
 const snapVars = () => JSON.stringify(variants.value)
-function markClean() { formSnap.value = snapForm(); varSnap.value = snapVars(); dirty.value = false }
+function draftsDirty() {
+  if (editing.value) return true
+  if (newVar.option1.trim() || imgLines(newVar.imgs).length) return true
+  if (trDlg.value && (trForm.title.trim() || trForm.subtitle.trim() || trForm.description_md.trim())) return true
+  return false
+}
+function markClean() { formSnap.value = snapForm(); varSnap.value = snapVars(); dirty.value = draftsDirty() }
 function markVarsClean() { varSnap.value = snapVars(); checkDirty() }
 function checkDirty() {
   if (!formLoaded.value) return /* 加载期间触发的 watch 一律跳过，防首载误判 dirty */
-  dirty.value = snapForm() !== formSnap.value || snapVars() !== varSnap.value
+  dirty.value = snapForm() !== formSnap.value || snapVars() !== varSnap.value || draftsDirty()
 }
 watch([form, schedAt], checkDirty, { deep: true })
 watch(variants, checkDirty, { deep: true })
+/* 草稿（newVar/editing/trForm）的 dirty 监听在 trForm 声明后注册（见多语言区块） */
 
 /* ===== 离开拦截：SPA 内弹 ConfirmDialog 暂停导航；刷新/关页走原生 beforeunload ===== */
 const leaveDlg = ref(false)
@@ -111,13 +135,13 @@ async function onPickFile(e) {
   }
   finally { uploading.value = false }
 }
-/* 回填：主图覆盖；图集/变体图片为追加一行（各守上限，文案与保存校验一致） */
+/* 回填：主图覆盖；图集/变体图片为追加一行（各守上限，文案与保存校验一致）；图集写 galText 保持草稿同步 */
 function applyUpUrl(url) {
   const t = upTarget.value
   if (t === 'hero') form.hero_image = url
   else if (t === 'gallery') {
-    if (form.images.length >= 8) { toast('图集最多 8 张', 'error'); return }
-    form.images = [...form.images, url]
+    if (galLines.value.length >= 8) { toast('图集最多 8 张', 'error'); return }
+    galText.value = appendLine(galText.value, url)
   } else if (t === 'newVar') {
     if (imgLines(newVar.imgs).length >= 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
     newVar.imgs = appendLine(newVar.imgs, url)
@@ -169,30 +193,56 @@ async function loadVariants(id) {
   return all
 }
 
+/* 编辑/复制加载态：期间表单整体禁用 + 覆盖层，防止用户对着默认假值保存 */
+const loading = ref(false)
+const loadFailed = ref(false)
+const loadErrMsg = ref('')
+/* 服务端商品回填（GET 载入与 PUT 保存成功后共用，回显规范化结果） */
+function applyProduct(p) {
+  Object.assign(form, {
+    slug: p.slug, title: p.title, subtitle: p.subtitle || '',
+    price_min: p.price_min, price_max: p.price_max, compare_at_price: p.compare_at_price,
+    description_md: p.description_md || '', hero_image: p.hero_image || '',
+    video_url: p.video_url || '',
+    category_id: p.category_id, tags: p.tags || [],
+    is_new: !!p.is_new, is_best_seller: !!p.is_best_seller,
+  })
+  setImages((p.images || []).slice(0, 8))
+  prodSched.value = !!p.scheduled
+  loadedSchedISO.value = p.scheduled ? new Date(asUTC(p.published_at)).toISOString() : null
+  schedAt.value = loadedSchedISO.value ? fmtLocal(new Date(asUTC(p.published_at))) : ''
+}
+
 async function loadProduct(id) {
   formLoaded.value = false /* 重载期间暂停 dirty 判定，防切换编辑时误报未保存 */
+  loading.value = true
+  loadFailed.value = false
   try {
     const p = await req('GET', '/api/admin/catalog/products/' + id)
-    Object.assign(form, {
-      slug: p.slug, title: p.title, subtitle: p.subtitle || '',
-      price_min: p.price_min, price_max: p.price_max, compare_at_price: p.compare_at_price,
-      description_md: p.description_md || '', hero_image: p.hero_image || '',
-      images: (p.images || []).slice(0, 8), video_url: p.video_url || '',
-      category_id: p.category_id, tags: p.tags || [],
-      is_new: !!p.is_new, is_best_seller: !!p.is_best_seller,
-    })
-    prodSched.value = !!p.scheduled
-    loadedSchedISO.value = p.scheduled ? new Date(asUTC(p.published_at)).toISOString() : null
-    schedAt.value = loadedSchedISO.value ? fmtLocal(new Date(asUTC(p.published_at))) : ''
+    applyProduct(p)
     variants.value = await loadVariants(id)
     formLoaded.value = true
     markClean()
     loadTranslations(id)
-  } catch (e) { toast('商品加载失败：' + (e.message || ''), 'error') }
+  } catch (e) {
+    loadErrMsg.value = e.message || '请求失败'
+    loadFailed.value = true
+    /* formLoaded 仍置 true 并以当前值为基线：保证此后 dirty 跟踪生效 */
+    formLoaded.value = true
+    markClean()
+    toast('商品加载失败：' + (e.message || ''), 'error')
+  } finally { loading.value = false }
 }
+function retryLoad() { if (pid.value) loadProduct(pid.value) }
 
 onMounted(async () => {
   window.addEventListener('beforeunload', onUnload)
+  /* 非法 id（NaN/<1）：报错并跳回列表，不静默落入新建模式 */
+  if (idInvalid.value) {
+    toast('无效的商品 id：' + route.query.id, 'error')
+    router.replace('/products')
+    return
+  }
   try {
     cats.value = await req('GET', '/api/admin/catalog/categories')
     if (!pid.value && cats.value.length && !cats.value.some((c) => c.id === form.category_id)) form.category_id = cats.value[0].id
@@ -202,24 +252,30 @@ onMounted(async () => {
   else { formLoaded.value = true; markClean() }
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', onUnload))
-/* 新建→编辑切换（同路由 query 变化）时重新拉取 */
-watch(pid, (np, op) => { if (np && np !== op) loadProduct(np) })
+/* 新建→编辑切换（同路由 query 变化）时重新拉取；id 变非法则同样拦截 */
+watch(pid, (np, op) => {
+  if (np && np !== op) loadProduct(np)
+  else if (idInvalid.value) { toast('无效的商品 id：' + route.query.id, 'error'); router.replace('/products') }
+})
 
 /* 复制模式载入：变体/翻译剥 id 暂存，待新商品保存成功后逐个重建（sku 依新 slug 生成） */
 const copyVars = ref([])
 const copyTrs = ref([])
 async function loadCopy(id) {
   formLoaded.value = false
+  loading.value = true
+  loadFailed.value = false
   try {
     const p = await req('GET', '/api/admin/catalog/products/' + id)
     Object.assign(form, {
       slug: '', title: p.title, subtitle: p.subtitle || '',
       price_min: p.price_min, price_max: p.price_max, compare_at_price: p.compare_at_price,
       description_md: p.description_md || '', hero_image: p.hero_image || '',
-      images: (p.images || []).slice(0, 8), video_url: p.video_url || '',
+      video_url: p.video_url || '',
       category_id: p.category_id, tags: p.tags || [],
       is_new: !!p.is_new, is_best_seller: !!p.is_best_seller,
     })
+    setImages((p.images || []).slice(0, 8))
     if (cats.value.length && !cats.value.some((c) => c.id === p.category_id)) form.category_id = cats.value[0].id
     /* 定时/状态置草稿：schedAt 清空即不随 POST 提交 published_at */
     prodSched.value = false
@@ -235,10 +291,18 @@ async function loadCopy(id) {
     catch (_) { copyTrs.value = [] }
     formLoaded.value = true
     markClean()
-  } catch (e) { toast('源商品加载失败：' + (e.message || ''), 'error') }
+  } catch (e) {
+    toast('源商品加载失败：' + (e.message || ''), 'error')
+    formLoaded.value = true
+    markClean()
+  } finally { loading.value = false }
 }
 
+/* URL 前缀校验：主图/图集/变体图须 http(s):// 开头（空值放行） */
+const badUrl = (u) => !!u && !/^https?:\/\//i.test(u)
+
 async function save() {
+  if (loading.value) return
   if (!form.slug || !form.title) { toast('slug 与标题必填', 'error'); return }
   /* 新建时 slug 格式：小写字母/数字/连字符（如 nova-set） */
   if (!pid.value && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(form.slug)) { toast('slug 格式无效：仅小写字母、数字与连字符（如 nova-set）', 'error'); return }
@@ -258,6 +322,11 @@ async function save() {
     toast(`价格倒挂：最高价（${form.price_max} 分）不能低于最低价（${form.price_min} 分），请修正后再保存`, 'error')
     return
   }
+  if (badUrl(form.hero_image)) { toast('主图 URL 需以 http:// 或 https:// 开头', 'error'); return }
+  const gi = form.images.findIndex(badUrl)
+  if (gi >= 0) { toast(`图集第 ${gi + 1} 张 URL 需以 http:// 或 https:// 开头`, 'error'); return }
+  /* 图集超 8 张：保存时才截断，并提示忽略数量 */
+  if (form.images.length > 8) toast(`图集最多 8 张，已忽略超出部分（${form.images.length - 8} 张）`)
   busy.value = true
   const body = { ...form, images: form.images.slice(0, 8) }
   if (pid.value) delete body.slug
@@ -266,11 +335,13 @@ async function save() {
   if (iso !== loadedSchedISO.value) body.published_at = iso
   try {
     if (pid.value) {
-      await req('PUT', '/api/admin/catalog/products/' + pid.value, body)
+      const d = await req('PUT', '/api/admin/catalog/products/' + pid.value, body)
       if (body.published_at !== undefined) {
         loadedSchedISO.value = body.published_at
         prodSched.value = body.published_at ? new Date(body.published_at) > new Date() : false
       }
+      /* PUT 响应体回填表单（服务端规范化回显）后再 markClean */
+      if (d && d.id) applyProduct(d)
       toast('保存成功 ✓', 'success')
       markClean()
     } else {
@@ -278,9 +349,11 @@ async function save() {
       /* 复制模式：新商品落库后重建变体与翻译（逐个调用；失败项汇总提示手动补录） */
       if (copyVars.value.length || copyTrs.value.length) {
         const newSlug = p.slug || form.slug
-        let vok = 0, vfail = 0, tok = 0, tfail = 0
+        let vok = 0, vfail = 0, tok = 0, tfail = 0, trunc = 0
         for (const v of copyVars.value) {
-          const sku = buildSku(newSlug, v.option1_value, v.option2_value)
+          const fullSku = rawSku(newSlug, v.option1_value, v.option2_value)
+          if (fullSku.length > 64) trunc++
+          const sku = fullSku.slice(0, 64)
           try { await req('POST', `/api/admin/catalog/products/${p.id}/variants`, { sku, option1_value: v.option1_value, option2_value: v.option2_value, price: v.price, stock: v.stock, images: v.images || [] }); vok++ }
           catch (_) { vfail++ }
         }
@@ -289,6 +362,7 @@ async function save() {
           catch (_) { tfail++ }
         }
         const fails = vfail + tfail
+        if (trunc) toast(`${trunc} 个变体 SKU 超长，已截断到 64 字符`, 'error')
         if (fails) toast(`副本重建：变体 ${vok}/${copyVars.value.length}、翻译 ${tok}/${copyTrs.value.length}，${fails} 项失败请手动补录`, 'error')
         copyVars.value = []
         copyTrs.value = []
@@ -308,7 +382,11 @@ async function addVariant() {
   if (!Number.isInteger(newVar.weight_gram) || newVar.weight_gram < 0) { toast('重量需为非负整数（单位：克）', 'error'); return }
   const imgs = imgLines(newVar.imgs)
   if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
-  const sku = buildSku(form.slug, newVar.option1, newVar.option2)
+  const vi = imgs.findIndex(badUrl)
+  if (vi >= 0) { toast(`变体图片第 ${vi + 1} 行 URL 需以 http:// 或 https:// 开头`, 'error'); return }
+  const fullSku = rawSku(form.slug, newVar.option1, newVar.option2)
+  if (fullSku.length > 64) toast(`SKU 超长（${fullSku.length} 字符），已截断到 64 字符`, 'error')
+  const sku = fullSku.slice(0, 64)
   try {
     /* weight_gram 仅创建时支持（VariantUpdateIn 无此字段） */
     await req('POST', `/api/admin/catalog/products/${pid.value}/variants`, {
@@ -341,6 +419,8 @@ async function saveEdit() {
   if (!Number.isFinite(ed.price) || !Number.isFinite(ed.safety) || ed.price < 0 || ed.safety < 0) { toast('价格与安全库存需为非负数字', 'error'); return }
   const imgs = imgLines(ed.imgs)
   if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
+  const ei = imgs.findIndex(badUrl)
+  if (ei >= 0) { toast(`变体图片第 ${ei + 1} 行 URL 需以 http:// 或 https:// 开头`, 'error'); return }
   try {
     /* images 仅在有输入或原有图时提交：后端缺省/null=保持原值、[]=清空，避免改价时误清图 */
     const body = { price: ed.price, safety_stock: ed.safety }
@@ -354,10 +434,30 @@ async function saveEdit() {
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
-/* 变体图片 textarea 解析：非空行 → URL 数组（契约 images ≤6 张） */
-const imgLines = (t) => (t || '').split(/\n+/).map((s) => s.trim()).filter(Boolean)
-/* SKU 生成：slug-option1[-option2]（option2 有值才拼，防同 option1 不同 option2 撞码）；parts join 避免拼出 undefined */
-const buildSku = (...parts) => parts.filter((p) => p && String(p).trim()).join('-').toUpperCase().replace(/\s+/g, '-').slice(0, 64)
+/* SKU 生成：slug-option1[-option2]（option2 有值才拼，防同 option1 不同 option2 撞码）；parts join 避免拼出 undefined
+ * rawSku 保留全长用于超长提示，调用处 slice(0,64) 截断（与后端一致） */
+const rawSku = (...parts) => parts.filter((p) => p && String(p).trim()).join('-').toUpperCase().replace(/\s+/g, '-')
+
+/* 变体区头部汇总：总库存 / 变体数 / 低于安全线数量（口径同列表页 low_stock_count：stock ≤ safety） */
+const varSum = computed(() => ({
+  stock: variants.value.reduce((s, v) => s + (v.stock || 0), 0),
+  low: variants.value.filter((v) => (v.stock || 0) <= (v.safety_stock ?? 0)).length,
+}))
+/* 规格展示：option2 存在且非 Default 时拼接（与库存页一致，如 "Short Almond / XL"） */
+const specText = (v) => (v.option2_value && v.option2_value !== 'Default' ? v.option1_value + ' / ' + v.option2_value : v.option1_value)
+/* 图集缩略图上移/下移/删除：操作 galText 行序并写回（textarea 与 form.images 同步） */
+function moveImg(i, d) {
+  const lines = imgLines(galText.value)
+  const j = i + d
+  if (j < 0 || j >= lines.length) return
+  ;[lines[i], lines[j]] = [lines[j], lines[i]]
+  galText.value = lines.join('\n')
+}
+function removeImg(i) {
+  const lines = imgLines(galText.value)
+  lines.splice(i, 1)
+  galText.value = lines.join('\n')
+}
 
 /* ===== 多语言翻译（GET/PUT /products/{id}/translations、DELETE /{locale}；GET 返回裸数组）
  * 契约：locale 须匹配 ^[a-z]{2}-[A-Z]{2}$，title 必填，subtitle/description_md 可选 ===== */
@@ -367,6 +467,8 @@ const translations = ref([])
 const trDlg = ref(false)
 const trEditing = ref(false)   /* true=编辑已有语言（locale 锁定） */
 const trForm = reactive({ locale: 'zh-CN', title: '', subtitle: '', description_md: '' })
+/* 草稿（newVar/editing/trForm）dirty 监听：trForm 声明后注册，防 TDZ */
+watch([newVar, editing, trDlg, trForm], checkDirty, { deep: true })
 async function loadTranslations(id) {
   try { translations.value = (await req('GET', `/api/admin/catalog/products/${id}/translations`)) || [] }
   catch (_) { translations.value = [] }
@@ -426,7 +528,7 @@ async function doDelTr() {
     <div style="display:flex;gap:10px">
       <a v-if="pid" class="btn btn-secondary" :href="'/product?id=' + pid" target="_blank" rel="noopener">前台预览 ↗</a>
       <router-link to="/products" class="btn btn-ghost">← 列表</router-link>
-      <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="save">保存</button>
+      <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
     </div>
   </div>
 
@@ -438,14 +540,26 @@ async function doDelTr() {
     <button v-for="s in SECTIONS" :key="s.id" @click="jump(s.id)">{{ s.label }}</button>
   </div>
 
+  <!-- 编辑态加载失败：错误空态 + 重试（表单隐藏，防对默认假值误保存） -->
+  <div v-if="pid && loadFailed" class="card">
+    <EmptyState icon="⚠️" title="商品加载失败" :sub="loadErrMsg">
+      <template #action>
+        <button class="btn btn-primary btn-sm" @click="retryLoad">重试</button>
+        <router-link to="/products" class="btn btn-secondary btn-sm">← 返回列表</router-link>
+      </template>
+    </EmptyState>
+  </div>
+
+  <!-- 加载期间整体禁用（fieldset disabled）+ 覆盖层，防对默认假值操作/保存 -->
+  <fieldset v-else :disabled="loading" :aria-busy="loading" class="form-shell">
   <div class="grid-2" style="align-items:start">
     <div style="display:grid;gap:16px">
       <div id="sec-base" class="card" style="padding:20px">
         <div class="dhead"><h3 class="dtitle">基本信息</h3></div>
-        <div class="field"><label>标题</label><input v-model="form.title" class="input"></div>
-        <div v-if="!pid" class="field"><label>Slug</label><input v-model="form.slug" class="input" placeholder="nova-set"></div>
-        <div v-else class="field"><label>Slug（不可改）</label><input :value="form.slug" class="input" disabled style="background:var(--rose-pale)"></div>
-        <div class="field"><label>副标题</label><input v-model="form.subtitle" class="input"></div>
+        <div class="field"><label>标题</label><input v-model="form.title" class="input" maxlength="200"></div>
+        <div v-if="!pid" class="field"><label>Slug</label><input v-model="form.slug" class="input" maxlength="150" placeholder="nova-set"></div>
+        <div v-else class="field"><label>Slug（不可改）</label><input :value="form.slug" class="input" maxlength="150" disabled style="background:var(--rose-pale)"></div>
+        <div class="field"><label>副标题</label><input v-model="form.subtitle" class="input" maxlength="300"></div>
         <div class="field">
           <label>分类</label>
           <select v-model="form.category_id" class="input" :disabled="!cats.length">
@@ -467,47 +581,58 @@ async function doDelTr() {
       </div>
 
       <div id="sec-variants" class="card" style="padding:20px">
-        <div class="dhead"><h3 class="dtitle">变体管理</h3></div>
-        <div v-if="variants.length" style="display:grid;gap:8px;margin-bottom:14px">
-          <div v-for="(v, i) in variants" :key="v.id || 'copy' + i" style="display:flex;gap:12px;align-items:center;font-size:13px;padding:8px 0;border-bottom:1px solid var(--gray-light)">
-            <b>{{ v.option1_value }}</b>
-            <span v-if="v.sku" style="color:var(--gray);font-size:12px">{{ v.sku }}</span>
-            <span v-else class="tag tag-sched" style="font-size:10px" title="SKU 将依新 slug 自动生成">保存后创建</span>
-            <span v-if="v.images && v.images.length" class="tag" style="font-size:10px" :title="v.images.join('\n')">🖼×{{ v.images.length }}</span>
+        <div class="dhead">
+          <h3 class="dtitle">变体管理</h3>
+          <span v-if="variants.length" class="item-cnt" title="按变体现货汇总（低于安全线口径：stock ≤ 安全库存）">库存 {{ varSum.stock }} · 变体 {{ variants.length }} · 低安全线 {{ varSum.low }}</span>
+        </div>
+        <div v-if="variants.length" style="display:grid;gap:10px;margin-bottom:14px">
+          <!-- 卡片式变体行：展示态单行可换行；编辑态两行 grid（规格/SKU/价格/安全库存 + 图片/操作），窄屏不溢出 -->
+          <div v-for="(v, i) in variants" :key="v.id || 'copy' + i" class="var-card" style="font-size:13px">
             <template v-if="editing && editing.id === v.id">
-              <div class="field" style="margin:0 0 0 auto">
-                <label style="font-size:11px">价格（分）</label>
-                <input v-model.number="editing.price" class="input" type="number" style="width:110px;padding:6px 8px">
+              <div class="var-edit-grid">
+                <div class="field"><label style="font-size:11px">规格</label><input class="input" :value="specText(v)" disabled style="background:var(--rose-pale)"></div>
+                <div class="field"><label style="font-size:11px">SKU</label><input class="input" :value="v.sku" disabled maxlength="64" style="background:var(--rose-pale)"></div>
+                <div class="field"><label style="font-size:11px">价格（分）</label><input v-model.number="editing.price" class="input" type="number" min="0" step="1"></div>
+                <div class="field"><label style="font-size:11px">安全库存</label><input v-model.number="editing.safety" class="input" type="number" min="0" step="1"></div>
               </div>
-              <div class="field" style="margin:0">
-                <label style="font-size:11px">安全库存</label>
-                <input v-model.number="editing.safety" class="input" type="number" style="width:90px;padding:6px 8px">
-              </div>
-              <div class="field" style="margin:0;flex:1;min-width:170px;max-width:320px">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-                  <label style="margin:0;flex:1;font-size:11px">变体图片 URL（每行一张，≤6）</label>
-                  <button class="btn btn-secondary btn-sm" style="flex:none;height:26px;padding:0 10px;font-size:11px" :disabled="uploading" @click="pickImage('editVar')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+              <div class="var-edit-row2">
+                <div class="field">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    <label style="margin:0;flex:1;font-size:11px">变体图片 URL（每行一张，≤6）</label>
+                    <button class="btn btn-secondary btn-sm" style="flex:none;height:26px;padding:0 10px;font-size:11px" :disabled="uploading" @click="pickImage('editVar')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+                  </div>
+                  <textarea v-model="editing.imgs" class="input" rows="2" style="padding:6px 8px;font-size:12px" placeholder="https://…"></textarea>
                 </div>
-                <textarea v-model="editing.imgs" class="input" rows="2" style="padding:6px 8px;font-size:12px" placeholder="https://…"></textarea>
+                <div style="display:flex;gap:8px;align-items:flex-end">
+                  <button class="btn btn-primary btn-sm" @click="saveEdit">保存</button>
+                  <button class="btn btn-ghost btn-sm" @click="editing = null">取消</button>
+                </div>
               </div>
-              <button class="btn btn-primary btn-sm" @click="saveEdit">保存</button>
-              <button class="btn btn-ghost btn-sm" @click="editing = null">取消</button>
             </template>
             <template v-else>
-              <b style="margin-left:auto">{{ money(v.price) }}</b>
-              <span class="tag" :class="v.stock > v.safety_stock ? 'tag-done' : 'tag-error'" :title="`安全库存 ${v.safety_stock ?? 0}`">{{ v.stock }}</span>
-              <!-- 复制预览行无 id（未落库），不提供操作 -->
-              <template v-if="v.id">
-                <button class="btn btn-ghost btn-sm" @click="startEdit(v)">编辑</button>
-                <button class="btn btn-ghost btn-sm" @click="toggleVar(v)">{{ v.is_active ? '停用' : '启用' }}</button>
-              </template>
+              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+                <b>{{ v.option1_value }}</b>
+                <span v-if="v.option2_value && v.option2_value !== 'Default'" style="color:var(--gray)">/ {{ v.option2_value }}</span>
+                <span v-if="v.sku" style="color:var(--gray);font-size:12px">{{ v.sku }}</span>
+                <span v-else class="tag tag-sched" style="font-size:10px" title="SKU 将依新 slug 自动生成">保存后创建</span>
+                <span v-if="v.images && v.images.length" class="tag" style="font-size:10px" :title="v.images.join('\n')">🖼×{{ v.images.length }}</span>
+                <b style="margin-left:auto">{{ money(v.price) }}</b>
+                <!-- 颜色语义与列表页统一：为 0 红 error、≤安全线黄 warn、充足灰 done -->
+                <span class="tag" :class="!v.stock ? 'tag-error' : (v.stock <= (v.safety_stock ?? 0) ? 'tag-pending' : 'tag-done')" :title="`安全库存 ${v.safety_stock ?? 0}`">{{ v.stock }}</span>
+                <!-- 复制预览行无 id（未落库），不提供操作 -->
+                <template v-if="v.id">
+                  <button class="btn btn-ghost btn-sm" @click="startEdit(v)">编辑</button>
+                  <button class="btn btn-ghost btn-sm" @click="toggleVar(v)">{{ v.is_active ? '停用' : '启用' }}</button>
+                </template>
+              </div>
             </template>
           </div>
         </div>
         <p v-else style="font-size:13px;color:var(--gray);margin-bottom:12px">暂无变体（新建商品请先保存再添加）</p>
-        <div v-if="pid" style="display:grid;grid-template-columns:1.2fr 1fr .6fr .5fr .5fr auto;gap:8px;align-items:end">
-          <div class="field"><label>规格（如 Short Almond）</label><input v-model="newVar.option1" class="input"></div>
-          <div class="field"><label>副规格</label><input v-model="newVar.option2" class="input"></div>
+        <!-- 新增变体 6 列 grid：<900px 降 3 列、<600px 降 2 列 -->
+        <div v-if="pid" class="var-new-grid">
+          <div class="field"><label>规格（如 Short Almond）</label><input v-model="newVar.option1" class="input" maxlength="50"></div>
+          <div class="field"><label>副规格</label><input v-model="newVar.option2" class="input" maxlength="50"></div>
           <div class="field"><label>价格（分）</label><input v-model.number="newVar.price" class="input" type="number" min="0" step="1"></div>
           <div class="field"><label>库存（件）</label><input v-model.number="newVar.stock" class="input" type="number" min="0" step="1"></div>
           <div class="field"><label>重量（克）</label><input v-model.number="newVar.weight_gram" class="input" type="number" min="0" step="1" placeholder="30"></div>
@@ -529,7 +654,7 @@ async function doDelTr() {
         <div class="field">
           <label>主图 URL</label>
           <div style="display:flex;gap:8px">
-            <input v-model="form.hero_image" class="input" style="flex:1;min-width:0" placeholder="https://…">
+            <input v-model="form.hero_image" class="input" style="flex:1;min-width:0" maxlength="500" placeholder="https://…">
             <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('hero')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
           </div>
           <div style="margin-top:10px;border-radius:12px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);max-width:200px">
@@ -542,18 +667,22 @@ async function doDelTr() {
             <label style="margin:0;flex:1">图集（每行一个 URL，最多 8 张）</label>
             <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('gallery')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
           </div>
-          <textarea :value="form.images.join('\n')" class="input" rows="4"
-                    @input="form.images = $event.target.value.split(/\n+/).map(s => s.trim()).filter(Boolean).slice(0, 8)"></textarea>
-          <p style="font-size:11.5px;color:var(--gray)">{{ form.images.length }}/8</p>
+          <!-- 草稿原文绑定：超 8 行保留仅警告，保存时才截断；计数超限变红 -->
+          <textarea v-model="galText" class="input" rows="4" placeholder="https://…"></textarea>
+          <p style="font-size:11.5px" :style="{ color: galLines.length > 8 ? 'var(--error)' : 'var(--gray)' }">{{ galLines.length }}/8</p>
           <div v-if="form.images.length" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px">
             <div v-for="(img, i) in form.images" :key="i" style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--rose-pale)">
               <img v-if="!brokenImgs[i]" :src="img" :alt="'图 ' + (i + 1)" style="width:100%;height:100%;object-fit:cover" @error="brokenImgs[i] = true">
               <div v-else style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--gray-light);color:var(--gray);font-size:11px">图片加载失败</div>
-              <button style="position:absolute;top:3px;right:3px;width:18px;height:18px;border:none;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:18px;padding:0;cursor:pointer" :title="'删除第 ' + (i + 1) + ' 张'" @click="form.images.splice(i, 1)">×</button>
+              <div style="position:absolute;bottom:3px;left:3px;display:flex;gap:3px">
+                <button type="button" class="thumb-btn" :disabled="i === 0" title="上移" @click="moveImg(i, -1)">▲</button>
+                <button type="button" class="thumb-btn" :disabled="i === form.images.length - 1" title="下移" @click="moveImg(i, 1)">▼</button>
+              </div>
+              <button type="button" class="thumb-btn" style="position:absolute;top:3px;right:3px;width:auto;height:auto;line-height:1;padding:2px 5px;font-size:11px" :title="'删除第 ' + (i + 1) + ' 张'" @click="removeImg(i)">×</button>
             </div>
           </div>
         </div>
-        <div class="field"><label>视频 URL（可选）</label><input v-model="form.video_url" class="input"></div>
+        <div class="field"><label>视频 URL（可选）</label><input v-model="form.video_url" class="input" maxlength="500"></div>
       </div>
 
       <div v-if="pid" class="card" style="padding:20px">
@@ -604,9 +733,15 @@ async function doDelTr() {
       </div>
     </div>
   </div>
+  <!-- 加载覆盖层：编辑/复制载入期间提示 -->
+  <div v-if="loading" class="load-mask">加载商品数据…</div>
+  </fieldset>
 
-  <div style="display:flex;justify-content:center;margin-top:8px">
-    <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="save">保存</button>
+  <!-- 吸底保存条：dirty / 保存中才出现 -->
+  <div v-if="dirty || busy" class="save-bar">
+    <span class="save-dot" aria-hidden="true"></span>
+    <span style="flex:1;font-size:13px">有未保存的修改</span>
+    <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
   </div>
 
   <!-- 多语言添加/编辑弹层（不点遮罩关闭，防误触丢稿，仅右上 × 可关） -->
@@ -643,4 +778,33 @@ async function doDelTr() {
 .achips button{padding:5px 12px;font-size:12.5px;border:1px solid var(--gray-light);background:#fff;border-radius:999px;color:var(--gray);cursor:pointer}
 .achips button:hover{color:var(--plum);border-color:var(--plum)}
 .phint{font-size:11.5px;color:var(--gray);margin-top:3px}
+/* 表单外壳：fieldset 包裹 + 加载覆盖层（loading 期间整体禁用） */
+.form-shell{border:none;padding:0;margin:0;position:relative;min-width:0}
+.load-mask{position:absolute;inset:0;z-index:6;background:rgba(255,255,255,.72);display:flex;align-items:flex-start;justify-content:center;gap:10px;padding-top:110px;font-size:13.5px;color:var(--gray);border-radius:12px}
+.load-mask::before{content:"";width:15px;height:15px;flex:none;margin-top:-1px;border:2px solid var(--gray-light);border-top-color:var(--plum);border-radius:50%;animation:gmSpin 1s linear infinite}
+@keyframes gmSpin{to{transform:rotate(360deg)}}
+/* 变体卡片行：编辑态两行 grid（规格/SKU/价格/安全库存 + 图片/操作） */
+.var-card{border:1px solid var(--gray-light);border-radius:10px;padding:10px 12px}
+.var-card .field{margin-bottom:0}
+.var-edit-grid{display:grid;grid-template-columns:1.2fr 1.6fr .8fr .8fr;gap:10px}
+.var-edit-row2{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end;margin-top:10px}
+/* 新增变体表单：6 列 → <900px 3 列 → <600px 2 列 */
+.var-new-grid{display:grid;grid-template-columns:1.2fr 1fr .6fr .5fr .5fr auto;gap:8px;align-items:end}
+.var-new-grid .field{margin-bottom:0}
+@media(max-width:900px){
+  .var-edit-grid{grid-template-columns:1fr 1fr}
+  .var-edit-row2{grid-template-columns:1fr}
+  .var-new-grid{grid-template-columns:1fr 1fr 1fr}
+}
+@media(max-width:600px){
+  .var-new-grid{grid-template-columns:1fr 1fr}
+}
+/* 图集缩略图小按钮（上移/下移/删除） */
+.thumb-btn{width:18px;height:18px;border:none;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:9px;line-height:18px;padding:0;cursor:pointer}
+.thumb-btn:hover:not(:disabled){background:rgba(0,0,0,.8)}
+.thumb-btn:disabled{opacity:.35;cursor:default}
+/* 吸底保存条：dirty/保存中出现，红点呼吸提示未保存 */
+.save-bar{position:sticky;bottom:12px;z-index:30;display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 16px;background:#fff;border:1px solid var(--gray-light);border-radius:12px;box-shadow:0 6px 22px rgba(31,27,30,.16)}
+.save-dot{width:9px;height:9px;border-radius:50%;background:var(--error);animation:savePulse 1.6s infinite;flex:none}
+@keyframes savePulse{50%{opacity:.35}}
 </style>

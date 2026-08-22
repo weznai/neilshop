@@ -8,6 +8,8 @@ import { i18n } from '../i18n'
 const route = useRoute()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 const no = ref(String(route.query.no || ''))
 const email = ref(String(route.query.email || ''))
 const result = ref(null)
@@ -73,7 +75,7 @@ async function track() {
   err.value = ''
   result.value = null
   if (!no.value.trim()) { err.value = tt('Enter your order number (NS…)', '请输入订单号（NS…）'); return }
-  if (!email.value.trim()) { err.value = tt('Enter the email you used at checkout', '请输入下单时使用的邮箱'); return }
+  if (!EMAIL_RE.test(email.value.trim())) { err.value = tt('Enter a valid email address', '请输入有效的邮箱地址'); return }
   busy.value = true
   try {
     result.value = await req('GET', '/api/orders/track?no=' + encodeURIComponent(no.value.trim()) + '&email=' + encodeURIComponent(email.value.trim()))

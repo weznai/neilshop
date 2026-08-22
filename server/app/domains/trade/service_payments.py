@@ -102,7 +102,8 @@ def mark_order_paid(
         },
     )
 
-    points_svc.grant_for_order(db, order, order.grand_total // 10)
+    # 积分发放：按运营设置 points_per_dollar_earn（$1=100 分 → grand_total*rate//100）
+    points_svc.grant_for_order(db, order, order.grand_total * points_svc.earn_rate(db) // 100)
 
     for gc in repo.giftcards_to_activate(db, order.id):
         gc.status = 1
@@ -259,7 +260,15 @@ def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) ->
         if not order:
             raise HTTPException(status_code=404, detail="order_not_found")
 
-        if event_type == "payment_intent.succeeded":
+        # 换货差价 payment（diff_payment_id 关联）：路由到换货核销，不走订单 mark_paid
+        # —— 原订单已付（status>=1），CAS 抢占必然失败，旧路径会把差价回调变成空转。
+        linked_ex = repo.exchange_by_diff_payment(db, payment.id)
+        if linked_ex is not None:
+            if event_type == "payment_intent.succeeded" and payment.status != 1:
+                from app.domains.trade.service_exchanges import settle_diff_paid
+
+                settle_diff_paid(db, linked_ex, payment, actor="system")
+        elif event_type == "payment_intent.succeeded":
             if payment.status != 1:
                 if order.status != 1:
                     mark_order_paid(db, order, payment, source="webhook")

@@ -20,6 +20,7 @@ const password = ref('')
 const showPw = ref(false)
 const busy = ref(false)
 const err = ref('')
+const agreed = ref(false)
 /* 推荐落地：/register?ref=GLOW-XXXX（存表单，注册请求体带 ref_code 由后端绑定） */
 const refCode = ref(String(route.query.ref || '').trim())
 
@@ -40,6 +41,7 @@ function fieldCheck() {
   if (!name.value.trim()) return tt('Enter your name', '请输入昵称')
   if (!EMAIL_RE.test(email.value.trim())) return tt('Enter a valid email address', '请输入有效的邮箱地址')
   if (!pwOk.value) return tt('Password must be 8-128 characters', '密码长度需为 8-128 位')
+  if (!agreed.value) return tt('Please agree to the Terms of Service & Privacy Policy', '请先阅读并同意服务条款与隐私政策')
   return ''
 }
 
@@ -98,14 +100,22 @@ async function submit() {
               </button>
             </div>
             <div v-if="password" class="field-msg" :style="{ display: 'block', color: pwOk ? 'var(--success)' : 'var(--error)' }">
-              {{ pwOk ? '✓ ' + tt('Length OK', '长度符合要求') : tt(`还需 ${8 - pwLen} 位`, `还需 ${8 - pwLen} 位`) }}
+              {{ pwOk ? '✓ ' + tt('Length OK', '长度符合要求') : tt(`${8 - pwLen} more to go`, `还需 ${8 - pwLen} 位`) }}
             </div>
             <div v-if="pwWeak" class="field-msg" style="display:block;color:var(--warn)">
               ⚠️ {{ tt('All-digit passwords are easy to crack — mix in letters or symbols', '纯数字密码容易被破解，建议加入字母/符号') }}
             </div>
           </div>
-          <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
-          <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Create Account', '注册') }}</button>
+            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
+            <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;font-size:13px;color:var(--gray)">
+              <input v-model="agreed" type="checkbox" style="width:16px;height:16px;margin-top:1px;accent-color:var(--plum)">
+              <span>{{ tt('I have read and agree to the', '我已阅读并同意') }}
+                <router-link to="/terms" style="color:var(--plum);text-decoration:underline">{{ tt('Terms of Service', '服务条款') }}</router-link>
+                {{ tt('and', '与') }}
+                <router-link to="/privacy" style="color:var(--plum);text-decoration:underline">{{ tt('Privacy Policy', '隐私政策') }}</router-link>
+              </span>
+            </label>
+            <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Create Account', '注册') }}</button>
         </form>
         <div style="text-align:center;margin-top:14px;font-size:13px;color:var(--gray)">
           {{ tt('Already a member?', '已是会员？') }}

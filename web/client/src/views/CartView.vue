@@ -10,6 +10,8 @@ const cart = useCartStore()
 const ui = useUiStore()
 const auth = useAuthStore()
 
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+
 /* 折扣码失败原因走 i18n promo.*（对齐后端 promo REASON_TEXT；preview 返回裸 reason 码），
    t() 缺键返回键本身 → 回退展示原始 reason 码 */
 const reasonText = (r) => {
@@ -97,6 +99,12 @@ function undoRemove() {
   cart.undoRemove(ui)
 }
 
+function onQtyInput(i, e) {
+  const n = Math.floor(Number(e.target.value) || 0)
+  if (n < 1 || n === i.qty) { e.target.value = i.qty; return }
+  cart.setQty(i.vid, n, ui)
+}
+
 onMounted(() => {
   cart.refresh().catch(() => {})
 })
@@ -110,7 +118,6 @@ watch(
 const subC = computed(() => cart.subtotalC)
 const bundleC = computed(() => (pv.value && pv.value.bundle_discount) || 0)
 const codeC = computed(() => (pv.value && pv.value.code_valid && pv.value.code === appliedCode.value && pv.value.code_discount) || 0)
-const codeActive = computed(() => !!(pv.value && pv.value.code_valid && pv.value.code === appliedCode.value))
 const shipC = computed(() => {
   if (!pv.value) return subC.value >= FREE_SHIP_C ? 0 : FALLBACK_SHIP_C
   return pv.value.free_shipping ? 0 : (pv.value.shipping_fee != null ? pv.value.shipping_fee : FALLBACK_SHIP_C)
@@ -125,9 +132,9 @@ watch(freeShip, (v) => {
   clearTimeout(freePopT)
   freePopT = setTimeout(() => { freePop.value = false }, 1100)
 })
-/* 免邮进度口径：存在有效折扣码时以 preview 折后小计为准（后端免邮按折后判定），否则按原小计 */
+/* 免邮进度口径：preview 可用时统一以折后小计判定（后端免邮按折后金额），否则按原小计 */
 const awayC = computed(() => {
-  if (codeActive.value) {
+  if (pv.value) {
     if (pv.value.free_shipping || pv.value.shipping_fee === 0) return 0
     const after = pv.value.subtotal - (pv.value.discount_total || 0)
     return Math.max(0, FREE_SHIP_C - after)
@@ -135,9 +142,7 @@ const awayC = computed(() => {
   return Math.max(0, FREE_SHIP_C - subC.value)
 })
 const totalD = computed(() => ((subC.value - bundleC.value - codeC.value + shipC.value) / 100).toFixed(2))
-const shipPct = computed(() => (codeActive.value
-  ? Math.min(100, ((FREE_SHIP_C - awayC.value) / FREE_SHIP_C) * 100)
-  : Math.min(100, (subC.value / FREE_SHIP_C) * 100)))
+const shipPct = computed(() => Math.min(100, ((FREE_SHIP_C - awayC.value) / FREE_SHIP_C) * 100))
 
 /* 穿戴甲组合进度（后端规则：press-on 2 件 85 折 / 3 件 8 折，只算 press-on-nails 类目） */
 const pressQty = computed(() => (pv.value && pv.value.bundle_qty) || 0)
@@ -146,8 +151,14 @@ const bundleHint = computed(() => i18n.t(pressQty.value >= 3
   : pressQty.value === 2 ? 'cart.bundle.2' : pressQty.value === 1 ? 'cart.bundle.1' : 'cart.bundle.0'))
 
 const checkoutLink = computed(() => '/checkout' + (appliedCode.value ? `?code=${encodeURIComponent(appliedCode.value)}` : ''))
-const hasLash = computed(() => cart.items.some((i) => /lash/i.test(i.title)))
-const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
+const hasOos = computed(() => cart.items.some((i) => (i.stock || 0) <= 0 || i.stockStatus === 'out'))
+function isLash(i) {
+  const l = pv.value && pv.value.items ? pv.value.items.find((x) => x.variant_id === i.vid) : null
+  if (l && l.category_slug) return l.category_slug === 'magnetic-lashes'
+  return /\b(lashes?)\b/i.test(i.title)
+}
+const hasLash = computed(() => cart.items.some(isLash))
+const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
 </script>
 
 <template>
@@ -158,7 +169,7 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
       <div v-if="!cart.items.length" style="text-align:center;padding:60px 0;color:var(--gray)">
         <div style="font-size:52px;margin-bottom:12px">🛒</div>
         <p style="margin-bottom:18px">{{ i18n.t('cart.empty') }}</p>
-        <router-link class="btn btn-primary" to="/">{{ i18n.t('cart.shop') }}</router-link>
+        <router-link class="btn btn-primary" to="/store">{{ i18n.t('cart.shop') }}</router-link>
       </div>
 
       <div v-else class="grid-m-1" style="display:grid;grid-template-columns:1.6fr 1fr;gap:32px;align-items:start">
@@ -170,7 +181,7 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
           <div
             v-for="i in cart.items" :key="i.id"
             class="cart-row"
-            style="display:flex;gap:14px;padding:18px 0;border-bottom:1px solid var(--gray-light)"
+            style="display:flex;gap:14px;padding:18px 12px;margin:0 -12px;border-bottom:1px solid var(--gray-light)"
           >
             <router-link :to="`/product?id=${i.pid}`">
               <img :src="i.img" :alt="i.title" style="width:88px;height:88px;border-radius:12px;object-fit:cover" loading="lazy" @error="imgFallback">
@@ -191,8 +202,12 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
               </div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
                 <div style="display:flex;align-items:center;border:1px solid var(--gray-light);border-radius:8px">
-                  <button class="qbtn" @click="cart.setQty(i.vid, i.qty - 1, ui)">−</button>
-                  <span style="width:34px;text-align:center;font-weight:600;font-size:13px">{{ i.qty }}</span>
+                  <button class="qbtn" :disabled="i.qty <= 1" @click="cart.setQty(i.vid, i.qty - 1, ui)">−</button>
+                  <input
+                    class="qty-in" type="number" min="1" inputmode="numeric" :value="i.qty"
+                    :aria-label="tt('Quantity', '数量')"
+                    @change="onQtyInput(i, $event)"
+                  >
                   <button
                     class="qbtn" :disabled="(i.stock || 0) <= 0 || (i.stock > 0 && i.qty >= i.stock)"
                     :title="(i.stock || 0) <= 0 ? i18n.t('cart.oos') : (i.stock > 0 && i.qty >= i.stock ? i18n.t('cart.maxStock') : '')"
@@ -255,7 +270,11 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
           <div style="display:flex;justify-content:space-between;font-weight:800;font-size:17px;margin:16px 0;padding-top:14px;border-top:1px solid var(--gray-light)">
             <span>{{ i18n.t('cart.total') }}</span><span style="color:var(--plum);font-variant-numeric:tabular-nums">${{ totalD }}</span>
           </div>
-          <router-link :to="checkoutLink" class="btn btn-primary btn-block btn-lg">{{ i18n.t('cart.checkout') }} · ${{ totalD }}</router-link>
+          <router-link v-if="!hasOos" :to="checkoutLink" class="btn btn-primary btn-block btn-lg">{{ i18n.t('cart.checkout') }} · ${{ totalD }}</router-link>
+          <button v-else class="btn btn-primary btn-block btn-lg" disabled>{{ i18n.t('cart.checkout') }}</button>
+          <div v-if="hasOos" style="font-size:12.5px;color:var(--error);font-weight:600;margin-top:10px;text-align:center">
+            {{ tt('Please remove out-of-stock items before checkout', '请先移除缺货商品后再结算') }}
+          </div>
           <router-link to="/store" style="display:block;text-align:center;margin-top:12px;font-size:13px;color:var(--gray);text-decoration:underline">
             {{ i18n.t('cart.continue') }}
           </router-link>
@@ -272,6 +291,9 @@ const hasNail = computed(() => cart.items.some((i) => !/lash/i.test(i.title)))
 .qbtn { width: 30px; height: 30px; border: none; background: none; color: var(--plum); font-size: 16px; font-weight: 700; line-height: 1; cursor: pointer; border-radius: 6px; transition: background .15s; }
 .qbtn:hover:not(:disabled) { background: var(--rose-pale); }
 .qbtn:disabled { opacity: .35; cursor: not-allowed; }
+.qty-in { width: 34px; height: 30px; border: none; background: none; text-align: center; font-weight: 600; font-size: 13px; color: inherit; padding: 0; -moz-appearance: textfield; }
+.qty-in:focus { outline: none; background: var(--rose-pale); border-radius: 6px; }
+.qty-in::-webkit-outer-spin-button, .qty-in::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .srow { display: flex; justify-content: space-between; align-items: baseline; }
 .srow .val { font-variant-numeric: tabular-nums; font-weight: 600; }
 .undo-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--rose-pale); border-radius: 10px; padding: 10px 12px; font-size: 13px; margin: 14px 0 4px; animation: undoIn .25s ease-out; }

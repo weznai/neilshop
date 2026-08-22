@@ -1,22 +1,20 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
+import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
-const route = useRoute()
 const router = useRouter()
 const items = ref([])
 const total = ref(0)
 const pages = ref(1)
-const page = ref(1)
-const q = ref('')
-const status = ref(null)
 const loaded = ref(false)
+const loadErr = ref('')
 const bulk = ref(false)
 const bulkText = ref('')
 const bulkResult = ref(null)
@@ -25,6 +23,17 @@ const TABS = [[null, '全部'], [1, '在售'], [0, '草稿'], [2, '归档']]
 const SMeta = { 0: ['草稿', 'tag-pending'], 1: ['在售', 'tag-paid'], 2: ['归档', 'tag'] }
 const BULK_ERR = { 'slug already exists': 'slug 已存在', 'category not found': '分类不存在' }
 const failures = computed(() => (bulkResult.value?.results || []).filter((r) => !r.ok))
+
+/* ===== URL 同步：page/q/status（tab 映射，'all'=全部）+ 原有 category_id/sort 一并并入 useQuerySync ===== */
+const SORTABLE = ['title', '-title', 'price', '-price', 'created_at', '-created_at']
+const state = reactive({ page: 1, q: '', status: 'all', category_id: '', sort: '' })
+useQuerySync(state, { nums: ['page', 'category_id'], defaults: { page: 1, q: '', status: 'all', category_id: '', sort: '' } })
+/* 回填清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
+if (!SORTABLE.includes(state.sort)) state.sort = ''
+if (!['all', '0', '1', '2'].includes(state.status)) state.status = 'all'
+if (!(state.page >= 1)) state.page = 1
+if (!(state.category_id >= 1)) state.category_id = ''
+const status = computed(() => (state.status === 'all' ? null : Number(state.status)))
 
 /* 分类白名单：onMounted 拉分类列表，批量导入的 category_id 校验以此为准（动态） */
 const categories = ref([])
@@ -38,74 +47,92 @@ async function loadCategories() {
   catch (_) { /* 拉取失败时导入校验回退为「任意正整数」，后端仍会兜底 */ }
 }
 
-/* 分类筛选：category_id 传后端真过滤（分页生效），选中值与 sort 一并同步 URL */
-const catFilter = ref(Number(route.query.category_id) > 0 ? Number(route.query.category_id) : '')
+/* 分类筛选：category_id 传后端真过滤（分页生效），选中值与 sort 一并同步 URL（已并入 useQuerySync 的 state） */
 
+/* 请求序号 token：快速切换筛选/翻页时丢弃过期响应（竞态） */
+let reqSeq = 0
 async function load() {
   /* 刷新保留旧数据，骨架只在首载出现；翻页/切 tab/搜索均经此入口，顺带重置勾选 */
   selIds.value = []
+  const token = ++reqSeq
   try {
-    const qs = { page: page.value, size: 50, q: q.value.trim() }
+    const qs = { page: state.page, size: 50, q: state.q.trim() }
     if (status.value !== null) qs.status = status.value
-    if (catFilter.value !== '') qs.category_id = catFilter.value
-    if (sort.value) qs.sort = sort.value
+    if (state.category_id !== '') qs.category_id = state.category_id
+    if (state.sort) qs.sort = state.sort
     const d = await req('GET', '/api/admin/catalog/products?' + new URLSearchParams(qs))
+    if (token !== reqSeq) return
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(total.value / 50))
-    syncSortUrl()
-  } catch (e) { if (!loaded.value) items.value = []; toast('加载失败', 'error') }
-  loaded.value = true
+  } catch (e) {
+    if (token !== reqSeq) return
+    /* 首载失败记错误走错误空态（不再误导为「暂无商品」）；刷新失败保留旧数据仅 toast */
+    if (!loaded.value) { items.value = []; loadErr.value = e.message || '请求失败' }
+    toast('加载失败', 'error')
+  }
+  if (token === reqSeq) loaded.value = true
 }
 onMounted(() => { loadCategories(); load() })
+function retryLoad() { loadErr.value = ''; loaded.value = false; load() }
 
-function search() { page.value = 1; load() }
-function clearSearch() { q.value = ''; page.value = 1; load() }
-function tab(sv) { status.value = sv; page.value = 1; load() }
-function filterCat() { page.value = 1; load() }
+function search() { state.page = 1; load() }
+function clearSearch() { state.q = ''; state.page = 1; load() }
+function tab(sv) { state.status = sv === null ? 'all' : String(sv); state.page = 1; load() }
+function filterCat() { state.page = 1; load() }
 /* 空态引导：有搜索/分类筛选时空态文案区分 + 一键清除 */
-const filtered = computed(() => !!(q.value.trim() || catFilter.value !== ''))
-function clearFilters() { q.value = ''; catFilter.value = ''; page.value = 1; load() }
+const filtered = computed(() => !!(state.q.trim() || state.category_id !== ''))
+function clearFilters() { state.q = ''; state.category_id = ''; state.page = 1; load() }
 
-/* 服务端排序：sort 直传后端（title/price/created_at，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码
- * URL 同步 sort + category_id 两键（其余筛选不进 query，最小侵入） */
-const SORTABLE = ['title', '-title', 'price', '-price', 'created_at', '-created_at']
-const sort = ref(SORTABLE.includes(route.query.sort) ? route.query.sort : '')
-function syncSortUrl() {
-  const query = { ...route.query }
-  if (sort.value) query.sort = sort.value; else delete query.sort
-  if (catFilter.value !== '') query.category_id = catFilter.value; else delete query.category_id
-  if (JSON.stringify(query) !== JSON.stringify(route.query)) router.replace({ query })
-}
+/* 服务端排序：sort 直传后端（title/price/created_at，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码 */
 function sortBy(k) {
-  sort.value = sort.value === k ? '-' + k : (sort.value === '-' + k ? '' : k)
-  page.value = 1
+  state.sort = state.sort === k ? '-' + k : (state.sort === '-' + k ? '' : k)
+  state.page = 1
   load()
 }
-const sortInd = (k) => (sort.value === k ? '▲' : sort.value === '-' + k ? '▼' : '')
+const sortInd = (k) => (state.sort === k ? '▲' : state.sort === '-' + k ? '▼' : '')
+const ariaSort = (k) => (state.sort === k ? 'ascending' : state.sort === '-' + k ? 'descending' : 'none')
 
-/* ===== 批量上下架：全选作用于当前页可见行；翻页/筛选后勾选重置 ===== */
+/* ===== 批量上下架：全选作用于当前页可见行；翻页/筛选后勾选重置；上架/归档均走 ConfirmDialog ===== */
 const selIds = ref([])
 const visIds = computed(() => items.value.map((p) => p.id))
 const allChecked = computed(() => visIds.value.length > 0 && visIds.value.every((id) => selIds.value.includes(id)))
 function toggleAll() { selIds.value = allChecked.value ? [] : [...visIds.value] }
 
-const batchDlg = ref(false)
+const batchDlg = reactive({ open: false, action: 'publish' })
 const batchBusy = ref(false)
-/* 循环逐个调 publish/unpublish 端点（无批量接口），进度分段 toast，结束汇总刷新 */
+const batchProg = reactive({ done: 0, total: 0 })
+const failText = (d) => (typeof d === 'string' && d ? (BULK_ERR[d] || d) : '请求失败')
+const batchBody = computed(() => {
+  const n = selIds.value.length
+  let s = batchDlg.action === 'unpublish'
+    ? `确认归档选中的 ${n} 款商品？归档后前台不再展示，可在「归档」tab 查看。`
+    : `确认上架选中的 ${n} 款商品？上架后前台立即可见。`
+  if (batchBusy.value) s += `\n\n正在处理：${batchProg.done}/${batchProg.total}`
+  return s
+})
+function askBatch(action) { if (batchBusy.value) return; batchDlg.action = action; batchDlg.open = true }
+/* 循环逐个调 publish/unpublish 端点（无批量接口），确认弹窗内实时进度，失败明细 toast 列出 slug 与原因 */
 async function runBatch(action) {
   const ids = [...selIds.value]
   if (!ids.length || batchBusy.value) return
   batchBusy.value = true
-  let ok = 0
+  batchProg.total = ids.length
+  batchProg.done = 0
+  const fails = []
   for (let i = 0; i < ids.length; i++) {
-    try { await req('POST', `/api/admin/catalog/products/${ids[i]}/${action}`); ok++ } catch (_) {}
-    if (i % 5 === 4 || i === ids.length - 1) toast(`已处理 ${i + 1}/${ids.length}`)
+    try { await req('POST', `/api/admin/catalog/products/${ids[i]}/${action}`) }
+    catch (e) { fails.push({ id: ids[i], err: e.data?.detail || e.message || '' }) }
+    batchProg.done = i + 1
   }
-  const fail = ids.length - ok
-  toast(`批量${action === 'publish' ? '上架' : '归档'}完成：成功 ${ok}${fail ? '，失败 ' + fail : ''}`, fail ? 'error' : 'success')
+  const ok = ids.length - fails.length
+  if (fails.length) {
+    const lines = fails.map((f) => `${items.value.find((x) => x.id === f.id)?.slug || '#' + f.id}（${failText(f.err)}）`)
+    toast(`批量${action === 'publish' ? '上架' : '归档'}失败 ${fails.length} 项：` + lines.join('、'), 'error')
+  }
+  toast(`批量${action === 'publish' ? '上架' : '归档'}完成：成功 ${ok}${fails.length ? '，失败 ' + fails.length : ''}`, fails.length ? 'error' : 'success')
   batchBusy.value = false
-  batchDlg.value = false
+  batchDlg.open = false
   selIds.value = []
   load()
 }
@@ -121,10 +148,10 @@ async function exportCsv() {
   exporting.value = true
   try {
     const params = { page: 1, size: EXPORT_PER_PAGE }
-    if (q.value.trim()) params.q = q.value.trim()
+    if (state.q.trim()) params.q = state.q.trim()
     if (status.value !== null) params.status = status.value
-    if (catFilter.value !== '') params.category_id = catFilter.value
-    if (sort.value) params.sort = sort.value
+    if (state.category_id !== '') params.category_id = state.category_id
+    if (state.sort) params.sort = state.sort
     const first = await req('GET', '/api/admin/catalog/products?' + new URLSearchParams(params))
     const all = [...(first.items || [])]
     const totalMatch = first.total ?? all.length
@@ -251,23 +278,26 @@ async function createCat() {
       <h1 class="page-title">商品管理</h1>
       <span class="page-sub">共 {{ total }} 款</span>
     </div>
-    <div style="display:flex;gap:10px">
+    <!-- 主按钮「新建商品」保持突出，次要操作（分类/导入/导出）收为一组；整行 flex-wrap 防窄屏溢出 -->
+    <div class="topbar-actions">
       <div style="position:relative">
-        <input v-model="q" class="input" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
-        <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
+        <input v-model="state.q" class="input" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
+        <button v-if="state.q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
       </div>
       <button class="btn btn-secondary" @click="search">搜索</button>
-      <button class="btn btn-secondary" @click="catDlg = true">🏷 分类管理</button>
-      <button class="btn btn-secondary" @click="bulk = true">📦 批量导入</button>
-      <button class="btn btn-secondary btn-sm" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
       <router-link to="/product-edit" class="btn btn-primary">＋ 新建商品</router-link>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-left:1px solid var(--gray-light);padding-left:10px">
+        <button class="btn btn-secondary" @click="catDlg = true">🏷 分类管理</button>
+        <button class="btn btn-secondary" @click="bulk = true">📦 批量导入</button>
+        <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
+      </div>
     </div>
   </div>
 
   <div class="otab">
     <button v-for="[sv, label] in TABS" :key="String(sv)" :class="{ on: status === sv }" @click="tab(sv)">{{ label }}</button>
     <div style="margin-left:auto;align-self:center;display:flex;align-items:center;gap:6px">
-      <select v-model="catFilter" class="input" style="width:auto;max-width:180px;padding:6px 10px;font-size:12.5px" title="按分类筛选（作用于全部页）" @change="filterCat">
+      <select v-model="state.category_id" class="input" style="width:auto;max-width:180px;padding:6px 10px;font-size:12.5px" title="按分类筛选（作用于全部页）" @change="filterCat">
         <option :value="''">全部分类</option>
         <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.name }}</option>
       </select>
@@ -276,23 +306,33 @@ async function createCat() {
 
   <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
 
+  <!-- 首载失败：错误空态 + 重试（不再误导为「暂无商品」） -->
+  <div v-else-if="loadErr" class="card">
+    <EmptyState icon="⚠️" title="商品列表加载失败" :sub="loadErr">
+      <template #action>
+        <button class="btn btn-primary btn-sm" @click="retryLoad">重试</button>
+        <router-link to="/product-edit" class="btn btn-secondary btn-sm">➕ 新建商品</router-link>
+      </template>
+    </EmptyState>
+  </div>
+
   <div v-else class="card tbl-wrap">
-    <!-- 批量操作条：勾选任意行后出现，归档走危险确认 -->
+    <!-- 批量操作条：勾选任意行后出现，上架/归档均走确认弹窗 -->
     <div v-if="selIds.length" style="display:flex;gap:10px;align-items:center;padding:10px 12px;background:var(--rose-pale);font-size:13px;flex-wrap:wrap">
       已选 <b>{{ selIds.length }}</b> 款
-      <button class="btn btn-primary btn-sm" :disabled="batchBusy" @click="runBatch('publish')">上架</button>
-      <button class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="batchBusy" @click="batchDlg = true">归档</button>
+      <button class="btn btn-primary btn-sm" :disabled="batchBusy" @click="askBatch('publish')">上架</button>
+      <button class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="batchBusy" @click="askBatch('unpublish')">归档</button>
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" :disabled="batchBusy" @click="selIds = []">取消</button>
     </div>
     <table v-if="items.length" style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
         <th style="width:28px"><input type="checkbox" :checked="allChecked" :disabled="!visIds.length" title="全选本页" @change="toggleAll"></th>
-        <th class="sortable" title="点击排序" @click="sortBy('title')">商品<span v-if="sortInd('title')" class="sort-ind">{{ sortInd('title') }}</span></th>
-        <th class="sortable" title="点击排序" @click="sortBy('price')">价格<span v-if="sortInd('price')" class="sort-ind">{{ sortInd('price') }}</span></th>
+        <th class="sortable" tabindex="0" role="button" :aria-sort="ariaSort('title')" title="点击排序（回车/空格亦可）" @click="sortBy('title')" @keydown.enter.prevent="sortBy('title')" @keydown.space.prevent="sortBy('title')">商品<span v-if="sortInd('title')" class="sort-ind">{{ sortInd('title') }}</span></th>
+        <th class="sortable" tabindex="0" role="button" :aria-sort="ariaSort('price')" title="点击排序（回车/空格亦可）" @click="sortBy('price')" @keydown.enter.prevent="sortBy('price')" @keydown.space.prevent="sortBy('price')">价格<span v-if="sortInd('price')" class="sort-ind">{{ sortInd('price') }}</span></th>
         <th>库存</th>
         <th>销量</th>
         <th>评分</th>
-        <th class="sortable" title="点击排序" @click="sortBy('created_at')">创建时间<span v-if="sortInd('created_at')" class="sort-ind">{{ sortInd('created_at') }}</span></th>
+        <th class="sortable" tabindex="0" role="button" :aria-sort="ariaSort('created_at')" title="点击排序（回车/空格亦可）" @click="sortBy('created_at')" @keydown.enter.prevent="sortBy('created_at')" @keydown.space.prevent="sortBy('created_at')">创建时间<span v-if="sortInd('created_at')" class="sort-ind">{{ sortInd('created_at') }}</span></th>
         <th>状态</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
@@ -315,19 +355,21 @@ async function createCat() {
             <div v-if="p.compare_at_price" style="font-size:11px;color:var(--gray);text-decoration:line-through">{{ money(p.compare_at_price) }}</div>
           </td>
           <td>
-            <span class="tag" :class="p.total_stock ? (p.low_stock_count ? 'tag-pending' : 'tag-done') : 'tag-error'">{{ p.total_stock ?? 0 }}</span>
-            <div v-if="p.low_stock_count" style="font-size:11px;color:var(--error)">{{ p.low_stock_count }} 个低水位</div>
+            <!-- 颜色语义与编辑页统一：为 0 红 error、低于安全线黄 warn、充足灰 done -->
+            <span class="tag" :class="!p.total_stock ? 'tag-error' : (p.low_stock_count ? 'tag-pending' : 'tag-done')">{{ p.total_stock ?? 0 }}</span>
+            <div v-if="p.low_stock_count" style="font-size:11px;color:var(--warn)">{{ p.low_stock_count }} 个低水位</div>
           </td>
           <td style="color:var(--gray)">{{ p.sold_count ?? 0 }}</td>
           <td style="color:var(--gray)">{{ ((p.rating_avg || 0) / 100).toFixed(1) }} <small v-if="p.rating_count">({{ p.rating_count }})</small></td>
           <td style="color:var(--gray)">{{ dt(p.created_at) || '—' }}</td>
           <td>
             <span class="tag" :class="SMeta[p.status]?.[1] || 'tag'">{{ SMeta[p.status]?.[0] || p.status }}</span>
-            <span v-if="p.scheduled" class="tag tag-sched" style="margin-left:4px" title="到点自动在前台可见">定时</span>
+            <!-- 定时徽标按状态区分：已上架=到点前台可见；草稿/归档=需手动上架后才生效 -->
+            <span v-if="p.scheduled" class="tag tag-sched" style="margin-left:4px" :title="p.status === 1 ? '到点后在前台可见' : '注意：需手动上架后才会生效'">定时</span>
           </td>
           <td style="text-align:right;white-space:nowrap">
             <router-link class="btn btn-secondary btn-sm" :to="{ path: '/product-edit', query: { id: p.id } }">编辑</router-link>
-            <button class="btn btn-ghost btn-sm" style="margin-left:6px" title="复制商品（保存后生成新商品）" @click="router.push('/product-edit?copy=' + p.id)">⧉</button>
+            <button class="btn btn-ghost btn-sm" style="margin-left:6px" title="复制商品" @click="router.push('/product-edit?copy=' + p.id)">⧉</button>
             <button class="btn btn-ghost btn-sm" style="margin-left:6px" @click="toggle(p)">{{ p.status === 1 ? '归档' : '上架' }}</button>
           </td>
         </tr>
@@ -341,7 +383,7 @@ async function createCat() {
     </EmptyState>
   </div>
 
-  <Pagination v-if="loaded" :page="page" :pages="pages" :total="total" unit="款" @go="page = $event; load()" />
+  <Pagination v-if="loaded && !loadErr" :page="state.page" :pages="pages" :total="total" unit="款" @go="state.page = $event; load()" />
 
   <!-- 批量导入弹窗 -->
   <div v-if="bulk" class="modal open" @click.self="closeBulk">
@@ -396,15 +438,20 @@ async function createCat() {
   <ConfirmDialog :open="dlg.open" :title="dlg.action === 'unpublish' ? '归档商品' : '上架商品'" :body="dlgBody"
                  :danger="dlg.action === 'unpublish'" :confirm-text="dlg.action === 'unpublish' ? '归档' : '上架'"
                  :busy="dlg.busy" @confirm="doToggle" @close="dlg.open = false" />
-  <!-- 批量归档确认（危险） -->
-  <ConfirmDialog :open="batchDlg" title="批量归档" :body="`确认归档选中的 ${selIds.length} 款商品？归档后前台不再展示，可在「归档」tab 查看。`"
-                 danger confirm-text="归档" :busy="batchBusy" @confirm="runBatch('unpublish')" @close="batchDlg = false" />
+  <!-- 批量上架/归档确认（归档危险；执行中弹窗内显示进度 n/total，busy 期间不可关闭） -->
+  <ConfirmDialog :open="batchDlg.open" :title="batchDlg.action === 'unpublish' ? '批量归档' : '批量上架'" :body="batchBody"
+                 :danger="batchDlg.action === 'unpublish'" :confirm-text="batchDlg.action === 'unpublish' ? '归档' : '上架'"
+                 :busy="batchBusy" @confirm="runBatch(batchDlg.action)" @close="batchDlg.open = false" />
 </template>
 
 <style scoped>
 td,th{padding:10px 12px}
 .otab button{background:none;border:none;border-bottom:2.5px solid transparent;cursor:pointer}
 .otab button.on{color:var(--plum);border-color:var(--plum)}
+/* 顶栏操作组：主按钮+次要组整行可换行（全局类由 admin.css 提供，此处兜底同规则） */
+.topbar-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+/* 可排序表头键盘可达：焦点环 */
+th.sortable:focus-visible{outline:2px solid var(--plum);outline-offset:-2px}
 /* 搜索框清空钮：悬浮输入框右侧 */
 .q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
 .q-clear:hover{background:var(--gray)}

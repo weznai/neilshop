@@ -3,6 +3,7 @@
 import { defineStore } from 'pinia'
 import { productDetail, req } from '../api/client'
 import { i18n } from '../i18n'
+import { useUiStore } from './ui'
 
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
@@ -117,11 +118,17 @@ export const useCartStore = defineStore('cart', {
       } catch (e) { this._err(e, ui) }
     },
     dismissRemoved() { this.removed = null },
-    /* 登录后合并游客车（登录流程调用） */
+    /* 登录后合并游客车（登录流程调用）：无游客车时服务端幂等成功，抛错均为真实失败 */
     async mergeAfterLogin() {
       let token = ''
       try { token = localStorage.getItem('gm_cart_token') || '' } catch (_) { /* 隐私模式 */ }
-      try { await req('POST', '/api/cart/merge', { token }) } catch (_) { /* token 无车 */ }
+      try {
+        await req('POST', '/api/cart/merge', { token })
+      } catch (e) {
+        if (!e || e.status !== 404) {
+          useUiStore().toast(tt('Failed to merge your cart, some items may be missing', '购物车合并失败，部分商品可能未带入'), 'error')
+        }
+      }
       await this.refresh().catch(() => {})
     },
   },

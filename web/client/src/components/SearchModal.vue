@@ -10,6 +10,7 @@ const ui = useUiStore()
 const router = useRouter()
 const q = ref('')
 const suggestions = ref(null) /* null = 未搜索（显示最近/热门） */
+const sugLoading = ref(false)
 const trending = [
   ['french', '法式'], ['glitter', '亮片'], ['cat-eye', '猫眼'], ['short almond', '短杏仁'],
   ['natural', '自然款'], ['gift', '送礼'],
@@ -38,8 +39,9 @@ let sugSeq = 0
 watch(q, (v) => {
   clearTimeout(timer)
   const raw = v.trim()
-  if (!raw) { suggestions.value = null; return }
+  if (!raw) { suggestions.value = null; sugLoading.value = false; return }
   const seq = ++sugSeq
+  sugLoading.value = true
   timer = setTimeout(async () => {
     try {
       const d = await req('GET', '/api/catalog/search?q=' + encodeURIComponent(raw))
@@ -47,16 +49,9 @@ watch(q, (v) => {
       suggestions.value = d
     } catch (_) {
       if (seq !== sugSeq) return
-      /* 回落本地目录联想 */
-      const lo = raw.toLowerCase()
-      suggestions.value = {
-        products: GM_CATALOG.filter(
-          (p) => p.title.toLowerCase().includes(lo) || (p.titleZh || '').includes(raw),
-        ).slice(0, 6).map((p) => ({
-          id: p.id, title: p.title, hero_image: p.img, price_min: p.price * 100,
-        })),
-        categories: [],
-      }
+      suggestions.value = { products: [], categories: [] }
+    } finally {
+      if (seq === sugSeq) sugLoading.value = false
     }
   }, 300)
 })
@@ -184,7 +179,13 @@ function cardTitle(p) {
         >
       </form>
       <div class="sug-list">
-        <template v-if="suggestions === null">
+        <div v-if="sugLoading" aria-live="polite">
+          <div v-for="i in 3" :key="'sugsk' + i" class="sug-row" style="pointer-events:none">
+            <span class="sk-shimmer" style="width:36px;height:36px;border-radius:8px;flex:none"></span>
+            <span class="sk-shimmer" style="width:55%;height:14px;border-radius:7px"></span>
+          </div>
+        </div>
+        <template v-else-if="suggestions === null">
           <template v-if="recentTerms.length">
             <div class="trend-chip-title" style="font-size:12px;color:var(--gray);margin-bottom:8px">
               {{ i18n.lang === 'zh' ? '最近搜索' : 'Recent searches' }}

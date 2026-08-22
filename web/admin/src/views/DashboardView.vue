@@ -7,17 +7,19 @@ const d = ref(null)
 const err = ref('')
 const range = ref('last7')
 const refreshing = ref(false)
+const loadedAt = ref(null)      /* 数据加载完成时间（卡头展示 HH:mm:ss） */
 
 async function refresh() {
   refreshing.value = true
   err.value = ''
-  try { d.value = await req('GET', '/api/admin/ops/dashboard') }
+  try { d.value = await req('GET', '/api/admin/ops/dashboard'); loadedAt.value = new Date() }
   catch (e) { err.value = (e.status || '') + ' ' + (e.message || '') }
   refreshing.value = false
 }
 onMounted(refresh)
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
+const fmtHMS = (dt) => (dt ? dt.toTimeString().slice(0, 8) : '')
 const cur = computed(() => (d.value ? d.value[range.value] : null))
 const aov = computed(() => (cur.value && cur.value.orders ? Math.round(cur.value.gmv_cents / cur.value.orders) : 0))
 
@@ -103,6 +105,7 @@ const reconcile = computed(() => d.value?.reconcile)
       <span class="dash-sub">实时数据（API）</span>
     </div>
     <div class="dash-actions">
+      <span v-if="loadedAt && !err" class="dash-sub" title="数据加载完成时间">更新于 {{ fmtHMS(loadedAt) }}</span>
       <button class="btn btn-secondary" :class="{ loading: refreshing }" :disabled="refreshing" @click="refresh">{{ refreshing ? '刷新中…' : '⟳ 刷新' }}</button>
       <select v-model="range" class="input" style="width:auto;height:38px;font-size:13px">
         <option value="today">今日</option>
@@ -112,15 +115,17 @@ const reconcile = computed(() => d.value?.reconcile)
     </div>
   </div>
 
-  <div v-if="err" class="card" style="padding:30px;text-align:center;color:var(--error)">加载失败：{{ err }}</div>
+  <EmptyState v-if="err" icon="⚠️" title="看板加载失败" :sub="err">
+    <template #action><button class="btn btn-secondary btn-sm" :class="{ loading: refreshing }" :disabled="refreshing" @click="refresh">重试</button></template>
+  </EmptyState>
 
   <template v-else-if="d">
     <div class="stat-grid">
       <div v-for="(s, i) in STATS" :key="s.lb" class="stat" :class="{ 'stat-dark': s.hot }" :style="{ animationDelay: i * 70 + 'ms' }">
         <div class="stat-top">
           <span class="lb">{{ s.lb }}{{ range !== 'today' ? `（${range === 'last7' ? '7天' : '30天'}）` : '' }}</span>
-          <span v-if="s.pct != null" class="delta" :class="s.pct >= 0 ? 'up' : 'down'">
-            {{ s.pct >= 0 ? '▲' : '▼' }} {{ Math.abs(s.pct) }}%
+          <span v-if="s.pct != null" class="delta" :class="s.pct >= 0 ? 'up' : 'down'" title="近 7 天环比（近 7 天 vs 前 7 天），与所选时间窗无关">
+            {{ s.pct >= 0 ? '▲' : '▼' }} {{ Math.abs(s.pct) }}%<i style="font-style:normal;font-weight:500;margin-left:3px">近7天</i>
           </span>
           <span v-else-if="s.note" class="delta">{{ s.note }}</span>
         </div>
@@ -196,9 +201,9 @@ const reconcile = computed(() => d.value?.reconcile)
             <b class="todo-cnt">{{ d.abandoned_carts ?? 0 }}</b>
           </div>
         </div>
-        <!-- 快捷入口（看板未返回计数的两类待办，直达预填筛选） -->
+        <!-- 快捷入口（待支付用看板 unpaid_orders 计数；待审退货直达预填筛选） -->
         <div class="quick-row">
-          <router-link class="quick-chip" to="/orders?status=0">待支付订单 →</router-link>
+          <router-link class="quick-chip" to="/orders?status=0">待支付订单 {{ d.unpaid_orders ?? 0 }} →</router-link>
           <router-link class="quick-chip" to="/returns?tab=rma">待审退货 →</router-link>
         </div>
         <div v-if="lowStockTop.length" class="lstock">

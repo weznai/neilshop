@@ -44,8 +44,8 @@ const P = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
   panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
 }
-/* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营），数组 = [图标, 名称, 路径]；
- * 营销工具/内容管理归「运营」组，与会员/日志/设置并列 */
+/* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营/系统），数组 = [图标, 名称, 路径]；
+ * 营销工具/内容管理/会员归「运营」组；审计日志/系统设置归「系统」组 */
 const ITEMS = [
   ['dash', '数据看板', '/'],
   '交易',
@@ -59,6 +59,7 @@ const ITEMS = [
   ['promo', '营销工具', '/marketing'],
   ['content', '内容管理', '/content'],
   ['members', '会员管理', '/members'],
+  '系统',
   ['logs', '审计日志', '/logs'],
   ['settings', '系统设置', '/settings'],
 ]
@@ -135,8 +136,7 @@ onMounted(async () => {
     const mapped = e.status ? GUARD_ERR[e.status] : ''
     guardErr.value = mapped || ((e && e.status ? 'HTTP ' + e.status + ' · ' : '') + (e.message || '会话无效'))
     session._cache(null)
-    /* 停 1.5s 让用户看到失败原因，再回登录页 */
-    setTimeout(() => router.push('/login'), 1500)
+    /* 不再自动跳转：保留错误信息，由用户手动点「立即返回登录」（401 会话过期时 gm-admin-401 事件仍会全局接管跳转） */
   }
   watchTblWrap()
   window.addEventListener('keydown', onGlobalKey)
@@ -149,7 +149,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
     <RouteProgress />
     <aside class="aside" id="admSide">
       <router-link class="logo" to="/">GLOW<span>MAG</span></router-link>
-      <div style="font-size:10px;letter-spacing:2px;color:var(--gray);padding:0 12px 14px">管理控制台</div>
+      <div class="side-sub" style="font-size:10px;letter-spacing:2px;color:var(--gray);padding:0 12px 14px">管理控制台</div>
       <nav class="anav">
         <template v-for="(it, i) in ITEMS" :key="i">
           <div v-if="typeof it === 'string'" class="group">{{ it }}</div>
@@ -164,16 +164,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
           <span>查看店铺</span>
         </a>
         <div class="sep"></div>
-        <a href="javascript:void(0)" :title="'当前登录：' + session.name" style="cursor:default">
+        <div class="side-row side-user" :title="'当前登录：' + session.name">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P.members" />
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ session.name }}</span>
           <span class="abadge">{{ roleBadge }}</span>
-        </a>
+        </div>
         <div class="sep"></div>
-        <a href="javascript:void(0)" title="退出登录" @click="logout">
+        <button type="button" class="side-row side-link" title="退出登录" @click="logout">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P.logout" />
           <span>退出登录</span>
-        </a>
+        </button>
       </nav>
       <button class="side-toggle" title="折叠/展开侧栏" aria-label="折叠或展开侧栏" @click="toggleSide">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" v-html="P.panel" />
@@ -196,13 +196,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
   <div v-else class="admin" style="align-items:center;justify-content:center">
     <div style="text-align:center;color:var(--gray)">
       <template v-if="guardErr">
-        <div style="font-size:34px;margin-bottom:8px">⚠️</div>
+        <div class="guard-ico">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--error)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
         <div style="font-size:14px;color:var(--error);margin-bottom:6px">会话校验失败</div>
         <div style="font-size:12.5px">{{ guardErr }}</div>
-        <div style="font-size:12px;margin-top:10px">即将返回登录页…</div>
+        <button class="btn btn-primary" style="margin-top:16px" @click="router.push('/login')">立即返回登录</button>
       </template>
       <template v-else>
-        <div style="font-size:34px;margin-bottom:8px">⏳</div>正在验证管理会话…
+        <div class="guard-spin"></div>正在验证管理会话…
       </template>
     </div>
   </div>
@@ -214,4 +216,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 .crumbs a:hover{color:var(--plum)}
 .crumbs .sep{color:var(--gray)}
 .crumbs b{color:var(--plum);font-weight:700}
+/* 守卫等待态 spinner：与 .btn.loading 同款环（@keyframes spin 为 style.css 全局定义） */
+.guard-spin{width:22px;height:22px;border:2.5px solid var(--rose-pale);border-top-color:var(--plum);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 10px}
+.guard-ico{margin-bottom:8px}
 </style>

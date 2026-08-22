@@ -77,7 +77,7 @@ onMounted(() => load(true))
 <template>
   <section class="section">
     <div class="container">
-      <div class="section-head"><h2 class="section-title">{{ i18n.t('blog.title') }}</h2></div>
+      <div class="section-head"><h1 class="section-title">{{ i18n.t('blog.title') }}</h1></div>
 
       <div v-if="tagsAvail.length" class="blog-tags">
         <button class="pill" :class="{ on: !tag }" @click="pickTag('')">{{ i18n.t('blog.all') }}</button>
@@ -167,14 +167,6 @@ onMounted(() => load(true))
 </template>
 
 <style scoped>
-.skeleton {
-  background: linear-gradient(90deg, var(--gray-light) 25%, #fff 50%, var(--gray-light) 75%);
-  background-size: 200% 100%;
-  animation: gmSk 1.2s ease-in-out infinite;
-  border-radius: 12px;
-}
-@keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
-
 /* 标签 pills（选中态用全局 .pill.on） */
 .blog-tags { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
 

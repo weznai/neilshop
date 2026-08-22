@@ -15,8 +15,16 @@ def page(q: Query, page: int, size: int):
     return rows, total
 
 
-def discounts_newest_first(db: Session) -> Query:
-    return db.query(DiscountCode).order_by(DiscountCode.id.desc())
+def discounts_newest_first(db: Session, q: str | None = None) -> Query:
+    """后台折扣码列表：q 匹配 code/name（ilike），时间倒序"""
+    query = db.query(DiscountCode)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(
+            DiscountCode.code.ilike(like),
+            DiscountCode.name.ilike(like),
+        ))
+    return query.order_by(DiscountCode.id.desc())
 
 
 def discount_id_by_code(db: Session, code: str):

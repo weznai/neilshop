@@ -30,7 +30,7 @@ function printPage() { window.print() }
           </div>
         </aside>
         <article class="prose">
-          <div class="grid grid-3" style="margin-bottom:22px">
+          <div class="grid grid-3 grid-m-1" style="margin-bottom:22px">
             <div class="card" style="padding:16px;text-align:center"><b style="font-size:20px">30 days</b><div style="font-size:12.5px;color:var(--gray)">Free returns window</div></div>
             <div class="card" style="padding:16px;text-align:center"><b style="font-size:20px">Free</b><div style="font-size:12.5px;color:var(--gray)">Exchanges, always</div></div>
             <div class="card" style="padding:16px;text-align:center"><b style="font-size:20px">Instant</b><div style="font-size:12.5px;color:var(--gray)">Refunds to original method</div></div>
@@ -52,13 +52,4 @@ function printPage() { window.print() }
 @media (max-width: 768px) {
   .policy-grid { grid-template-columns: 1fr !important; gap: 16px; }
 }
-/* TOC 命中态（Scrollspy）：plum + 左侧指示条 */
-.toc-link.on { color: var(--plum); font-weight: 700; border-left: 3px solid var(--plum); padding-left: 10px; margin-left: -13px; }
-/* 正文排版补全：68ch 行宽 + h3/h4 层级 + 品牌链接/圆角图片 */
-.prose { max-width: 68ch; }
-.prose h3 { font-family: var(--font-title); font-size: 18px; margin: 26px 0 10px; }
-.prose h4 { font-family: var(--font-title); font-size: 15.5px; margin: 20px 0 8px; }
-.prose a { color: var(--plum); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rose); }
-.prose a:hover { text-decoration-color: var(--plum); }
-.prose img { border-radius: 12px; }
 </style>

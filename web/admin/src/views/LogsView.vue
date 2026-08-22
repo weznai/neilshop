@@ -24,14 +24,14 @@ const ENTITY_META = {
   order: '订单', return: '退货', exchange: '换货', product: '商品', variant: '变体',
   product_translation: '商品翻译', ticket: '工单', member: '会员', review: '评价', ugc: 'UGC',
   article: '文章', faq: 'FAQ', discount: '折扣', popup: '弹窗', setting: '设置',
-  shipping_rate: '运费', collection: '集合',
+  shipping_rate: '运费', collection: '集合', giftcard: '礼品卡', media: '媒体',
 }
 /* entity 徽标配色：每个域一个色相（hex 前缀，透明度后缀拼接） */
 const ENTITY_COLOR = {
   order: '#6D2E46', return: '#B4453F', exchange: '#C0552F', product: '#2F6D4F', variant: '#3F7A5A',
   product_translation: '#4E7A57', ticket: '#3C5A9A', member: '#7A4A8F', review: '#A8456B', ugc: '#8A6D1B',
   article: '#4A6B8A', faq: '#5F6B7A', discount: '#2F5D8A', popup: '#8F4A5F', setting: '#555B66',
-  shipping_rate: '#2F6D6B', collection: '#9A5B2F',
+  shipping_rate: '#2F6D6B', collection: '#9A5B2F', giftcard: '#6B4A7A', media: '#6B7A4A',
 }
 const entLabel = (e) => ENTITY_META[e] || e
 const badgeStyle = (e) => {
@@ -66,7 +66,9 @@ const ENT_ROUTE = {
   member: () => ({ path: '/members' }),
   discount: () => ({ path: '/marketing' }),
   popup: () => ({ path: '/marketing' }),
+  giftcard: () => ({ path: '/marketing', query: { tab: 'giftcards' } }),
   setting: () => ({ path: '/settings' }),
+  /* media 无独立管理页：保持纯文本展示（不入 ENT_ROUTE） */
 }
 const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id) || null
 

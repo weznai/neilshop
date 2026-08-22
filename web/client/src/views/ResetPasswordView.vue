@@ -1,6 +1,6 @@
 <script setup>
 /* 密码重置落地页：邮件链接 /reset-password?token=…（确认端点需 email + token + new_password） */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
@@ -22,9 +22,14 @@ const busy = ref(false)
 const err = ref('')
 const done = ref(false)
 
+const pwLen = computed(() => password.value.length)
+/* 弱密码提示：纯数字易被撞库（与注册页一致） */
+const pwWeak = computed(() => pwLen.value >= 8 && pwLen.value <= 128 && /^\d+$/.test(password.value))
+
 function fieldCheck() {
   if (!EMAIL_RE.test(email.value.trim())) return tt('Enter a valid email', '请输入有效邮箱')
   if (password.value.length < 8) return tt('Password must be at least 8 characters', '密码至少 8 位')
+  if (password.value.length > 128) return tt('Password must be 128 characters or fewer', '密码最多 128 位')
   if (password.value !== password2.value) return tt('Passwords do not match', '两次输入的密码不一致')
   return ''
 }
@@ -45,7 +50,7 @@ async function submit() {
   } catch (e) {
     const d = e && e.data && e.data.detail
     if (e && e.status === 400 && d === 'invalid_token') {
-      err.value = tt('This reset link is invalid or expired — please request a new one.', '重置链接无效或已过期，请重新申请。')
+      err.value = tt('This reset link is invalid or expired — please confirm the email you entered matches the one you registered with, then request a new link.', '重置链接无效或已过期——请确认输入的邮箱与注册邮箱一致（链接只带 token，邮箱需手动输入），必要时重新申请。')
       token.value = ''
     } else if (e && e.status === 422) {
       err.value = tt('Please check: valid email + password of 8-128 characters', '请检查：有效邮箱 + 8-128 位密码')
@@ -103,8 +108,11 @@ async function submit() {
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
                 </button>
               </div>
-              <div v-if="password && password.length < 8" class="field-msg" style="display:block">
-                {{ tt('At least 8 characters', '至少 8 位') }}
+              <div v-if="password && (pwLen < 8 || pwLen > 128)" class="field-msg" style="display:block">
+                {{ pwLen < 8 ? tt('At least 8 characters', '至少 8 位') : tt('Up to 128 characters', '最多 128 位') }}
+              </div>
+              <div v-if="pwWeak" class="field-msg" style="display:block;color:var(--warn)">
+                ⚠️ {{ tt('All-digit passwords are easy to crack — mix in letters or symbols', '纯数字密码容易被破解，建议加入字母/符号') }}
               </div>
             </div>
             <div class="field">

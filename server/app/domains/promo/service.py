@@ -176,15 +176,32 @@ def _discount_dict(d: DiscountCode) -> dict:
     }
 
 
-def list_discounts(db: Session, page: int, size: int) -> dict:
-    rows, total = repo.page(repo.discounts_newest_first(db), page, size)
+def list_discounts(db: Session, page: int, size: int, q: str | None = None) -> dict:
+    rows, total = repo.page(repo.discounts_newest_first(db, q), page, size)
     return {"items": [_discount_dict(d) for d in rows], "total": total, "page": page, "size": size}
+
+
+def _validate_discount(type_: int, value: int) -> None:
+    """类型/面值交叉校验：百分比 1-100；固定减免须 ≥1 分（免邮 type=3 值无意义放行 0）"""
+    if type_ == 1 and not (1 <= value <= 100):
+        raise HTTPException(status_code=422, detail="invalid_percent_value")
+    if type_ == 2 and value < 1:
+        raise HTTPException(status_code=422, detail="invalid_fixed_value")
+
+
+def _validate_window(starts_at, ends_at) -> None:
+    if starts_at is None:
+        raise HTTPException(status_code=422, detail="starts_at_required")
+    if ends_at is not None and ends_at < starts_at:
+        raise HTTPException(status_code=422, detail="ends_before_starts")
 
 
 def create_discount(db: Session, admin: User, body: DiscountCreateIn) -> dict:
     code = body.code.strip().upper()
     if repo.discount_id_by_code(db, code):
         raise HTTPException(status_code=409, detail="code exists")
+    _validate_discount(body.type, body.value)
+    _validate_window(body.starts_at, body.ends_at)
     dc = DiscountCode(
         code=code,
         type=body.type,
@@ -215,6 +232,19 @@ def update_discount(db: Session, admin: User, discount_id: int, body: DiscountUp
         data["code"] = data["code"].strip().upper()
         if repo.discount_id_by_code_excluding(db, data["code"], dc.id):
             raise HTTPException(status_code=409, detail="code exists")
+    # starts_at 非空列：显式传 null 直接拒绝（避免 IntegrityError 500）
+    if data.get("starts_at") is None:
+        data.pop("starts_at", None)
+    # 类型/面值交叉校验（type 或 value 任一变更时按合并后口径）
+    if "type" in data or "value" in data:
+        _validate_discount(data.get("type", dc.type), data.get("value", dc.value))
+    # 面额上限不得低于已用量（否则码立即变"已被领完"）
+    if "usage_limit" in data and data["usage_limit"] is not None and data["usage_limit"] < dc.used_count:
+        raise HTTPException(status_code=409, detail="usage_limit_below_used")
+    _validate_window(
+        data.get("starts_at", dc.starts_at),
+        data["ends_at"] if "ends_at" in data else dc.ends_at,
+    )
     for k, v in data.items():
         setattr(dc, k, v)
     log_admin(db, admin, "update", "discount", dc.id, _json_safe_diff(data))
@@ -338,9 +368,12 @@ def freeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
 
 
 def unfreeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
+    """仅冻结卡(2)可解冻：待激活/已用尽/已作废的卡不允许借解冻复活为有效"""
     card = db.get(GiftCard, gift_card_id)
     if not card:
         raise HTTPException(status_code=404, detail="giftcard not found")
+    if card.status != 2:
+        raise HTTPException(status_code=409, detail="invalid_status")
     card.status = 1
     log_admin(db, admin, "unfreeze", "giftcard", card.id, {"code": card.code, "status": card.status})
     db.commit()

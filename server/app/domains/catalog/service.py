@@ -6,6 +6,7 @@
 from datetime import datetime
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -345,6 +346,22 @@ def stock_notify_cancel(db: Session, variant_id: int, email: str) -> dict:
 
 # ---------- 后台 ----------
 
+def _sync_price_range(db: Session, product_id: int) -> None:
+    """变体价格变更后回写商品冗余价格区间（前台卡片价与价格筛选依赖该列）；
+    仅统计在售变体；无在售变体时保留原值不动"""
+    row = (
+        db.query(func.min(Variant.price), func.max(Variant.price))
+        .filter(Variant.product_id == product_id, Variant.is_active == 1)
+        .one()
+    )
+    pmin, pmax = row
+    if pmin is None:
+        return
+    p = repo.get_product(db, product_id)
+    if p:
+        p.price_min, p.price_max = int(pmin), int(pmax)
+
+
 def _admin_variant_out(v: Variant, images: list[str] | None = None) -> dict:
     return {
         "id": v.id,
@@ -613,6 +630,7 @@ def admin_create_variant(
     db.flush()
     if body.images is not None:
         repo.add_variant_images(db, v.id, body.images)
+    _sync_price_range(db, product_id)
     _log(db, admin, "create", "variant", v.id)
     db.commit()
     _invalidate_cache()
@@ -638,6 +656,7 @@ def admin_update_variant(
         diff["images"] = {"before": repo.variant_images(db, v.id), "after": images}
         repo.replace_variant_images(db, v.id, images)
     if diff:
+        _sync_price_range(db, v.product_id)
         _log(db, admin, "update", "variant", v.id, diff)
         db.commit()
         _invalidate_cache()

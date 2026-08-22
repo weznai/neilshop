@@ -65,7 +65,9 @@ async function quickAdd() {
       ui.toast(zh.value ? '该商品已售罄' : 'Sold out', 'error')
       return
     }
-    await cart.add(v.id, 1, ui)
+    const label = [v.option1_value, v.option2_value].filter(Boolean).join(' · ')
+    const ok = await cart.add(v.id, 1, label ? { ...ui, toast: (m, t) => { if (t !== 'success') ui.toast(m, t) } } : ui)
+    if (ok && label) ui.toast(zh.value ? `已加入 ${label}` : `Added ${label}`, 'success')
   } catch (_) {
     ui.toast(zh.value ? '加购失败，请稍后再试' : 'Could not add, try again', 'error')
   } finally { busy.value = false }

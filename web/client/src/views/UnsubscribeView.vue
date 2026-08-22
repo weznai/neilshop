@@ -1,10 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { i18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
+import { useArmConfirm } from '../composables/useArmConfirm'
 
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 /* 退订链接：/unsubscribe?email=xx&token=us_HMAC（token 为 us_ 前缀 HMAC）
@@ -70,19 +71,9 @@ async function save() {
   } finally { saving.value = false }
 }
 
-/* 一键全部退订：站内二次点击确认（替代 window.confirm），5 秒未确认自动复位 */
-const confirming = ref(false)
-let confirmTimer = null
-onUnmounted(() => clearTimeout(confirmTimer))
+/* 一键全部退订：站内二次点击确认（useArmConfirm，5 秒未确认自动复位） */
+const { is, hit } = useArmConfirm()
 async function unsubAll() {
-  if (!confirming.value) {
-    confirming.value = true
-    clearTimeout(confirmTimer)
-    confirmTimer = setTimeout(() => { confirming.value = false }, 5000)
-    return
-  }
-  confirming.value = false
-  clearTimeout(confirmTimer)
   saving.value = true
   try {
     await req('POST', '/api/account/unsubscribe', {
@@ -106,7 +97,7 @@ async function unsubAll() {
 <template>
   <section class="section">
     <div class="container" style="max-width:560px">
-      <div class="section-head"><h2 class="section-title">{{ tt('Email Preferences ✉️', '邮件偏好设置 ✉️') }}</h2></div>
+      <div class="section-head"><h1 class="section-title">{{ tt('Email Preferences ✉️', '邮件偏好设置 ✉️') }}</h1></div>
 
       <div v-if="loading" class="skeleton" style="min-height:220px;border-radius:14px" />
 
@@ -125,10 +116,10 @@ async function unsubAll() {
         <button class="btn btn-primary btn-block" style="margin-top:16px" :class="{ loading: saving }" :disabled="saving" @click="save">{{ tt('Save preferences', '保存偏好') }}</button>
         <button
           class="btn btn-ghost btn-block btn-sm" style="margin-top:8px"
-          :style="confirming ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
+          :style="is('unsub') ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
           :disabled="saving"
-          @click="unsubAll"
-        >{{ confirming ? tt('Tap again to confirm unsubscribe', '再点一次确认退订全部') : tt('Unsubscribe from all emails', '一键退订全部邮件') }}</button>
+          @click="hit('unsub', unsubAll)"
+        >{{ is('unsub') ? tt('Tap again to confirm unsubscribe', '再点一次确认退订全部') : tt('Unsubscribe from all emails', '一键退订全部邮件') }}</button>
         <p v-if="saved" style="font-size:12.5px;color:var(--success);text-align:center;margin-top:10px">{{ tt('Saved — takes effect on the next send.', '已保存 —— 后续发送立即生效。') }}</p>
       </div>
 

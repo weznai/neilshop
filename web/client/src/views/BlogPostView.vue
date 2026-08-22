@@ -207,14 +207,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.skeleton {
-  background: linear-gradient(90deg, var(--gray-light) 25%, #fff 50%, var(--gray-light) 75%);
-  background-size: 200% 100%;
-  animation: gmSk 1.2s ease-in-out infinite;
-  border-radius: 12px;
-}
-@keyframes gmSk { from { background-position: 200% 0 } to { background-position: -200% 0 } }
-
 /* 作者行 + 阅读时长 chip */
 .post-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--gray); margin-bottom: 22px; }
 .read-chip { background: var(--rose-pale); color: var(--plum); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 600; }

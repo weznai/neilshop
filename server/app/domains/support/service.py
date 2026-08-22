@@ -66,6 +66,16 @@ def create_ticket(db: Session, body: TicketCreateIn, user: User | None = None) -
     db.add(ticket)
     db.flush()
     db.add(TicketMessage(ticket_id=ticket.id, sender=1, content=body.content))
+    # 关联订单侧落 ticket_linked 时间线（客服在订单时间线即可看到工单入口）
+    if body.order_no:
+        from app.domains.trade import repository as trade_repo
+
+        order = trade_repo.order_by_no(db, body.order_no.strip().upper())
+        if order:
+            trade_repo.add_timeline(
+                db, order.id, "ticket_linked", actor="user",
+                detail={"ticket_no": ticket.ticket_no, "subject": body.subject},
+            )
     db.commit()
     return {"ticket_no": ticket.ticket_no, "status": ticket.status}
 
@@ -174,7 +184,7 @@ def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict
         raise HTTPException(status_code=409, detail="ticket_already_closed")
     t.status = 4
     t.closed_at = utcnow()
-    t.close_reason = body.close_reason
+    t.close_reason = _norm_close_reason(body.close_reason)
     log_admin(db, admin, "close", "ticket", t.id, {"status": 4, "close_reason": body.close_reason})
     db.commit()
     db.refresh(t)
@@ -190,6 +200,17 @@ def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> di
     return _ticket_admin_dict(t, _assignee_names(db, [t]))
 
 
+def _norm_close_reason(value) -> int | None:
+    """关单原因归一化到 CloseReason 数字枚举（列为 SmallInteger）：
+    数字/数字串直取，自由文本落 9（其他），空值保持 None"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    return int(s) if s.lstrip("-").isdigit() else 9
+
+
 # 状态机：仅允许 1→2/3/4、2→3/4、3→4（0/1 态只能经回复进入，4 已关闭为终态）
 _ALLOWED_TRANSITIONS = {(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)}
 
@@ -201,8 +222,8 @@ def admin_set_status(db: Session, admin: User, ticket_no: str, body: TicketStatu
     t.status = body.status
     if body.status == 4:
         t.closed_at = utcnow()
-        t.close_reason = body.close_reason
-    log_admin(db, admin, "status", "ticket", t.id, {"status": body.status, "close_reason": body.close_reason})
+        t.close_reason = _norm_close_reason(body.close_reason)
+    log_admin(db, admin, "status", "ticket", t.id, {"status": body.status, "close_reason": t.close_reason})
     db.commit()
     db.refresh(t)
     return _ticket_admin_dict(t, _assignee_names(db, [t]))

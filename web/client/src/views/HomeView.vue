@@ -189,7 +189,7 @@ function heroFallback(e) {
     <div class="container" style="text-align:center">
       <h2 class="section-title" style="margin-bottom:8px">{{ i18n.t('home.how.t') }}</h2>
       <p style="color:var(--gray);margin-bottom:36px">{{ i18n.t('home.how.sub') }}</p>
-      <div class="grid grid-3" style="text-align:left">
+      <div class="grid grid-3 grid-m-1" style="text-align:left">
         <div class="card">
           <div class="step-n">1</div>
           <b style="font-size:15px">{{ i18n.t('home.how.s1t') }}</b>

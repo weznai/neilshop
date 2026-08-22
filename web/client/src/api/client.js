@@ -5,7 +5,7 @@ const API_BASE = window.GM_API_BASE || ''
 const DEFAULT_TIMEOUT = 15000
 
 /* 这些端点自身的 401 是业务结果（密码错/未登录可选接口），不广播会话过期 */
-const AUTH_401_SKIP = ['/api/account/login', '/api/account/register']
+const AUTH_401_SKIP = ['/api/account/login', '/api/account/register', '/api/account/password']
 
 const state = {
   cartToken: localStorage.getItem('gm_cart_token') || '',

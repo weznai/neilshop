@@ -61,7 +61,7 @@ onMounted(() => {
   else if (mq.addListener) mq.addListener(onMq)
   onMq()
   cart.refresh().catch(() => { /* 服务端不可达时保留本地快照 */ })
-  if (auth.isLoggedIn) auth.me().catch(() => auth._cache(null))
+  if (auth.isLoggedIn) auth.me().catch(() => {})
 })
 onUnmounted(() => {
   document.removeEventListener('keydown', onKey)

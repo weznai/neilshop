@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -13,10 +13,18 @@ const emailEl = ref(null)
 const password = ref('')
 const showPass = ref(false)
 const busy = ref(false)
+/* 字段级 inline 错误（.field.error + .field-msg）+ 表单级错误横幅（服务端失败） */
+const emailErr = ref('')
+const passErr = ref('')
+const formErr = ref('')
 /* 演示账号/密码提示仅 DEV 出现，生产构建不泄露种子账号 */
 const DEV = import.meta.env.DEV
 
 onMounted(() => nextTick(() => emailEl.value?.focus()))
+
+/* 输入即清除对应字段错误 */
+watch(email, () => { emailErr.value = '' })
+watch(password, () => { passErr.value = '' })
 
 function normEmail() {
   let v = (email.value || '').trim().replace(/\s+/g, '')
@@ -25,15 +33,28 @@ function normEmail() {
   email.value = v.toLowerCase()
 }
 
+/* 服务端错误映射（横幅与 toast 共用同一文案） */
+function srvMsg(e) {
+  return e.status === 422 ? '邮箱格式无效——请用半角 @' + (DEV ? '（或直接填 ops / admin 快捷名）' : '')
+    : e.status === 401 ? '邮箱或密码错误' + (DEV ? '（密码统一 glowmag123）' : '')
+      : e.status === 403 ? '该账号无后台权限（需管理员账号）'
+        : e.status === 429 ? '尝试过于频繁，请稍后再试'
+          : '登录失败：' + (e.message || '请稍后重试')
+}
+
 async function submit() {
   normEmail()
-  if (!email.value.includes('@')) { toast(DEV ? '邮箱无法识别——直接填 ops 或 admin 即可' : '邮箱格式无效，请输入完整邮箱', 'error'); return }
-  if (!password.value) { toast(DEV ? '请输入密码（演示密码统一 glowmag123）' : '请输入密码', 'error'); return }
+  emailErr.value = ''
+  passErr.value = ''
+  formErr.value = ''
+  if (!email.value.includes('@')) { emailErr.value = DEV ? '邮箱无法识别——直接填 ops 或 admin 即可' : '邮箱格式无效，请输入完整邮箱'; return }
+  if (!password.value) { passErr.value = DEV ? '请输入密码（演示密码统一 glowmag123）' : '请输入密码'; return }
   busy.value = true
   try {
     /* 登录响应已含 user（role/id/email），无需再 verify() 探测 */
     const u = await session.login(email.value, password.value)
     if ((u.role | 0) < 2) {
+      formErr.value = '该账号无后台权限（需管理员账号）'
       toast('该账号无后台权限（需管理员账号）', 'error')
       await session.logout()
       return
@@ -44,14 +65,8 @@ async function submit() {
     router.push(/^\/[^/]/.test(n) ? n : '/')
   } catch (e) {
     console.error('[admin] 登录失败：', e)
-    toast(
-      e.status === 422 ? '邮箱格式无效——请用半角 @' + (DEV ? '（或直接填 ops / admin 快捷名）' : '')
-        : e.status === 401 ? '邮箱或密码错误' + (DEV ? '（密码统一 glowmag123）' : '')
-          : e.status === 403 ? '该账号无后台权限（需管理员账号）'
-            : e.status === 429 ? '尝试过于频繁，请稍后再试'
-              : '登录失败：' + (e.message || '请稍后重试'),
-      'error',
-    )
+    formErr.value = srvMsg(e)
+    toast(srvMsg(e), 'error')
   } finally { busy.value = false }
 }
 </script>
@@ -63,20 +78,23 @@ async function submit() {
         <div class="logo" style="font-size:26px;color:var(--ink)">GLOW<span style="color:var(--rose)">MAG</span></div>
         <div style="font-size:11px;letter-spacing:3px;color:var(--gray);margin-top:6px">管理控制台 · ADMIN</div>
       </div>
-      <form @submit.prevent="submit">
-        <div class="field">
-          <label>邮箱</label>
-          <input ref="emailEl" v-model="email" class="input" autofocus autocomplete="username" :placeholder="DEV ? 'ops / admin / 完整邮箱' : '管理员邮箱'">
+      <form @submit.prevent="submit" novalidate>
+        <div v-if="formErr" class="err-banner login-err" role="alert">{{ formErr }}</div>
+        <div class="field" :class="{ error: !!emailErr }">
+          <label for="loginEmail">邮箱</label>
+          <input ref="emailEl" id="loginEmail" v-model="email" class="input" autofocus autocomplete="username" :placeholder="DEV ? 'ops / admin / 完整邮箱' : '管理员邮箱'">
+          <div class="field-msg">{{ emailErr }}</div>
         </div>
-        <div class="field">
-          <label>密码</label>
+        <div class="field" :class="{ error: !!passErr }">
+          <label for="loginPass">密码</label>
           <div class="pw-wrap">
-            <input v-model="password" class="input" :type="showPass ? 'text' : 'password'" autocomplete="current-password" :placeholder="DEV ? 'glowmag123' : '密码'">
+            <input id="loginPass" v-model="password" class="input" :type="showPass ? 'text' : 'password'" autocomplete="current-password" :placeholder="DEV ? 'glowmag123' : '密码'">
             <button type="button" class="pw-eye" :aria-label="showPass ? '隐藏密码' : '显示密码'" @click="showPass = !showPass">
               <svg v-if="showPass" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /><path d="m4 4 16 16" /></svg>
               <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
             </button>
           </div>
+          <div class="field-msg">{{ passErr }}</div>
         </div>
         <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy" style="margin-top:16px">登录后台</button>
       </form>
@@ -92,3 +110,10 @@ async function submit() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 表单顶错误横幅：复用全局 .err-banner 视觉，收窄外边距适配登录卡 */
+.login-err{margin:0 0 14px}
+/* 字段错误时输入框同步红边（.field-msg 的显隐由 style.css .field.error 接管） */
+.field.error .input{border-color:var(--error)}
+</style>

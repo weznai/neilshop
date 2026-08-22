@@ -34,7 +34,9 @@ const total = ref(0)
 const size = 20
 const expiring = ref([])
 const loaded = ref(false)
-const failed = ref(false)
+/* 余额与流水分别标记失败：仅流水失败时余额照常展示，流水卡内重试 */
+const ptsFailed = ref(false)
+const ledgerFailed = ref(false)
 /* page ↔ route.query（replace）：刷新/回退不丢状态 */
 const page = ref(Math.max(1, Number(route.query.page) || 1))
 
@@ -44,7 +46,10 @@ function fmt(iso) {
   const d = new Date(iso)
   if (isNaN(d)) return '—'
   const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  return d.getFullYear() === new Date().getFullYear()
+    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
+    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
 }
 function fmtDate(iso) {
   if (!iso) return '—'
@@ -55,7 +60,8 @@ function fmtDate(iso) {
 }
 
 async function load() {
-  failed.value = false
+  ptsFailed.value = false
+  ledgerFailed.value = false
   const [s, l, e] = await Promise.allSettled([
     req('GET', '/api/points'),
     req('GET', '/api/points/ledger?page=' + page.value + '&size=' + size),
@@ -67,7 +73,8 @@ async function load() {
     total.value = l.value.total || 0
   }
   if (e.status === 'fulfilled') expiring.value = (e.value.items || []).filter((r) => (r.change || 0) > 0)
-  failed.value = s.status === 'rejected' && l.status === 'rejected'
+  ptsFailed.value = s.status === 'rejected'
+  ledgerFailed.value = l.status === 'rejected'
   loaded.value = true
 }
 onMounted(load)
@@ -120,6 +127,9 @@ const RULES = [
           <div style="font-size:12px;opacity:.75">{{ tt('Frozen', '冻结中') }}</div>
         </div>
       </div>
+      <div v-if="ptsFailed" style="font-size:12.5px;margin-top:10px">
+        {{ tt('Load failed —', '加载失败 ——') }} <a href="javascript:void(0)" style="color:#fff;text-decoration:underline" @click="load">{{ tt('retry', '重试') }}</a>
+      </div>
     </div>
 
     <!-- 即将过期提醒（日期 chip 化） -->
@@ -145,7 +155,9 @@ const RULES = [
       <div class="card" style="padding:20px">
         <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Points history', '积分流水') }}</h3>
         <div v-if="!loaded" class="skeleton" style="min-height:120px" />
-        <div v-else-if="failed" style="font-size:13.5px;color:var(--gray)">{{ tt('Load failed — please refresh and retry', '加载失败，请刷新重试') }}</div>
+        <div v-else-if="ledgerFailed" style="font-size:13.5px;color:var(--gray)">
+          {{ tt('Load failed —', '加载失败 ——') }} <a href="javascript:void(0)" style="color:var(--plum)" @click="load">{{ tt('retry', '重试') }}</a>
+        </div>
         <template v-else>
           <div v-if="ledger.length" style="display:grid;gap:2px;max-height:300px;overflow-y:auto">
             <div v-for="h in ledger" :key="h.id" style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:6px 0;border-bottom:1px dashed var(--gray-light)">

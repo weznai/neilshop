@@ -61,7 +61,13 @@ const unitLabel = computed(() => (unit.value === 'mm' ? 'mm' : 'in'))
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in SIZES" :key="s[0]" class="sg-row" :class="{ sel: picked === s[0] }" @click="picked = s[0]">
+            <tr
+              v-for="s in SIZES" :key="s[0]" class="sg-row" :class="{ sel: picked === s[0] }"
+              tabindex="0" role="button" :aria-pressed="picked === s[0] ? 'true' : 'false'"
+              @click="picked = s[0]"
+              @keydown.enter.prevent="picked = s[0]"
+              @keydown.space.prevent="picked = s[0]"
+            >
               <td><span v-if="picked === s[0]" class="sg-ok">✓</span><b>{{ s[0] }}</b></td><td>{{ conv(s[1]) }}</td><td>{{ conv(s[2]) }}</td>
               <td style="color:var(--gray)">{{ finger(s[0]) }}</td>
             </tr>

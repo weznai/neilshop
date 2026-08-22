@@ -9,6 +9,7 @@ import hmac
 import os
 import time
 from datetime import timedelta
+from urllib.parse import quote
 
 import jwt as pyjwt
 from fastapi import HTTPException
@@ -134,6 +135,25 @@ def login(db: Session, body: LoginIn, admin: bool = False) -> dict:
 
 def profile(user: User) -> dict:
     return _user_out(user)
+
+
+def profile_with_delete_request(db: Session, user: User) -> dict:
+    """前台 /me：附带回显进行中的注销申请（刷新后恢复冷静期状态，避免重复提交撞 409）。"""
+    pending = (
+        db.query(DataRequest)
+        .filter(DataRequest.user_id == user.id, DataRequest.type == 2,
+                DataRequest.status == 0)
+        .first()
+    )
+    out = _user_out(user)
+    out["delete_request"] = (
+        {
+            "request_id": pending.id,
+            "effective_at": pending.created_at + timedelta(days=_gdpr_delay_days(db)),
+        }
+        if pending is not None else None
+    )
+    return out
 
 
 def update_profile(db: Session, user: User, body: ProfileUpdateIn) -> dict:
@@ -339,7 +359,10 @@ def password_reset_request(db: Session, body: PasswordResetRequestIn) -> dict:
         deliver(
             body.email, "Reset your GLOWMAG password",
             render("password_reset", email=body.email,
-                   reset_link=f"{_site_url(db)}/reset-password?token={token}"),
+                   reset_link=(
+                       f"{_site_url(db)}/reset-password"
+                       f"?token={token}&email={quote(user.email)}"
+                   )),
         )
     return {"ok": True}
 

@@ -3,7 +3,7 @@
  * 三层接入：
  *   1) 路由级兜底：router.afterEach 调 applyRouteSeo(to)。title 沿用路由表 meta.title，
  *      description 查下方 ROUTE_SEO 表，canonical = location.origin + path
- *      （product / blog-post 详情页带 ?slug=，保留 query 唯一化 URL）
+ *      （product / blog-post 详情页带 ?slug= 或 ?id=，保留 query 唯一化 URL）
  *   2) 页面级动态数据（views 数据就绪后）：dispatchEvent(new CustomEvent('gm:seo', { detail: {...} }))
  *      —— views 未发事件也不报错，保持路由级兜底
  *   3) 页面级直调：import { setSeo } / useSeo（事件与直调走同一合并逻辑，未来 views 接入用）
@@ -142,8 +142,8 @@ export function setSeo(meta = {}) {
 /* 路由级兜底：整体重置 current（清掉上一页动态残留）；首页附 Organization + WebSite 结构化数据 */
 export function applyRouteSeo(route) {
   const name = route && route.name ? String(route.name) : ''
-  /* 详情页语义在 query（slug）：canonical 保留 query 才能唯一化，其余路由去掉 query */
-  const detailSlug = (name === 'product' || name === 'blog-post') && route.query && route.query.slug
+  /* 详情页语义在 query（slug / id）：canonical 保留 query 才能唯一化，其余路由去掉 query */
+  const detailSlug = (name === 'product' || name === 'blog-post') && route.query && (route.query.slug || route.query.id)
   base = {
     title: route && route.meta && route.meta.title ? route.meta.title + SITE.titleSuffix : SITE.baseTitle,
     description: ROUTE_SEO[name] || SITE.description,

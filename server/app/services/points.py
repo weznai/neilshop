@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.core.enums import PointsReason
-from app.models import Order, PointsLedger, User
+from app.models import Order, PointsLedger, Setting, User
 
 # 原子扣减/回补（余额守卫放进 WHERE，rowcount=0 即余额不足，杜绝并发双花）
 _SPEND_SQL = text(
@@ -45,6 +45,19 @@ def _write_ledger(db: Session, user_id: int, change: int, reason: PointsReason,
 def get_balance(db: Session, user_id: int) -> int:
     user = db.get(User, user_id)
     return int(user.points) if user else 0
+
+
+def earn_rate(db: Session) -> int:
+    """消费 $1 赚取积分数：读取运营设置 points_per_dollar_earn（缺省 10），
+    非法/越界值回落默认，保证支付路径永不因配置报错"""
+    row = db.query(Setting).filter(Setting.key == "points_per_dollar_earn").first()
+    if row is None or row.value is None:
+        return 10
+    try:
+        rate = int(row.value)
+    except (TypeError, ValueError):
+        return 10
+    return rate if 0 <= rate <= 1_000_000 else 10
 
 
 def usable_balance(db: Session, user_id: int) -> int:

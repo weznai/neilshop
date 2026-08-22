@@ -84,8 +84,7 @@ function priceRange(w) {
             <img class="img-main" :src="w.hero_image" :alt="w.title">
           </router-link>
           <span v-if="w.stock_summary?.out" class="badge badge-out">SOLD OUT</span>
-          <span
-            class="pcard-quick" role="button" tabindex="0"
+          <span v-if="!w.stock_summary?.out" class="pcard-quick" role="button" tabindex="0"
             :style="{ opacity: addingId === w.id ? 1 : '', transform: addingId === w.id ? 'translateY(0)' : '' }"
             @click="add(w.id)"
           >{{ addingId === w.id ? tt('Adding…', '加入中…') : '+ ' + tt('Add to Cart', '加入购物车') }}</span>

@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.domains.trade.schemas import (
-    NoteIn, RefundRequest, ShipRequest, ShippingRateIn, ShippingRateUpdateIn,
-    StockAdjustRequest,
+    NoteIn, RefundRequest, RmaRejectRequest, ShipRequest, ShippingRateIn,
+    ShippingRateUpdateIn, StockAdjustRequest,
 )
 from app.models import Order, Rma, Shipment, ShippingRate, User
 from app.services import points as points_svc
@@ -377,6 +377,23 @@ def approve_rma(db: Session, admin: User, rma_no: str) -> dict:
     _admin_log(db, admin, "rma_approve", "return", rma.id, {"rma_no": rma.rma_no, "to": 2})
     db.commit()
     return {"rma_no": rma.rma_no, "status": rma.status, "label_url": rma.label_url}
+
+
+def reject_rma(db: Session, admin: User, rma_no: str, reason: str | None = None) -> dict:
+    """拒绝退货申请（0→6）：不符合政策的申请走此闭环，落时间线与审计日志"""
+    rma = _get_rma(rma_no)
+    if rma.status != 0:
+        raise HTTPException(status_code=409, detail=f"rma_not_rejectable:{rma.status}")
+    rma.status = 6
+    rma.handled_by = admin.id
+    _timeline(db, rma.order_id, "rma_rejected", actor="admin", detail={
+        "rma_no": rma.rma_no, "reason": reason or "",
+    })
+    _admin_log(db, admin, "rma_reject", "return", rma.id, {
+        "rma_no": rma.rma_no, "reason": reason or "",
+    })
+    db.commit()
+    return {"rma_no": rma.rma_no, "status": rma.status}
 
 
 def receive_rma(db: Session, admin: User, rma_no: str) -> dict:

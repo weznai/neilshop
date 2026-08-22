@@ -15,16 +15,17 @@ const active = ref(null)
 const loaded = ref(false)
 const loadErr = ref(false)
 const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
-const detailBusy = ref(false)
+const detailBusy = ref(0)      /* 按行隔离：存正在加载的行 id（0=空闲），仅该行 loading */
 
 /* 筛选/分页 URL 同步（risk：'' 全部 / 0 正常 / 1 关注 / 2 黑名单，见 models/user.py） */
 const st = reactive({ q: '', page: 1, risk: '' })
 useQuerySync(st, { nums: ['page'], defaults: { page: 1, risk: '' } })
 
-const TIER = ['Glow', 'Shimmer', 'Diva', 'Queen']
-/* 等级视觉分档：Glow/Shimmer 淡玫瑰、Diva 蓝调（tag-ship）、Queen 金 */
-const tierCls = (t) => (t === 2 ? 'tag-ship' : '')
-const tierStyle = (t) => (t === 3 ? 'background:#C9A227;color:#fff' : 'background:var(--rose-pale);color:var(--plum)')
+/* 等级口径与后端一致：tier 0普通(Glow) / 1银卡(Silver) / 2金卡(Gold)，值域 0-2 */
+const TIER = ['Glow', 'Silver', 'Gold']
+/* 等级视觉分档：Glow 淡玫瑰、Silver 银灰、Gold 金 */
+const tierCls = (t) => ''
+const tierStyle = (t) => (t === 2 ? 'background:#C9A227;color:#fff' : t === 1 ? 'background:#E8ECF2;color:#4A5568' : 'background:var(--rose-pale);color:var(--plum)')
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
@@ -68,13 +69,13 @@ function sortBy(k) {
 const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
 
 async function openDetail(m) {
-  detailBusy.value = true
+  detailBusy.value = m.id
   try {
     active.value = await req('GET', '/api/admin/ops/members/' + m.id)
     riskDraft.value = String(active.value.risk_flag || 0)
   }
   catch (e) { toast('加载失败：' + (e.message || ''), 'error') }
-  finally { detailBusy.value = false }
+  finally { detailBusy.value = 0 }
 }
 
 /* 风控下拉：受控 v-model（riskDraft），确认/取消/失败都回写草稿值驱动视图复位 */
@@ -160,14 +161,14 @@ async function applyRisk(flag = 2) {
               <div><b>{{ m.name || '—' }}</b><div style="font-size:11.5px;color:var(--gray)">{{ m.email }}</div></div>
             </div>
           </td>
-          <td><span class="tag" :class="tierCls(m.tier || 0)" :style="tierStyle(m.tier || 0)">{{ TIER[m.tier || 0] }}</span></td>
+          <td><span class="tag" :class="tierCls(m.tier || 0)" :style="tierStyle(m.tier || 0)">{{ TIER[m.tier || 0] || '—' }}</span></td>
           <td><b style="color:var(--plum)">{{ (m.points || 0).toLocaleString() }}</b></td>
           <td>{{ money(m.total_spent) }}</td>
           <td style="color:var(--gray)">{{ m.last_order_at ? m.last_order_at.slice(0, 10) : '—' }}</td>
           <td><span class="tag" :class="m.risk_flag === 2 ? 'tag-error' : m.risk_flag === 1 ? 'tag-pending' : 'tag-done'">
             {{ ['正常', '关注', '黑名单'][m.risk_flag || 0] }}</span></td>
           <td style="text-align:right">
-            <button class="btn btn-secondary btn-sm" :class="{ loading: detailBusy }" :disabled="detailBusy" @click="openDetail(m)">{{ detailBusy ? '加载中…' : '画像' }}</button>
+            <button class="btn btn-secondary btn-sm" :class="{ loading: detailBusy === m.id }" :disabled="detailBusy === m.id" @click="openDetail(m)">{{ detailBusy === m.id ? '加载中…' : '画像' }}</button>
           </td>
         </tr>
       </tbody>
@@ -182,7 +183,7 @@ async function applyRisk(flag = 2) {
       <button class="modal-x" @click="active = null">×</button>
       <div class="dhead">
         <div class="dtitle">{{ active.name || active.email }}</div>
-        <span class="tag" :class="tierCls(active.tier || 0)" :style="tierStyle(active.tier || 0)">{{ TIER[active.tier || 0] }}</span>
+        <span class="tag" :class="tierCls(active.tier || 0)" :style="tierStyle(active.tier || 0)">{{ TIER[active.tier || 0] || '—' }}</span>
       </div>
       <div class="kv" style="margin-bottom:14px">
         <div class="kv-row"><span>邮箱</span><span class="kv-val">{{ active.email }}</span></div>

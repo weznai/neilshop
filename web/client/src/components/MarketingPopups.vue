@@ -21,7 +21,10 @@ function seenToday(p) { return localStorage.getItem(capKey(p)) === today() }
 function markSeen(p) { localStorage.setItem(capKey(p), today()) }
 function exitSeen() { return !!sessionStorage.getItem('gm_exit') }
 function markExitSeen() { sessionStorage.setItem('gm_exit', '1') }
-function consentReady() { return !!localStorage.getItem('gm_consent') }
+function readConsent() {
+  try { return JSON.parse(localStorage.getItem('gm_consent') || '{}') || {} } catch (_) { return {} }
+}
+const landedAt = Date.now()
 
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -129,6 +132,7 @@ async function copyCode(code, popupId) {
 
 function fireWelcome(p) {
   if (seenToday(p) || showExit.value) return
+  if (readConsent().mar === false) return
   welcome.value = p
   markSeen(p)
   showWelcome.value = true
@@ -139,6 +143,7 @@ function onConsentThen(p) {
 }
 function onExitOut(e) {
   if (e.relatedTarget || e.clientY > 0) return
+  if (Date.now() - landedAt < 15000) return
   const p = exitPop.value
   if (!p || exitSeen() || showWelcome.value) return
   markExitSeen()
@@ -167,7 +172,7 @@ onMounted(async () => {
     const delay = Math.max(0, Number(r.delaySec == null ? 7 : r.delaySec)) * 1000
     setTimeout(() => {
       if (showExit.value || seenToday(w)) return
-      if (!consentReady()) { onConsentThen(w); return }
+      if (!localStorage.getItem('gm_consent')) { onConsentThen(w); return }
       fireWelcome(w)
     }, delay)
   }
@@ -204,14 +209,16 @@ onUnmounted(() => {
             {{ zh() ? '复制' : 'Copy' }}
           </button>
         </div>
-        <input
-          ref="emailInput" v-model="email" class="input" :class="{ error: emailErr }" type="email"
-          :placeholder="i18n.t('welcome.ph')" autocomplete="email"
-          :aria-label="i18n.t('welcome.ph')" :aria-invalid="emailErr || undefined"
-          :aria-describedby="emailErr ? 'gm-welcome-err' : undefined"
-        >
-        <div v-if="emailErr" id="gm-welcome-err" class="field-msg" style="display:block" role="alert">{{ i18n.t('welcome.err') }}</div>
-        <button class="btn btn-block welcome-btn" style="margin-top:12px" :disabled="wBusy" @click="welcomeSubmit">{{ wBusy ? '…' : i18n.t('welcome.btn') }}</button>
+        <form @submit.prevent="welcomeSubmit">
+          <input
+            ref="emailInput" v-model="email" class="input" :class="{ error: emailErr }" type="email"
+            :placeholder="i18n.t('welcome.ph')" autocomplete="email"
+            :aria-label="i18n.t('welcome.ph')" :aria-invalid="emailErr || undefined"
+            :aria-describedby="emailErr ? 'gm-welcome-err' : undefined"
+          >
+          <div v-if="emailErr" id="gm-welcome-err" class="field-msg" style="display:block" role="alert">{{ i18n.t('welcome.err') }}</div>
+          <button class="btn btn-block welcome-btn" style="margin-top:12px" type="submit" :disabled="wBusy">{{ wBusy ? '…' : i18n.t('welcome.btn') }}</button>
+        </form>
         <div style="text-align:center;margin-top:10px">
           <button
             type="button"

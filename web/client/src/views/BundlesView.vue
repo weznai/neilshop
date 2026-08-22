@@ -16,7 +16,7 @@ const loaded = ref(false)
 const busy = ref(0)
 
 onMounted(async () => {
-  try { items.value = (await req('GET', '/api/catalog/products?size=9&sort=best')).items || [] }
+  try { items.value = (await req('GET', '/api/catalog/products?size=9&sort=best&category=press-on-nails')).items || [] }
   catch (_) { items.value = [] }
   loaded.value = true
 })

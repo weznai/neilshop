@@ -3,11 +3,12 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { useCartStore } from '../../stores/cart'
+import { useUiStore } from '../../stores/ui'
+import { useArmConfirm } from '../../composables/useArmConfirm'
 import { i18n } from '../../i18n'
 
 const auth = useAuthStore()
-const cart = useCartStore()
+const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
@@ -39,10 +40,12 @@ onMounted(async () => {
   ready.value = true
 })
 
+/* 登出两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
+const outArm = useArmConfirm()
+
 async function signOut() {
   await auth.logout()
-  /* 会话 Cookie 已清：刷新为游客购物车（丢弃上一账号的服务端车视图） */
-  cart.refresh().catch(() => {})
+  ui.toast(tt('Signed out', '已退出登录'), 'success')
   router.push('/')
 }
 </script>
@@ -70,7 +73,7 @@ async function signOut() {
               v-for="[href, label, ico] in NAV" :key="href" :to="href" :class="{ on: isActive(href) }"
             >{{ ico }} {{ tt(label[0], label[1]) }}</router-link>
             <div class="sep" />
-            <button class="acct-out" @click="signOut">🚪 {{ tt('Sign out', '退出登录') }}</button>
+            <button class="acct-out" :class="{ arm: outArm.is('out') }" @click="outArm.hit('out', signOut)">🚪 {{ outArm.is('out') ? tt('Tap again to confirm', '再点一次确认') : tt('Sign out', '退出登录') }}</button>
           </nav>
         </aside>
         <div><router-view /></div>
@@ -92,6 +95,14 @@ async function signOut() {
 .acct-out:hover { background: var(--pale-error); }
 @media (max-width: 768px) {
   .acct-grid { grid-template-columns: 1fr; }
-  .acct-side { position: static; }
+  .acct-side { position: static; padding: 12px; }
+  /* 用户卡折叠一行 + 导航改横向滚动 tab 条，避免导航堆满首屏 */
+  .acct-user { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 2px 4px 10px; }
+  .acct-user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .acct-nav { display: flex; gap: 6px; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
+  .acct-nav::-webkit-scrollbar { display: none; }
+  .acct-nav a { flex: none; white-space: nowrap; padding: 8px 12px; border-radius: 999px; font-size: 13px; }
+  .acct-nav .sep { display: none; }
+  .acct-out { flex: none; white-space: nowrap; padding: 8px 12px; border-radius: 999px; font-size: 13px; }
 }
 </style>

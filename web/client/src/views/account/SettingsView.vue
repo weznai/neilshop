@@ -35,6 +35,11 @@ onMounted(async () => {
     form.name = auth.user.name || ''
     form.birthday = auth.user.birthday || ''
   }
+  /* /me 附带回显进行中的注销申请：刷新后恢复冷静期状态（避免重复提交撞 409 才发现） */
+  try {
+    const u = await auth.me()
+    if (u && u.delete_request) deletePending.value = { effective_at: u.delete_request.effective_at }
+  } catch (_) { /* 网络失败保留本地状态（AccountShell 亦会重试） */ }
   try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { /* */ }
 })
 

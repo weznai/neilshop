@@ -140,13 +140,9 @@ onUnmounted(() => {
   if (cuRaf) cancelAnimationFrame(cuRaf)
 })
 
-/* 灯箱 / 弹窗打开时锁 body 滚动，关闭恢复 */
-const overlayCount = computed(() => (lbIdx.value >= 0 ? 1 : 0) + (postOpen.value ? 1 : 0))
-watch(overlayCount, (n) => {
-  if (typeof document === 'undefined') return
-  document.body.style.overflow = n > 0 ? 'hidden' : ''
-})
-onUnmounted(() => { if (typeof document !== 'undefined') document.body.style.overflow = '' })
+/* 灯箱 / 投稿弹窗打开时经 ui store 汇报（body 滚动锁由 StoreLayout 统一 watch anyOverlay 处理） */
+watch(() => lbIdx.value >= 0 || postOpen.value, (v) => { ui.lightboxOpen = v })
+onUnmounted(() => { ui.lightboxOpen = false })
 
 function openLb(i) { lbIdx.value = i }
 function lbPrev() { if (lbIdx.value > 0) lbIdx.value-- }
@@ -188,7 +184,7 @@ function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/55
   <section class="section">
     <div class="container">
       <div class="section-head">
-        <h2 class="section-title">#GLOWMAGGlam</h2>
+        <h1 class="section-title">#GLOWMAGGlam</h1>
         <button class="section-link" style="border:none;background:none;cursor:pointer;font:inherit;padding:0" @click="openPost">
           {{ tt('Share your look →', '投稿上墙 →') }}
         </button>
@@ -204,7 +200,7 @@ function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/55
       </div>
       <div class="g-masonry">
         <template v-if="!loaded">
-          <div v-for="i in 8" :key="'sk' + i" class="g-sk"></div>
+          <div v-for="i in 8" :key="'sk' + i" class="skeleton g-sk"></div>
         </template>
         <template v-else>
           <div
@@ -327,8 +323,7 @@ function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/55
 </template>
 
 <style scoped>
-.g-sk { aspect-ratio: 1; border-radius: 12px; background: linear-gradient(100deg, var(--gray-light) 40%, #f7f3f5 50%, var(--gray-light) 60%); background-size: 200% 100%; animation: gSk 1.2s infinite; }
-@keyframes gSk { to { background-position: -200% 0; } }
+.g-sk { aspect-ratio: 1; border-radius: 12px; }
 
 /* 计数行：font-title 40px plum 大数字 */
 .g-count { display: flex; align-items: baseline; justify-content: center; gap: 12px; text-align: center; color: var(--gray); margin-bottom: 26px; font-size: 14px; }

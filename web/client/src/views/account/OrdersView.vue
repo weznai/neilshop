@@ -21,9 +21,11 @@ const pages = ref(1)
 const total = ref(0)
 const payingNo = ref('')
 const cancelingNo = ref('')
+const confirmingNo = ref('')
 
 /* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
 const cancelArm = useArmConfirm()
+const recvArm = useArmConfirm()
 
 const SHIP = { 0: '', 1: [' · partially shipped', ' · 部分发货'], 2: [' · all shipped', ' · 全部发货'] }
 /* 服务端筛选（GET /api/orders?status=&page=，每页 10 条）；标签 tt 双语 [en, zh] */
@@ -48,7 +50,10 @@ function fmt(iso) {
   const d = new Date(iso)
   if (isNaN(d)) return '—'
   const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  return d.getFullYear() === new Date().getFullYear()
+    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
+    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
 }
 
 async function load() {
@@ -134,6 +139,20 @@ async function cancel(o) {
     else ui.toast(tt('Cancel failed — please retry later', '取消失败，请稍后再试'), 'error')
   } finally { cancelingNo.value = '' }
 }
+
+/* 确认收货（仅 status=4 已送达）：CAS 4→5 已完成；两段式确认防误触 */
+async function confirmRecv(o) {
+  confirmingNo.value = o.order_no
+  try {
+    await req('POST', '/api/orders/' + encodeURIComponent(o.order_no) + '/confirm-received')
+    ui.toast(tt('Thanks! Order completed 🎉', '感谢确认收货，订单已完成 🎉'), 'success')
+    await load()
+  } catch (e) {
+    const d = e && e.data && e.data.detail || ''
+    if (String(d).startsWith('not_confirmable')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); load() }
+    else ui.toast(tt('Could not confirm — please retry later', '确认失败，请稍后再试'), 'error')
+  } finally { confirmingNo.value = '' }
+}
 </script>
 
 <template>
@@ -159,7 +178,7 @@ async function cancel(o) {
             <div>
               <b>{{ o.order_no }}</b>
               <div style="font-size:12px;color:var(--gray)">
-                {{ fmt(o.placed_at) }}<span v-if="o.status === 3 && o.shipping_status === 1">{{ tt(SHIP[1][0], SHIP[1][1]) }}</span>
+                {{ fmt(o.placed_at) }}<span v-if="[3, 4, 5].includes(o.status) && SHIP[o.shipping_status]">{{ tt(SHIP[o.shipping_status][0], SHIP[o.shipping_status][1]) }}</span>
               </div>
             </div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
@@ -177,6 +196,12 @@ async function cancel(o) {
                   class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is(o.order_no), loading: cancelingNo === o.order_no }"
                   :disabled="cancelingNo === o.order_no" @click="cancelArm.hit(o.order_no, () => cancel(o))"
                 >{{ cancelArm.is(o.order_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel & refund', '取消并退款') }}</button>
+              </template>
+              <template v-else-if="o.status === 4">
+                <button
+                  class="btn btn-primary btn-sm" :class="{ arm: recvArm.is(o.order_no), loading: confirmingNo === o.order_no }"
+                  :disabled="confirmingNo === o.order_no" @click="recvArm.hit(o.order_no, () => confirmRecv(o))"
+                >{{ recvArm.is(o.order_no) ? tt('Tap again to confirm', '再点一次确认') : tt('✓ Confirm delivery', '确认收货') }}</button>
               </template>
               <router-link class="btn btn-secondary btn-sm" :to="{ path: '/account/orders/detail', query: { no: o.order_no } }">{{ tt('Details →', '详情 →') }}</router-link>
             </div>

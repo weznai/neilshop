@@ -194,3 +194,24 @@ def cancel_order(db: Session, order_no: str, user: User) -> dict:
     if order.status == 1 and order.shipping_status == 0:
         return _cancel_paid_unshipped(db, order, user)
     raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
+
+
+def confirm_received(db: Session, order_no: str, user: User) -> dict:
+    """用户确认收货：CAS（WHERE status=4，与后台 mark-completed 并发互斥）4→5 已完成；
+    积分解冻仍由 worker 按 paid_at+return_days 独立驱动，此处无积分副作用。"""
+    order = _get_order(db, order_no.strip().upper())
+    if order.user_id != user.id:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    now = utcnow()
+    if repo.claim_order_completed(db, order.id, now) == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail=f"not_confirmable:{order.status}")
+    # 原生 CAS UPDATE 不经过身份映射：expire 后重读，保证响应携带新状态
+    db.expire(order)
+    order.completed_at = now
+    repo.add_timeline(db, order.id, "status_changed", actor="user", detail={
+        "from": 4, "to": 5, "reason": "user_confirm_received",
+    })
+    db.commit()
+    return {"order_no": order.order_no, "status": order.status}

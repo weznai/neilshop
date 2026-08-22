@@ -57,19 +57,29 @@ function closeNew() { Object.assign(newCode, NEW_CODE); showNew.value = false }
 /* 弹窗（PopupCreateIn/PopupUpdateIn）：trigger_rules 为 JSON dict {delaySec,exitIntent,mobileOnly} */
 const POPUP_SCENES = { welcome: '欢迎订阅', exit_intent: '离开挽留', newsletter: '邮件引导' }
 const sceneLabel = (s) => POPUP_SCENES[s] || s
+/* scene 白名单：三个预置场景 + 现有数据中已出现的合法值（select 限制，避免自由输入脏数据） */
+const sceneOptions = computed(() => [...Object.keys(POPUP_SCENES), ...[...new Set(popups.value.map((p) => p.scene).filter((s) => s && !(s in POPUP_SCENES)))]])
 const popupDlg = ref(false)
 const popupForm = reactive({ id: null, scene: 'welcome', title: '', content_md: '', coupon_code: '', delaySec: 7, exitIntent: false, mobileOnly: false, start_at: '', end_at: '', active: 0 })
 /* datetime-local 值 YYYY-MM-DDTHH:mm ↔ 后端 naive ISO（YYYY-MM-DDTHH:mm:ss）直通，避免时区二次偏移 */
 const dtIn = (iso) => (iso || '').slice(0, 16)
 const dtOut = (v) => (v ? v + ':00' : null)
+/* 折扣码时间：naive UTC → 本地 datetime-local（提交时 new Date().toISOString() 转回 UTC，与新建口径一致） */
+const pad2 = (n) => String(n).padStart(2, '0')
+const dtLocalIn = (iso) => {
+  if (!iso) return ''
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z')
+  if (isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
 
-/* 深链支持：?tab=collections 等直达（审计日志行跳转使用） */
+/* 深链支持：?tab=collections 等直达（审计日志行跳转使用）；colLoaded 仅在请求完成后置位（判空依据） */
 const TAB_KEYS = ['discounts', 'giftcards', 'rates', 'bundles', 'popups', 'collections']
 function initTabFromQuery() {
   const t = route.query.tab
   if (TAB_KEYS.includes(t)) {
     tab.value = t
-    if (t === 'collections') { colLoaded.value = true; loadCollections() }
+    if (t === 'collections') loadCollections()
     if (t === 'giftcards') loadGiftcards()
   }
 }
@@ -95,19 +105,25 @@ onMounted(() => { initTabFromQuery(); load() })
 
 /* tab 切换：回写 URL 深链（可分享）+ 集合/礼品卡懒加载（首次进入才拉取） */
 const colLoaded = ref(false)
+let colFetching = false
 function setTab(k) {
   tab.value = k
   router.replace({ query: { ...route.query, tab: k } })
-  if (k === 'collections' && !colLoaded.value) { colLoaded.value = true; loadCollections() }
+  if (k === 'collections' && !colLoaded.value) loadCollections()
   if (k === 'giftcards' && !gcLoaded.value) loadGiftcards()
 }
 
 const TYPE_LABEL = { 1: (v) => `${v}% off`, 2: (v) => `${money(v)} off`, 3: () => '免邮' }
-/* ends_at 为 naive UTC：按 UTC 日期比较判定「已过期」（天级，避免本地时区偏移误标） */
+/* ends_at/starts_at 为 naive UTC：补 'Z' 解析为完整时间戳后与当前时刻比较（秒级，避免天级比较在边界日误标） */
+const utcMs = (iso) => {
+  if (!iso) return NaN
+  const d = new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : iso + 'Z')
+  return d.getTime()
+}
+const isExpired = (c) => { const t = utcMs(c.ends_at); return !isNaN(t) && t <= Date.now() }
+const isNotStarted = (c) => { const t = utcMs(c.starts_at); return !isNaN(t) && t > Date.now() }
+/* 弹窗 tab 到期判定：仍按天级比较（end_at 仅日期粒度展示） */
 const todayUtc = () => new Date().toISOString().slice(0, 10)
-const isExpired = (c) => !!(c.ends_at && c.ends_at.slice(0, 10) < todayUtc())
-/* starts_at 在未来 → 「未生效」（与 isExpired 对称，天级比较） */
-const isNotStarted = (c) => !!(c.starts_at && c.starts_at.slice(0, 10) > todayUtc())
 
 async function toggleCode(c) {
   try {
@@ -119,6 +135,11 @@ async function toggleCode(c) {
 async function addCode() {
   if (!newCode.code) { toast('折扣码必填', 'error'); return }
   if (newCode.type === 1 && (newCode.value <= 0 || newCode.value > 100)) { toast('百分比折扣需在 1-100 之间', 'error'); return }
+  if (newCode.type === 2 && !(newCode.value > 0)) { toast('固定减免金额需大于 $0', 'error'); return }
+  /* 有效期校验：starts 空=现在；days 天后的结束需晚于开始（开始设在未来时天数太短会被拦截） */
+  const startMs = newCode.starts_at ? new Date(newCode.starts_at).getTime() : Date.now()
+  const endMs = newCode.days > 0 ? Date.now() + newCode.days * 864e5 : null
+  if (endMs != null && endMs <= startMs) { toast('结束时间需晚于开始时间（有效天数过短）', 'error'); return }
   try {
     await req('POST', '/api/admin/ops/discounts', {
       code: newCode.code.toUpperCase().trim(),
@@ -162,9 +183,9 @@ async function copyCode(c) {
   }
 }
 
-/* 编辑折扣码（PUT DiscountUpdateIn 全可选：value/门槛/封顶/次数/有效期） */
+/* 编辑折扣码（PUT DiscountUpdateIn 全可选：value/门槛/封顶/次数/有效期/首单限制） */
 const editDlg = ref(false)
-const editCode = reactive({ id: null, code: '', type: 1, value: 20, min_subtotal: 0, max_discount: null, usage_limit: null, per_user_limit: 1, starts_at: '', ends_at: '' })
+const editCode = reactive({ id: null, code: '', type: 1, value: 20, min_subtotal: 0, max_discount: null, usage_limit: null, per_user_limit: 1, first_order_only: 0, used_count: 0, starts_at: '', ends_at: '' })
 function editDiscount(c) {
   Object.assign(editCode, {
     id: c.id,
@@ -175,14 +196,23 @@ function editDiscount(c) {
     max_discount: c.max_discount ? c.max_discount / 100 : null,
     usage_limit: c.usage_limit ?? null,
     per_user_limit: c.per_user_limit ?? 1,
-    starts_at: dtIn(c.starts_at),
-    ends_at: dtIn(c.ends_at),
+    first_order_only: c.first_order_only ? 1 : 0,
+    used_count: c.used_count ?? 0,
+    /* naive UTC → 本地 datetime-local，提交时统一 new Date().toISOString()（与新建一致） */
+    starts_at: dtLocalIn(c.starts_at),
+    ends_at: dtLocalIn(c.ends_at),
   })
   editDlg.value = true
 }
 async function saveEdit() {
   if (!editCode.code.trim()) { toast('折扣码必填', 'error'); return }
   if (editCode.type === 1 && (editCode.value <= 0 || editCode.value > 100)) { toast('百分比折扣需在 1-100 之间', 'error'); return }
+  if (editCode.type === 2 && !(editCode.value > 0)) { toast('固定减免金额需大于 $0', 'error'); return }
+  /* starts_at 后端必填（null 拒绝）：清空时提示而非提交 422 */
+  if (!editCode.starts_at) { toast('开始时间必填', 'error'); return }
+  if (editCode.ends_at && new Date(editCode.ends_at).getTime() <= new Date(editCode.starts_at).getTime()) { toast('结束时间需晚于开始时间', 'error'); return }
+  /* 总次数不得低于已核销次数（后端同样拒绝） */
+  if (editCode.usage_limit && editCode.usage_limit < editCode.used_count) { toast(`总次数不能低于已使用的 ${editCode.used_count} 次`, 'error'); return }
   try {
     await req('PUT', '/api/admin/ops/discounts/' + editCode.id, {
       /* code 放开编辑：后端会查重，冲突返回 409 detail（toast 展示） */
@@ -192,8 +222,10 @@ async function saveEdit() {
       max_discount: editCode.type === 1 && editCode.max_discount ? Math.round(editCode.max_discount * 100) : null,
       usage_limit: editCode.usage_limit ? Math.round(editCode.usage_limit) : null,
       per_user_limit: Math.round(editCode.per_user_limit || 1),
-      starts_at: dtOut(editCode.starts_at),
-      ends_at: dtOut(editCode.ends_at),
+      first_order_only: editCode.first_order_only ? 1 : 0,
+      /* 本地时间 → UTC ISO（与新建同一套转换） */
+      starts_at: new Date(editCode.starts_at).toISOString().slice(0, 19),
+      ends_at: editCode.ends_at ? new Date(editCode.ends_at).toISOString().slice(0, 19) : null,
     })
     editDlg.value = false
     await loadDiscounts()
@@ -201,7 +233,7 @@ async function saveEdit() {
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 
-/* ===== 核销明细（GET /discounts/{id}/usages：分页 embed，空态「暂无核销记录」） ===== */
+/* ===== 核销明细（GET /api/admin/promo/discounts/{id}/usages：分页 embed，空态「暂无核销记录」） ===== */
 const USE_SIZE = 10
 const useDlg = ref(false)
 const useCode = ref(null)
@@ -214,7 +246,7 @@ const useRoi = ref(null)
 async function loadUsages() {
   const c = useCode.value
   if (!c) return
-  const d = await req('GET', `/api/admin/ops/discounts/${c.id}/usages?page=${usePage.value}&size=${USE_SIZE}`)
+  const d = await req('GET', `/api/admin/promo/discounts/${c.id}/usages?page=${usePage.value}&size=${USE_SIZE}`)
   usages.value = d.items || []
   useTotal.value = d.total ?? usages.value.length
   useRoi.value = d.total_discount_cents != null ? { discount: d.total_discount_cents, order: d.total_order_cents ?? null } : null
@@ -241,7 +273,7 @@ async function doDelDiscount() {
   if (!c) return
   delDscBusy.value = true
   try {
-    await req('DELETE', '/api/admin/ops/discounts/' + c.id)
+    await req('DELETE', '/api/admin/promo/discounts/' + c.id)
     toast('已删除', 'success')
     delDscDlg.value = false
     await loadDiscounts()
@@ -253,12 +285,14 @@ async function doDelDiscount() {
 }
 
 /* ===== 礼品卡（GET /promo/giftcards?page&size&q&status：pages 前端由 total/size 计算） ===== */
+/* status 5 态：0待激活 1有效 2冻结 3用尽 4作废（解冻仅 2→1，其余后端 409 invalid_status） */
+const GC_STATUS = { 0: ['待激活', 'tag-pending'], 1: ['有效', 'tag-paid'], 2: ['冻结', 'tag-ship'], 3: ['用尽', 'tag-done'], 4: ['作废', 'tag-error'] }
 const GC_SIZE = 20
 const gc = ref([])
 const gcLoaded = ref(false)
 const gcErr = ref(false)
 const gcQ = ref('')
-const gcStatus = ref('')          /* '' 全部 / '1' 激活 / '2' 冻结 */
+const gcStatus = ref('')          /* '' 全部 / '0'-'4' 对应 GC_STATUS 五态 */
 const gcPage = ref(1)
 const gcTotal = ref(0)
 const gcPages = computed(() => Math.max(1, Math.ceil(gcTotal.value / GC_SIZE)))
@@ -286,15 +320,16 @@ const gcFiltered = computed(() => !!(gcQ.value.trim() || gcStatus.value))
 const gcPct = (g) => (g.initial_cents ? Math.min(100, Math.round(((g.balance_cents || 0) * 100) / g.initial_cents)) : 0)
 const gcBarCls = (g) => { const p = gcPct(g); return p <= 25 ? 'low' : p <= 60 ? 'mid' : 'ok' }
 
-/* 手工发卡（POST：面额美元 ×100 取整；有效天数空=永久；卡号后端生成） */
+/* 手工发卡（POST：面额美元 ×100 取整；有效天数空=永久；卡号留空后端自动生成，可自定义） */
 const gcNewDlg = ref(false)
-const GC_NEW = { amount: 50, days: null, note: '' }
+const GC_NEW = { code: '', amount: 50, days: null, note: '' }
 const gcNew = reactive({ ...GC_NEW })
 function openGcNew() { Object.assign(gcNew, GC_NEW); gcNewDlg.value = true }
 async function createGiftcard() {
   if (!(gcNew.amount > 0)) { toast('面额需大于 0', 'error'); return }
   try {
     await req('POST', '/api/admin/promo/giftcards', {
+      ...(gcNew.code.trim() ? { code: gcNew.code.trim().toUpperCase() } : {}),
       initial_cents: Math.round(gcNew.amount * 100),
       expires_days: gcNew.days > 0 ? Math.round(gcNew.days) : null,
       note: gcNew.note.trim() || null,
@@ -329,7 +364,8 @@ async function doGcFreeze() {
   gcFrzBusy.value = false
 }
 
-/* 流水明细（GET /{id}/ledger：分页 embed；delta 正绿负红） */
+/* 流水明细（GET /{id}/ledger：分页 embed；amount 恒为正，符号由 change_type 决定：
+ * 1激活(+) 2消费冻结(-) 3消费确认(-) 4解冻(+) 5退款返还(+) 6作废(-)） */
 const LED_SIZE = 10
 const ledgerDlg = ref(false)
 const ledgerCard = ref(null)
@@ -337,6 +373,8 @@ const ledger = ref([])
 const ledPage = ref(1)
 const ledTotal = ref(0)
 const ledPages = computed(() => Math.max(1, Math.ceil(ledTotal.value / LED_SIZE)))
+const ledNeg = (l) => [2, 3, 6].includes(l.change_type)
+const ledAmt = (l) => (l.amount != null ? l.amount : Math.abs(l.delta_cents || 0))
 async function loadLedger() {
   const g = ledgerCard.value
   if (!g) return
@@ -492,8 +530,10 @@ async function doDelRate() {
 /* ===== 集合页管理（GET/POST /api/admin/catalog/collections + PUT/DELETE /{id} + GET/PUT /{id}/products） ===== */
 const collections = ref([])
 const colErr = ref(false)
-/* 商品数：列表响应自带 product_count（不再逐集合探测） */
+/* 商品数：列表响应自带 product_count（不再逐集合探测）；colLoaded 仅在请求完成后置位（空态判定依据），colFetching 防重复请求 */
 async function loadCollections() {
+  if (colFetching) return
+  colFetching = true
   colErr.value = false
   try {
     collections.value = (await req('GET', '/api/admin/catalog/collections')).items || []
@@ -502,6 +542,8 @@ async function loadCollections() {
     collections.value = []
     toast('集合列表加载失败：' + (e.message || ''), 'error')
   }
+  colLoaded.value = true
+  colFetching = false
 }
 
 /* 新建集合（CollectionCreateIn{slug,title,rule_json}；banner_image 创建后可在「编辑」中维护） */
@@ -663,12 +705,12 @@ async function doDelCollection() {
     </div>
   </div>
 
-  <div class="otab" style="display:flex;gap:4px;border-bottom:1.5px solid var(--gray-light);margin-bottom:14px">
+  <div class="otab">
     <button
       v-for="[k, label] in [['discounts', '折扣码'], ['giftcards', '礼品卡'], ['rates', '运费模板'], ['bundles', '捆绑折扣'], ['popups', '弹窗'], ['collections', '集合页']]"
       :key="k"
-      style="padding:9px 16px;font-size:13.5px;font-weight:600;border:none;background:none;cursor:pointer"
-      :style="{ color: tab === k ? 'var(--plum)' : 'var(--gray)', borderBottom: tab === k ? '2.5px solid var(--plum)' : '2.5px solid transparent' }"
+      :class="{ on: tab === k }"
+      style="background:none;border:none;cursor:pointer"
       @click="setTab(k)"
     >{{ label }}</button>
   </div>
@@ -686,7 +728,7 @@ async function doDelCollection() {
     <EmptyState v-else-if="loadErr && !discounts.length" icon="⚠️" title="折扣码加载失败" sub="服务端可能未启动或端点暂不可用">
       <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
     </EmptyState>
-    <div v-else class="card tbl-wrap">
+    <div v-else class="card card-flush tbl-wrap">
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">折扣码</h3>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -695,14 +737,14 @@ async function doDelCollection() {
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px 0">
-        <input v-model="dscQ" class="input" style="width:200px" placeholder="搜折扣码" @keydown.enter="dscSearch">
+        <input v-model="dscQ" class="input" style="width:200px" placeholder="搜折扣码 / 名称" @keydown.enter="dscSearch">
         <button class="btn btn-secondary btn-sm" @click="dscSearch">搜索</button>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
-        <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">码</th><th>规则</th><th>门槛/上限</th><th>已用</th><th>有效期</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+        <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px 10px 10px 16px">码</th><th>规则</th><th>门槛/上限</th><th>已用</th><th>有效期</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
         <tbody>
           <tr v-for="c in discounts" :key="c.id" style="border-top:1px solid var(--gray-light)">
-            <td style="padding:11px 10px;white-space:nowrap"><b>{{ c.code }}</b>
+            <td style="padding:11px 10px 11px 16px;white-space:nowrap"><b>{{ c.code }}</b>
               <button class="btn btn-ghost btn-sm" style="margin-left:4px;padding:2px 7px" title="复制折扣码" @click="copyCode(c)">⧉</button>
             </td>
             <td>{{ (TYPE_LABEL[c.type] || (() => '—'))(c.value) }}</td>
@@ -738,7 +780,7 @@ async function doDelCollection() {
       <div class="modal-box" style="max-width:520px">
         <button class="modal-x" @click="closeNew">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">➕ 新建折扣码</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="grid2">
           <div class="field"><label>码</label><input v-model="newCode.code" class="input" placeholder="SUMMER30" style="text-transform:uppercase"></div>
           <div class="field"><label>类型</label>
             <select v-model.number="newCode.type" class="input">
@@ -769,19 +811,22 @@ async function doDelCollection() {
       <div class="modal-box" style="max-width:520px">
         <button class="modal-x" @click="editDlg = false">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">✏️ 编辑折扣码 {{ editCode.code }}</h3>
-        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">类型不可更改；金额单位为美元，保存时换算为美分。</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">类型不可更改；金额单位为美元，保存时换算为美分；时间按本地时区提交。</p>
+        <div class="grid2">
           <div class="field" style="grid-column:1/-1"><label>码（修改后后端查重，重复将保存失败）</label>
             <input v-model="editCode.code" class="input" style="text-transform:uppercase"></div>
           <div v-if="editCode.type !== 3" class="field"><label>{{ editCode.type === 1 ? '折扣 %' : '减免 $' }}</label>
             <input v-model.number="editCode.value" class="input" type="number"></div>
           <div class="field"><label>门槛 $（0=无）</label><input v-model.number="editCode.min_subtotal" class="input" type="number"></div>
           <div v-if="editCode.type === 1" class="field"><label>封顶 $（可选）</label><input v-model.number="editCode.max_discount" class="input" type="number"></div>
-          <div class="field"><label>总次数（空=不限）</label><input v-model.number="editCode.usage_limit" class="input" type="number" min="1"></div>
+          <div class="field"><label>总次数（空=不限，≥已用 {{ editCode.used_count }}）</label><input v-model.number="editCode.usage_limit" class="input" type="number" min="1"></div>
           <div class="field"><label>每人限用次数</label><input v-model.number="editCode.per_user_limit" class="input" type="number" min="1"></div>
-          <div class="field"><label>开始时间 (UTC)</label><input v-model="editCode.starts_at" class="input" type="datetime-local"></div>
-          <div class="field"><label>结束时间 (UTC)（空=永久）</label><input v-model="editCode.ends_at" class="input" type="datetime-local"></div>
+          <div class="field"><label>开始时间（必填）</label><input v-model="editCode.starts_at" class="input" type="datetime-local"></div>
+          <div class="field"><label>结束时间（空=永久）</label><input v-model="editCode.ends_at" class="input" type="datetime-local"></div>
         </div>
+        <label style="display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer;margin-top:10px">
+          <input v-model.number="editCode.first_order_only" type="checkbox" :true-value="1" :false-value="0" style="width:16px;height:16px"> 仅限首单使用
+        </label>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="editDlg = false">取消</button>
           <button class="btn btn-primary btn-sm" @click="saveEdit">保存</button>
@@ -825,11 +870,11 @@ async function doDelCollection() {
     </EmptyState>
     <template v-else>
       <div v-if="!gcLoaded" class="card skeleton" style="min-height:220px"></div>
-      <div v-else class="card tbl-wrap">
+      <div v-else class="card card-flush tbl-wrap">
         <div class="dhead" style="padding:14px 16px 0">
           <h3 class="dtitle">礼品卡</h3>
           <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-            <span style="font-size:12.5px;color:var(--gray)">共 {{ gcTotal }} 张 · 当前页激活 {{ gc.filter((g) => g.status === 1).length }} / 冻结 {{ gc.filter((g) => g.status === 2).length }}</span>
+            <span style="font-size:12.5px;color:var(--gray)">共 {{ gcTotal }} 张 · 当前页有效 {{ gc.filter((g) => g.status === 1).length }} / 冻结 {{ gc.filter((g) => g.status === 2).length }}</span>
             <button class="btn btn-primary btn-sm" @click="openGcNew">＋ 手工发卡</button>
           </div>
         </div>
@@ -837,16 +882,17 @@ async function doDelCollection() {
           <input v-model="gcQ" class="input" style="width:200px" placeholder="搜卡号 / 邮箱" @keydown.enter="gcSearch">
           <button class="btn btn-secondary btn-sm" @click="gcSearch">搜索</button>
           <select v-model="gcStatus" class="input" style="width:auto;padding:6px 10px" @change="gcSearch">
-            <option value="">全部状态</option><option value="1">激活</option><option value="2">冻结</option>
+            <option value="">全部状态</option>
+            <option v-for="(m, v) in GC_STATUS" :key="v" :value="String(v)">{{ m[0] }}</option>
           </select>
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:13px">
           <thead><tr style="text-align:left;color:var(--gray)">
-            <th style="padding:10px">卡号</th><th>余额</th><th>面值</th><th>状态</th><th>购买人</th><th>收件人</th><th>过期时间</th><th style="text-align:right">操作</th>
+            <th style="padding:10px 10px 10px 16px">卡号</th><th>余额</th><th>面值</th><th>状态</th><th>购买人</th><th>收件人</th><th>过期时间</th><th style="text-align:right">操作</th>
           </tr></thead>
           <tbody>
             <tr v-for="g in gc" :key="g.id" style="border-top:1px solid var(--gray-light)">
-              <td style="padding:11px 10px"><code style="font-size:12px">{{ g.code }}</code></td>
+              <td style="padding:11px 10px 11px 16px"><code style="font-size:12px">{{ g.code }}</code></td>
               <td style="white-space:nowrap">
                 <div style="display:flex;align-items:center;gap:8px" :title="`余额 ${money(g.balance_cents)} / 面值 ${money(g.initial_cents)}`">
                   <div class="stock-track" style="width:64px">
@@ -856,12 +902,12 @@ async function doDelCollection() {
                 </div>
               </td>
               <td>{{ money(g.initial_cents) }}</td>
-              <td><span class="tag" :class="g.status === 1 ? 'tag-paid' : 'tag-error'">{{ g.status === 1 ? '激活' : '冻结' }}</span></td>
+              <td><span class="tag" :class="GC_STATUS[g.status]?.[1] || 'tag-done'">{{ GC_STATUS[g.status]?.[0] || '未知' }}</span></td>
               <td style="color:var(--gray);font-size:12px">{{ g.purchaser_email || '—' }}</td>
               <td style="color:var(--gray);font-size:12px">{{ g.recipient_email || '—' }}</td>
               <td style="color:var(--gray);font-size:12px">{{ g.expired_at ? dt(g.expired_at) : '永久' }}</td>
               <td style="text-align:right;white-space:nowrap">
-                <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="askGcFreeze(g)">{{ g.status === 1 ? '冻结' : '解冻' }}</button>
+                <button v-if="g.status === 1 || g.status === 2" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="askGcFreeze(g)">{{ g.status === 1 ? '冻结' : '解冻' }}</button>
                 <button class="btn btn-secondary btn-sm" @click="openLedger(g)">流水</button>
               </td>
             </tr>
@@ -880,9 +926,10 @@ async function doDelCollection() {
         <button class="modal-x" @click="gcNewDlg = false">×</button>
         <div class="dhead" style="margin-bottom:12px">
           <h3 class="dtitle">手工发卡</h3>
-          <span style="font-size:12px;color:var(--gray)">卡号由后端生成，流水可查</span>
+          <span style="font-size:12px;color:var(--gray)">卡号留空自动生成，流水可查</span>
         </div>
         <div style="display:grid;gap:12px">
+          <div class="field"><label>自定义卡号（可选，留空自动生成）</label><input v-model="gcNew.code" class="input" placeholder="留空自动生成" style="text-transform:uppercase"></div>
           <div class="field"><label>面额（美元）*</label><input v-model.number="gcNew.amount" class="input" type="number" min="0.01" step="0.01"></div>
           <div class="field"><label>有效天数（空 = 永久）</label><input v-model.number="gcNew.days" class="input" type="number" min="1"></div>
           <div class="field"><label>备注（可选）</label><input v-model="gcNew.note" class="input" placeholder="如：客服补偿"></div>
@@ -894,7 +941,7 @@ async function doDelCollection() {
       </div>
     </div>
 
-    <!-- 流水明细（时间/变动/余额/关联订单；delta 正绿负红；分页 embed） -->
+    <!-- 流水明细（时间/变动/余额/关联订单；符号由 change_type 决定，消费/作负红色；分页 embed） -->
     <div v-if="ledgerDlg" class="modal open" @click.self="ledgerDlg = false">
       <div class="modal-box" style="max-width:560px">
         <button class="modal-x" @click="ledgerDlg = false">×</button>
@@ -904,7 +951,7 @@ async function doDelCollection() {
           <tbody>
             <tr v-for="l in ledger" :key="l.id" style="border-top:1px solid var(--gray-light)">
               <td style="padding:8px 6px;color:var(--gray);white-space:nowrap">{{ dt(l.created_at) }}</td>
-              <td :style="{ color: (l.delta_cents || 0) >= 0 ? '#2FA463' : 'var(--error)', fontWeight: 600 }">{{ (l.delta_cents || 0) >= 0 ? '+' : '' }}{{ money(l.delta_cents) }}</td>
+              <td :style="{ color: ledNeg(l) ? 'var(--error)' : '#2FA463', fontWeight: 600 }">{{ ledNeg(l) ? '−' : '+' }}{{ money(ledAmt(l)) }}</td>
               <td>{{ l.balance_after_cents != null ? money(l.balance_after_cents) : '—' }}</td>
               <td><code style="font-size:12px">{{ l.order_no || '—' }}</code></td>
             </tr>
@@ -926,7 +973,7 @@ async function doDelCollection() {
     <EmptyState v-else-if="loadErr && !rates.length" icon="⚠️" title="运费模板加载失败" sub="服务端可能未启动或端点暂不可用">
       <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
     </EmptyState>
-    <div v-else class="card tbl-wrap">
+    <div v-else class="card card-flush tbl-wrap">
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">运费模板</h3>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -936,11 +983,11 @@ async function doDelCollection() {
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)">
-          <th style="padding:10px">目的地</th><th>承运</th><th>方式</th><th>运费</th><th>免邮门槛</th><th>时效（天）</th><th>限重(g)</th><th>状态</th><th style="text-align:right">操作</th>
+          <th style="padding:10px 10px 10px 16px">目的地</th><th>承运</th><th>方式</th><th>运费</th><th>免邮门槛</th><th>时效（天）</th><th>限重(g)</th><th>状态</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in rates" :key="r.id" style="border-top:1px solid var(--gray-light)">
-            <td style="padding:11px 10px"><b>{{ r.dest_country || '*' }}</b></td>
+            <td style="padding:11px 10px 11px 16px"><b>{{ r.dest_country || '*' }}</b></td>
             <td>{{ r.carrier }}</td>
             <td>{{ r.method === 'express' ? '快递' : '标准' }}</td>
             <td><b>{{ money(r.price) }}</b></td>
@@ -963,8 +1010,8 @@ async function doDelCollection() {
       <div class="modal-box" style="max-width:520px">
         <button class="modal-x" @click="rateDlg = false">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ rateForm.id ? '编辑运费模板 #' + rateForm.id : '新建运费模板' }}</h3>
-        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">金额单位为美分（分），时效为天；相同目的地/承运组合将保存失败。</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">金额单位为美分，时效为天；相同目的地/承运组合将保存失败。</p>
+        <div class="grid2">
           <div class="field"><label>目的地（国家码）</label>
             <select v-model="rateForm.dest_country" class="input">
               <option v-for="c in ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'JP']" :key="c">{{ c }}</option>
@@ -980,8 +1027,8 @@ async function doDelCollection() {
               <option value="standard">标准</option><option value="express">快递</option>
             </select>
           </div>
-          <div class="field"><label>运费（分）</label><input v-model.number="rateForm.price" class="input" type="number"></div>
-          <div class="field"><label>免邮门槛（分，可空）</label><input v-model.number="rateForm.free_over" class="input" type="number"></div>
+          <div class="field"><label>运费（美分）</label><input v-model.number="rateForm.price" class="input" type="number"></div>
+          <div class="field"><label>免邮门槛（美分，可空）</label><input v-model.number="rateForm.free_over" class="input" type="number"></div>
           <div class="field"><label>最小时效（天）</label><input v-model.number="rateForm.eta_min_days" class="input" type="number"></div>
           <div class="field"><label>最大时效（天）</label><input v-model.number="rateForm.eta_max_days" class="input" type="number"></div>
           <div class="field"><label>限重（g）</label><input v-model.number="rateForm.max_weight_g" class="input" type="number"></div>
@@ -1005,14 +1052,14 @@ async function doDelCollection() {
           <h3 class="dtitle">🎁 捆绑折扣</h3>
           <span class="item-cnt">结算即时生效</span>
         </div>
-        <p style="font-size:12.5px;color:var(--gray);margin-bottom:14px">两件 / 三件及以上的购物车整单折扣比例（%，0 = 关闭该档）。</p>
-        <div class="field"><label>买 2 件折扣 %（0-50）</label>
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:14px">仅 press-on-nails（穿戴甲）分类商品参与计数与折扣：购物车内该分类 2 件享买 2 档、3 件及以上享买 3+ 档（%，0 = 关闭该档）。</p>
+        <div class="field"><label>穿戴甲 2 件折扣 %（0-50）</label>
           <div style="display:flex;gap:8px">
             <input v-model.number="settings.bundle_2_off" class="input" type="number" min="0" max="50">
             <button class="btn btn-secondary" @click="saveBundle('b2')">保存</button>
           </div>
         </div>
-        <div class="field"><label>买 3+ 件折扣 %（0-50）</label>
+        <div class="field"><label>穿戴甲 3+ 件折扣 %（0-50）</label>
           <div style="display:flex;gap:8px">
             <input v-model.number="settings.bundle_3_off" class="input" type="number" min="0" max="50">
             <button class="btn btn-secondary" @click="saveBundle('b3')">保存</button>
@@ -1021,13 +1068,13 @@ async function doDelCollection() {
       </div>
       <div class="card" style="padding:20px">
         <div class="dhead" style="margin-bottom:10px"><h3 class="dtitle">当前生效规则与结算示例</h3></div>
-        <div class="kv-row"><span>买 2 件整单折扣</span><b>{{ Number(settings.bundle_2_off) ? settings.bundle_2_off + '%' : '已关闭' }}</b></div>
-        <div class="kv-row"><span>买 3+ 件整单折扣</span><b>{{ Number(settings.bundle_3_off) ? settings.bundle_3_off + '%' : '已关闭' }}</b></div>
-        <div class="kv-row"><span>生效范围</span><b>全店购物车结算</b></div>
+        <div class="kv-row"><span>穿戴甲 2 件折扣</span><b>{{ Number(settings.bundle_2_off) ? settings.bundle_2_off + '%' : '已关闭' }}</b></div>
+        <div class="kv-row"><span>穿戴甲 3+ 件折扣</span><b>{{ Number(settings.bundle_3_off) ? settings.bundle_3_off + '%' : '已关闭' }}</b></div>
+        <div class="kv-row"><span>生效范围</span><b>仅 press-on-nails（穿戴甲）分类商品</b></div>
         <p style="font-size:12.5px;color:var(--gray);margin-top:12px;line-height:1.8">
-          结算示例：2 件小计 $100.00 → 享 −{{ settings.bundle_2_off }}%，应付 <b style="color:var(--plum)">${{ example(100, settings.bundle_2_off) }}</b>；
-          3 件小计 $150.00 → 享 −{{ settings.bundle_3_off }}%，应付 <b style="color:var(--plum)">${{ example(150, settings.bundle_3_off) }}</b>。
-          实际金额以后端结算为准。
+          结算示例：购物车含穿戴甲 2 件、小计 $100.00 → 享 −{{ settings.bundle_2_off }}%，应付 <b style="color:var(--plum)">${{ example(100, settings.bundle_2_off) }}</b>；
+          穿戴甲 3 件、小计 $150.00 → 享 −{{ settings.bundle_3_off }}%，应付 <b style="color:var(--plum)">${{ example(150, settings.bundle_3_off) }}</b>。
+          其他分类商品不参与计数与折扣，实际金额以后端结算为准。
         </p>
       </div>
     </div>
@@ -1040,7 +1087,7 @@ async function doDelCollection() {
     <EmptyState v-else-if="loadErr && !popups.length" icon="⚠️" title="弹窗配置加载失败" sub="服务端可能未启动或端点暂不可用">
       <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
     </EmptyState>
-    <div v-else class="card tbl-wrap">
+    <div v-else class="card card-flush tbl-wrap">
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">弹窗</h3>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -1050,11 +1097,11 @@ async function doDelCollection() {
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)">
-          <th style="padding:10px">场景</th><th>标题 / 券码</th><th>触发规则</th><th>有效期</th><th>曝光/转化</th><th>状态</th><th style="text-align:right">操作</th>
+          <th style="padding:10px 10px 10px 16px">场景</th><th>标题 / 券码</th><th>触发规则</th><th>有效期</th><th>曝光/转化</th><th>状态</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="p in popups" :key="p.id" style="border-top:1px solid var(--gray-light)">
-            <td style="padding:11px 10px;white-space:nowrap"><b>{{ sceneLabel(p.scene) }}</b><span style="color:var(--gray);font-size:11px;margin-left:4px">{{ p.scene }}</span></td>
+            <td style="padding:11px 10px 11px 16px;white-space:nowrap"><b>{{ sceneLabel(p.scene) }}</b><span style="color:var(--gray);font-size:11px;margin-left:4px">{{ p.scene }}</span></td>
             <td style="min-width:180px">
               <b>{{ p.title }}</b>
               <div v-if="p.coupon_code" style="color:var(--plum);font-size:12px;margin-top:2px">🎫 {{ p.coupon_code }}</div>
@@ -1084,12 +1131,11 @@ async function doDelCollection() {
         <button class="modal-x" @click="popupDlg = false">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ popupForm.id ? '✏️ 编辑弹窗 #' + popupForm.id : '🪟 新建弹窗' }}</h3>
         <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">按场景自动弹出：前台自动拉取「启用中 + 有效期内」的最新一条展示。</p>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="grid2">
           <div class="field"><label>场景 scene</label>
-            <input v-model="popupForm.scene" class="input" list="popup-scenes" placeholder="welcome">
-            <datalist id="popup-scenes">
-              <option v-for="(name, s) in POPUP_SCENES" :key="s" :value="s">{{ name }}</option>
-            </datalist>
+            <select v-model="popupForm.scene" class="input">
+              <option v-for="s in sceneOptions" :key="s" :value="s">{{ sceneLabel(s) }}（{{ s }}）</option>
+            </select>
           </div>
           <div class="field"><label>券码（可选，下拉选择或手动输入）</label>
             <input v-model="popupForm.coupon_code" class="input" list="popup-coupon-codes" placeholder="WELCOME20" style="text-transform:uppercase">
@@ -1128,8 +1174,8 @@ async function doDelCollection() {
       <template #action><button class="btn btn-secondary btn-sm" @click="loadCollections">重试</button></template>
     </EmptyState>
     <template v-else>
-      <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
-      <div v-else class="card tbl-wrap">
+      <div v-if="!colLoaded" class="card skeleton" style="min-height:220px"></div>
+      <div v-else class="card card-flush tbl-wrap">
         <div class="dhead" style="padding:14px 16px 0">
           <h3 class="dtitle">集合页</h3>
           <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -1139,11 +1185,11 @@ async function doDelCollection() {
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:13px">
           <thead><tr style="text-align:left;color:var(--gray)">
-            <th style="padding:10px">集合</th><th>slug</th><th>规则</th><th>商品数</th><th>状态</th><th style="text-align:right">操作</th>
+            <th style="padding:10px 10px 10px 16px">集合</th><th>slug</th><th>规则</th><th>商品数</th><th>状态</th><th style="text-align:right">操作</th>
           </tr></thead>
           <tbody>
             <tr v-for="c in collections" :key="c.id" style="border-top:1px solid var(--gray-light)">
-              <td style="padding:11px 10px">
+              <td style="padding:11px 10px 11px 16px">
                 <b>{{ c.title }}</b>
                 <div v-if="c.banner_image" style="font-size:11.5px;color:var(--gray);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" :title="c.banner_image">🖼 {{ c.banner_image }}</div>
               </td>
@@ -1257,4 +1303,7 @@ async function doDelCollection() {
 /* 捆绑折扣双卡：宽屏左右并排，≤900px 单列堆叠 */
 .bundle-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
 @media(max-width:900px){.bundle-grid{grid-template-columns:1fr}}
+/* 弹窗表单两列栅格：窄屏（<720px）单列 */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:720px){.grid2{grid-template-columns:1fr}}
 </style>

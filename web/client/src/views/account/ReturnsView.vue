@@ -89,6 +89,50 @@ async function cancelRma(r) {
     else ui.toast(tt('Could not withdraw — please retry later', '撤销失败，请稍后再试'), 'error')
   } finally { cancelingNo.value = '' }
 }
+
+/* 撤销换货申请（仅 status=0 申请中）：与 RMA 撤销同构；两段式确认 */
+async function cancelExchange(x) {
+  cancelingNo.value = x.exchange_no
+  try {
+    await req('POST', '/api/exchanges/' + encodeURIComponent(x.exchange_no) + '/cancel')
+    ui.toast(tt('Exchange request withdrawn', '换货申请已撤销'), 'success')
+    await load()
+  } catch (e) {
+    const d = e && e.data && e.data.detail || ''
+    if (String(d).startsWith('exchange_not_cancellable')) ui.toast(tt('This request is already being processed and can no longer be withdrawn', '该申请已在处理中，无法撤销'), 'error')
+    else ui.toast(tt('Could not withdraw — please retry later', '撤销失败，请稍后再试'), 'error')
+  } finally { cancelingNo.value = '' }
+}
+
+/* 换货差价支付（仅 status=2）：pay-intent 建单 → 真实 provider 带 redirect 跳转，
+   mock（dev）直接确认核销；与订单支付链路同构 */
+const payingXNo = ref('')
+async function payDiff(x) {
+  payingXNo.value = x.exchange_no
+  try {
+    const d = await req('POST', '/api/exchanges/' + encodeURIComponent(x.exchange_no) + '/pay-intent')
+    if (d && d.redirect_url) {
+      ui.toast(tt('Redirecting to payment…', '正在跳转支付…'), 'success')
+      window.location.href = d.redirect_url
+      return
+    }
+    const r = await req('POST', '/api/exchanges/' + encodeURIComponent(x.exchange_no) + '/mock-pay', { succeed: true })
+    ui.toast(r && r.exchange_status === 1
+      ? tt('Difference paid — your exchange will ship soon', '差价已支付，换货即将发出')
+      : tt('Payment processing', '支付处理中'), 'success')
+    await load()
+  } catch (e) {
+    const d = e && e.data && e.data.detail || ''
+    if (String(d).startsWith('exchange_not_awaiting_diff') || d === 'diff_already_paid') {
+      ui.toast(tt('Status changed — refreshed', '状态已变化，已刷新'), 'error')
+      await load()
+    } else if (d === 'mock_provider_disabled') {
+      ui.toast(tt('Online payment is not available yet — please contact support to pay the difference', '在线支付暂未开通，请联系客服支付差价'), 'error')
+    } else {
+      ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
+    }
+  } finally { payingXNo.value = '' }
+}
 </script>
 
 <template>
@@ -164,6 +208,19 @@ async function cancelRma(r) {
             <span v-if="x.old_variant && x.new_variant">→</span>
             <b v-if="x.new_variant">{{ x.new_variant.title }}</b>
             <span v-if="x.new_variant" style="color:var(--gray)">（{{ '$' + (x.new_variant.price / 100).toFixed(2) }}）</span>
+          </div>
+          <div v-if="x.status === 2" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+            <button
+              class="btn btn-primary btn-sm" :class="{ loading: payingXNo === x.exchange_no }"
+              :disabled="payingXNo === x.exchange_no || !!cancelingNo" @click="payDiff(x)"
+            >💳 {{ tt(`Pay difference $${(x.price_diff / 100).toFixed(2)}`, `支付差价 $${(x.price_diff / 100).toFixed(2)}`) }}</button>
+            <span style="font-size:12.5px;color:var(--gray)">{{ tt('Prefer help?', '需要帮助？') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></span>
+          </div>
+          <div v-if="x.status === 0" style="margin-top:8px">
+            <button
+              class="btn btn-ghost btn-sm" :class="{ arm: arm.is(x.exchange_no), loading: cancelingNo === x.exchange_no }"
+              :disabled="!!cancelingNo || !!payingXNo" @click="arm.hit(x.exchange_no, () => cancelExchange(x))"
+            >{{ arm.is(x.exchange_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Withdraw', '撤销申请') }}</button>
           </div>
         </div>
       </div>

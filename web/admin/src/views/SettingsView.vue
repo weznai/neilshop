@@ -3,9 +3,14 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
+import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 
-const tab = ref('shipping')
+const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['raw', '全部参数']]
+/* tab 进 URL（刷新/分享保持当前面板） */
+const st = reactive({ tab: 'shipping' })
+useQuerySync(st, { defaults: { tab: 'shipping' } })
+if (!TABS.some(([k]) => k === st.tab)) st.tab = 'shipping'
 const settings = reactive({})   /* key → {value, description} */
 const templates = ref([])
 const loaded = ref(false)
@@ -16,14 +21,22 @@ const settingsErr = ref(false)  /* 配置加载失败：禁用保存，防止默
  * seed: return_days / points_per_dollar_earn（PUT 为 upsert，缺失 key 也能保存生效）
  * bundle_2_off/bundle_3_off 已收敛至「营销工具 · 捆绑折扣」单一数据源，此处不再编辑 */
 const EDITABLE = {
-  free_shipping_threshold: { label: '满额免邮（分）', type: 'number', def: 3500 },
-  shipping_standard: { label: '标准运费（分）', type: 'number', def: 499 },
-  shipping_express: { label: '快递运费（分）', type: 'number', def: 1499 },
-  tax_rate: { label: '综合税率', type: 'number', step: '0.0001', def: 0.0735 },
-  return_days: { label: '退货窗口（天）', type: 'number', def: 30 },
-  points_per_dollar_earn: { label: '消费 $1 赚积分', type: 'number', def: 10 },
+  free_shipping_threshold: { label: '满额免邮（分）', type: 'number', def: 3500, min: 0 },
+  shipping_standard: { label: '标准运费（分）', type: 'number', def: 499, min: 0 },
+  shipping_express: { label: '快递运费（分）', type: 'number', def: 1499, min: 0 },
+  tax_rate: { label: '综合税率', type: 'number', step: '0.0001', def: 0.0735, min: 0, max: 1 },
+  return_days: { label: '退货窗口（天）', type: 'number', def: 30, min: 1, max: 90 },
+  points_per_dollar_earn: { label: '消费 $1 赚积分', type: 'number', def: 10, min: 0 },
 }
 const drafts = reactive({})   /* key → 编辑值（数字） */
+/* 轻量范围校验：超界返回中文提示（保存前拦截） */
+function checkRange(key, n) {
+  const meta = EDITABLE[key]
+  if (!meta) return ''
+  if (meta.min != null && n < meta.min) return `「${meta.label}」不能小于 ${meta.min}`
+  if (meta.max != null && n > meta.max) return `「${meta.label}」不能大于 ${meta.max}`
+  return ''
+}
 
 async function load() {
   /* loaded 置位后不再重置：重试/保存后刷新走旧数据模式，不闪骨架 */
@@ -50,6 +63,8 @@ async function saveKey(key) {
   if (settingsErr.value) { toast('配置加载失败，已禁用保存（防止默认值覆盖线上配置），请先重试加载', 'error'); return }
   const n = Number(drafts[key])
   if (!Number.isFinite(n) || n < 0) { toast('请输入有效的非负数字', 'error'); return }
+  const rangeMsg = checkRange(key, n)
+  if (rangeMsg) { toast(rangeMsg + '，已阻止保存', 'error'); return }
   saving.value = key
   try {
     await req('PUT', '/api/admin/ops/settings', { key, value: n })
@@ -69,6 +84,8 @@ async function saveAll() {
   for (const k of keys) {
     const n = Number(drafts[k])
     if (!Number.isFinite(n) || n < 0) { toast(`「${EDITABLE[k].label}」需为有效的非负数字`, 'error'); return }
+    const rangeMsg = checkRange(k, n)
+    if (rangeMsg) { toast(rangeMsg + '，已阻止保存', 'error'); return }
   }
   savingAll.value = true
   let done = 0
@@ -111,15 +128,16 @@ const rawRows = computed(() => {
 
   <div class="otab">
     <button
-      v-for="[k, label] in [['shipping', '运费与运营'], ['email', '邮件模板'], ['raw', '全部参数']]"
+      v-for="[k, label] in TABS"
       :key="k"
-      :class="{ on: tab === k }"
-      @click="tab = k"
+      :class="{ on: st.tab === k }"
+      style="background:none;border:none;cursor:pointer"
+      @click="st.tab = k"
     >{{ label }}</button>
   </div>
 
   <!-- 运费与运营（常用 key 表单化；保存即 upsert，未初始化的 key 用默认值占位） -->
-  <div v-if="tab === 'shipping'" class="card" style="padding:20px">
+  <div v-if="st.tab === 'shipping'" class="card" style="padding:20px">
     <div class="dhead">
       <div class="dtitle">运营参数</div>
       <button class="btn btn-primary btn-sm" :class="{ loading: savingAll }" :disabled="savingAll || settingsErr" @click="saveAll">
@@ -153,7 +171,7 @@ const rawRows = computed(() => {
   </div>
 
   <!-- 邮件模板 -->
-  <div v-else-if="tab === 'email'" class="card" style="padding:0">
+  <div v-else-if="st.tab === 'email'" class="card" style="padding:0">
     <div v-for="t in tplList()" :key="t.name" class="setrow" style="padding:14px 18px;border-bottom:1px solid var(--gray-light)">
       <div><b>{{ t.name }}</b><div style="font-size:12px;color:var(--gray)">主题：{{ t.subject }}</div></div>
       <button class="btn btn-secondary btn-sm" @click="showTpl(t)">👁 预览</button>

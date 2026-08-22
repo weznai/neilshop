@@ -2,10 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
+import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { i18n } from '../../i18n'
 
 const auth = useAuthStore()
+const ui = useUiStore()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const orders = ref([])
 const orderTotal = ref(0)
@@ -14,6 +16,7 @@ const pts = ref(null)
 const expiringSum = ref(0)
 const loaded = ref(false)
 const failed = ref(false)
+const payingNo = ref('')
 
 /* 心愿单计数：读 localStorage gm_wl_count（WishlistView/ProductView 维护）+ 监听 gm:wl-changed，不再拉全量 */
 function syncWl() {
@@ -33,7 +36,10 @@ function fmt(iso) {
   const d = new Date(iso)
   if (isNaN(d)) return '—'
   const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`
+  return d.getFullYear() === new Date().getFullYear()
+    ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
+    : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`
 }
 
 onMounted(async () => {
@@ -64,6 +70,22 @@ async function reload() {
     orderTotal.value = d.total || 0
   } catch (_) { failed.value = true }
   loaded.value = true
+}
+
+/* 待付订单支付：先建支付意图再 mock 支付（与 OrdersView 一致） */
+async function pay(o) {
+  payingNo.value = o.order_no
+  try {
+    await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })
+    ui.toast(d.order_status === 1 ? tt('Payment successful — points will be credited after confirmation', '支付成功，积分将在确认后发放') : tt('Payment processing', '支付处理中'), 'success')
+    await reload()
+  } catch (e) {
+    const d = e && e.data && e.data.detail || ''
+    if (String(d).startsWith('order_not_pending')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); reload() }
+    else if (d === 'already_paid') { ui.toast(tt('This order is already paid', '该订单已支付'), 'error'); reload() }
+    else ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
+  } finally { payingNo.value = '' }
 }
 
 const u = computed(() => auth.user || {})
@@ -148,6 +170,7 @@ const tierNext = computed(() => {
           <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
           <div style="display:flex;gap:10px;align-items:center">
             <b style="color:var(--plum)">{{ money(o.grand_total) }}</b>
+            <button v-if="o.status === 0" class="btn btn-primary btn-sm" :class="{ loading: payingNo === o.order_no }" :disabled="payingNo === o.order_no" @click="pay(o)">{{ tt('Pay now', '去支付') }}</button>
             <router-link class="btn btn-secondary btn-sm" :to="{ path: '/account/orders/detail', query: { no: o.order_no } }">{{ tt('Details', '详情') }}</router-link>
           </div>
         </div>

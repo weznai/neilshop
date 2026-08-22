@@ -7,10 +7,13 @@ import { i18n } from '../i18n'
 const auth = useAuthStore()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const pts = ref(null)
-onMounted(async () => {
-  if (auth.isLoggedIn) {
-    try { pts.value = await req('GET', '/api/points') } catch (_) { /* */ }
-  }
+const failed = ref(false)
+async function load() {
+  failed.value = false
+  try { pts.value = await req('GET', '/api/points') } catch (_) { failed.value = true }
+}
+onMounted(() => {
+  if (auth.isLoggedIn) load()
 })
 
 /* User.tier：0普通(Glow) 1银(Shimmer, 累计$100+) 2金(Diva, 累计$300+)；[en, zh] 双语 */
@@ -59,6 +62,10 @@ const SPEND_RULES = [
         <div style="font-size:13px;color:var(--gray)">{{ tt(`≈ $${((pts.usable || 0) / 100).toFixed(2)} off at checkout`, `≈ 结账可抵 $${((pts.usable || 0) / 100).toFixed(2)}`) }}</div>
         <div v-if="pts.frozen > 0" style="font-size:12.5px;color:var(--warn);margin-top:4px">{{ tt(`+ ${pts.frozen.toLocaleString()} pts frozen`, `另有 ${pts.frozen.toLocaleString()} 分冻结中`) }}</div>
         <router-link v-if="auth.isLoggedIn" class="btn btn-secondary btn-sm" style="margin-top:10px" to="/account/points">{{ tt('View details →', '查看明细 →') }}</router-link>
+      </div>
+
+      <div v-else-if="auth.isLoggedIn && failed" class="card" style="max-width:460px;margin:0 auto 26px;padding:18px;text-align:center;color:var(--gray)">
+        {{ tt('Could not load your points —', '积分加载失败 ——') }} <a href="javascript:void(0)" style="color:var(--plum)" @click="load">{{ tt('retry', '重试') }}</a>
       </div>
 
       <div class="grid grid-3">
