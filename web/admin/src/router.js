@@ -12,11 +12,11 @@ const router = createRouter({
       children: [
         { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { title: '数据看板' } },
         { path: 'orders', name: 'orders', component: () => import('./views/OrdersView.vue'), meta: { title: '订单管理' } },
-        { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情' } },
+        { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情', crumbs: ['订单管理', '订单详情'] } },
         { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue'), meta: { title: '退换货' } },
         { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue'), meta: { title: '工单' } },
         { path: 'products', name: 'products', component: () => import('./views/ProductsView.vue'), meta: { title: '商品管理' } },
-        { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue'), meta: { title: '商品编辑' } },
+        { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue'), meta: { title: '商品编辑', crumbs: ['商品管理', '商品编辑'] } },
         { path: 'inventory', name: 'inventory', component: () => import('./views/InventoryView.vue'), meta: { title: '库存中心' } },
         { path: 'marketing', name: 'marketing', component: () => import('./views/MarketingView.vue'), meta: { title: '营销工具' } },
         { path: 'content', name: 'content', component: () => import('./views/ContentView.vue'), meta: { title: '内容管理' } },

@@ -31,11 +31,12 @@ export function fmtDetail(detail) {
   return String(detail)
 }
 
-export async function req(method, path, body) {
+/* opts 可选：{ credentials } 透传 fetch（默认 'include'；'omit' 用于匿名端点不发 cookie） */
+export async function req(method, path, body, opts) {
   const o = {
     method,
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
+    credentials: opts?.credentials || 'include',
   }
   if (body !== undefined) o.body = JSON.stringify(body)
   const ctrl = new AbortController()

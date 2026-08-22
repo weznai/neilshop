@@ -1,9 +1,10 @@
 <script setup>
 /* 后台外壳：侧栏（admin.css anav）+ 顶栏 + 守卫（toast 走全局 composable） */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
+import RouteProgress from '../components/RouteProgress.vue'
 
 const session = useSessionStore()
 const route = useRoute()
@@ -23,6 +24,9 @@ function navOn(p) {
   if (p === '/') return cur === '/'
   return cur === p || cur.startsWith(p + '/')
 }
+
+/* 面包屑中间项（列表页名）→ 路径映射，末项为当前页直接加粗展示 */
+const CRUMB_LINKS = { '订单管理': '/orders', '商品管理': '/products' }
 
 const P = {
   dash: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
@@ -90,6 +94,31 @@ async function logout() {
   router.push('/login')
 }
 
+/* ===== 全局键盘兜底（DOM 方案，不侵入各页面/弹窗组件）=====
+ * Esc：关闭最上层 .modal.open（模拟点其 .modal-x；无 modal-x 则忽略）。
+ *   ConfirmDialog 无 modal-x 且自带 Esc 处理，重复触发幂等无害。
+ * /：非输入焦点（input/textarea/select/可编辑区）且无修饰键时，聚焦 .main 内第一个可见搜索框。 */
+const SEARCH_SELS = ['[type=search]', 'input.js-search', '.filter-bar input[type=text]', '.main input[placeholder*=搜索]', '.main input[placeholder*=单号]']
+function focusSearch() {
+  for (const sel of SEARCH_SELS) {
+    for (const el of document.querySelectorAll(sel)) {
+      if (el.offsetParent !== null) { el.focus(); return }
+    }
+  }
+}
+function onGlobalKey(e) {
+  if (e.key === 'Escape') {
+    const opens = document.querySelectorAll('.modal.open')
+    const top = opens[opens.length - 1]
+    if (top) top.querySelector('.modal-x')?.click()
+  } else if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    const ae = document.activeElement
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return
+    e.preventDefault()
+    focusSearch()
+  }
+}
+
 onMounted(async () => {
   try {
     const u = await session.verify()
@@ -110,11 +139,14 @@ onMounted(async () => {
     setTimeout(() => router.push('/login'), 1500)
   }
   watchTblWrap()
+  window.addEventListener('keydown', onGlobalKey)
 })
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 </script>
 
 <template>
   <div v-if="!guard" class="admin" :class="{ 'side-min': collapsed }">
+    <RouteProgress />
     <aside class="aside" id="admSide">
       <router-link class="logo" to="/">GLOW<span>MAG</span></router-link>
       <div style="font-size:10px;letter-spacing:2px;color:var(--gray);padding:0 12px 14px">管理控制台</div>
@@ -149,6 +181,15 @@ onMounted(async () => {
     </aside>
 
     <main class="main">
+      <!-- 面包屑：仅详情页（meta.crumbs）渲染，是各页 topbar 的补充而非替代 -->
+      <div v-if="route.meta.crumbs" class="crumbs">
+        <router-link to="/">首页</router-link>
+        <template v-for="(c, i) in route.meta.crumbs" :key="i">
+          <span class="sep">/</span>
+          <router-link v-if="i < route.meta.crumbs.length - 1 && CRUMB_LINKS[c]" :to="CRUMB_LINKS[c]">{{ c }}</router-link>
+          <b v-else>{{ c }}</b>
+        </template>
+      </div>
       <router-view />
     </main>
   </div>
@@ -166,3 +207,11 @@ onMounted(async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.crumbs{font-size:12px;margin-bottom:12px;display:flex;align-items:center;gap:7px}
+.crumbs a{color:var(--gray)}
+.crumbs a:hover{color:var(--plum)}
+.crumbs .sep{color:var(--gray)}
+.crumbs b{color:var(--plum);font-weight:700}
+</style>

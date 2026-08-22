@@ -1,8 +1,9 @@
 /* GLOWMAG 后台共享样式（10 个 admin*.html 公共布局/组件）
    依赖 assets/style.css 的 Design Tokens，页面引入顺序：style.css → admin.css
    不重复 style.css 已有的 .btn/.table/.tag/.modal/.toast 等 */
-:root{--pale-error:#FDE9EA}   /* 浅错误底（提示条），与 style.css v13 的 --pale-error 同值统一 */
-body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
+/* 语义 token（收敛本文件裸 hex；--pale-error 已由 style.css v13 同值定义，不再双写） */
+:root{--bg-page:#F6F4F5;--row-hover:#F7EEF0;--row-alt:#FBF9FA;--skeleton:#EDEAEB;--scroll:#D8D2D5;--scroll-hover:#C4BCC0;--sched-bg:#FBF3DC;--sched-ink:#8A6D1B}
+body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 .main{font-size:13.5px}
 .main .table{font-size:13px}
 .main .table th{font-size:11px}
@@ -86,7 +87,7 @@ body{background:#F6F4F5;font-size:13.5px;line-height:1.55}
 .stock-low{color:var(--warn);font-weight:700}
 .stock-out{color:var(--error);font-weight:700}
 /* 定时上架标签（product-edit 独立打开时原依赖 products 页定义才生效） */
-.tag-sched{background:#FBF3DC;color:#8A6D1B}
+.tag-sched{background:var(--sched-bg);color:var(--sched-ink)}
 /* 可排序表头（orders/products 两页重复） */
 th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
 th.sortable:hover{color:var(--plum)}
@@ -106,18 +107,18 @@ th.sortable:hover{color:var(--plum)}
 
 /* ===== 全局体验层（v14）：骨架屏 / 表格 / 弹窗 / 焦点态 / 滚动条 ===== */
 /* 骨架屏：此前 .skeleton 类被多页引用但从未定义 */
-.skeleton{position:relative;overflow:hidden;background:#EDEAEB;border-radius:12px}
+.skeleton{position:relative;overflow:hidden;background:var(--skeleton);border-radius:12px}
 .skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
   background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
   animation:gmSk 1.4s infinite}
 @keyframes gmSk{100%{transform:translateX(100%)}}
 /* 表格：行悬停 + 数字列弱化边框 */
 .main table tbody tr{transition:background .12s}
-.main table tbody tr:hover{background:#F7EEF0}
+.main table tbody tr:hover{background:var(--row-hover)}
 /* 斑马纹（偶数行浅底）+ sticky 表头（长表滚动时表头常驻于 tbl-wrap 容器顶部） */
 .main table thead th{position:sticky;top:0;background:#fff;z-index:1;box-shadow:inset 0 -1px 0 var(--gray-light)}
-.main table tbody tr:nth-child(even){background:#FBF9FA}
-.main table tbody tr:nth-child(even):hover{background:#F7EEF0}
+.main table tbody tr:nth-child(even){background:var(--row-alt)}
+.main table tbody tr:nth-child(even):hover{background:var(--row-hover)}
 /* 右缘渐隐滚动提示：条件化——仅横向可滚（.can-scroll）且未滚到尽头（无 .at-end）时出现；
  * 类名由 AdminLayout 的 ResizeObserver/scroll 监听切换（.card-lift 悬浮定义在 style.css，此处不重复） */
 .tbl-wrap.can-scroll:not(.at-end){
@@ -127,7 +128,8 @@ th.sortable:hover{color:var(--plum)}
 /* 卡片与统计卡：轻悬浮反馈 */
 .card{transition:box-shadow .2s}
 .stat{transition:transform .18s,box-shadow .2s}
-.stat:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(155,60,95,.10)}
+/* 悬浮阴影原 rgba(155,60,95,.10)，对齐 plum（#6D2E46）改 rgb(109,46,70)，视觉差异可忽略 */
+.stat:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(109,46,70,.10)}
 /* 输入焦点环 */
 .input:focus{outline:none;border-color:var(--rose);box-shadow:0 0 0 3px rgba(214,120,150,.18)}
 /* 按钮过渡 */
@@ -136,8 +138,8 @@ th.sortable:hover{color:var(--plum)}
 .btn:not(:disabled):active{transform:none}
 /* 细滚动条（列表/弹窗长内容） */
 ::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-thumb{background:#D8D2D5;border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:#C4BCC0}
+::-webkit-scrollbar-thumb{background:var(--scroll);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--scroll-hover)}
 ::-webkit-scrollbar-track{background:transparent}
 
 /* ===== v15 全站基建:页面标题/数据表/筛选栏/dtitle 全局化 ===== */
