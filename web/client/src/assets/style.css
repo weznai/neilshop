@@ -75,7 +75,7 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 
 /* ===== 徽章角标 ===== */
 .badge { position: absolute; top: 10px; left: 10px; font-size: 10px; font-weight: 700; letter-spacing: .5px; padding: 3px 8px; border-radius: 4px; color: #fff; z-index: 2; }
-.badge-new { background: var(--ink); }
+.badge-new { background: linear-gradient(135deg, var(--plum), var(--plum-dark)); }
 .badge-sale { background: var(--coral); }
 .badge-best { background: var(--gold); }
 .badge-out { background: var(--gray); }
