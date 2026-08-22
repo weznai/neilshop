@@ -10,6 +10,8 @@ const router = useRouter()
 /* 响应式 pid：新建保存成功后 router.replace 挂 id，此处随之变为编辑态
  * （此前一次性快照导致重复保存会重复建品、变体区不出现） */
 const pid = computed(() => (route.query.id ? parseInt(route.query.id, 10) : null))
+/* 复制模式：?copy={id} 载入源商品作底稿，但保持新建态（不设 id、slug 置空、定时清空） */
+const copyId = computed(() => (route.query.copy ? parseInt(route.query.copy, 10) : null))
 
 const form = reactive({
   slug: '', title: '', subtitle: '', price_min: 1599, price_max: 1599,
@@ -20,7 +22,7 @@ const variants = ref([])
 const cats = ref([])
 const catsFailed = ref(false)
 const busy = ref(false)
-const newVar = reactive({ option1: '', option2: 'Default', price: 1599, stock: 10 })
+const newVar = reactive({ option1: '', option2: 'Default', price: 1599, stock: 10, weight_gram: 30 })
 const schedAt = ref('')
 const loadedSchedISO = ref(null)
 const prodSched = ref(false)
@@ -131,11 +133,44 @@ onMounted(async () => {
     if (!pid.value && cats.value.length && !cats.value.some((c) => c.id === form.category_id)) form.category_id = cats.value[0].id
   } catch (_) { catsFailed.value = true; toast('分类加载失败，保存前请刷新重试', 'error') }
   if (pid.value) loadProduct(pid.value)
+  else if (copyId.value) loadCopy(copyId.value)
   else { formLoaded.value = true; markClean() }
 })
 onBeforeUnmount(() => window.removeEventListener('beforeunload', onUnload))
 /* 新建→编辑切换（同路由 query 变化）时重新拉取 */
 watch(pid, (np, op) => { if (np && np !== op) loadProduct(np) })
+
+/* 复制模式载入：变体/翻译剥 id 暂存，待新商品保存成功后逐个重建（sku 依新 slug 生成） */
+const copyVars = ref([])
+const copyTrs = ref([])
+async function loadCopy(id) {
+  formLoaded.value = false
+  try {
+    const p = await req('GET', '/api/admin/catalog/products/' + id)
+    Object.assign(form, {
+      slug: '', title: p.title, subtitle: p.subtitle || '',
+      price_min: p.price_min, price_max: p.price_max, compare_at_price: p.compare_at_price,
+      description_md: p.description_md || '', hero_image: p.hero_image || '',
+      images: (p.images || []).slice(0, 8), video_url: p.video_url || '',
+      category_id: p.category_id, tags: p.tags || [],
+      is_new: !!p.is_new, is_best_seller: !!p.is_best_seller,
+    })
+    if (cats.value.length && !cats.value.some((c) => c.id === p.category_id)) form.category_id = cats.value[0].id
+    /* 定时/状态置草稿：schedAt 清空即不随 POST 提交 published_at */
+    prodSched.value = false
+    loadedSchedISO.value = null
+    schedAt.value = ''
+    const src = await loadVariants(id)
+    copyVars.value = src.map((v) => ({
+      option1_value: v.option1_value, option2_value: v.option2_value || 'Default', price: v.price, stock: v.stock,
+    }))
+    variants.value = src.map((v) => ({ ...v, id: null, sku: '', is_active: true })) /* 仅作预览，操作按钮已按 id 隐藏 */
+    try { copyTrs.value = ((await req('GET', `/api/admin/catalog/products/${id}/translations`)) || []).map((t) => ({ locale: t.locale, title: t.title, subtitle: t.subtitle || null, description_md: t.description_md || null })) }
+    catch (_) { copyTrs.value = [] }
+    formLoaded.value = true
+    markClean()
+  } catch (e) { toast('源商品加载失败：' + (e.message || ''), 'error') }
+}
 
 async function save() {
   if (!form.slug || !form.title) { toast('slug 与标题必填', 'error'); return }
@@ -174,6 +209,24 @@ async function save() {
       markClean()
     } else {
       const p = await req('POST', '/api/admin/catalog/products', body)
+      /* 复制模式：新商品落库后重建变体与翻译（逐个调用；失败项汇总提示手动补录） */
+      if (copyVars.value.length || copyTrs.value.length) {
+        const newSlug = p.slug || form.slug
+        let vok = 0, vfail = 0, tok = 0, tfail = 0
+        for (const v of copyVars.value) {
+          const sku = (newSlug + '-' + v.option1_value).toUpperCase().replace(/\s+/g, '-').slice(0, 64)
+          try { await req('POST', `/api/admin/catalog/products/${p.id}/variants`, { sku, option1_value: v.option1_value, option2_value: v.option2_value, price: v.price, stock: v.stock }); vok++ }
+          catch (_) { vfail++ }
+        }
+        for (const t of copyTrs.value) {
+          try { await req('PUT', `/api/admin/catalog/products/${p.id}/translations`, { ...t }); tok++ }
+          catch (_) { tfail++ }
+        }
+        const fails = vfail + tfail
+        if (fails) toast(`副本重建：变体 ${vok}/${copyVars.value.length}、翻译 ${tok}/${copyTrs.value.length}，${fails} 项失败请手动补录`, 'error')
+        copyVars.value = []
+        copyTrs.value = []
+      }
       toast('创建成功 ✓ 转编辑态', 'success')
       markClean()
       router.replace({ path: '/product-edit', query: { id: p.id } })
@@ -186,11 +239,13 @@ async function addVariant() {
   if (!newVar.option1 || !newVar.option2) { toast('变体规格必填（如 Short Almond / Default）', 'error'); return }
   if (!Number.isInteger(newVar.price) || newVar.price < 0) { toast('价格需为非负整数（单位：分）', 'error'); return }
   if (!Number.isInteger(newVar.stock) || newVar.stock < 0) { toast('库存需为非负整数（单位：件）', 'error'); return }
+  if (!Number.isInteger(newVar.weight_gram) || newVar.weight_gram < 0) { toast('重量需为非负整数（单位：克）', 'error'); return }
   const sku = (form.slug + '-' + newVar.option1).toUpperCase().replace(/\s+/g, '-').slice(0, 64)
   try {
+    /* weight_gram 仅创建时支持（VariantUpdateIn 无此字段） */
     await req('POST', `/api/admin/catalog/products/${pid.value}/variants`, {
       sku, option1_value: newVar.option1, option2_value: newVar.option2,
-      price: newVar.price, stock: newVar.stock,
+      price: newVar.price, stock: newVar.stock, weight_gram: newVar.weight_gram,
     })
     newVar.option1 = ''
     variants.value = await loadVariants(pid.value)
@@ -297,6 +352,10 @@ async function doDelTr() {
     </div>
   </div>
 
+  <div v-if="copyId && !pid" style="padding:10px 16px;margin-bottom:14px;background:var(--rose-pale);border:1px solid var(--rose);border-radius:10px;font-size:13px;color:var(--plum)">
+    ⧉ 已从商品 #{{ copyId }} 复制，保存后生效为新商品——请填写新 Slug；{{ copyVars.length }} 个变体与 {{ copyTrs.length }} 条翻译将在保存后自动重建
+  </div>
+
   <div class="achips">
     <button v-for="s in SECTIONS" :key="s.id" @click="jump(s.id)">{{ s.label }}</button>
   </div>
@@ -332,9 +391,10 @@ async function doDelTr() {
       <div id="sec-variants" class="card" style="padding:20px">
         <div class="dhead"><h3 class="dtitle">变体管理</h3></div>
         <div v-if="variants.length" style="display:grid;gap:8px;margin-bottom:14px">
-          <div v-for="v in variants" :key="v.id" style="display:flex;gap:12px;align-items:center;font-size:13px;padding:8px 0;border-bottom:1px solid var(--gray-light)">
+          <div v-for="(v, i) in variants" :key="v.id || 'copy' + i" style="display:flex;gap:12px;align-items:center;font-size:13px;padding:8px 0;border-bottom:1px solid var(--gray-light)">
             <b>{{ v.option1_value }}</b>
-            <span style="color:var(--gray);font-size:12px">{{ v.sku }}</span>
+            <span v-if="v.sku" style="color:var(--gray);font-size:12px">{{ v.sku }}</span>
+            <span v-else class="tag tag-sched" style="font-size:10px" title="SKU 将依新 slug 自动生成">保存后创建</span>
             <template v-if="editing && editing.id === v.id">
               <div class="field" style="margin:0 0 0 auto">
                 <label style="font-size:11px">价格（分）</label>
@@ -350,17 +410,21 @@ async function doDelTr() {
             <template v-else>
               <b style="margin-left:auto">{{ money(v.price) }}</b>
               <span class="tag" :class="v.stock > v.safety_stock ? 'tag-done' : 'tag-error'" :title="`安全库存 ${v.safety_stock ?? 0}`">{{ v.stock }}</span>
-              <button class="btn btn-ghost btn-sm" @click="startEdit(v)">编辑</button>
-              <button class="btn btn-ghost btn-sm" @click="toggleVar(v)">{{ v.is_active ? '停用' : '启用' }}</button>
+              <!-- 复制预览行无 id（未落库），不提供操作 -->
+              <template v-if="v.id">
+                <button class="btn btn-ghost btn-sm" @click="startEdit(v)">编辑</button>
+                <button class="btn btn-ghost btn-sm" @click="toggleVar(v)">{{ v.is_active ? '停用' : '启用' }}</button>
+              </template>
             </template>
           </div>
         </div>
         <p v-else style="font-size:13px;color:var(--gray);margin-bottom:12px">暂无变体（新建商品请先保存再添加）</p>
-        <div v-if="pid" style="display:grid;grid-template-columns:1.2fr 1fr .7fr .6fr auto;gap:8px;align-items:end">
+        <div v-if="pid" style="display:grid;grid-template-columns:1.2fr 1fr .6fr .5fr .5fr auto;gap:8px;align-items:end">
           <div class="field"><label>规格（如 Short Almond）</label><input v-model="newVar.option1" class="input"></div>
           <div class="field"><label>副规格</label><input v-model="newVar.option2" class="input"></div>
           <div class="field"><label>价格（分）</label><input v-model.number="newVar.price" class="input" type="number" min="0" step="1"></div>
           <div class="field"><label>库存（件）</label><input v-model.number="newVar.stock" class="input" type="number" min="0" step="1"></div>
+          <div class="field"><label>重量（克）</label><input v-model.number="newVar.weight_gram" class="input" type="number" min="0" step="1" placeholder="30"></div>
           <button class="btn btn-secondary" @click="addVariant">＋ 添加</button>
         </div>
       </div>
@@ -409,7 +473,7 @@ async function doDelTr() {
           <button class="btn btn-secondary btn-sm" @click="schedQuick(7)">+7 天</button>
           <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="schedAt = ''">清空</button>
         </div>
-        <p style="font-size:11.5px;color:var(--gray);margin-top:8px">保存后生效：到点前台自动可见；清空并保存 = 取消定时（立即按当前状态可见）。需先在列表页「上架」。</p>
+        <p style="font-size:11.5px;color:var(--gray);margin-top:8px">保存后生效：设定未来时间后需在列表页点「上架」激活，定时时间将保留，到点自动可见；清空并保存 = 取消定时（立即按当前状态可见）。</p>
       </div>
 
       <!-- 多语言（仅编辑态；GET 返回裸数组，locale 徽标 + 标题 + 编辑/删除） -->

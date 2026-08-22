@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import { dt } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 
 const tab = ref('shipping')
@@ -11,8 +12,9 @@ const loaded = ref(false)
 const settingsErr = ref(false)  /* 配置加载失败：禁用保存，防止默认值覆盖线上配置 */
 
 /* 可编辑运营 key —— 必须与后端消费方一致：
- * pricing.py: free_shipping_threshold / shipping_standard / shipping_express / tax_rate / bundle_2_off / bundle_3_off
- * seed: return_days / points_per_dollar_earn（PUT 为 upsert，缺失 key 也能保存生效） */
+ * pricing.py: free_shipping_threshold / shipping_standard / shipping_express / tax_rate
+ * seed: return_days / points_per_dollar_earn（PUT 为 upsert，缺失 key 也能保存生效）
+ * bundle_2_off/bundle_3_off 已收敛至「营销工具 · 捆绑折扣」单一数据源，此处不再编辑 */
 const EDITABLE = {
   free_shipping_threshold: { label: '满额免邮（分）', type: 'number', def: 3500 },
   shipping_standard: { label: '标准运费（分）', type: 'number', def: 499 },
@@ -20,8 +22,6 @@ const EDITABLE = {
   tax_rate: { label: '综合税率', type: 'number', step: '0.0001', def: 0.0735 },
   return_days: { label: '退货窗口（天）', type: 'number', def: 30 },
   points_per_dollar_earn: { label: '消费 $1 赚积分', type: 'number', def: 10 },
-  bundle_2_off: { label: '买 2 件折扣 %', type: 'number', def: 15 },
-  bundle_3_off: { label: '买 3+ 件折扣 %', type: 'number', def: 20 },
 }
 const drafts = reactive({})   /* key → 编辑值（数字） */
 
@@ -31,7 +31,7 @@ async function load() {
   try {
     const rows = (await req('GET', '/api/admin/ops/settings')).items || []
     for (const r of rows) {
-      settings[r.key] = { value: r.value, description: r.description }
+      settings[r.key] = { value: r.value, description: r.description, updated_by: r.updated_by, updated_at: r.updated_at }
     }
   } catch (e) {
     settingsErr.value = true
@@ -53,7 +53,7 @@ async function saveKey(key) {
   saving.value = key
   try {
     await req('PUT', '/api/admin/ops/settings', { key, value: n })
-    settings[key] = { value: n, description: settings[key]?.description }
+    settings[key] = { ...settings[key], value: n }   /* 展开保留 updated_by/updated_at 等旧值 */
     toast(`「${EDITABLE[key].label}」已保存 ✓`, 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
   finally { saving.value = '' }
@@ -76,7 +76,7 @@ async function saveAll() {
     for (const k of keys) {
       const n = Number(drafts[k])
       await req('PUT', '/api/admin/ops/settings', { key: k, value: n })
-      settings[k] = { value: n, description: settings[k]?.description }
+      settings[k] = { ...settings[k], value: n }
       done++
     }
     toast(`已保存 ${done} 项修改 ✓`, 'success')
@@ -105,7 +105,7 @@ const rawRows = computed(() => {
   <div class="topbar">
     <div>
       <h1 class="page-title">系统设置</h1>
-      <span class="page-sub">运费 / 税率 / 捆绑 / 运营参数 / 邮件模板</span>
+      <span class="page-sub">运费 / 税率 / 运营参数 / 邮件模板</span>
     </div>
   </div>
 
@@ -144,6 +144,9 @@ const rawRows = computed(() => {
         </div>
       </template>
     </div>
+    <p style="font-size:12.5px;color:var(--gray);margin-top:12px">
+      捆绑折扣参数已移至 <router-link :to="{ path: '/marketing', query: { tab: 'bundles' } }" style="color:var(--plum)">营销工具 · 捆绑折扣</router-link> 统一管理
+    </p>
     <div v-if="loaded && !settingsErr && !Object.keys(settings).length" style="color:var(--gray);font-size:13px;margin-top:6px">
       服务端暂无预置参数，上方表单保存后将写入并即时生效。
     </div>
@@ -165,12 +168,13 @@ const rawRows = computed(() => {
       <span style="font-size:12px;color:var(--gray)">匹配 {{ rawRows.length }} / {{ Object.keys(settings).length }} 项</span>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Key</th><th>Value</th><th>说明</th></tr></thead>
+      <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Key</th><th>Value</th><th>说明</th><th>最后修改</th></tr></thead>
       <tbody>
         <tr v-for="[key, v] in rawRows" :key="key" style="border-top:1px solid var(--gray-light)">
           <td style="padding:10px"><b>{{ key }}</b></td>
           <td><code>{{ JSON.stringify(v.value) }}</code></td>
           <td style="color:var(--gray)">{{ v.description || '—' }}</td>
+          <td style="color:var(--gray);white-space:nowrap">{{ v.updated_by != null ? '#' + v.updated_by : '—' }} · {{ dt(v.updated_at) || '—' }}</td>
         </tr>
       </tbody>
     </table>

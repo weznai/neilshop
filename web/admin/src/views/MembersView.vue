@@ -16,9 +16,9 @@ const loaded = ref(false)
 const loadErr = ref(false)
 const detailBusy = ref(false)
 
-/* 筛选/分页 URL 同步 */
-const st = reactive({ q: '', page: 1 })
-useQuerySync(st, { nums: ['page'], defaults: { page: 1 } })
+/* 筛选/分页 URL 同步（risk：'' 全部 / 0 正常 / 1 关注 / 2 黑名单，见 models/user.py） */
+const st = reactive({ q: '', page: 1, risk: '' })
+useQuerySync(st, { nums: ['page'], defaults: { page: 1, risk: '' } })
 
 const TIER = ['Glow', 'Shimmer', 'Diva', 'Queen']
 /* 等级视觉分档：Glow/Shimmer 淡玫瑰、Diva 蓝调（tag-ship）、Queen 金 */
@@ -35,6 +35,8 @@ async function load(p = 1) {
     const s = st.q.trim()
     if (s) params.set('q', s)
     if (tier.value !== '') params.set('tier', tier.value)
+    if (st.risk !== '') params.set('risk', st.risk)
+    if (sort.key) params.set('sort', (sort.dir === -1 ? '-' : '') + sort.key)   /* 服务端白名单排序 */
     const d = await req('GET', '/api/admin/ops/members?' + params)
     members.value = d.items || []
     total.value = d.total ?? 0
@@ -49,27 +51,16 @@ onMounted(() => load(st.page))
 
 function search() { load(1) }
 function setTier(v) { tier.value = v; load(1) }
+function setRiskFilter(v) { st.risk = v; load(1) }
 
-/* 当前页前端排序（积分/累计消费）：三态切换，空值恒沉底 */
+/* 服务端排序（积分/累计消费）：点击列头 asc/desc 循环，sort 传后端白名单（points/-points/total_spent/-total_spent） */
 const sort = reactive({ key: '', dir: 1 })
 function sortBy(k) {
   if (sort.key !== k) { sort.key = k; sort.dir = 1 }
-  else if (sort.dir === 1) { sort.dir = -1 }
-  else { sort.key = ''; sort.dir = 1 }
+  else { sort.dir = -sort.dir }
+  load(1)   /* 全量排序后回第一页；翻页时 load 继续携带排序参数 */
 }
 const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
-const sortedMembers = computed(() => {
-  if (!sort.key) return members.value
-  const k = sort.key
-  return [...members.value].sort((a, b) => {
-    const av = a[k], bv = b[k]
-    if (av == null && bv == null) return 0
-    if (av == null) return 1
-    if (bv == null) return -1
-    if (av === bv) return 0
-    return (av > bv ? 1 : -1) * sort.dir
-  })
-})
 
 async function openDetail(m) {
   detailBusy.value = true
@@ -123,6 +114,12 @@ async function applyRisk(flag = 2) {
         <option value="">全部等级</option>
         <option v-for="(t, i) in TIER" :key="i" :value="String(i)">{{ t }}</option>
       </select>
+      <select class="input" :value="st.risk" style="width:auto;height:38px;font-size:13px" @change="setRiskFilter($event.target.value)">
+        <option value="">全部会员</option>
+        <option value="0">正常</option>
+        <option value="1">关注</option>
+        <option value="2">黑名单</option>
+      </select>
       <input v-model="st.q" class="input" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
     </div>
@@ -134,12 +131,12 @@ async function applyRisk(flag = 2) {
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
         <th style="padding:10px">会员</th><th>等级</th>
-        <th class="sortable" title="点击排序（当前页）" @click="sortBy('points')">积分<span v-if="sortInd('points')" class="sort-ind">{{ sortInd('points') }}</span></th>
-        <th class="sortable" title="点击排序（当前页）" @click="sortBy('total_spent')">累计消费<span v-if="sortInd('total_spent')" class="sort-ind">{{ sortInd('total_spent') }}</span></th>
+        <th class="sortable" title="点击排序" @click="sortBy('points')">积分<span v-if="sortInd('points')" class="sort-ind">{{ sortInd('points') }}</span></th>
+        <th class="sortable" title="点击排序" @click="sortBy('total_spent')">累计消费<span v-if="sortInd('total_spent')" class="sort-ind">{{ sortInd('total_spent') }}</span></th>
         <th>最近下单</th><th>风控</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
-        <tr v-for="m in sortedMembers" :key="m.id" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="m in members" :key="m.id" style="border-top:1px solid var(--gray-light)">
           <td style="padding:10px">
             <div style="display:flex;gap:10px;align-items:center">
               <span style="width:34px;height:34px;border-radius:50%;background:var(--rose);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:13px;font-weight:700">
@@ -165,7 +162,6 @@ async function applyRisk(flag = 2) {
     </EmptyState>
     <EmptyState v-else-if="!members.length" icon="🧍" title="没有匹配会员" sub="试试其他关键词或等级筛选" />
     <Pagination embed :page="st.page" :pages="pages" :total="total" unit="位" @go="load" />
-    <div v-if="sort.key" style="text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
   </div>
 
   <!-- 会员画像弹窗 -->

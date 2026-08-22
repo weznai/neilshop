@@ -17,9 +17,9 @@ const loadErr = ref(false)
 const cat = ref('')            /* '' = 全部分类 */
 const mine = ref('')           /* '' = 全部；'1' = 我的工单（assignee=当前管理员 id） */
 
-/* 筛选 URL 同步：tab/q 回填与写回 */
-const st = reactive({ tab: 'all', q: '' })
-useQuerySync(st, { defaults: { tab: 'all' } })
+/* 筛选 URL 同步：tab/q/priority 回填与写回（priority '0'=仅紧急） */
+const st = reactive({ tab: 'all', q: '', priority: '' })
+useQuerySync(st, { defaults: { tab: 'all', priority: '' } })
 
 /* 状态机：0 新工单 → 1 处理中（回复后）→ 2 等待客户 / 3 已解决 → 4 已关闭（带 close_reason） */
 const SSTATUS = { 0: ['新工单', 'tag-pending'], 1: ['处理中', 'tag-ship'], 2: ['等待客户', 'tag-pending'], 3: ['已解决', 'tag-paid'], 4: ['已关闭', 'tag-done'] }
@@ -53,6 +53,7 @@ function buildUrl(status, p) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (status !== null && status !== undefined) params.set('status', status)
   if (cat.value !== '') params.set('category', cat.value)
+  if (st.priority !== '') params.set('priority', st.priority)
   if (mine.value === '1' && session.user?.id) params.set('assignee', session.user.id)
   const s = st.q.trim()
   if (s) params.set('q', s)
@@ -80,11 +81,13 @@ onMounted(() => load(1))
 function setTab(k) { if (st.tab !== k) { st.tab = k; load(1) } }
 function setCat(v) { cat.value = v; load(1) }
 function setMine(v) { mine.value = v; load(1) }
+function togglePriority() { st.priority = st.priority === '0' ? '' : '0'; load(1) }
 function search() { load(1) }
 
-/* 快捷回复模板：GET /api/support/templates（公开端点，返回 [{id,category,title,content}]） */
-const templates = ref([])
+/* 快捷回复模板：GET /api/support/templates（公开端点，支持 ?category= 过滤，返回 [{id,category,title,content}]） */
+const templates = ref([])          /* 全量模板（当前工单分类无匹配时兜底显示） */
 const templatesLoaded = ref(false)
+const catTpl = ref(null)           /* { cat, items } 当前工单分类的模板缓存 */
 async function loadTemplates() {
   if (templatesLoaded.value) return
   try {
@@ -92,10 +95,25 @@ async function loadTemplates() {
     templatesLoaded.value = true
   } catch (_) { /* 下拉里提示加载失败，可重选再试 */ }
 }
+/* 打开线程时按当前工单分类带参拉取；返回项含 category 字段，二次过滤兜底 */
+async function loadCatTemplates(cat) {
+  if (catTpl.value?.cat === cat) return
+  try {
+    const items = (await req('GET', '/api/support/templates?category=' + cat)) || []
+    catTpl.value = { cat, items: items.filter((x) => x.category === cat) }
+  } catch (_) { catTpl.value = { cat, items: [] } }   /* 失败置空，下拉回退全量 */
+}
+/* 下拉数据源：当前工单分类模板优先，无匹配回退全量 */
+const tplOptions = computed(() => {
+  const c = active.value?.category
+  if (c && catTpl.value?.cat === c && catTpl.value.items.length) return catTpl.value.items
+  return templates.value
+})
+const tplLabel = computed(() => (!templatesLoaded.value && !tplOptions.value.length ? '加载快捷模板…' : tplOptions.value.length ? '快捷模板…' : '暂无模板'))
 function applyTemplate(e) {
   const id = parseInt(e.target.value, 10)
   e.target.value = ''
-  const t = templates.value.find((x) => x.id === id)
+  const t = tplOptions.value.find((x) => x.id === id)
   if (!t) return
   reply.value = reply.value.trim() ? reply.value.trim() + '\n' + t.content : t.content
 }
@@ -105,6 +123,7 @@ function applyTemplate(e) {
 async function openTicket(t) {
   active.value = t
   thread.value = null
+  if (t.category) loadCatTemplates(t.category)   /* 预取该分类快捷模板（不阻塞线程加载） */
   try {
     const r = await fetch(`${API_BASE}/api/support/tickets?email=${encodeURIComponent(t.email)}&ticket_no=${encodeURIComponent(t.ticket_no)}`, {
       credentials: 'omit',
@@ -187,6 +206,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
   <div class="filter-bar" style="margin-bottom:14px">
     <button v-for="[k, label] in TABS" :key="k" class="ttab" :class="{ on: st.tab === k }" @click="setTab(k)">{{ label }}</button>
     <span style="flex:1"></span>
+    <button class="ttab" :class="{ on: st.priority === '0' }" title="只看紧急工单（priority=0）" @click="togglePriority">仅紧急</button>
     <select class="input" :value="cat" style="width:auto;height:36px;font-size:13px" @change="setCat($event.target.value)">
       <option value="">全部分类</option>
       <option v-for="(label, v) in CATEGORY" :key="v" :value="String(v)">{{ label }}</option>
@@ -195,7 +215,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
       <option value="">全部工单</option>
       <option value="1">我的工单</option>
     </select>
-    <input v-model="st.q" class="input" style="width:200px;height:36px" placeholder="搜工单号 / 邮箱" @keydown.enter="search()">
+    <input v-model="st.q" class="input" style="width:200px;height:36px" placeholder="邮箱 / 工单号 / 主题" @keydown.enter="search()">
     <button class="btn btn-secondary btn-sm" style="height:36px" @click="search()">搜索</button>
   </div>
 
@@ -279,8 +299,8 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
           <div class="dtitle" style="margin-bottom:10px">回复工单</div>
           <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center">
             <select class="input" style="height:34px;font-size:12.5px;flex:1" @focus="loadTemplates" @change="applyTemplate">
-              <option value="">{{ templatesLoaded ? (templates.length ? '快捷模板…' : '暂无模板') : '加载快捷模板…' }}</option>
-              <option v-for="t in templates" :key="t.id" :value="t.id">{{ t.title }}</option>
+              <option value="">{{ tplLabel }}</option>
+              <option v-for="t in tplOptions" :key="t.id" :value="t.id">{{ t.title }}</option>
             </select>
             <button class="btn btn-secondary btn-sm" style="height:34px" title="指派给当前登录管理员" @click="assignMe">指派给我</button>
           </div>

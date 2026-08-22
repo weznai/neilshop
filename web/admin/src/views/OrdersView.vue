@@ -16,6 +16,9 @@ const page = ref(1)
 const perPage = ref(20)
 const status = ref(null)
 const q = ref('')
+/* 时间范围筛选：date input 原生值即 YYYY-MM-DD，直传后端 date_from/date_to */
+const dateFrom = ref('')
+const dateTo = ref('')
 const loaded = ref(false)
 const refreshing = ref(false)
 /* OrderStatus 真值：0待付 1已付 2履约中 3已发货 4已送达 5已完成 8已取消 9已退款(全额) */
@@ -39,6 +42,9 @@ const statusLabel = computed(() => (status.value == null ? '' : OSTATUS[status.v
 function initFromQuery() {
   const rq = route.query
   if (typeof rq.q === 'string') q.value = rq.q
+  /* 日期仅接受合法 YYYY-MM-DD，脏 query 不回填 */
+  if (/^\d{4}-\d{2}-\d{2}$/.test(rq.date_from || '')) dateFrom.value = rq.date_from
+  if (/^\d{4}-\d{2}-\d{2}$/.test(rq.date_to || '')) dateTo.value = rq.date_to
   if (rq.status !== undefined && rq.status !== '') {
     const n = Number(rq.status)
     if (OSTATUS[n]) status.value = n
@@ -51,6 +57,8 @@ function initFromQuery() {
 function syncUrl() {
   const query = {}
   if (q.value.trim()) query.q = q.value.trim()
+  if (dateFrom.value) query.date_from = dateFrom.value
+  if (dateTo.value) query.date_to = dateTo.value
   if (status.value != null) query.status = status.value
   if (page.value > 1) query.page = page.value
   if (perPage.value !== 20) query.per_page = perPage.value
@@ -58,12 +66,15 @@ function syncUrl() {
 }
 
 async function load() {
-  /* 筛选/翻页保留旧数据不清空，骨架只在首次出现 */
+  /* 筛选/翻页保留旧数据不清空，骨架只在首次出现；勾选随列表刷新清空（防跨页误发货） */
   refreshing.value = true
+  selected.value = []
   /* 后端支持可选 per_page（钳制 10-100），分页以响应 pages/total 为准 */
   const params = { page: page.value, per_page: perPage.value }
   if (status.value != null) params.status = status.value
   if (q.value.trim()) params.q = q.value.trim()
+  if (dateFrom.value) params.date_from = dateFrom.value
+  if (dateTo.value) params.date_to = dateTo.value
   try {
     const d = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
     items.value = d.items || []
@@ -77,6 +88,7 @@ async function load() {
 onMounted(() => { initFromQuery(); load() })
 
 function tab(sv) { status.value = sv; page.value = 1; load() }
+function clearDates() { dateFrom.value = ''; dateTo.value = ''; page.value = 1; load() }
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 /* 时间统一走 format.js 的 dt（补 Z 修时区） */
@@ -122,6 +134,46 @@ async function shipConfirm() {
   shipSubmitting.value = false
 }
 
+/* 批量发货勾选：selected 按勾选顺序存 order_no（与单号行一一对应），仅 status 1/2 可勾，load() 时清空 */
+const selected = ref([])
+const shippable = computed(() => sortedItems.value.filter((o) => o.status === 1 || o.status === 2))
+const allChecked = computed(() => shippable.value.length > 0 && shippable.value.every((o) => selected.value.includes(o.order_no)))
+const someChecked = computed(() => shippable.value.some((o) => selected.value.includes(o.order_no)))
+function toggleAll() {
+  const nos = shippable.value.map((o) => o.order_no)
+  selected.value = nos.every((n) => selected.value.includes(n))
+    ? selected.value.filter((n) => !nos.includes(n))
+    : [...selected.value, ...nos.filter((n) => !selected.value.includes(n))]
+}
+function toggleOne(no, checked) {
+  selected.value = checked ? [...selected.value, no] : selected.value.filter((n) => n !== no)
+}
+/* 批量发货弹窗：textarea 每行一个单号，行序对应勾选序 */
+const batchDlg = ref(false)
+const batchCarrier = ref('USPS')
+const batchTrackings = ref('')
+const batchSubmitting = ref(false)
+function openBatchShip() { batchCarrier.value = 'USPS'; batchTrackings.value = ''; batchDlg.value = true }
+async function batchShipConfirm() {
+  if (batchSubmitting.value) return
+  const nos = [...selected.value]
+  const lines = batchTrackings.value.split('\n').map((s) => s.trim()).filter(Boolean)
+  if (lines.length !== nos.length) { toast(`物流单号 ${lines.length} 行，与勾选 ${nos.length} 单不一致`, 'error'); return }
+  batchSubmitting.value = true
+  /* 逐单串行 POST，单笔失败不中断，最终汇总成功/失败数 */
+  let ok = 0, fail = 0
+  for (let i = 0; i < nos.length; i++) {
+    try {
+      await req('POST', `/api/admin/trade/orders/${nos[i]}/ship`, { carrier: batchCarrier.value, tracking_no: lines[i] })
+      ok++
+    } catch (_) { fail++ }
+  }
+  batchSubmitting.value = false
+  batchDlg.value = false
+  toast(`成功 ${ok} 单，失败 ${fail} 单`, fail > 0 ? 'error' : 'success')
+  load()
+}
+
 const exporting = ref(false)
 /* CSV 导出：per_page=100 循环拉全量，页数按 total/100 重算；上限 50 页（5000 单）防滥用 */
 const EXPORT_PER_PAGE = 100
@@ -133,6 +185,8 @@ async function exportCsv() {
     const params = { page: 1, per_page: EXPORT_PER_PAGE }
     if (status.value != null) params.status = status.value
     if (q.value.trim()) params.q = q.value.trim()
+    if (dateFrom.value) params.date_from = dateFrom.value
+    if (dateTo.value) params.date_to = dateTo.value
     const first = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
     const all = [...(first.items || [])]
     const totalMatch = first.total ?? all.length
@@ -171,7 +225,7 @@ async function exportCsv() {
       <h1 class="page-title">订单管理
         <span v-if="refreshing" style="font-size:12px;color:var(--gray);font-weight:400;margin-left:6px">⟳ 刷新中…</span>
       </h1>
-      <span class="page-sub">共 {{ total }} 单<template v-if="statusLabel"> · 筛选：{{ statusLabel }}</template><template v-if="q.trim()"> · 关键词“{{ q.trim() }}”</template></span>
+      <span class="page-sub">共 {{ total }} 单<template v-if="statusLabel"> · 筛选：{{ statusLabel }}</template><template v-if="dateFrom || dateTo"> · {{ dateFrom || '…' }} ~ {{ dateTo || '…' }}</template><template v-if="q.trim()"> · 关键词“{{ q.trim() }}”</template></span>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <select v-model.number="perPage" class="input" style="width:auto;height:36px;font-size:13px" @change="page = 1; load()">
@@ -194,12 +248,35 @@ async function exportCsv() {
     >{{ label }}</button>
   </div>
 
+  <!-- 时间范围筛选卡 -->
+  <div class="card filter-bar" style="padding:14px 16px;margin-bottom:14px;align-items:flex-end">
+    <div class="field" style="margin:0">
+      <label>下单起</label>
+      <input v-model="dateFrom" class="input" style="width:160px" type="date" @change="page = 1; load()">
+    </div>
+    <div class="field" style="margin:0">
+      <label>下单止</label>
+      <input v-model="dateTo" class="input" style="width:160px" type="date" @change="page = 1; load()">
+    </div>
+    <button v-if="dateFrom && dateTo" class="btn btn-ghost btn-sm" style="height:36px" @click="clearDates">清空</button>
+  </div>
+
   <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
 
   <div v-else class="card tbl-wrap">
+    <div class="dhead">
+      <h3 class="dtitle">订单列表</h3>
+      <!-- 批量操作条：勾选后出现 -->
+      <div v-if="selected.length" style="display:flex;align-items:center;gap:8px;font-size:13px;white-space:nowrap">
+        已选 <b style="color:var(--plum)">{{ selected.length }}</b> 单
+        <button class="btn btn-primary btn-sm" @click="openBatchShip">📦 批量发货</button>
+        <button class="btn btn-secondary btn-sm" @click="selected = []">取消选择</button>
+      </div>
+    </div>
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead>
         <tr style="text-align:left;color:var(--gray)">
+          <th style="width:32px;padding:10px" title="全选本页可发货订单（已支付/备货中）"><input type="checkbox" style="cursor:pointer" :checked="allChecked" :indeterminate.prop="someChecked && !allChecked" @change="toggleAll"></th>
           <th style="padding:10px">订单号</th><th>客户</th><th>留言</th>
           <th class="sortable" title="点击排序（当前页）" @click="sortBy('grand_total')">金额<span v-if="sortInd('grand_total')" class="sort-ind">{{ sortInd('grand_total') }}</span></th>
           <th>状态</th><th>履约</th>
@@ -210,7 +287,8 @@ async function exportCsv() {
       </thead>
       <tbody>
         <tr v-for="o in sortedItems" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:11px 10px"><b>{{ o.order_no }}</b></td>
+          <td style="padding:11px 10px"><input type="checkbox" style="cursor:pointer" :checked="selected.includes(o.order_no)" :disabled="o.status !== 1 && o.status !== 2" @change="toggleOne(o.order_no, $event.target.checked)"></td>
+          <td><b>{{ o.order_no }}</b></td>
           <td>{{ esc(o.email) }}</td>
           <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray)" :title="o.note || ''">{{ o.note ? esc(o.note) : '—' }}</td>
           <td><b style="color:var(--plum)">{{ money(o.grand_total) }}</b></td>
@@ -248,6 +326,26 @@ async function exportCsv() {
         <input v-model="tracking" class="input" placeholder="9400…">
       </div>
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="shipSubmitting" @click="shipConfirm">{{ shipSubmitting ? '发货中…' : '确认发货' }}</button>
+    </div>
+  </div>
+
+  <!-- 批量发货弹窗：单号行序对应勾选序 -->
+  <div v-if="batchDlg" class="modal open" @click.self="!batchSubmitting && (batchDlg = false)">
+    <div class="modal-box" style="max-width:480px">
+      <button class="modal-x" @click="!batchSubmitting && (batchDlg = false)">×</button>
+      <h3 style="font-family:var(--font-title);margin-bottom:6px">📦 批量发货 · 已选 {{ selected.length }} 单</h3>
+      <p style="font-size:12px;color:var(--gray);margin-bottom:14px;word-break:break-all">勾选顺序：{{ selected.join(' → ') }}</p>
+      <div class="field">
+        <label>承运商（全部单共用）</label>
+        <select v-model="batchCarrier" class="input">
+          <option>USPS</option><option>UPS</option><option>FedEx</option><option>DHL</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>物流单号（每行一个）</label>
+        <textarea v-model="batchTrackings" class="input" style="height:auto;min-height:120px;padding:10px 14px;resize:vertical;font-family:inherit" :placeholder="'每行一个单号，顺序对应勾选顺序，共 ' + selected.length + ' 行'"></textarea>
+      </div>
+      <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="batchSubmitting" @click="batchShipConfirm">{{ batchSubmitting ? '发货中…' : '确认发货' }}</button>
     </div>
   </div>
 </template>

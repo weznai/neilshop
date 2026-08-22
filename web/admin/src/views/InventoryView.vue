@@ -17,11 +17,14 @@ const threshold = ref(8)
 const mPage = ref(1)
 const mPages = ref(1)
 const mVar = ref(null)
+const mType = ref(null)
 const adjust = ref(null)
 const adjChange = ref(0)
 const adjReason = ref('')
 
 const MTYPE = { 1: '采购', 2: '预扣', 3: '实扣', 4: '释放', 5: '回补', 6: '盘点', 7: '手工', 8: '损耗' }
+/* 类型 chips 数据源：[值, 文案]，首项「全部」= null（数字值与 MTYPE 常量一致） */
+const MTYPES = [[null, '全部'], ...Object.entries(MTYPE).map(([k, v]) => [Number(k), v])]
 const ADJ_ERR = { variant_not_found: '变体不存在', zero_change: '调整量不能为 0', stock_adjust_conflict: '库存并发冲突，请刷新重试' }
 
 const adjAfter = computed(() => (adjust.value ? adjust.value.stock + (adjChange.value || 0) : null))
@@ -41,6 +44,7 @@ async function loadMovements() {
   try {
     const p = new URLSearchParams({ page: mPage.value })
     if (mVar.value) p.set('variant_id', mVar.value.id)
+    if (mType.value !== null) p.set('type', mType.value)
     const d = await req('GET', '/api/admin/trade/stock/movements?' + p)
     movements.value = d.items || []
     mPages.value = Math.max(1, d.pages || 1)
@@ -83,6 +87,63 @@ function applyThreshold() {
 }
 function filterVar(v) { mVar.value = v; mPage.value = 1; loadMovements() }
 function clearVar() { mVar.value = null; mPage.value = 1; loadMovements() }
+function filterType(t) { mType.value = t; mPage.value = 1; loadMovements() }
+
+/* CSV 导出：按当前 SKU + 类型筛选循环翻页拉全量（后端每页 20，上限 20 页）
+ * 流水仅含 variant_id：已选 SKU 直接用其 sku，否则拉变体列表建 id→sku 映射 */
+const exporting = ref(false)
+const EXPORT_MAX_PAGES = 20
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const qs = () => {
+      const p = { page: 1 }
+      if (mVar.value) p.variant_id = mVar.value.id
+      if (mType.value !== null) p.type = mType.value
+      return p
+    }
+    const all = []
+    let pg = 1
+    let totalPages = 1
+    while (pg <= totalPages && pg <= EXPORT_MAX_PAGES) {
+      const params = qs(); params.page = pg
+      const d = await req('GET', '/api/admin/trade/stock/movements?' + new URLSearchParams(params))
+      all.push(...(d.items || []))
+      totalPages = d.pages || 1
+      if (!(d.items || []).length) break
+      pg++
+    }
+    if (totalPages > EXPORT_MAX_PAGES) toast(`流水超过 ${EXPORT_MAX_PAGES} 页，仅导出前 ${all.length} 条`, 'error')
+    const skuMap = {}
+    if (!mVar.value) {
+      let vp = 1
+      while (vp <= EXPORT_MAX_PAGES) {
+        const d = await req('GET', `/api/admin/catalog/variants?page=${vp}&size=200`)
+        ;(d.items || []).forEach((v) => { skuMap[v.id] = v.sku })
+        if (!(d.items || []).length || vp * 200 >= (d.total ?? 0)) break
+        vp++
+      }
+    }
+    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号（同 OrdersView） */
+    const cell = (v) => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const rows = [['时间', 'SKU', '类型', '变更数', '结果库存', '关联', '操作人'],
+      ...all.map((m) => [dt(m.created_at), mVar.value ? mVar.value.sku : (skuMap[m.variant_id] || '#' + m.variant_id),
+        MTYPE[m.type] || m.type, m.change, m.stock_after, m.ref_type ? `${m.ref_type}#${m.ref_id ?? ''}` : '', m.operator || ''])]
+    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `movements-${mType.value !== null ? MTYPE[mType.value] : '全部'}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('已导出 ' + all.length + ' 条 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
 
 /* 遮罩仅在未填写时可关（防误触丢输入）；右上 × 恒可关 */
 function closeAdjust() { if (adjChange.value || adjReason.value.trim()) return; adjust.value = null }
@@ -172,7 +233,13 @@ async function doAdjust() {
     <div class="card" style="padding:18px">
       <div class="dhead">
         <h3 class="dtitle">📜 变动流水</h3>
-        <button v-if="mVar" class="btn btn-secondary btn-sm" @click="clearVar">SKU {{ mVar.sku }} ✕</button>
+        <div style="display:flex;gap:6px">
+          <button v-if="mVar" class="btn btn-secondary btn-sm" @click="clearVar">SKU {{ mVar.sku }} ✕</button>
+          <button class="btn btn-secondary btn-sm" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
+        </div>
+      </div>
+      <div class="filter-bar" style="margin-bottom:10px">
+        <button v-for="[tv, tl] in MTYPES" :key="String(tv)" class="mchip" :class="{ on: mType === tv }" @click="filterType(tv)">{{ tl }}</button>
       </div>
       <div v-for="m in movements" :key="m.id" style="display:flex;justify-content:space-between;font-size:13px;padding:7px 0;border-bottom:1px solid var(--gray-light)">
         <span style="color:var(--gray)" :title="m.operator || ''">{{ dt(m.created_at) }} · {{ MTYPE[m.type] || m.type }}<span v-if="m.ref_id" title="关联单号（内部ID）"> #{{ m.ref_id }}</span></span>
@@ -205,4 +272,7 @@ async function doAdjust() {
 
 <style scoped>
 td,th{padding:10px 12px}
+.mchip{padding:3px 11px;border-radius:999px;border:1px solid var(--gray-light);background:#fff;color:var(--gray);font-size:12px;cursor:pointer}
+.mchip:hover{border-color:var(--rose);color:var(--plum)}
+.mchip.on{border-color:var(--plum);background:var(--plum);color:#fff}
 </style>

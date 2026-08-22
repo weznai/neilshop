@@ -28,9 +28,9 @@ const ESTATUS = {
   3: ['已重发', 'tag-ship'], 4: ['已完成', 'tag-done'], 5: ['已拒绝', 'tag-error'],
 }
 
-/* URL 同步：tab 主档位 + rs/es 两列表状态筛选（存 tab key 字符串）+ rp/ep 两分页 */
-const state = reactive({ tab: 'rma', rs: 'all', es: 'all', rp: 1, ep: 1 })
-useQuerySync(state, { nums: ['rp', 'ep'], defaults: { tab: 'rma', rs: 'all', es: 'all', rp: 1, ep: 1 } })
+/* URL 同步：tab 主档位 + rs/es 两列表状态筛选（存 tab key 字符串）+ rp/ep 两分页 + 共用搜索词 q */
+const state = reactive({ tab: 'rma', rs: 'all', es: 'all', rp: 1, ep: 1, q: '' })
+useQuerySync(state, { nums: ['rp', 'ep'], defaults: { tab: 'rma', rs: 'all', es: 'all', rp: 1, ep: 1, q: '' } })
 const tab = computed(() => (state.tab === 'exch' ? 'exch' : 'rma'))
 
 /* 刷新指示：并发计数（tab/筛选只刷单列表，load 刷两个），对齐订单页「⟳ 刷新中…」 */
@@ -56,13 +56,16 @@ async function loadRmas() {
     if (!f || f.length === 1) {
       const params = { page: state.rp, per_page: RMA_PER_PAGE }
       if (f) params.status = f[0]
+      if (state.q.trim()) params.q = state.q.trim()
       const d = await req('GET', '/api/admin/trade/rmas?' + new URLSearchParams(params))
       rmas.value = d.items || []
       rmaTotal.value = d.total ?? 0
       rmaPages.value = d.pages ?? 1
     } else {
+      const qp = { per_page: 100 }
+      if (state.q.trim()) qp.q = state.q.trim()
       const res = await Promise.all(
-        f.map((s) => req('GET', '/api/admin/trade/rmas?status=' + s + '&per_page=100')),
+        f.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))),
       )
       const all = res
         .flatMap((d) => d.items || [])
@@ -92,6 +95,7 @@ async function loadExch() {
   loadCnt.value++
   const params = { page: state.ep, size: 50 }
   if (exFilter.value != null) params.status = exFilter.value
+  if (state.q.trim()) params.q = state.q.trim()
   try {
     const d = await req('GET', '/api/admin/trade/exchanges?' + new URLSearchParams(params))
     exch.value = d.items || []
@@ -107,6 +111,76 @@ function exTab(k) { state.es = k; state.ep = 1; loadExch() }
 
 async function load() { await Promise.all([loadRmas(), loadExch()]) }
 onMounted(async () => { await load(); loaded.value = true })
+
+/* 顶栏搜索：q 两 tab 共用（分别传给各自请求），回车/按钮触发并重置两列表页码 */
+function search() { state.rp = 1; state.ep = 1; load() }
+
+/* CSV 导出：仅导出当前 tab 当前筛选（状态+关键词）下全部页；转义/BOM 写法照抄 OrdersView */
+const exporting = ref(false)
+const EXPORT_MAX_PAGES = 20
+const csvCell = (v) => {
+  const s = String(v ?? '')
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+}
+/* 循环翻页拉全量：按首页 total 重算页数；size 为该接口单页条数（rma per_page=100 / exch size=50） */
+async function fetchAll(url, params, size) {
+  const first = await req('GET', url + '?' + new URLSearchParams(params))
+  const all = [...(first.items || [])]
+  const totalMatch = first.total ?? all.length
+  const maxPage = Math.min(Math.ceil(totalMatch / size) || 1, EXPORT_MAX_PAGES)
+  for (let p = 2; p <= maxPage; p++) {
+    params.page = p
+    const d = await req('GET', url + '?' + new URLSearchParams(params))
+    all.push(...(d.items || []))
+  }
+  return { all, overflow: Math.ceil(totalMatch / size) > EXPORT_MAX_PAGES }
+}
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const kw = state.q.trim()
+    let all = [], overflow = false
+    if (tab.value === 'rma') {
+      const f = rmaFilter.value
+      if (f && f.length > 1) {
+        /* 「待收货」组合筛选：两状态各拉前 100 合并（与列表口径一致，超 100 截断提示） */
+        const qp = { per_page: 100 }
+        if (kw) qp.q = kw
+        const res = await Promise.all(f.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))))
+        all = res.flatMap((d) => d.items || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+        overflow = res.some((d) => (d.total ?? 0) > (d.items || []).length)
+      } else {
+        const params = { page: 1, per_page: 100 }
+        if (f) params.status = f[0]
+        if (kw) params.q = kw
+        const r = await fetchAll('/api/admin/trade/rmas', params, 100)
+        all = r.all; overflow = r.overflow
+      }
+    } else {
+      const params = { page: 1, size: 50 }
+      if (exFilter.value != null) params.status = exFilter.value
+      if (kw) params.q = kw
+      const r = await fetchAll('/api/admin/trade/exchanges', params, 50)
+      all = r.all; overflow = r.overflow
+    }
+    if (overflow) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    const rows = [['单号', '订单号', '邮箱', '状态', '金额', '原因', '创建时间'],
+      ...all.map((r) => tab.value === 'rma'
+        ? [r.rma_no, r.order_no, r.email, RSTATUS[r.status]?.[0], money(r.refund_amount), reasonLabel(r), dt(r.created_at)]
+        : [r.exchange_no, r.order_no, r.email, ESTATUS[r.status]?.[0], r.price_diff ? money(r.price_diff) : '', '', dt(r.created_at)])]
+    const csv = rows.map((r) => r.map(csvCell).join(',')).join('\n')
+    const label = (tab.value === 'rma' ? RTABS.find(([k]) => k === state.rs)?.[1] : ETABS.find(([k]) => k === state.es)?.[1]) || '全部'
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${tab.value === 'rma' ? 'rmas' : 'exchanges'}-${label}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('已导出 ' + all.length + ' 条 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
 
 /* 统一确认弹窗（替代原生 confirm）：pending 记录待发请求；refund 危险态、reject 需填拒绝原因 */
 const cfm = reactive({ open: false, title: '', body: '', danger: false, reasonLabel: '', reasonPlaceholder: '', confirmText: '确认', pending: null })
@@ -180,7 +254,12 @@ async function exShipConfirm() {
       <h1 class="page-title">退换货处理
         <span v-if="refreshing" style="font-size:12px;color:var(--gray);font-weight:400;margin-left:6px">⟳ 刷新中…</span>
       </h1>
-      <span class="page-sub">RMA {{ rmaTotal }} · 换货 {{ exTotal }}</span>
+      <span class="page-sub">RMA {{ rmaTotal }} · 换货 {{ exTotal }}<template v-if="state.q.trim()"> · 关键词“{{ state.q.trim() }}”</template></span>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <input v-model="state.q" class="input" style="width:220px" placeholder="退货单/订单号/邮箱" @keydown.enter="search">
+      <button class="btn btn-secondary" @click="search">搜索</button>
+      <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
     </div>
   </div>
 

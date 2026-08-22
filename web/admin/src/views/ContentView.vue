@@ -28,6 +28,18 @@ const REV_SIZE = 100
 const revPage = ref(1)
 const revTotal = ref(0)
 const revPages = computed(() => Math.max(1, Math.ceil(revTotal.value / REV_SIZE)))
+const revRating = ref(0)          /* 星级筛选：0 全部 / 1-5 星 */
+
+/* 批量审核勾选（评价）：仅 status=0 行可勾；翻页/筛选重拉时清空（见 loadReviews） */
+const revSel = ref([])
+const revPendingIds = computed(() => reviews.value.filter((r) => r.status === 0).map((r) => r.id))
+const revAllChecked = computed(() => revPendingIds.value.length > 0 && revPendingIds.value.every((id) => revSel.value.includes(id)))
+function toggleRevAll() { revSel.value = revAllChecked.value ? [] : [...revPendingIds.value] }
+function toggleRevSel(id) {
+  const i = revSel.value.indexOf(id)
+  if (i > -1) revSel.value.splice(i, 1)
+  else revSel.value.push(id)
+}
 
 /* 文章分页：GET /api/admin/ops/articles?page=&size=（size ≤100），响应含 total */
 const ART_SIZE = 20
@@ -43,8 +55,18 @@ const ugcPage = ref(1)
 const ugcTotal = ref(0)
 const ugcPages = computed(() => Math.max(1, Math.ceil(ugcTotal.value / UGC_SIZE)))
 const ugcPending = ref(0)         /* tab 角标：status=0 的 total */
+const ugcSel = ref([])            /* 批量审核勾选（UGC）：翻页/切状态重拉时清空 */
+const ugcPendingIds = computed(() => ugc.value.filter((u) => u.status === 0).map((u) => u.id))
+const ugcAllChecked = computed(() => ugcPendingIds.value.length > 0 && ugcPendingIds.value.every((id) => ugcSel.value.includes(id)))
+function toggleUgcAll() { ugcSel.value = ugcAllChecked.value ? [] : [...ugcPendingIds.value] }
+function toggleUgcSel(id) {
+  const i = ugcSel.value.indexOf(id)
+  if (i > -1) ugcSel.value.splice(i, 1)
+  else ugcSel.value.push(id)
+}
 
 async function loadUgc() {
+  ugcSel.value = []
   const qs = new URLSearchParams({ page: ugcPage.value, size: UGC_SIZE })
   if (ugcStatus.value !== null) qs.set('status', ugcStatus.value)
   const d = await req('GET', '/api/admin/ops/ugc?' + qs)
@@ -88,8 +110,10 @@ const lightbox = ref(null)
 function imgFail(row) { row.img_broken = true }
 
 async function loadReviews() {
+  revSel.value = []
   const qs = new URLSearchParams({ page: revPage.value, size: REV_SIZE })
   if (pendingOnly.value) qs.set('status', 0)
+  if (revRating.value) qs.set('rating', revRating.value)
   const d = await req('GET', '/api/admin/ops/reviews?' + qs)
   reviews.value = d.items || []
   revTotal.value = d.total ?? reviews.value.length
@@ -139,16 +163,17 @@ async function retryFaqs() { errs.faqs = false; try { await loadFaqs() } catch (
 async function retryArticles() { errs.articles = false; try { await loadArticles() } catch (_) { errs.articles = true; toast('文章列表加载失败', 'error') } }
 async function retryUgc() { errs.ugc = false; try { await loadUgc() } catch (_) { errs.ugc = true; toast('UGC 列表加载失败', 'error') } }
 
-/* 通用确认弹窗（替代原生 confirm）：askConfirm 装载标题/文案/危险态/按钮文案与待执行动作 */
-const cd = reactive({ open: false, title: '', body: '', danger: false, confirmText: '确认', busy: false, action: null })
+/* 通用确认弹窗（替代原生 confirm）：askConfirm 装载标题/文案/危险态/按钮文案与待执行动作；
+ * reasonLabel 模式（批量驳回评价）下 confirm 事件回传原因文本 */
+const cd = reactive({ open: false, title: '', body: '', danger: false, confirmText: '确认', busy: false, reasonLabel: '', reasonPlaceholder: '', action: null })
 function askConfirm(title, body, action, opts = {}) {
-  Object.assign(cd, { open: true, title, body, danger: !!opts.danger, confirmText: opts.confirmText || '确认', busy: false, action })
+  Object.assign(cd, { open: true, title, body, danger: !!opts.danger, confirmText: opts.confirmText || '确认', busy: false, reasonLabel: opts.reasonLabel || '', reasonPlaceholder: opts.reasonPlaceholder || '', action })
 }
 function closeConfirm() { cd.open = false }
-async function onCdConfirm() {
+async function onCdConfirm(reason) {
   const fn = cd.action
   cd.busy = true
-  try { if (fn) await fn() } finally { cd.busy = false; cd.open = false }
+  try { if (fn) await fn(reason) } finally { cd.busy = false; cd.open = false }
 }
 
 /* 驳回原因：自定义小弹层（ReasonIn 必填，原生 prompt 已弃用） */
@@ -178,6 +203,40 @@ function approveReview(r) {
   }, { confirmText: '通过' })
 }
 
+/* 撤销审核（POST /{id}/unapprove：1|2 → 0 回到待审） */
+function unapproveReview(r) {
+  askConfirm('撤销审核', `将评价 #${r.id} 回到待审核状态？`, async () => {
+    try {
+      await req('POST', `/api/admin/ops/reviews/${r.id}/unapprove`)
+      toast('已撤销 ✓', 'success')
+      reloadReviews()
+    } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  }, { confirmText: '撤销' })
+}
+
+/* 批量审核评价（POST /reviews/bulk {ids,action,reason?}）：驳回走 reasonLabel 模式，body 提示将批量通知用户 */
+function bulkReviews(action) {
+  const ids = [...revSel.value]
+  if (!ids.length) return
+  if (action === 'reject') {
+    askConfirm('批量驳回评价', `驳回选中的 ${ids.length} 条评价？将记录驳回原因并批量通知用户。`, async (reason) => {
+      try {
+        const d = await req('POST', '/api/admin/ops/reviews/bulk', { ids, action, reason: reason || DEFAULT_REJECT })
+        toast(`已处理 ${d.updated ?? ids.length} 条`, 'success')
+        reloadReviews()
+      } catch (e) { toast('批量驳回失败：' + (e.data?.detail || e.message), 'error') }
+    }, { danger: true, confirmText: '驳回', reasonLabel: '驳回原因', reasonPlaceholder: '如：图片涉及第三方水印' })
+  } else {
+    askConfirm('批量通过评价', `通过选中的 ${ids.length} 条评价？将通过并公开展示在前台商品页。`, async () => {
+      try {
+        const d = await req('POST', '/api/admin/ops/reviews/bulk', { ids, action })
+        toast(`已处理 ${d.updated ?? ids.length} 条`, 'success')
+        reloadReviews()
+      } catch (e) { toast('批量通过失败：' + (e.data?.detail || e.message), 'error') }
+    }, { confirmText: '通过' })
+  }
+}
+
 /* UGC 上架/拒绝：拒绝无 reason（后端 reject_ugc 不收 body），body 说明影响 */
 function ugcAct(u, approve) {
   askConfirm(approve ? '上架 UGC' : '拒绝 UGC',
@@ -189,6 +248,36 @@ function ugcAct(u, approve) {
         await loadUgc()
         if (ugcStatus.value !== 0) refreshUgcPending()
       } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+    },
+    { danger: !approve, confirmText: approve ? '上架' : '拒绝' })
+}
+
+/* 撤销审核（POST /ugc/{id}/unapprove：1|2 → 0 回到待审） */
+function unapproveUgc(u) {
+  askConfirm('撤销审核', `将 UGC #${u.id} 回到待审核状态？`, async () => {
+    try {
+      await req('POST', `/api/admin/ops/ugc/${u.id}/unapprove`)
+      toast('已撤销 ✓', 'success')
+      await loadUgc()
+      if (ugcStatus.value !== 0) refreshUgcPending()
+    } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  }, { confirmText: '撤销' })
+}
+
+/* 批量审核 UGC（POST /ugc/bulk {ids,action}）：后端契约无 reason 字段 */
+function bulkUgc(action) {
+  const ids = [...ugcSel.value]
+  if (!ids.length) return
+  const approve = action === 'approve'
+  askConfirm(approve ? '批量上架 UGC' : '批量拒绝 UGC',
+    approve ? `上架选中的 ${ids.length} 条 UGC？将公开展示在前台画廊。` : `拒绝选中的 ${ids.length} 条 UGC？将不会在前台展示。`,
+    async () => {
+      try {
+        const d = await req('POST', '/api/admin/ops/ugc/bulk', { ids, action })
+        toast(`已处理 ${d.updated ?? ids.length} 条`, 'success')
+        await loadUgc()
+        if (ugcStatus.value !== 0) refreshUgcPending()
+      } catch (e) { toast('批量操作失败：' + (e.data?.detail || e.message), 'error') }
     },
     { danger: !approve, confirmText: approve ? '上架' : '拒绝' })
 }
@@ -262,6 +351,9 @@ function delArticle(a) {
     } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
   }, { danger: true, confirmText: '删除' })
 }
+
+/* 文章前台链接：client 路由为 /blog/post?slug=（BlogPostView 按 query.slug 拉取），仅已发布可见 */
+const artUrl = (a) => '/blog/post?slug=' + encodeURIComponent(a.slug)
 
 /* 文章新建/编辑（ArticleCreateIn：slug/title/author/content_md/tags/status；slug 后端强制小写且唯一） */
 const artDlg = ref(false)
@@ -337,9 +429,23 @@ async function saveArticle() {
         <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--gray);cursor:pointer">
           <input v-model="pendingOnly" type="checkbox" style="width:15px;height:15px" @change="togglePending"> 只看待审
         </label>
+        <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--gray);cursor:pointer" title="勾选当前页全部待审评价">
+          <input type="checkbox" :checked="revAllChecked" :disabled="!revPendingIds.length" style="width:15px;height:15px" @change="toggleRevAll"> 全选待审
+        </label>
+        <select v-model.number="revRating" class="input" style="width:auto;padding:6px 10px" @change="togglePending">
+          <option :value="0">全部星级</option>
+          <option v-for="n in 5" :key="n" :value="n">{{ n }} 星</option>
+        </select>
+        <template v-if="revSel.length">
+          <span style="font-size:12.5px;color:var(--plum)">已选 {{ revSel.length }} 条</span>
+          <button class="btn btn-primary btn-sm" @click="bulkReviews('approve')">✓ 批量通过</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="bulkReviews('reject')">✗ 批量驳回</button>
+          <button class="btn btn-ghost btn-sm" @click="revSel = []">取消</button>
+        </template>
       </div>
     </div>
     <div v-for="r in reviews" :key="r.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
+      <input v-if="r.status === 0" type="checkbox" :checked="revSel.includes(r.id)" style="width:15px;height:15px;flex:none;cursor:pointer" @change="toggleRevSel(r.id)">
       <div style="flex:1;min-width:0">
         <div><b :title="'product_id: ' + r.product_id">{{ productName(r.product_id) }}</b> · <span style="color:var(--gold)">{{ '★'.repeat(r.rating || 0) }}</span></div>
         <div style="color:var(--gray);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.content">{{ r.content || '（无文字内容）' }}</div>
@@ -355,6 +461,7 @@ async function saveArticle() {
         <button class="btn btn-primary btn-sm" @click="approveReview(r)">通过</button>
         <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="askReject(r)">驳回</button>
       </template>
+      <button v-else class="btn btn-ghost btn-sm" style="color:var(--gray)" @click="unapproveReview(r)">撤销审核</button>
     </div>
     <EmptyState
       v-if="loaded && errs.reviews" icon="⚠️" title="评价列表加载失败"
@@ -383,6 +490,15 @@ async function saveArticle() {
           class="btn btn-sm" :class="ugcStatus === sv ? 'btn-primary' : 'btn-ghost'"
           @click="ugcTab(sv)"
         >{{ sl }}<template v-if="ugcStatus === sv">（{{ ugcTotal }}）</template></button>
+        <label v-if="ugcStatus === 0" style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--gray);cursor:pointer" title="勾选当前页全部待审 UGC">
+          <input type="checkbox" :checked="ugcAllChecked" :disabled="!ugcPendingIds.length" style="width:15px;height:15px" @change="toggleUgcAll"> 全选
+        </label>
+        <template v-if="ugcSel.length">
+          <span style="font-size:12.5px;color:var(--plum)">已选 {{ ugcSel.length }} 条</span>
+          <button class="btn btn-primary btn-sm" @click="bulkUgc('approve')">✓ 批量通过</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="bulkUgc('reject')">✗ 批量驳回</button>
+          <button class="btn btn-ghost btn-sm" @click="ugcSel = []">取消</button>
+        </template>
       </div>
     </div>
     <div v-for="u in ugc" :key="u.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
@@ -396,9 +512,11 @@ async function saveArticle() {
       </div>
       <span class="tag" :class="UGC_STATUS[u.status]?.[1]">{{ UGC_STATUS[u.status]?.[0] || '待审' }}</span>
       <template v-if="u.status === 0">
+        <input type="checkbox" :checked="ugcSel.includes(u.id)" style="width:15px;height:15px;flex:none;cursor:pointer" @change="toggleUgcSel(u.id)">
         <button class="btn btn-primary btn-sm" @click="ugcAct(u, true)">上架</button>
         <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="ugcAct(u, false)">拒绝</button>
       </template>
+      <button v-else class="btn btn-ghost btn-sm" style="color:var(--gray)" @click="unapproveUgc(u)">撤销审核</button>
     </div>
     <EmptyState
       v-if="loaded && errs.ugc" icon="⚠️" title="UGC 列表加载失败"
@@ -468,6 +586,7 @@ async function saveArticle() {
         <div style="color:var(--gray);margin-top:3px">{{ (a.published_at || '未发布').slice(0, 10) }} · {{ a.slug }} · {{ a.author || '—' }}</div>
       </div>
       <span class="tag" :class="a.status === 1 ? 'tag-paid' : 'tag-pending'">{{ a.status === 1 ? '已发布' : '草稿' }}</span>
+      <a v-if="a.status === 1" class="btn btn-ghost btn-sm" :href="artUrl(a)" target="_blank" rel="noopener" title="在前台查看">↗</a>
       <button class="btn btn-secondary btn-sm" @click="editArticle(a)">编辑</button>
       <button class="btn btn-ghost btn-sm" @click="toggleArticle(a)">{{ a.status === 1 ? '转草稿' : '发布' }}</button>
       <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delArticle(a)">删除</button>
@@ -558,8 +677,8 @@ async function saveArticle() {
     </div>
   </div>
 
-  <!-- 通用确认弹窗（通过评价/UGC 上架与拒绝/删 FAQ/发布与转草稿/删文章共用） -->
-  <ConfirmDialog :open="cd.open" :title="cd.title" :body="cd.body" :danger="cd.danger" :confirm-text="cd.confirmText" :busy="cd.busy" @confirm="onCdConfirm" @close="closeConfirm" />
+  <!-- 通用确认弹窗（单条审核/删 FAQ/文章发布与删除/批量审核共用；reasonLabel 模式用于批量驳回评价） -->
+  <ConfirmDialog :open="cd.open" :title="cd.title" :body="cd.body" :danger="cd.danger" :confirm-text="cd.confirmText" :reason-label="cd.reasonLabel" :reason-placeholder="cd.reasonPlaceholder" :busy="cd.busy" @confirm="onCdConfirm" @close="closeConfirm" />
 </template>
 
 <style scoped>
