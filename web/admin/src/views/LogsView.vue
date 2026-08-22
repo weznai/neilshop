@@ -14,6 +14,7 @@ const total = ref(0)
 const SIZE = 20
 const loaded = ref(false)
 const loadErr = ref(false)
+const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 
 /* 筛选项（entity 集合与后端 AdminLog 写入方一致）+ page 一并入 URL 同步 */
 const f = reactive({ entity: '', action: '', admin_id: '', start: '', end: '', page: 1 })
@@ -84,6 +85,7 @@ function buildUrl(p) {
 
 async function load(p = 1) {
   loadErr.value = false
+  errMsg.value = ''
   try {
     const d = await req('GET', buildUrl(p))
     items.value = d.items || []
@@ -91,6 +93,7 @@ async function load(p = 1) {
     f.page = d.page || p
   } catch (e) {
     loadErr.value = true
+    errMsg.value = e.message || ''
     toast('审计日志加载失败：' + (e.message || ''), 'error')
   }
   loaded.value = true
@@ -102,6 +105,8 @@ function reset() {
   Object.assign(f, { entity: '', action: '', admin_id: '', start: '', end: '', page: 1 })
   load(1)
 }
+/* 表格空态文案：任一筛选（实体/动作/管理员/日期）生效→未匹配，否则暂无 */
+const filtered = computed(() => !!(f.entity || f.action.trim() || f.admin_id || f.start || f.end))
 
 const pad2 = (n) => String(n).padStart(2, '0')
 const fmtShort = (d) => `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
@@ -198,7 +203,17 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
 
   <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
 
+  <!-- 首屏失败（无旧数据）：错误空态置顶，隐藏表格 -->
+  <EmptyState v-else-if="loadErr && !items.length" icon="⚠️" title="审计日志加载失败" :sub="errMsg || '服务端可能未启动或会话已过期'">
+    <template #action><button class="btn btn-secondary btn-sm" @click="load(f.page)">重试</button></template>
+  </EmptyState>
+
   <div v-else class="card tbl-wrap">
+    <!-- 刷新失败（有旧数据）：卡内顶部横幅，旧数据保留 -->
+    <div v-if="loadErr" class="err-banner">
+      <span>⚠️ 刷新失败：{{ errMsg || '网络异常，下方为旧数据' }}</span>
+      <button class="btn btn-secondary btn-sm" @click="load(f.page)">重试</button>
+    </div>
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
         <th style="padding:10px">时间</th><th>管理员</th><th>实体</th><th>动作</th><th>#ID</th><th>变更内容</th>
@@ -223,14 +238,13 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
         </tr>
       </tbody>
     </table>
-    <EmptyState v-if="loadErr" icon="⚠️" title="审计日志加载失败" sub="服务端可能未启动或会话已过期">
-      <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
-    </EmptyState>
-    <EmptyState v-else-if="!items.length" icon="🗒️" title="暂无匹配日志" sub="调整筛选条件后重试，或稍后再来看看" />
+    <EmptyState v-if="!items.length" :icon="filtered ? '🔍' : '🗒️'" :title="filtered ? '未找到匹配的日志' : '暂无日志'" :sub="filtered ? '试试调整或清除筛选' : '管理员操作记录将显示在这里'" />
     <Pagination embed :page="f.page" :pages="pages" :total="total" unit="条" @go="load" />
   </div>
 </template>
 
 <style scoped>
 .ent-badge{display:inline-block;font-size:11px;font-weight:600;border-radius:999px;padding:2px 10px;white-space:nowrap}
+/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
+.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
 </style>

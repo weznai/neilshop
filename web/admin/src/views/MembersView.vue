@@ -14,6 +14,7 @@ const SIZE = 50
 const active = ref(null)
 const loaded = ref(false)
 const loadErr = ref(false)
+const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 const detailBusy = ref(false)
 
 /* 筛选/分页 URL 同步（risk：'' 全部 / 0 正常 / 1 关注 / 2 黑名单，见 models/user.py） */
@@ -30,6 +31,7 @@ const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 async function load(p = 1) {
   /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
+  errMsg.value = ''
   try {
     const params = new URLSearchParams({ page: p, size: SIZE })
     const s = st.q.trim()
@@ -43,6 +45,7 @@ async function load(p = 1) {
     st.page = d.page || p
   } catch (e) {
     loadErr.value = true
+    errMsg.value = e.message || ''
     toast('会员列表加载失败：' + (e.message || ''), 'error')
   }
   loaded.value = true
@@ -52,6 +55,8 @@ onMounted(() => load(st.page))
 function search() { load(1) }
 function setTier(v) { tier.value = v; load(1) }
 function setRiskFilter(v) { st.risk = v; load(1) }
+/* 表格空态文案：搜索/等级/风控任一筛选生效→未匹配，否则暂无 */
+const filtered = computed(() => st.q.trim() !== '' || tier.value !== '' || st.risk !== '')
 
 /* 服务端排序（积分/累计消费）：点击列头 asc/desc 循环，sort 传后端白名单（points/-points/total_spent/-total_spent） */
 const sort = reactive({ key: '', dir: 1 })
@@ -127,7 +132,17 @@ async function applyRisk(flag = 2) {
 
   <div v-if="!loaded" class="card skeleton" style="min-height:280px" />
 
+  <!-- 首屏失败（无旧数据）：错误空态置顶，隐藏表格 -->
+  <EmptyState v-else-if="loadErr && !members.length" icon="⚠️" title="会员列表加载失败" :sub="errMsg || '服务端可能未启动或会话已过期'">
+    <template #action><button class="btn btn-secondary btn-sm" @click="load(st.page)">重试</button></template>
+  </EmptyState>
+
   <div v-else class="card tbl-wrap">
+    <!-- 刷新失败（有旧数据）：卡内顶部横幅，旧数据保留 -->
+    <div v-if="loadErr" class="err-banner">
+      <span>⚠️ 刷新失败：{{ errMsg || '网络异常，下方为旧数据' }}</span>
+      <button class="btn btn-secondary btn-sm" @click="load(st.page)">重试</button>
+    </div>
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
         <th style="padding:10px">会员</th><th>等级</th>
@@ -157,10 +172,7 @@ async function applyRisk(flag = 2) {
         </tr>
       </tbody>
     </table>
-    <EmptyState v-if="loadErr" icon="⚠️" title="会员列表加载失败" sub="服务端可能未启动或会话已过期">
-      <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
-    </EmptyState>
-    <EmptyState v-else-if="!members.length" icon="🧍" title="没有匹配会员" sub="试试其他关键词或等级筛选" />
+    <EmptyState v-if="!members.length" :icon="filtered ? '🔍' : '🧍'" :title="filtered ? '未找到匹配的会员' : '暂无会员'" :sub="filtered ? '试试调整或清除筛选' : '注册用户将显示在这里'" />
     <Pagination embed :page="st.page" :pages="pages" :total="total" unit="位" @go="load" />
   </div>
 
@@ -215,3 +227,8 @@ async function applyRisk(flag = 2) {
     @confirm="applyRisk(2)" @close="cancelBan"
   />
 </template>
+
+<style scoped>
+/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
+.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+</style>

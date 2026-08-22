@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { API_BASE, req } from '../api/client'
+import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { useQuerySync } from '../composables/useQuerySync'
@@ -14,6 +14,7 @@ const page = ref(1)
 const SIZE = 50
 const loaded = ref(false)
 const loadErr = ref(false)
+const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 const cat = ref('')            /* '' = 全部分类 */
 const mine = ref('')           /* '' = 全部；'1' = 我的工单（assignee=当前管理员 id） */
 
@@ -63,6 +64,7 @@ function buildUrl(status, p) {
 async function load(p = 1) {
   /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
+  errMsg.value = ''
   try {
     /* 已关 tab 由后端组合状态 status=3,4 单请求返回 */
     const stt = TABS.find((t) => t[0] === st.tab)?.[2]
@@ -72,6 +74,7 @@ async function load(p = 1) {
     page.value = p
   } catch (e) {
     loadErr.value = true
+    errMsg.value = e.message || ''
     toast('工单列表加载失败：' + (e.message || ''), 'error')
   }
   loaded.value = true
@@ -83,6 +86,8 @@ function setCat(v) { cat.value = v; load(1) }
 function setMine(v) { mine.value = v; load(1) }
 function togglePriority() { st.priority = st.priority === '0' ? '' : '0'; load(1) }
 function search() { load(1) }
+/* 列表空态文案：任一筛选（tab/仅紧急/分类/我的/搜索）生效→未匹配，否则暂无 */
+const filtered = computed(() => st.tab !== 'all' || st.priority !== '' || cat.value !== '' || mine.value !== '' || st.q.trim() !== '')
 
 /* 快捷回复模板：GET /api/support/templates（公开端点，支持 ?category= 过滤，返回 [{id,category,title,content}]） */
 const templates = ref([])          /* 全量模板（当前工单分类无匹配时兜底显示） */
@@ -118,22 +123,17 @@ function applyTemplate(e) {
   reply.value = reply.value.trim() ? reply.value.trim() + '\n' + t.content : t.content
 }
 
-/* 工单线程走用户侧查询接口：omit credentials（匿名路径需 ticket_no+email，与后台会话无关）。
- * 拼 API_BASE：拆独立 API 域后不再依赖同源相对路径 */
+/* 工单线程走用户侧查询接口：匿名路径需 ticket_no+email，与后台会话无关 → credentials:'omit' 不发 cookie */
 async function openTicket(t) {
   active.value = t
   thread.value = null
   if (t.category) loadCatTemplates(t.category)   /* 预取该分类快捷模板（不阻塞线程加载） */
   try {
-    const r = await fetch(`${API_BASE}/api/support/tickets?email=${encodeURIComponent(t.email)}&ticket_no=${encodeURIComponent(t.ticket_no)}`, {
-      credentials: 'omit',
-    })
-    if (!r.ok) throw new Error('HTTP ' + r.status)
-    const d = await r.json()
+    const d = await req('GET', `/api/support/tickets?email=${encodeURIComponent(t.email)}&ticket_no=${encodeURIComponent(t.ticket_no)}`, undefined, { credentials: 'omit' })
     thread.value = d.items?.[0] || { messages: [] }
   } catch (e) {
     thread.value = { messages: [], loadErr: true }
-    toast('对话加载失败：' + e.message, 'error')
+    toast('对话加载失败：' + (e.message || ''), 'error')
   }
 }
 
@@ -207,22 +207,32 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
     <button v-for="[k, label] in TABS" :key="k" class="ttab" :class="{ on: st.tab === k }" @click="setTab(k)">{{ label }}</button>
     <span style="flex:1"></span>
     <button class="ttab" :class="{ on: st.priority === '0' }" title="只看紧急工单（priority=0）" @click="togglePriority">仅紧急</button>
-    <select class="input" :value="cat" style="width:auto;height:36px;font-size:13px" @change="setCat($event.target.value)">
+    <select class="input" :value="cat" style="width:auto;height:38px;font-size:13px" @change="setCat($event.target.value)">
       <option value="">全部分类</option>
       <option v-for="(label, v) in CATEGORY" :key="v" :value="String(v)">{{ label }}</option>
     </select>
-    <select class="input" :value="mine" style="width:auto;height:36px;font-size:13px" @change="setMine($event.target.value)">
+    <select class="input" :value="mine" style="width:auto;height:38px;font-size:13px" @change="setMine($event.target.value)">
       <option value="">全部工单</option>
       <option value="1">我的工单</option>
     </select>
-    <input v-model="st.q" class="input" style="width:200px;height:36px" placeholder="邮箱 / 工单号 / 主题" @keydown.enter="search()">
-    <button class="btn btn-secondary btn-sm" style="height:36px" @click="search()">搜索</button>
+    <input v-model="st.q" class="input" style="width:200px;height:38px" placeholder="邮箱 / 工单号 / 主题" @keydown.enter="search()">
+    <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
   </div>
 
   <div v-if="!loaded" class="card skeleton" style="min-height:280px;margin-bottom:14px" />
 
+  <!-- 首屏失败（无旧数据）：错误空态置顶，隐藏列表 -->
+  <EmptyState v-else-if="loadErr && !tickets.length" icon="⚠️" title="工单列表加载失败" :sub="errMsg || '服务端可能未启动或会话已过期'">
+    <template #action><button class="btn btn-secondary btn-sm" @click="load(page)">重试</button></template>
+  </EmptyState>
+
   <div v-else class="grid-2" style="align-items:start">
     <div class="card tbl-wrap">
+      <!-- 刷新失败（有旧数据）：卡内顶部横幅，旧数据保留 -->
+      <div v-if="loadErr" class="err-banner">
+        <span>⚠️ 刷新失败：{{ errMsg || '网络异常，下方为旧数据' }}</span>
+        <button class="btn btn-secondary btn-sm" @click="load(page)">重试</button>
+      </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">工单号</th><th>主题</th><th>客户</th><th>首次回复</th><th>指派</th><th>状态</th></tr></thead>
         <tbody>
@@ -252,10 +262,7 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
           </tr>
         </tbody>
       </table>
-      <EmptyState v-if="loadErr" icon="⚠️" title="工单列表加载失败" sub="服务端可能未启动或会话已过期">
-        <template #action><button class="btn btn-secondary btn-sm" @click="load(1)">重试</button></template>
-      </EmptyState>
-      <EmptyState v-else-if="loaded && !tickets.length" icon="💬" title="暂无工单" sub="当前筛选下没有匹配的工单" />
+      <EmptyState v-if="!tickets.length" :icon="filtered ? '🔍' : '💬'" :title="filtered ? '未找到匹配的工单' : '暂无工单'" :sub="filtered ? '试试调整或清除筛选' : '客户提交工单后将显示在这里'" />
       <Pagination embed :page="page" :pages="pages" :total="total" unit="张" @go="load" />
     </div>
 
@@ -340,3 +347,8 @@ const fmtTime = (iso) => (iso || '').slice(0, 16).replace('T', ' ')
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
+.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+</style>
