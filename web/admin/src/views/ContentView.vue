@@ -29,6 +29,9 @@ const revPage = ref(1)
 const revTotal = ref(0)
 const revPages = computed(() => Math.max(1, Math.ceil(revTotal.value / REV_SIZE)))
 const revRating = ref(0)          /* 星级筛选：0 全部 / 1-5 星 */
+const revProduct = ref(0)         /* 商品筛选：0 全部 / product_id（选项来自商品标题映射，onMounted 已拉取） */
+/* 评价空态文案：星级/商品筛选生效→未匹配（仅待审视图保持“处理完”正向文案） */
+const revFiltered = computed(() => revRating.value > 0 || revProduct.value > 0)
 
 /* 批量审核勾选（评价）：仅 status=0 行可勾；翻页/筛选重拉时清空（见 loadReviews） */
 const revSel = ref([])
@@ -46,6 +49,9 @@ const ART_SIZE = 20
 const artPage = ref(1)
 const artTotal = ref(0)
 const artPages = computed(() => Math.max(1, Math.ceil(artTotal.value / ART_SIZE)))
+/* 文章状态筛选：status=published|draft 传后端（全部=不传）；切换回第 1 页重拉 */
+const artStatus = ref(null)        /* null 全部 / 'published' 已发布 / 'draft' 草稿 */
+function artTab(sv) { artStatus.value = sv; artPage.value = 1; loadArticles().catch(() => toast('文章列表加载失败', 'error')) }
 
 /* UGC：服务端 status + page/size 分页（对齐评价模式，后端 admin_ugc 已支持）
  * 「待审 N」角标取响应 total；当前 tab 计数也用 total（后端缺 total 时回退当前页条数） */
@@ -61,9 +67,11 @@ const ugcAllChecked = computed(() => ugcPendingIds.value.length > 0 && ugcPendin
 function toggleUgcAll() { ugcSel.value = ugcAllChecked.value ? [] : [...ugcPendingIds.value] }
 function toggleUgcSel(id) {
   const i = ugcSel.value.indexOf(id)
-  if (i > -1) ugcSel.value.splice(i, 1)
+  if (i > -1) ugcSel.value.splice(1, 1)
   else ugcSel.value.push(id)
 }
+/* UGC 空态文案：已上架/已拒绝 tab→未匹配（待审保持“处理完”、全部=暂无） */
+const ugcFiltered = computed(() => ugcStatus.value === 1 || ugcStatus.value === 2)
 
 async function loadUgc() {
   ugcSel.value = []
@@ -86,9 +94,16 @@ function ugcGo(n) {
   if (n >= 1 && n <= ugcPages.value) { ugcPage.value = n; loadUgc().catch(() => toast('UGC 列表加载失败', 'error')) }
 }
 
-/* FAQ 分类筛选（后台 list 无 category 参数，前端过滤） */
-const faqCat = ref(0)
-const faqList = computed(() => faqs.value.filter((f) => !faqCat.value || f.category === faqCat.value))
+/* FAQ：category 筛选 + page/size 分页均传后端，响应 {items,total}（兼容裸数组回退） */
+const FAQ_SIZE = 20
+const faqPage = ref(1)
+const faqTotal = ref(0)
+const faqPages = computed(() => Math.max(1, Math.ceil(faqTotal.value / FAQ_SIZE)))
+const faqCat = ref(0)              /* 0 全部 / 1-6 分类 */
+function faqFilter() { faqPage.value = 1; loadFaqs().catch(() => toast('FAQ 加载失败', 'error')) }
+function faqGo(n) {
+  if (n >= 1 && n <= faqPages.value) { faqPage.value = n; loadFaqs().catch(() => toast('FAQ 加载失败', 'error')) }
+}
 
 /* 商品标题映射：评价/UGC 只有 product_id，用商品列表解析标题（翻页拉全，最多 10 页 × 100，只在首载执行） */
 const productTitles = reactive({})
@@ -114,16 +129,25 @@ async function loadReviews() {
   const qs = new URLSearchParams({ page: revPage.value, size: REV_SIZE })
   if (pendingOnly.value) qs.set('status', 0)
   if (revRating.value) qs.set('rating', revRating.value)
+  if (revProduct.value) qs.set('product_id', revProduct.value)
   const d = await req('GET', '/api/admin/ops/reviews?' + qs)
   reviews.value = d.items || []
   revTotal.value = d.total ?? reviews.value.length
 }
 async function loadArticles() {
-  const d = await req('GET', `/api/admin/ops/articles?page=${artPage.value}&size=${ART_SIZE}`)
-  articles.value = d.items || []
+  const qs = new URLSearchParams({ page: artPage.value, size: ART_SIZE })
+  if (artStatus.value) qs.set('status', artStatus.value)
+  const d = await req('GET', '/api/admin/ops/articles?' + qs)
+  articles.value = Array.isArray(d) ? d : (d.items || [])
   artTotal.value = d.total ?? articles.value.length
 }
-async function loadFaqs() { faqs.value = (await req('GET', '/api/admin/ops/faqs')).items || [] }
+async function loadFaqs() {
+  const qs = new URLSearchParams({ page: faqPage.value, size: FAQ_SIZE })
+  if (faqCat.value) qs.set('category', faqCat.value)
+  const d = await req('GET', '/api/admin/ops/faqs?' + qs)
+  faqs.value = Array.isArray(d) ? d : (d.items || [])
+  faqTotal.value = d.total ?? faqs.value.length
+}
 
 async function load() {
   loaded.value = false
@@ -282,15 +306,51 @@ function bulkUgc(action) {
     { danger: !approve, confirmText: approve ? '上架' : '拒绝' })
 }
 
+/* 极简 Markdown 渲染（文章/FAQ 弹窗预览共用）：先整体转义再插入标签，防 XSS；
+ * 支持 h1-h3（先长后短匹配）/ 无序列表 / 引用 / 粗体 / 斜体 / 链接 / 行内代码，对齐 client BlogPostView 先例 */
+function md2html(src) {
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  const inline = (t) => t
+    /* 行内代码先于加粗/链接，避免代码片段被二次加工 */
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/\*([^*]+)\*/g, '<i>$1</i>')
+    /* 链接协议白名单：http(s) 外链新窗打开，/ 开头站内路径放行；其余（javascript: 等）剥语法留纯文本 */
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, href) => (/^https?:\/\//i.test(href)
+      ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>`
+      : /^\/(?!\/)/.test(href) ? `<a href="${href}">${text}</a>` : text))
+  const out = []
+  let ul = false
+  const closeUl = () => { if (ul) { out.push('</ul>'); ul = false } }
+  for (const raw of esc(src).split(/\r?\n/)) {
+    const l = raw.trim()
+    let m
+    if (!l) { closeUl(); continue }
+    if ((m = l.match(/^###\s+(.*)$/))) { closeUl(); out.push(`<h3>${inline(m[1])}</h3>`) }
+    else if ((m = l.match(/^##\s+(.*)$/))) { closeUl(); out.push(`<h2>${inline(m[1])}</h2>`) }
+    else if ((m = l.match(/^#\s+(.*)$/))) { closeUl(); out.push(`<h1>${inline(m[1])}</h1>`) }
+    else if ((m = l.match(/^[-*]\s+(.*)$/))) { if (!ul) { out.push('<ul>'); ul = true } out.push(`<li>${inline(m[1])}</li>`) }
+    else if ((m = l.match(/^&gt;\s?(.*)$/))) { closeUl(); out.push(`<blockquote>${inline(m[1])}</blockquote>`) }
+    else { closeUl(); out.push(`<p>${inline(l)}</p>`) }
+  }
+  closeUl()
+  return out.join('')
+}
+/* 文章 / FAQ 弹窗各自独立的预览开关（切预览只是隐藏 textarea，v-model 内容不丢） */
+const artPrev = ref(false)
+const faqPrev = ref(false)
+
 /* FAQ 增改（FaqCreateIn/FaqUpdateIn） */
 const faqDlg = ref(false)
 const faqForm = reactive({ id: null, category: 1, question: '', answer_md: '', sort_order: 0, active: 1 })
 function newFaq() {
-  Object.assign(faqForm, { id: null, category: 1, question: '', answer_md: '', sort_order: faqs.value.length + 1, active: 1 })
+  Object.assign(faqForm, { id: null, category: 1, question: '', answer_md: '', sort_order: faqTotal.value + 1, active: 1 })
+  faqPrev.value = false
   faqDlg.value = true
 }
 function editFaq(f) {
   Object.assign(faqForm, { id: f.id, category: f.category, question: f.question, answer_md: f.answer_md, sort_order: f.sort_order ?? 0, active: f.active ? 1 : 0 })
+  faqPrev.value = false
   faqDlg.value = true
 }
 async function saveFaq() {
@@ -304,7 +364,7 @@ async function saveFaq() {
     else await req('POST', '/api/admin/ops/faqs', body)
     toast(faqForm.id ? '已保存 ✓' : '已新增 ✓', 'success')
     faqDlg.value = false
-    faqs.value = (await req('GET', '/api/admin/ops/faqs')).items || []
+    await loadFaqs()
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 async function toggleFaq(f) {
@@ -319,6 +379,7 @@ function delFaq(f) {
     try {
       await req('DELETE', '/api/admin/ops/faqs/' + f.id)
       faqs.value = faqs.value.filter((x) => x.id !== f.id)
+      faqTotal.value = Math.max(0, faqTotal.value - 1)
       toast('已删除', 'success')
     } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
   }, { danger: true, confirmText: '删除' })
@@ -360,6 +421,7 @@ const artDlg = ref(false)
 const artForm = reactive({ id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0 })
 function newArticle() {
   Object.assign(artForm, { id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0 })
+  artPrev.value = false
   artDlg.value = true
 }
 function editArticle(a) {
@@ -372,6 +434,7 @@ function editArticle(a) {
     tagsStr: (a.tags || []).join(', '),
     status: a.status ?? 0,
   })
+  artPrev.value = false
   artDlg.value = true
 }
 async function saveArticle() {
@@ -412,7 +475,7 @@ async function saveArticle() {
 
   <div class="otab" style="display:flex;gap:4px;border-bottom:1.5px solid var(--gray-light);margin-bottom:14px">
     <button
-      v-for="[k, label] in [['reviews', `评价 (${revTotal})`], ['ugc', `UGC (待审 ${ugcPending})`], ['faqs', `FAQ (${faqs.length})`], ['articles', `博客 (${artTotal})`]]"
+      v-for="[k, label] in [['reviews', `评价 (${revTotal})`], ['ugc', `UGC (待审 ${ugcPending})`], ['faqs', `FAQ (${faqTotal})`], ['articles', `博客 (${artTotal})`]]"
       :key="k"
       style="padding:9px 16px;font-size:13.5px;font-weight:600;border:none;background:none;cursor:pointer"
       :style="{ color: tab === k ? 'var(--plum)' : 'var(--gray)', borderBottom: tab === k ? '2.5px solid var(--plum)' : '2.5px solid transparent' }"
@@ -435,6 +498,10 @@ async function saveArticle() {
         <select v-model.number="revRating" class="input" style="width:auto;padding:6px 10px" @change="togglePending">
           <option :value="0">全部星级</option>
           <option v-for="n in 5" :key="n" :value="n">{{ n }} 星</option>
+        </select>
+        <select v-model.number="revProduct" class="input" style="width:auto;max-width:220px;padding:6px 10px;text-overflow:ellipsis" title="按商品筛选评价" @change="togglePending">
+          <option :value="0">全部商品</option>
+          <option v-for="(title, id) in productTitles" :key="id" :value="Number(id)">{{ title }}</option>
         </select>
         <template v-if="revSel.length">
           <span style="font-size:12.5px;color:var(--plum)">已选 {{ revSel.length }} 条</span>
@@ -473,8 +540,9 @@ async function saveArticle() {
     </EmptyState>
     <EmptyState
       v-else-if="loaded && !reviews.length"
-      :icon="pendingOnly ? '🎉' : '📭'"
-      :title="pendingOnly ? '没有待审评价，都处理完了' : '暂无评价'"
+      :icon="pendingOnly && !revFiltered ? '🎉' : '📭'"
+      :title="revFiltered ? '未找到匹配的评价' : pendingOnly ? '没有待审评价，都处理完了' : '暂无评价'"
+      :sub="revFiltered ? '试试调整或清除筛选' : ''"
     />
     <Pagination embed :page="revPage" :pages="revPages" :total="revTotal" unit="条" @go="revGo" />
   </div>
@@ -529,7 +597,8 @@ async function saveArticle() {
     <EmptyState
       v-else-if="loaded && !ugc.length"
       :icon="ugcStatus === 0 ? '🎉' : '📭'"
-      :title="ugcStatus === 0 ? '没有待审 UGC，都处理完了' : ugcStatus === 1 ? '暂无已上架 UGC' : ugcStatus === 2 ? '暂无已拒绝 UGC' : '暂无 UGC 投稿'"
+      :title="ugcFiltered ? '未找到匹配的 UGC' : ugcStatus === 0 ? '没有待审 UGC，都处理完了' : '暂无 UGC 投稿'"
+      :sub="ugcFiltered ? '试试调整或清除筛选' : ''"
     />
     <Pagination embed :page="ugcPage" :pages="ugcPages" :total="ugcTotal" unit="条" @go="ugcGo" />
   </div>
@@ -541,14 +610,14 @@ async function saveArticle() {
       <h3 class="dtitle">FAQ</h3>
       <div class="filter-bar">
         <span style="font-size:12.5px;color:var(--gray)">分类筛选</span>
-        <select v-model.number="faqCat" class="input" style="width:auto;padding:6px 10px">
+        <select v-model.number="faqCat" class="input" style="width:auto;padding:6px 10px" @change="faqFilter">
           <option :value="0">全部分类</option>
           <option v-for="(name, v) in FAQ_CATS" :key="v" :value="Number(v)">{{ name }}</option>
         </select>
-        <span class="item-cnt">{{ faqList.length }} 条</span>
+        <span class="item-cnt">{{ faqTotal }} 条</span>
       </div>
     </div>
-    <div v-for="f in faqList" :key="f.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
+    <div v-for="f in faqs" :key="f.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
       <div style="flex:1;min-width:0">
         <b>{{ f.question }}</b>
         <span class="cat-chip" style="margin-left:6px">{{ FAQ_CATS[f.category] || f.category_name || f.category }}</span>
@@ -564,11 +633,14 @@ async function saveArticle() {
       <template #action><button class="btn btn-secondary btn-sm" @click="retryFaqs">重试</button></template>
     </EmptyState>
     <EmptyState
-      v-else-if="loaded && !faqList.length"
+      v-else-if="loaded && !faqs.length"
       :icon="faqCat ? '📭' : '📖'"
-      :title="faqCat ? '该分类暂无 FAQ' : '暂无 FAQ'"
-      :sub="faqCat ? '换个分类看看' : '点击右上角「新增 FAQ」创建'"
-    />
+      :title="faqCat ? '未找到匹配的 FAQ' : '暂无 FAQ'"
+      :sub="faqCat ? '试试调整或清除筛选' : '点击右上角「新增 FAQ」创建'"
+    >
+      <template #action><button class="btn btn-primary btn-sm" @click="newFaq">➕ 新建 FAQ</button></template>
+    </EmptyState>
+    <Pagination embed :page="faqPage" :pages="faqPages" :total="faqTotal" unit="条" @go="faqGo" />
   </div>
 
   <!-- 博客 -->
@@ -576,7 +648,14 @@ async function saveArticle() {
   <div v-else-if="tab === 'articles'" class="card" style="padding:0">
     <div class="dhead" style="padding:12px 18px;border-bottom:1px solid var(--gray-light);margin-bottom:0">
       <h3 class="dtitle">博客文章</h3>
-      <span class="item-cnt">{{ artTotal }} 篇</span>
+      <div class="filter-bar">
+        <button
+          v-for="[sv, sl] in [[null, '全部'], ['published', '已发布'], ['draft', '草稿']]" :key="String(sv)"
+          class="btn btn-sm" :class="artStatus === sv ? 'btn-primary' : 'btn-ghost'"
+          @click="artTab(sv)"
+        >{{ sl }}</button>
+        <span class="item-cnt">{{ artTotal }} 篇</span>
+      </div>
     </div>
     <div v-for="a in articles" :key="a.id" style="display:flex;gap:14px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--gray-light);font-size:13px;flex-wrap:wrap">
       <img v-if="a.cover" :src="a.cover" alt="" style="width:52px;height:38px;border-radius:8px;object-fit:cover;flex:none">
@@ -594,7 +673,9 @@ async function saveArticle() {
     <EmptyState v-if="loaded && errs.articles" icon="⚠️" title="文章列表加载失败" sub="点击重试，或稍后再来">
       <template #action><button class="btn btn-secondary btn-sm" @click="artPage = 1; retryArticles()">重试</button></template>
     </EmptyState>
-    <EmptyState v-else-if="loaded && !articles.length" icon="📝" title="暂无文章" sub="点击右上角「新文章」开始创作" />
+    <EmptyState v-else-if="loaded && !articles.length" :icon="artStatus === null ? '📝' : '📭'" :title="artStatus === null ? '暂无文章' : '未找到匹配的文章'" :sub="artStatus === null ? '点击右上角「新文章」开始创作' : '试试调整或清除筛选'">
+      <template #action><button class="btn btn-primary btn-sm" @click="newArticle">➕ 新建文章</button></template>
+    </EmptyState>
     <Pagination embed :page="artPage" :pages="artPages" :total="artTotal" unit="篇" @go="artGo" />
   </div>
 
@@ -633,7 +714,14 @@ async function saveArticle() {
           <input v-model="artForm.slug" class="input" placeholder="press-on-nails-101" style="text-transform:lowercase"></div>
         <div class="field"><label>作者</label><input v-model="artForm.author" class="input" placeholder="Maya Chen"></div>
         <div class="field" style="grid-column:1/-1"><label>标题 *</label><input v-model="artForm.title" class="input"></div>
-        <div class="field" style="grid-column:1/-1"><label>正文（Markdown）</label><textarea v-model="artForm.content_md" class="input" rows="8"></textarea></div>
+        <div class="field" style="grid-column:1/-1"><label>正文（Markdown）</label>
+          <div class="md-tabs">
+            <button :class="{ on: !artPrev }" @click="artPrev = false">编辑</button>
+            <button :class="{ on: artPrev }" @click="artPrev = true">预览</button>
+          </div>
+          <textarea v-show="!artPrev" v-model="artForm.content_md" class="input" rows="8"></textarea>
+          <div v-show="artPrev" class="prose md-prev" v-html="md2html(artForm.content_md)"></div>
+        </div>
         <div class="field" style="grid-column:1/-1"><label>标签（逗号分隔）</label><input v-model="artForm.tagsStr" class="input" placeholder="howto, nails"></div>
       </div>
       <!-- 发布状态：新建可选「立即发布」；编辑已发布文章时锁定（发布/转草稿走列表行按钮） -->
@@ -666,7 +754,14 @@ async function saveArticle() {
         </div>
       </div>
       <div class="field"><label>问题</label><input v-model="faqForm.question" class="input"></div>
-      <div class="field"><label>答案（Markdown）</label><textarea v-model="faqForm.answer_md" class="input" rows="5"></textarea></div>
+      <div class="field"><label>答案（Markdown）</label>
+        <div class="md-tabs">
+          <button :class="{ on: !faqPrev }" @click="faqPrev = false">编辑</button>
+          <button :class="{ on: faqPrev }" @click="faqPrev = true">预览</button>
+        </div>
+        <textarea v-show="!faqPrev" v-model="faqForm.answer_md" class="input" rows="5"></textarea>
+        <div v-show="faqPrev" class="prose md-prev" v-html="md2html(faqForm.answer_md)"></div>
+      </div>
       <label v-if="faqForm.id" style="display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer;margin-top:6px">
         <input v-model.number="faqForm.active" type="checkbox" :true-value="1" :false-value="0" style="width:16px;height:16px"> 前台显示
       </label>
@@ -684,4 +779,15 @@ async function saveArticle() {
 <style scoped>
 /* 中性分类 chips（FAQ 分类/文章标签：非状态语义，不用 tag-pending） */
 .cat-chip{background:var(--gray-light);color:var(--gray);font-size:11px;border-radius:999px;padding:1px 8px}
+/* Markdown 编辑/预览切换 pill（选中 plum 白字） */
+.md-tabs{display:flex;gap:6px;margin-bottom:8px}
+.md-tabs button{border:1px solid var(--gray-light);background:#fff;color:var(--gray);font-size:12px;font-weight:600;border-radius:999px;padding:3px 12px;cursor:pointer}
+.md-tabs button.on{background:var(--plum);border-color:var(--plum);color:#fff}
+/* 预览容器：对齐 textarea 视觉（限高滚动）；.prose 全局已有 p/li/ul/h2/b，此处补 h1/h3/引用/代码 */
+.md-prev{max-height:300px;overflow-y:auto;border:1px solid var(--gray-light);border-radius:10px;padding:12px 14px;background:#fff;font-size:14px}
+.md-prev h1{font-family:var(--font-title);font-size:20px;margin:14px 0 8px}
+.md-prev h3{font-family:var(--font-title);font-size:16px;margin:12px 0 6px}
+.md-prev blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid var(--plum);background:var(--rose-pale);border-radius:0 8px 8px 0;color:#3A3438}
+.md-prev code{background:var(--gray-light);border-radius:5px;padding:1px 6px;font-size:12.5px}
+.md-prev a{color:var(--plum);font-weight:600}
 </style>

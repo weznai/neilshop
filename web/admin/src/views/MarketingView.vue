@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
-import { dt } from '../composables/format'
+import { dt, money } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -22,11 +22,17 @@ const DSC_SIZE = 20
 const dscPage = ref(1)
 const dscTotal = ref(0)
 const dscPages = computed(() => Math.max(1, Math.ceil(dscTotal.value / DSC_SIZE)))
+const dscQ = ref('')
 async function loadDiscounts() {
-  const d = await req('GET', `/api/admin/ops/discounts?page=${dscPage.value}&size=${DSC_SIZE}`)
+  const qs = new URLSearchParams({ page: dscPage.value, size: DSC_SIZE })
+  if (dscQ.value.trim()) qs.set('q', dscQ.value.trim())
+  const d = await req('GET', '/api/admin/ops/discounts?' + qs)
   discounts.value = d.items || []
   dscTotal.value = d.total ?? discounts.value.length
 }
+/* 搜索：重置回第 1 页再拉取；有筛选时空态文案区分 */
+const dscFiltered = computed(() => !!dscQ.value.trim())
+function dscSearch() { dscPage.value = 1; loadDiscounts().catch((e) => toast('折扣码加载失败：' + (e.message || ''), 'error')) }
 function dscGo(n) {
   if (n >= 1 && n <= dscPages.value) {
     dscPage.value = n
@@ -41,8 +47,8 @@ const BUNDLE_KEYS = { b2: 'bundle_2_off', b3: 'bundle_3_off' }
 const example = (sub, pct) => ((sub * (100 - (Number(pct) || 0))) / 100).toFixed(2)
 
 const showNew = ref(false)
-/* DiscountCreateIn: type int 1-3（1=pct 2=fixed 3=ship）、value 分、starts_at 必填；starts_at 空=立即生效 */
-const NEW_CODE = { code: '', type: 1, value: 20, min_subtotal: 0, max_discount: null, usage_limit: null, per_user_limit: 1, first_order_only: 0, days: 30, starts_at: '' }
+/* DiscountCreateIn: type int 1-3（1=pct 2=fixed 3=ship）、value 分、starts_at 必填；starts_at 空=立即生效；days 默认 0=永久（提交 ends_at=null） */
+const NEW_CODE = { code: '', type: 1, value: 20, min_subtotal: 0, max_discount: null, usage_limit: null, per_user_limit: 1, first_order_only: 0, days: 0, starts_at: '' }
 const newCode = reactive({ ...NEW_CODE })
 /* 弹窗开关整体重置（对齐 newPopup 的做法，避免残留上次输入） */
 function openNew() { Object.assign(newCode, NEW_CODE); showNew.value = true }
@@ -96,7 +102,6 @@ function setTab(k) {
   if (k === 'giftcards' && !gcLoaded.value) loadGiftcards()
 }
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const TYPE_LABEL = { 1: (v) => `${v}% off`, 2: (v) => `${money(v)} off`, 3: () => '免邮' }
 /* ends_at 为 naive UTC：按 UTC 日期比较判定「已过期」（天级，避免本地时区偏移误标） */
 const todayUtc = () => new Date().toISOString().slice(0, 10)
@@ -127,7 +132,7 @@ async function addCode() {
       first_order_only: newCode.first_order_only ? 1 : 0,
       /* 开始时间：填了按本地时间转 UTC ISO（datetime-local → Date → toISOString），空=当前时刻立即生效 */
       starts_at: newCode.starts_at ? new Date(newCode.starts_at).toISOString().slice(0, 19) : new Date().toISOString().slice(0, 19),
-      ends_at: newCode.days > 0 ? new Date(Date.now() + newCode.days * 864e5).toISOString().slice(0, 19) : null,
+      ends_at: newCode.days > 0 ? new Date(Date.now() + newCode.days * 864e5).toISOString().slice(0, 19) : null, /* days=0/空 → null 永久 */
     })
     showNew.value = false
     Object.assign(newCode, NEW_CODE)
@@ -204,16 +209,20 @@ const usages = ref([])
 const usePage = ref(1)
 const useTotal = ref(0)
 const usePages = computed(() => Math.max(1, Math.ceil(useTotal.value / USE_SIZE)))
+/* ROI 汇总 {discount, order}：响应全量聚合（不受分页影响）；旧结构缺字段时置 null 整行隐藏 */
+const useRoi = ref(null)
 async function loadUsages() {
   const c = useCode.value
   if (!c) return
   const d = await req('GET', `/api/admin/ops/discounts/${c.id}/usages?page=${usePage.value}&size=${USE_SIZE}`)
   usages.value = d.items || []
   useTotal.value = d.total ?? usages.value.length
+  useRoi.value = d.total_discount_cents != null ? { discount: d.total_discount_cents, order: d.total_order_cents ?? null } : null
 }
 function openUsages(c) {
   useCode.value = c
   usePage.value = 1
+  useRoi.value = null
   useDlg.value = true
   loadUsages().catch(() => toast('核销记录加载失败', 'error'))
 }
@@ -270,6 +279,8 @@ function gcGo(n) {
 }
 /* 搜索/状态筛选：重置回第 1 页再拉取 */
 function gcSearch() { gcPage.value = 1; loadGiftcards() }
+/* 有筛选（搜索词/状态）时空态文案区分 */
+const gcFiltered = computed(() => !!(gcQ.value.trim() || gcStatus.value))
 
 /* 余额进度条：复用库存条渐变（≤25% low / ≤60% mid / 其余 ok） */
 const gcPct = (g) => (g.initial_cents ? Math.min(100, Math.round(((g.balance_cents || 0) * 100) / g.initial_cents)) : 0)
@@ -401,7 +412,7 @@ async function saveBundle(key) {
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 
-/* ===== 运费模板管理（后端：GET/POST + PUT price/free_over/eta/active） ===== */
+/* ===== 运费模板管理（后端：GET/POST + PUT 全字段可编辑，局部 {active} 更新仍兼容；409 rate_conflict 组合冲突） ===== */
 async function toggleRate(r) {
   try {
     await req('PUT', `/api/admin/trade/shipping-rates/${r.id}`, { active: !r.active })
@@ -417,9 +428,11 @@ function newRate() {
   rateDlg.value = true
 }
 function editRate(r) {
+  /* 全字段预填（含限重）；空值回退默认，避免 select 空匹配提交空串 */
   Object.assign(rateForm, {
-    id: r.id, dest_country: r.dest_country, carrier: r.carrier, method: r.method,
+    id: r.id, dest_country: r.dest_country || 'US', carrier: r.carrier || 'usps', method: r.method || 'standard',
     price: r.price, free_over: r.free_over, eta_min_days: r.eta_min_days, eta_max_days: r.eta_max_days,
+    max_weight_g: r.max_weight_g ?? null,
   })
   rateDlg.value = true
 }
@@ -427,9 +440,13 @@ async function saveRate() {
   if (rateForm.eta_max_days < rateForm.eta_min_days) { toast('最大时效不能小于最小时效', 'error'); return }
   try {
     if (rateForm.id) {
+      /* PUT 已放开全字段：目的地/承运/方式/限重编辑态可改，组合唯一冲突 409 */
       await req('PUT', `/api/admin/trade/shipping-rates/${rateForm.id}`, {
-        price: Math.round(rateForm.price), free_over: rateForm.free_over ? Math.round(rateForm.free_over) : null,
+        dest_country: rateForm.dest_country.trim().toUpperCase(), carrier: rateForm.carrier.trim().toLowerCase(),
+        method: rateForm.method, price: Math.round(rateForm.price),
+        free_over: rateForm.free_over ? Math.round(rateForm.free_over) : null,
         eta_min_days: rateForm.eta_min_days | 0, eta_max_days: rateForm.eta_max_days | 0,
+        max_weight_g: rateForm.max_weight_g | 0 || 500,
       })
       toast('运费模板已保存 ✓', 'success')
     } else {
@@ -444,7 +461,10 @@ async function saveRate() {
     }
     rateDlg.value = false
     rates.value = (await req('GET', '/api/admin/trade/shipping-rates')).items || []
-  } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+  } catch (e) {
+    if (e.status === 409) toast('相同目的地/承运组合已存在', 'error')
+    else toast('保存失败：' + (e.data?.detail || e.message), 'error')
+  }
 }
 
 /* 删除运费模板：危险确认；已被订单引用（409 rate_referenced）不可删 */
@@ -662,13 +682,21 @@ async function doDelCollection() {
   <!-- 折扣码 -->
   <template v-if="tab === 'discounts'">
     <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
+    <!-- 首屏失败（无旧数据）：错误空态置顶兜底（页首横幅仍保留） -->
+    <EmptyState v-else-if="loadErr && !discounts.length" icon="⚠️" title="折扣码加载失败" sub="服务端可能未启动或端点暂不可用">
+      <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
+    </EmptyState>
     <div v-else class="card tbl-wrap">
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">折扣码</h3>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12.5px;color:var(--gray)">共 {{ dscTotal }} 个 · 当前页启用 {{ discounts.filter((c) => c.is_active).length }}<span v-if="discounts.some((c) => isExpired(c))"> · 当前页 {{ discounts.filter((c) => isExpired(c)).length }} 个已过期</span></span>
+          <span style="font-size:12.5px;color:var(--gray)">共 {{ dscTotal }} 个 · 启用 {{ discounts.filter((c) => c.is_active).length }}（当前页）<span v-if="discounts.some((c) => isExpired(c))"> · 当前页 {{ discounts.filter((c) => isExpired(c)).length }} 个已过期</span></span>
           <button class="btn btn-primary btn-sm" @click="openNew">＋ 新建折扣码</button>
         </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px 0">
+        <input v-model="dscQ" class="input" style="width:200px" placeholder="搜折扣码" @keydown.enter="dscSearch">
+        <button class="btn btn-secondary btn-sm" @click="dscSearch">搜索</button>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">码</th><th>规则</th><th>门槛/上限</th><th>已用</th><th>有效期</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
@@ -700,7 +728,9 @@ async function doDelCollection() {
           </tr>
         </tbody>
       </table>
-      <EmptyState v-if="!discounts.length" icon="🏷️" title="暂无折扣码" sub="点击右上角「新建折扣码」创建第一个" />
+      <EmptyState v-if="!discounts.length" icon="🏷️" :title="dscFiltered ? '未找到匹配的折扣码' : '暂无折扣码'" :sub="dscFiltered ? '试试清除筛选' : '点击右上角「新建折扣码」创建第一个'">
+        <template #action><button class="btn btn-primary btn-sm" @click="openNew">➕ 新建折扣码</button></template>
+      </EmptyState>
       <Pagination embed :page="dscPage" :pages="dscPages" :total="dscTotal" unit="个" @go="dscGo" />
     </div>
 
@@ -720,7 +750,7 @@ async function doDelCollection() {
           <div class="field"><label>门槛 $（0=无）</label><input v-model.number="newCode.min_subtotal" class="input" type="number"></div>
           <div v-if="newCode.type === 1" class="field"><label>封顶 $（可选，%码适用）</label><input v-model.number="newCode.max_discount" class="input" type="number"></div>
           <div class="field"><label>开始时间（空=立即生效）</label><input v-model="newCode.starts_at" class="input" type="datetime-local"></div>
-          <div class="field"><label>有效天数（0=永久）</label><input v-model.number="newCode.days" class="input" type="number"></div>
+          <div class="field"><label>有效天数（0 或留空 = 永久有效）</label><input v-model.number="newCode.days" class="input" type="number" placeholder="0"></div>
           <div class="field"><label>总次数（空=不限）</label><input v-model.number="newCode.usage_limit" class="input" type="number" min="1"></div>
           <div class="field"><label>每人限用次数</label><input v-model.number="newCode.per_user_limit" class="input" type="number" min="1"></div>
         </div>
@@ -764,6 +794,10 @@ async function doDelCollection() {
       <div class="modal-box" style="max-width:560px">
         <button class="modal-x" @click="useDlg = false">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">📋 核销明细 · {{ useCode?.code }}</h3>
+        <!-- ROI 汇总 chips：全量聚合，翻页不变；旧后端缺字段时整行隐藏 -->
+        <div v-if="useRoi" style="background:var(--rose-pale);border-radius:10px;padding:8px 14px;margin-bottom:10px;font-size:12.5px;color:var(--plum)">
+          共核销 {{ useTotal }} 次 · 累计优惠 {{ money(useRoi.discount) }} · 关联订单额 {{ useRoi.order != null ? money(useRoi.order) : '—' }}
+        </div>
         <table style="width:100%;border-collapse:collapse;font-size:12.5px">
           <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:8px">订单号</th><th>邮箱</th><th>优惠金额</th><th>时间</th></tr></thead>
           <tbody>
@@ -833,7 +867,9 @@ async function doDelCollection() {
             </tr>
           </tbody>
         </table>
-        <EmptyState v-if="!gc.length" icon="🎁" title="暂无礼品卡" sub="点击右上角「手工发卡」创建第一张" />
+        <EmptyState v-if="!gc.length" icon="🎁" :title="gcFiltered ? '未找到匹配的礼品卡' : '暂无礼品卡'" :sub="gcFiltered ? '试试清除筛选' : '点击右上角「手工发卡」创建第一张'">
+          <template #action><button class="btn btn-primary btn-sm" @click="openGcNew">➕ 手工发卡</button></template>
+        </EmptyState>
         <Pagination embed :page="gcPage" :pages="gcPages" :total="gcTotal" unit="张" @go="gcGo" />
       </div>
     </template>
@@ -886,6 +922,10 @@ async function doDelCollection() {
   <!-- 运费模板 -->
   <template v-else-if="tab === 'rates'">
     <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
+    <!-- 首屏失败（无旧数据）：错误空态置顶兜底（页首横幅仍保留） -->
+    <EmptyState v-else-if="loadErr && !rates.length" icon="⚠️" title="运费模板加载失败" sub="服务端可能未启动或端点暂不可用">
+      <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
+    </EmptyState>
     <div v-else class="card tbl-wrap">
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">运费模板</h3>
@@ -923,19 +963,19 @@ async function doDelCollection() {
       <div class="modal-box" style="max-width:520px">
         <button class="modal-x" @click="rateDlg = false">×</button>
         <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ rateForm.id ? '编辑运费模板 #' + rateForm.id : '新建运费模板' }}</h3>
-        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">金额单位为美分（分），时效为天。</p>
+        <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">金额单位为美分（分），时效为天；相同目的地/承运组合将保存失败。</p>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div v-if="!rateForm.id" class="field"><label>目的地（国家码）</label>
+          <div class="field"><label>目的地（国家码）</label>
             <select v-model="rateForm.dest_country" class="input">
               <option v-for="c in ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'JP']" :key="c">{{ c }}</option>
             </select>
           </div>
-          <div v-if="!rateForm.id" class="field"><label>承运商</label>
+          <div class="field"><label>承运商</label>
             <select v-model="rateForm.carrier" class="input">
               <option>usps</option><option>ups</option><option>fedex</option><option>dhl</option>
             </select>
           </div>
-          <div v-if="!rateForm.id" class="field"><label>方式</label>
+          <div class="field"><label>方式</label>
             <select v-model="rateForm.method" class="input">
               <option value="standard">标准</option><option value="express">快递</option>
             </select>
@@ -944,7 +984,7 @@ async function doDelCollection() {
           <div class="field"><label>免邮门槛（分，可空）</label><input v-model.number="rateForm.free_over" class="input" type="number"></div>
           <div class="field"><label>最小时效（天）</label><input v-model.number="rateForm.eta_min_days" class="input" type="number"></div>
           <div class="field"><label>最大时效（天）</label><input v-model.number="rateForm.eta_max_days" class="input" type="number"></div>
-          <div v-if="!rateForm.id" class="field"><label>限重（g）</label><input v-model.number="rateForm.max_weight_g" class="input" type="number"></div>
+          <div class="field"><label>限重（g）</label><input v-model.number="rateForm.max_weight_g" class="input" type="number"></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="rateDlg = false">取消</button>
@@ -996,6 +1036,10 @@ async function doDelCollection() {
   <!-- 弹窗（PopupConfig 完整 CRUD + 启停；前台按 scene 拉取启用中的最新一条） -->
   <div v-else-if="tab === 'popups'">
     <div v-if="!loaded" class="card skeleton" style="min-height:220px"></div>
+    <!-- 首屏失败（无旧数据）：错误空态置顶兜底（页首横幅仍保留） -->
+    <EmptyState v-else-if="loadErr && !popups.length" icon="⚠️" title="弹窗配置加载失败" sub="服务端可能未启动或端点暂不可用">
+      <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
+    </EmptyState>
     <div v-else class="card tbl-wrap">
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">弹窗</h3>
