@@ -69,13 +69,13 @@ async function payNow() {
       await req('POST', '/api/payments/mock-pay', { order_no: orderNo.value, succeed: true })
     } catch (e) {
       const m = (e.data && e.data.detail) || ''
-      if (m === 'already_paid') ui.toast(t('Already paid ✓', '已支付 ✓'), 'success')
+      if (m === 'already_paid') ui.toast(t('Already paid', '已支付'), 'success')
       else ui.toast(m === 'use_webhook' ? t('Please complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || 'Pay failed', 'error')
     }
     await fetchOrder()
   } catch (e) {
     const m = (e.data && e.data.detail) || ''
-    if (/order_not_pending/.test(m)) { ui.toast(t('This order is already paid ✓', '该订单已支付 ✓'), 'success'); await fetchOrder() }
+    if (/order_not_pending/.test(m)) { ui.toast(t('This order is already paid', '该订单已支付'), 'success'); await fetchOrder() }
     else ui.toast(m || 'Pay failed', 'error')
   } finally { paying.value = false }
 }

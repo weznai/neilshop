@@ -102,10 +102,10 @@ async function save() {
   try {
     if (editing.value === null) {
       await req('POST', '/api/account/addresses', body)
-      ui.toast(tt('Address added ✓', '地址已添加 ✓'), 'success')
+      ui.toast(tt('Address added', '地址已添加'), 'success')
     } else {
       await req('PUT', '/api/account/addresses/' + editing.value, body)
-      ui.toast(tt('Address updated ✓', '地址已更新 ✓'), 'success')
+      ui.toast(tt('Address updated', '地址已更新'), 'success')
     }
     reset()
     await load()
@@ -130,7 +130,7 @@ async function makeDefault(a) {
       phone: a.phone || null,
       is_default: true,
     })
-    ui.toast(tt('Default address updated ✓', '默认地址已更新 ✓'), 'success')
+    ui.toast(tt('Default address updated', '默认地址已更新'), 'success')
     await load()
   } catch (_) {
     ui.toast(tt('Could not set default — please retry', '设置失败，请稍后再试'), 'error')

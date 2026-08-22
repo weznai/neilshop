@@ -59,7 +59,7 @@ async function save() {
   try {
     prefs.value = await req('PUT', '/api/account/email-preferences' + qs, body)
     saved.value = true
-    ui.toast(tt('Preferences saved ✓', '偏好已保存 ✓'), 'success')
+    ui.toast(tt('Preferences saved', '偏好已保存'), 'success')
   } catch (e) {
     ui.toast(
       e && (e.status === 400 || e.status === 401)

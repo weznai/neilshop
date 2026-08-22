@@ -329,7 +329,7 @@ async function notifyMe() {
     await req('POST', '/api/catalog/stock-notify', { variant_id: variant.value.id, email: em })
     notifyHasCache[variant.value.id] = Promise.resolve({ watching: true })
     notifyState.value = 2
-    ui.toast(zh.value ? '到货后第一时间邮件通知你 ✓' : "We'll email you when it's back in stock ✓", 'success')
+    ui.toast(zh.value ? '到货后第一时间邮件通知你' : "We'll email you when it's back in stock", 'success')
   } catch (e) {
     notifyState.value = 0
     if (e.status === 400) ui.toast(zh.value ? '邮箱格式不正确' : 'Enter a valid email address', 'error')

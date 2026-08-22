@@ -50,7 +50,7 @@ async function stockNotify(w) {
     const v = (d.variants || []).find((x) => (x.stock || 0) <= 0)
     if (!v) { ui.toast(tt('All variants in stock — grab it now!', '全部规格都有货，快下单！'), 'success'); return }
     await req('POST', '/api/catalog/stock-notify', { variant_id: v.id, email: auth.user.email })
-    ui.toast(tt("We'll email you when it's back in stock ✓", '到货后第一时间邮件通知你 ✓'), 'success')
+    ui.toast(tt("We'll email you when it's back in stock", '到货后第一时间邮件通知你'), 'success')
   } catch (e) {
     if (e && e.status === 409) ui.toast(tt('Just restocked — grab it now!', '该款刚回货啦，快下单！'), 'success')
     else ui.toast(tt('Subscribe failed — please retry later', '订阅失败，请稍后再试'), 'error')

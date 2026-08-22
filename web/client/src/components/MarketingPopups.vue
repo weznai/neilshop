@@ -124,7 +124,7 @@ async function copyCode(code, popupId) {
     document.body.removeChild(ta)
   }
   report('convert', popupId)
-  ui.toast((zh() ? '已复制 ' : 'Copied ') + code + ' ✓', 'success')
+  ui.toast((zh() ? '已复制 ' : 'Copied ') + code, 'success')
 }
 
 function fireWelcome(p) {

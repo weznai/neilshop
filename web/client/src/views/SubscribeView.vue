@@ -88,7 +88,7 @@ async function act(sub, action, body) {
   busy.value = true
   try {
     await req('POST', `/api/subscriptions/${sub.id}/${action}`, body || {})
-    ui.toast(tt('Done ✓', '操作成功 ✓'), 'success')
+    ui.toast(tt('Done', '操作成功'), 'success')
     await load()
   } catch (e) {
     const d = e && e.data && e.data.detail

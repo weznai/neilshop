@@ -197,7 +197,7 @@ async function buyAgain() {
         `已加 ${added}/${all.length} 件，其余请手动加购`,
       ), 'success')
     } else {
-      ui.toast(tt(`Added ${added} item(s) to cart ✓`, `已加入 ${added} 件商品 ✓`), 'success')
+      ui.toast(tt(`Added ${added} item(s) to cart`, `已加入 ${added} 件商品`), 'success')
     }
     ui.openCart()
   } catch (e) {

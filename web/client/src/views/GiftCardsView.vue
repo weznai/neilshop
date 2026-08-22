@@ -67,10 +67,10 @@ async function payAndActivate() {
     try {
       await req('POST', '/api/payments/mock-pay', { order_no: result.value.order_no, succeed: true })
       paid.value = true
-      ui.toast(t('Paid — gift card activated ✓', '支付成功 · 礼品卡已激活 ✓'), 'success')
+      ui.toast(t('Paid — gift card activated', '支付成功 · 礼品卡已激活'), 'success')
     } catch (e) {
       const m = (e.data && e.data.detail) || ''
-      if (m === 'already_paid') { paid.value = true; ui.toast(t('Already paid ✓', '已支付 ✓'), 'success') }
+      if (m === 'already_paid') { paid.value = true; ui.toast(t('Already paid', '已支付'), 'success') }
       else ui.toast(m === 'use_webhook' ? t('Complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || 'Pay failed', 'error')
     }
   } catch (e) {

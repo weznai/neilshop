@@ -64,7 +64,7 @@ export const useCartStore = defineStore('cart', {
       try {
         this._apply(await req('POST', '/api/cart/items', { variant_id: variantId, qty: qty || 1 }))
         this.removed = null
-        if (ui) { ui.toast(tt('Added to cart ✓', '已加入购物车 ✓'), 'success'); ui.openCart() }
+        if (ui) { ui.toast(tt('Added to cart', '已加入购物车'), 'success'); ui.openCart() }
         return true
       } catch (e) { this._err(e, ui); return false }
     },
@@ -113,7 +113,7 @@ export const useCartStore = defineStore('cart', {
       this.removed = null
       try {
         this._apply(await req('POST', '/api/cart/items', { variant_id: r.vid, qty: r.qty }))
-        if (ui) ui.toast(tt('Item restored ✓', '已恢复商品 ✓'), 'success')
+        if (ui) ui.toast(tt('Item restored', '已恢复商品'), 'success')
       } catch (e) { this._err(e, ui) }
     },
     dismissRemoved() { this.removed = null },

@@ -44,7 +44,7 @@ async function save() {
   try {
     await req('PUT', '/api/account/me', { name: form.name.trim(), birthday: form.birthday || null })
     await auth.me()
-    ui.toast(tt('Profile saved ✓', '资料已保存 ✓'), 'success')
+    ui.toast(tt('Profile saved', '资料已保存'), 'success')
   } catch (_) { ui.toast(tt('Save failed — please retry later', '保存失败，请稍后再试'), 'error') }
   finally { saving.value = false }
 }
@@ -54,7 +54,7 @@ async function togglePref(key) {
   prefsBusy.value = true
   try {
     prefs.value = await req('PUT', '/api/account/email-preferences', { [key]: !!prefs.value[key] })
-    ui.toast(tt('Email preferences saved ✓', '邮件偏好已保存 ✓'), 'success')
+    ui.toast(tt('Email preferences saved', '邮件偏好已保存'), 'success')
   } catch (_) {
     ui.toast(tt('Save failed — please retry later', '保存失败，请稍后再试'), 'error')
     try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { /* */ }
@@ -91,7 +91,7 @@ async function changePassword() {
     pwForm.old_password = ''
     pwForm.new_password = ''
     pwForm.confirm = ''
-    ui.toast(tt('Password changed ✓', '密码已修改 ✓'), 'success')
+    ui.toast(tt('Password changed', '密码已修改'), 'success')
   } catch (e) {
     const d = e && e.data && e.data.detail
     if (e && e.status === 401 && d === 'invalid credentials') pwErr.value = tt('Current password is incorrect', '当前密码不正确')
@@ -121,7 +121,7 @@ async function exportData() {
     a.download = `glowmag-my-data-${new Date().toISOString().slice(0, 10)}.json`
     a.click()
     URL.revokeObjectURL(url)
-    ui.toast(tt('Data exported ✓', '数据导出成功 ✓'), 'success')
+    ui.toast(tt('Data exported', '数据导出成功'), 'success')
   } catch (_) { ui.toast(tt('Export failed — please retry later', '导出失败，请稍后再试'), 'error') }
   finally { exporting.value = false }
 }
@@ -153,7 +153,7 @@ async function cancelDelete() {
   try {
     await req('DELETE', '/api/account/delete-request')
     deletePending.value = null
-    ui.toast(tt('Deletion request cancelled ✓', '已撤销注销申请 ✓'), 'success')
+    ui.toast(tt('Deletion request cancelled', '已撤销注销申请'), 'success')
   } catch (_) { ui.toast(tt('Could not cancel — please retry later', '撤销失败，请稍后再试'), 'error') }
   finally { deleting.value = false }
 }

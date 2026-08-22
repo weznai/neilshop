@@ -98,7 +98,7 @@ async function submit() {
       content: f.content.trim(),
     })
     created.value = d
-    ui.toast(tt('Ticket created ✓', '工单已创建 ✓'), 'success')
+    ui.toast(tt('Ticket created', '工单已创建'), 'success')
   } catch (e) {
     ui.toast(e.status === 422 ? tt('Please check the highlighted fields', '请检查标红项后重试') : tt('Submit failed — please retry', '提交失败，请稍后再试'), 'error')
   } finally { busy.value = false }
@@ -118,7 +118,7 @@ async function copyNo(no) {
     try { document.execCommand('copy') } catch (__) { /* noop */ }
     document.body.removeChild(ta)
   }
-  ui.toast(no + ' ' + tt('copied ✓', '已复制 ✓'), 'success')
+  ui.toast(no + ' ' + tt('copied', '已复制'), 'success')
 }
 
 function goLookup() {
