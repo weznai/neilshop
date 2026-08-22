@@ -134,6 +134,7 @@ function eventText(t) {
       return `${money(d.amount)}${d.recipient ? ' · 赠送给 ' + d.recipient : ''}`
     case 'points_granted':
       return d.referrer_points ? `推荐奖励：邀请人 +${d.referrer_points} 分${d.invitee_points ? ' · 受邀人 +' + d.invitee_points + ' 分' : ''}` : ''
+    case 'note_added': return d.text || ''
     case 'checkout_created': {
       const parts = []
       if (d.code_discount) parts.push('折扣码 −' + money(d.code_discount))
@@ -225,6 +226,40 @@ async function refundConfirm() {
   }
   submitting.value = false
 }
+
+/* 取消订单：仅 status=0 可取消，409 时转后端语义文案 */
+const cancelDlg = ref(false)
+async function cancelConfirm() {
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    await req('POST', `/api/admin/trade/orders/${o.value.order_no}/cancel`)
+    toast('已取消', 'success')
+    cancelDlg.value = false
+    await reload()
+  } catch (e) {
+    toast(e.status === 409 ? '仅待支付订单可取消' : '取消失败：' + (e.data?.detail || e.message), 'error')
+  }
+  submitting.value = false
+}
+
+/* 添加备注：POST /note 落时间线 note_added，reload 后由时间线渲染正文 */
+const noteDlg = ref(false)
+const noteText = ref('')
+function openNote() { noteText.value = ''; noteDlg.value = true }
+async function noteConfirm() {
+  if (submitting.value) return
+  const text = noteText.value.trim()
+  if (!text) { toast('请填写备注内容', 'error'); return }
+  submitting.value = true
+  try {
+    await req('POST', `/api/admin/trade/orders/${o.value.order_no}/note`, { text })
+    toast('备注已添加', 'success')
+    noteDlg.value = false
+    await reload()
+  } catch (e) { toast('添加失败：' + (e.data?.detail || e.message), 'error') }
+  submitting.value = false
+}
 </script>
 
 <template>
@@ -278,7 +313,8 @@ async function refundConfirm() {
       <div class="hero-ops">
         <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" @click="act('ship')">📦 发货</button>
         <button v-if="o.status === 3" class="btn btn-secondary btn-sm" @click="act('deliver')">✅ 标记妥投</button>
-        <button v-if="[1, 2, 3, 4, 5].includes(o.status)" class="btn btn-ghost btn-sm hero-refund" @click="act('refund')">💸 退款（余额 {{ money(refundable) }}）</button>
+        <button v-if="[1, 2, 3, 4, 5].includes(o.status)" class="btn btn-ghost btn-sm hero-danger" @click="act('refund')">💸 退款（余额 {{ money(refundable) }}）</button>
+        <button v-if="o.status === 0" class="btn btn-ghost btn-sm hero-danger" @click="cancelDlg = true">✕ 取消订单</button>
       </div>
     </div>
 
@@ -393,7 +429,10 @@ async function refundConfirm() {
     <div class="card od-card" style="padding:20px;animation-delay:.18s">
       <div class="dhead">
         <h3 class="dtitle">时间线</h3>
-        <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
+          <button class="btn btn-secondary btn-sm" @click="openNote">＋ 添加备注</button>
+        </div>
       </div>
       <div class="tl">
         <div v-for="(t, i) in tlItems" :key="i" class="tl-item">
@@ -442,6 +481,18 @@ async function refundConfirm() {
     @close="deliverDlg = false"
   />
 
+  <!-- 取消订单确认弹窗 -->
+  <ConfirmDialog
+    :open="cancelDlg"
+    title="取消订单"
+    body="仅待支付订单可取消，取消后不可恢复，库存/积分/礼品卡抵扣将回补。"
+    confirm-text="确认取消"
+    danger
+    :busy="submitting"
+    @confirm="cancelConfirm"
+    @close="cancelDlg = false"
+  />
+
   <!-- 退款弹窗 -->
   <div v-if="refundDlg" class="modal open" @click.self="refundDlg = false">
     <div class="modal-box" style="max-width:420px">
@@ -457,6 +508,22 @@ async function refundConfirm() {
       </div>
       <div class="field"><label>原因</label><input v-model="refundReason" class="input" placeholder="ops-refund"></div>
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="submitting" @click="refundConfirm">{{ submitting ? '退款中…' : '确认退款' }}</button>
+    </div>
+  </div>
+
+  <!-- 添加备注弹窗 -->
+  <div v-if="noteDlg" class="modal open" @click.self="!submitting && (noteDlg = false)">
+    <div class="modal-box" style="max-width:420px">
+      <button class="modal-x" @click="!submitting && (noteDlg = false)">×</button>
+      <div class="dhead" style="margin-bottom:10px"><h3 class="dtitle">添加订单备注</h3></div>
+      <div class="field">
+        <label>备注内容 <span style="float:right;color:var(--gray);font-weight:400">{{ noteText.length }}/500</span></label>
+        <textarea v-model="noteText" class="input" rows="3" maxlength="500" style="height:auto;min-height:78px;padding:10px 14px;resize:vertical;font-family:inherit" placeholder="记录客服沟通、异常原因等（仅内部可见）"></textarea>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:10px;margin-top:12px">
+        <button class="btn btn-secondary" :disabled="submitting" @click="noteDlg = false">取消</button>
+        <button class="btn btn-primary" :disabled="submitting" @click="noteConfirm">{{ submitting ? '提交中…' : '确认添加' }}</button>
+      </div>
     </div>
   </div>
 </template>
@@ -509,8 +576,8 @@ async function refundConfirm() {
 .hero-meta b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
 /* 操作按钮区 */
 .hero-ops{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
-.hero-refund{color:var(--error)}
-.hero-refund:hover{background:var(--pale-error)}
+.hero-danger{color:var(--error)}
+.hero-danger:hover{background:var(--pale-error)}
 
 /* ===== 页面骨架：主栏 1.6fr / 侧栏 1fr，支付物流并排，时间线通栏 ===== */
 .od-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start;margin-top:16px}

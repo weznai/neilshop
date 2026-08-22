@@ -20,7 +20,7 @@ const RSTATUS = {
 }
 /* RmaReason 真值（models/fulfill.py）：1尺码 2质量 3不喜欢 4损坏 5发错 6其他 */
 const RMA_REASON = { 1: '尺码不合', 2: '质量问题', 3: '不喜欢', 4: '损坏', 5: '发错货', 6: '其他' }
-const reasonLabel = (r) => RMA_REASON[r.reason] || r.reason_detail || '—'
+const reasonLabel = (r) => RMA_REASON[r.reason] || '—'
 /* Exchange 真值：0申请 1已批准待重发 2待买家补差价 3已重发 4已完成 5已拒绝
  * approve 0→(diff>0?2:1) · mark-paid 2→1 · ship 1→3 · complete 3→4 · reject 0→5 */
 const ESTATUS = {
@@ -114,6 +114,8 @@ onMounted(async () => { await load(); loaded.value = true })
 
 /* 顶栏搜索：q 两 tab 共用（分别传给各自请求），回车/按钮触发并重置两列表页码 */
 function search() { state.rp = 1; state.ep = 1; load() }
+/* 空态文案：当前 tab 状态筛选或关键词生效→未匹配，否则暂无 */
+const filtered = computed(() => state.q.trim() !== '' || (tab.value === 'rma' ? state.rs !== 'all' : state.es !== 'all'))
 
 /* CSV 导出：仅导出当前 tab 当前筛选（状态+关键词）下全部页；转义/BOM 写法照抄 OrdersView */
 const exporting = ref(false)
@@ -354,7 +356,12 @@ async function exShipConfirm() {
         </tbody>
       </table>
 
-      <EmptyState v-if="tab === 'rma' ? !rmas.length : !exch.length" icon="📭" :title="'暂无' + (tab === 'rma' ? '退货' : '换货') + '申请'" />
+      <EmptyState
+        v-if="tab === 'rma' ? !rmas.length : !exch.length"
+        :icon="filtered ? '🔍' : '📭'"
+        :title="filtered ? '未找到匹配的' + (tab === 'rma' ? '退货' : '换货') : '暂无' + (tab === 'rma' ? '退货' : '换货') + '申请'"
+        :sub="filtered ? '试试调整或清除筛选' : '客户提交后将显示在这里'"
+      />
       <!-- 换货分页：卡内贴表下缘 -->
       <Pagination v-if="tab === 'exch'" embed :page="state.ep" :pages="exPages" :total="exTotal" unit="条" @go="state.ep = $event; loadExch()" />
     </div>

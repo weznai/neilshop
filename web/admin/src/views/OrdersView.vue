@@ -1,8 +1,9 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import { dt } from '../composables/format'
@@ -21,6 +22,8 @@ const dateFrom = ref('')
 const dateTo = ref('')
 const loaded = ref(false)
 const refreshing = ref(false)
+/* O2 错误空态：首载失败且无数据时表格区渲染「加载失败+重试」；有旧数据仍走 toast 提示 */
+const loadErr = ref('')
 /* OrderStatus 真值：0待付 1已付 2履约中 3已发货 4已送达 5已完成 8已取消 9已退款(全额) */
 const OSTATUS = {
   0: ['待支付', 'tag-pending'], 1: ['已支付', 'tag-paid'], 2: ['备货中', 'tag-pending'],
@@ -53,6 +56,8 @@ function initFromQuery() {
   if (Number.isInteger(p) && p >= 1) page.value = p
   const pp = parseInt(rq.per_page, 10)
   if ([20, 50, 100].includes(pp)) perPage.value = pp
+  /* sort 白名单校验，脏 query 不回填 */
+  if (SORTABLE.includes(rq.sort)) sort.value = rq.sort
 }
 function syncUrl() {
   const query = {}
@@ -62,6 +67,7 @@ function syncUrl() {
   if (status.value != null) query.status = status.value
   if (page.value > 1) query.page = page.value
   if (perPage.value !== 20) query.per_page = perPage.value
+  if (sort.value) query.sort = sort.value
   if (JSON.stringify(query) !== JSON.stringify(route.query)) router.replace({ query })
 }
 
@@ -75,13 +81,18 @@ async function load() {
   if (q.value.trim()) params.q = q.value.trim()
   if (dateFrom.value) params.date_from = dateFrom.value
   if (dateTo.value) params.date_to = dateTo.value
+  if (sort.value) params.sort = sort.value
   try {
     const d = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = d.pages ?? 1
+    loadErr.value = ''
     syncUrl()
-  } catch (e) { toast('加载失败：' + (e.message || ''), 'error') }
+  } catch (e) {
+    loadErr.value = e.message || '加载失败'
+    toast('加载失败：' + (e.message || ''), 'error')
+  }
   loaded.value = true
   refreshing.value = false
 }
@@ -89,30 +100,20 @@ onMounted(() => { initFromQuery(); load() })
 
 function tab(sv) { status.value = sv; page.value = 1; load() }
 function clearDates() { dateFrom.value = ''; dateTo.value = ''; page.value = 1; load() }
+function clearSearch() { q.value = ''; page.value = 1; load() }
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 /* 时间统一走 format.js 的 dt（补 Z 修时区） */
 
-/* 当前页前端排序：三态切换（无 → 升 → 降 → 无），空值恒沉底 */
-const sort = reactive({ key: '', dir: 1 })
+/* 服务端排序：sort 直传后端（placed_at/total，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码 */
+const SORTABLE = ['placed_at', '-placed_at', 'total', '-total']
+const sort = ref('')
 function sortBy(k) {
-  if (sort.key !== k) { sort.key = k; sort.dir = 1 }
-  else if (sort.dir === 1) { sort.dir = -1 }
-  else { sort.key = ''; sort.dir = 1 }
+  sort.value = sort.value === k ? '-' + k : (sort.value === '-' + k ? '' : k)
+  page.value = 1
+  load()
 }
-const sortInd = (k) => (sort.key === k ? (sort.dir === 1 ? '▲' : '▼') : '')
-const sortedItems = computed(() => {
-  if (!sort.key) return items.value
-  const k = sort.key
-  return [...items.value].sort((a, b) => {
-    const av = a[k], bv = b[k]
-    if (av == null && bv == null) return 0
-    if (av == null) return 1
-    if (bv == null) return -1
-    if (av === bv) return 0
-    return (av > bv ? 1 : -1) * sort.dir
-  })
-})
+const sortInd = (k) => (sort.value === k ? '▲' : sort.value === '-' + k ? '▼' : '')
 
 const shipDlg = ref(null) /* {order_no} */
 const carrier = ref('USPS')
@@ -134,9 +135,27 @@ async function shipConfirm() {
   shipSubmitting.value = false
 }
 
+/* 行内取消订单：仅 status=0 可取消，409 时转后端语义文案 */
+const cancelDlg = ref(null) /* {order_no} */
+const cancelSubmitting = ref(false)
+async function cancelConfirm() {
+  if (cancelSubmitting.value) return
+  const o = cancelDlg.value
+  cancelSubmitting.value = true
+  try {
+    await req('POST', `/api/admin/trade/orders/${o.order_no}/cancel`)
+    toast(`${o.order_no} 已取消`, 'success')
+    cancelDlg.value = null
+    load() /* 刷新当前页 */
+  } catch (e) {
+    toast(e.status === 409 ? '仅待支付订单可取消' : '取消失败：' + (e.data?.detail || e.message), 'error')
+  }
+  cancelSubmitting.value = false
+}
+
 /* 批量发货勾选：selected 按勾选顺序存 order_no（与单号行一一对应），仅 status 1/2 可勾，load() 时清空 */
 const selected = ref([])
-const shippable = computed(() => sortedItems.value.filter((o) => o.status === 1 || o.status === 2))
+const shippable = computed(() => items.value.filter((o) => o.status === 1 || o.status === 2))
 const allChecked = computed(() => shippable.value.length > 0 && shippable.value.every((o) => selected.value.includes(o.order_no)))
 const someChecked = computed(() => shippable.value.some((o) => selected.value.includes(o.order_no)))
 function toggleAll() {
@@ -187,14 +206,19 @@ async function exportCsv() {
     if (q.value.trim()) params.q = q.value.trim()
     if (dateFrom.value) params.date_from = dateFrom.value
     if (dateTo.value) params.date_to = dateTo.value
+    if (sort.value) params.sort = sort.value
     const first = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
     const all = [...(first.items || [])]
     const totalMatch = first.total ?? all.length
     const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_PER_PAGE) || 1, EXPORT_MAX_PAGES)
-    for (let p = 2; p <= maxPage; p++) {
-      params.page = p
-      const d = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
-      all.push(...(d.items || []))
+    /* 第 2 页起每 5 页一批 Promise.all 并发（批间 await 控压，结果按页序拼接） */
+    for (let s = 2; s <= maxPage; s += 5) {
+      const end = Math.min(s + 4, maxPage)
+      const batch = await Promise.all(
+        Array.from({ length: end - s + 1 }, (_, i) =>
+          req('GET', '/api/admin/trade/orders?' + new URLSearchParams({ ...params, page: s + i })))
+      )
+      for (const d of batch) all.push(...(d.items || []))
     }
     if (Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES) {
       toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 单，仅导出前 ${all.length} 单`, 'error')
@@ -228,12 +252,16 @@ async function exportCsv() {
       <span class="page-sub">共 {{ total }} 单<template v-if="statusLabel"> · 筛选：{{ statusLabel }}</template><template v-if="dateFrom || dateTo"> · {{ dateFrom || '…' }} ~ {{ dateTo || '…' }}</template><template v-if="q.trim()"> · 关键词“{{ q.trim() }}”</template></span>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
-      <select v-model.number="perPage" class="input" style="width:auto;height:36px;font-size:13px" @change="page = 1; load()">
+      <span style="font-size:12px;color:var(--gray)">每页</span>
+      <select v-model.number="perPage" class="input" aria-label="每页条数" style="width:auto;height:36px;font-size:13px" @change="page = 1; load()">
         <option :value="20">20 条/页</option>
         <option :value="50">50 条/页</option>
         <option :value="100">100 条/页</option>
       </select>
-      <input v-model="q" class="input" style="width:220px" placeholder="搜订单号 / 邮箱" @keydown.enter="page = 1; load()">
+      <div style="position:relative">
+        <input v-model="q" class="input" style="width:220px;padding-right:30px" placeholder="搜订单号 / 邮箱" @keydown.enter="page = 1; load()">
+        <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
+      </div>
       <button class="btn btn-secondary" @click="page = 1; load()">搜索</button>
       <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
     </div>
@@ -278,15 +306,15 @@ async function exportCsv() {
         <tr style="text-align:left;color:var(--gray)">
           <th style="width:32px;padding:10px" title="全选本页可发货订单（已支付/备货中）"><input type="checkbox" style="cursor:pointer" :checked="allChecked" :indeterminate.prop="someChecked && !allChecked" @change="toggleAll"></th>
           <th style="padding:10px">订单号</th><th>客户</th><th>留言</th>
-          <th class="sortable" title="点击排序（当前页）" @click="sortBy('grand_total')">金额<span v-if="sortInd('grand_total')" class="sort-ind">{{ sortInd('grand_total') }}</span></th>
+          <th class="sortable" title="点击排序" @click="sortBy('total')">金额<span v-if="sortInd('total')" class="sort-ind">{{ sortInd('total') }}</span></th>
           <th>状态</th><th>履约</th>
-          <th class="sortable" title="点击排序（当前页）" @click="sortBy('placed_at')">下单时间<span v-if="sortInd('placed_at')" class="sort-ind">{{ sortInd('placed_at') }}</span></th>
-          <th class="sortable" title="点击排序（当前页）" @click="sortBy('paid_at')">支付时间<span v-if="sortInd('paid_at')" class="sort-ind">{{ sortInd('paid_at') }}</span></th>
+          <th class="sortable" title="点击排序" @click="sortBy('placed_at')">下单时间<span v-if="sortInd('placed_at')" class="sort-ind">{{ sortInd('placed_at') }}</span></th>
+          <th>支付时间</th>
           <th style="text-align:right">操作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="o in sortedItems" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
+        <tr v-for="o in items" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
           <td style="padding:11px 10px"><input type="checkbox" style="cursor:pointer" :checked="selected.includes(o.order_no)" :disabled="o.status !== 1 && o.status !== 2" @change="toggleOne(o.order_no, $event.target.checked)"></td>
           <td><b>{{ o.order_no }}</b></td>
           <td>{{ esc(o.email) }}</td>
@@ -299,15 +327,18 @@ async function exportCsv() {
           <td style="text-align:right;white-space:nowrap">
             <router-link class="btn btn-secondary btn-sm" :to="{ path: '/order-detail', query: { no: o.order_no } }">详情</router-link>
             <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" style="margin-left:6px" @click="ship(o)">📦 发货</button>
+            <button v-if="o.status === 0" class="btn btn-ghost btn-sm row-cancel" style="margin-left:6px" @click="cancelDlg = o">取消</button>
           </td>
         </tr>
       </tbody>
     </table>
-    <EmptyState v-if="!items.length" icon="📭" title="该状态下暂无订单" sub="试试其他筛选或搜索词" />
+    <EmptyState v-if="!items.length && loadErr" icon="⚠️" title="加载失败" :sub="loadErr">
+      <template #action><button class="btn btn-secondary btn-sm" @click="load">重试</button></template>
+    </EmptyState>
+    <EmptyState v-else-if="!items.length" icon="📭" title="该状态下暂无订单" sub="试试其他筛选或搜索词" />
   </div>
 
   <Pagination v-if="loaded" :page="page" :pages="pages" :total="total" unit="单" @go="page = $event; load()" />
-  <div v-if="sort.key" style="margin-top:6px;text-align:center;font-size:11.5px;color:var(--gray)">⇅ 本页内排序（仅当前页数据）</div>
 
   <!-- 发货弹窗 -->
   <div v-if="shipDlg" class="modal open" @click.self="shipDlg = null">
@@ -348,4 +379,25 @@ async function exportCsv() {
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="batchSubmitting" @click="batchShipConfirm">{{ batchSubmitting ? '发货中…' : '确认发货' }}</button>
     </div>
   </div>
+
+  <!-- 取消订单确认弹窗 -->
+  <ConfirmDialog
+    :open="!!cancelDlg"
+    title="取消订单"
+    :body="`取消订单 ${cancelDlg?.order_no}，仅待支付可取消，不可恢复`"
+    confirm-text="确认取消"
+    danger
+    :busy="cancelSubmitting"
+    @confirm="cancelConfirm"
+    @close="cancelDlg = null"
+  />
 </template>
+
+<style scoped>
+/* 行内取消按钮：红字 ghost（悬停浅红，同详情页危险操作） */
+.row-cancel{color:var(--error)}
+.row-cancel:hover{background:var(--pale-error)}
+/* 搜索框清空钮：悬浮输入框右侧 */
+.q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
+.q-clear:hover{background:var(--gray)}
+</style>
