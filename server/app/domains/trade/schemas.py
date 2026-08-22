@@ -96,10 +96,16 @@ class ShippingRateIn(BaseModel):
 
 
 class ShippingRateUpdateIn(BaseModel):
+    # 全字段局部更新（exclude_unset 语义：缺省不更新），字段集对齐 ShippingRateIn
+    dest_country: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    carrier: Optional[str] = Field(default=None, min_length=1, max_length=30)
+    method: Optional[str] = Field(default=None, min_length=1, max_length=50,
+                                  pattern="^(standard|express)$")
     price: Optional[int] = Field(default=None, ge=0)
     free_over: Optional[int] = Field(default=None, ge=0)
     eta_min_days: Optional[int] = Field(default=None, ge=0, le=60)
     eta_max_days: Optional[int] = Field(default=None, ge=0, le=90)
+    max_weight_g: Optional[int] = Field(default=None, ge=1)
     active: Optional[bool] = None
 
 

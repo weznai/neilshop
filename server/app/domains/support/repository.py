@@ -48,10 +48,11 @@ def admin_tickets_query(
     if priority is not None:
         query = query.filter(Ticket.priority == priority)
     if q:
-        # 后台搜索：邮箱 / 工单号 / 主题 三字段模糊
+        # 后台搜索：邮箱 / 工单号 / 主题 / 订单号 四字段模糊
         like = f"%{q}%"
         query = query.filter(or_(
-            Ticket.email.ilike(like), Ticket.ticket_no.ilike(like), Ticket.subject.ilike(like),
+            Ticket.email.ilike(like), Ticket.ticket_no.ilike(like),
+            Ticket.subject.ilike(like), Ticket.order_no.ilike(like),
         ))
     return query.order_by(Ticket.priority.asc(), Ticket.created_at.desc(), Ticket.id.desc())
 

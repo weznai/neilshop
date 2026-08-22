@@ -24,12 +24,13 @@ def list_orders(
     q: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    sort: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     per_page: Optional[int] = Query(default=None, ge=1),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_orders(db, status, q, page, per_page, date_from, date_to)
+    return service_admin.list_orders(db, status, q, page, per_page, date_from, date_to, sort)
 
 
 @router.get("/orders/{order_no}")
@@ -103,11 +104,13 @@ def adjust_stock(body: StockAdjustRequest, admin: User = Depends(require_admin),
 def stock_movements(
     variant_id: Optional[int] = None,
     type: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_admin.stock_movements(db, variant_id, page, type)
+    return service_admin.stock_movements(db, variant_id, page, type, date_from, date_to)
 
 
 @router.get("/stock/low")

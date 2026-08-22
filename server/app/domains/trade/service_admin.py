@@ -150,7 +150,7 @@ def _parse_date(value: str, name: str) -> datetime:
 def list_orders(
     db: Session, status: Optional[int], q: Optional[str], page: int,
     per_page: Optional[int] = None, date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    date_to: Optional[str] = None, sort: Optional[str] = None,
 ) -> dict:
     # 可选每页条数：缺省 10 兼容；显式传值时钳制到 10-100
     pp = PER_PAGE_ORDERS if per_page is None else min(max(per_page, 10), 100)
@@ -161,7 +161,7 @@ def list_orders(
         end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
     orders, total = repo.paginate_orders(
         db, status=status, q=q, page=page, per_page=pp,
-        date_from=start, date_to=end,
+        date_from=start, date_to=end, sort=sort,
     )
     return {
         "items": [{
@@ -472,10 +472,17 @@ def adjust_stock(db: Session, admin: User, body: StockAdjustRequest) -> dict:
 
 def stock_movements(
     db: Session, variant_id: Optional[int], page: int,
-    type: Optional[int] = None,
+    type: Optional[int] = None, date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> dict:
+    # 发生时间范围闭区间（与订单时间筛选同款解析）：date_to 补到当日 23:59:59
+    start = _parse_date(date_from, "date_from") if date_from else None
+    end = None
+    if date_to:
+        end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
     rows, total = repo.paginate_stock_movements(
         db, variant_id=variant_id, page=page, per_page=PER_PAGE_MOVEMENTS, type=type,
+        date_from=start, date_to=end,
     )
     return {
         "items": [{
@@ -545,8 +552,28 @@ def update_shipping_rate(
     r = db.get(ShippingRate, rate_id)
     if not r:
         raise HTTPException(status_code=404, detail="shipping_rate_not_found")
+    data = body.model_dump(exclude_unset=True)
+    # 目的地/承运商归一化与创建同口径（strip+upper / strip+lower）
+    if data.get("dest_country") is not None:
+        data["dest_country"] = data["dest_country"].strip().upper()
+    if data.get("carrier") is not None:
+        data["carrier"] = data["carrier"].strip().lower()
+    # 改唯一键组合（目的地+承运商+方式）前查重，撞已有模板 409
+    if any(k in data for k in ("dest_country", "carrier", "method")):
+        dup = (
+            db.query(ShippingRate)
+            .filter(
+                ShippingRate.dest_country == data.get("dest_country", r.dest_country),
+                ShippingRate.carrier == data.get("carrier", r.carrier),
+                ShippingRate.method == data.get("method", r.method),
+                ShippingRate.id != r.id,
+            )
+            .first()
+        )
+        if dup:
+            raise HTTPException(status_code=409, detail="rate_conflict")
     diff: dict = {}
-    for field, new in body.model_dump(exclude_unset=True).items():
+    for field, new in data.items():
         if field == "active":
             new = int(new)
         old = getattr(r, field)

@@ -165,10 +165,20 @@ def find_guest_cart(db: Session, token: str) -> Optional[Cart]:
 
 
 # ---------- 订单聚合读 ----------
+# 后台订单排序白名单（total → grand_total 列；-前缀倒序，非法值 .get 落空走默认）
+_ORDER_SORTS = {
+    "placed_at": Order.placed_at.asc(),
+    "-placed_at": Order.placed_at.desc(),
+    "total": Order.grand_total.asc(),
+    "-total": Order.grand_total.desc(),
+}
+
+
 def paginate_orders(
     db: Session, *, user_id: Optional[int] = None, status: Optional[int] = None,
     q: Optional[str] = None, page: int = 1, per_page: int = 10,
     date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+    sort: Optional[str] = None,
 ) -> tuple[list[Order], int]:
     query = db.query(Order)
     if user_id is not None:
@@ -184,8 +194,14 @@ def paginate_orders(
     if date_to is not None:
         query = query.filter(Order.placed_at <= date_to)
     total = query.count()
+    # 排序白名单：非法/缺省走默认 placed_at 倒序 + id 稳定尾键
+    order_col = _ORDER_SORTS.get(sort or "")
+    order_by_cols = (
+        (order_col, Order.id.desc()) if order_col is not None
+        else (Order.placed_at.desc(), Order.id.desc())
+    )
     orders = (
-        query.order_by(Order.placed_at.desc(), Order.id.desc())
+        query.order_by(*order_by_cols)
         .offset((page - 1) * per_page).limit(per_page).all()
     )
     return orders, total
@@ -373,12 +389,18 @@ def giftcard_debit_ledgers(db: Session, order_id: int) -> list[GiftCardLedger]:
 def paginate_stock_movements(
     db: Session, variant_id: Optional[int] = None, page: int = 1, per_page: int = 20,
     type: Optional[int] = None,
+    date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
 ) -> tuple[list[StockMovement], int]:
     query = db.query(StockMovement)
     if variant_id is not None:
         query = query.filter(StockMovement.variant_id == variant_id)
     if type is not None:
         query = query.filter(StockMovement.type == type)
+    # 发生时间范围（naive UTC 闭区间，date_to 由调用方补到 23:59:59）
+    if date_from is not None:
+        query = query.filter(StockMovement.created_at >= date_from)
+    if date_to is not None:
+        query = query.filter(StockMovement.created_at <= date_to)
     total = query.count()
     rows = (
         query.order_by(StockMovement.id.desc())
