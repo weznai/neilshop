@@ -30,6 +30,48 @@ const form = ref({ email: '', fname: '', lname: '', addr1: '', addr2: '', city: 
 const country = ref('US')
 const errors = ref({})
 
+/* 地址簿（登录用户）：GET /api/account/addresses，默认地址预选回填；0 = 手填新地址 */
+const savedAddrs = ref([])
+const selAddr = ref(0)
+
+function fillAddr(a) {
+  const f = form.value
+  /* 地址簿只存 full_name：首词作名、其余作姓（place 时再拼回，无损） */
+  const parts = (a.full_name || '').trim().split(/\s+/)
+  f.fname = parts.shift() || ''
+  f.lname = parts.join(' ')
+  f.addr1 = a.line1 || ''
+  f.addr2 = a.line2 || ''
+  f.city = a.city || ''
+  f.state = a.state || ''
+  f.zip = a.zip || ''
+  f.phone = a.phone || ''
+  country.value = (a.country || 'US').toUpperCase()
+}
+
+function pickAddr(a) {
+  selAddr.value = a.id
+  fillAddr(a)
+  errors.value = {}
+}
+
+function pickNewAddr() {
+  selAddr.value = 0
+  const f = form.value
+  f.fname = ''; f.lname = ''; f.addr1 = ''; f.addr2 = ''
+  f.city = ''; f.state = ''; f.zip = ''; f.phone = ''
+}
+
+async function loadAddrs() {
+  if (!auth.isLoggedIn) return
+  try {
+    const list = await req('GET', '/api/account/addresses')
+    savedAddrs.value = Array.isArray(list) ? list : []
+    const def = savedAddrs.value.find((a) => a.is_default) || savedAddrs.value[0]
+    if (def) pickAddr(def)
+  } catch (_) { /* 地址簿拉取失败 → 回落手填表单 */ }
+}
+
 /* 配送方式（后端 /api/checkout/shipping-methods：运费模板聚合） */
 const shipMethods = ref([])
 const FALLBACK_METHODS = [
@@ -293,6 +335,7 @@ onMounted(async () => {
   cart.refresh().catch(() => {})
   if (auth.user) form.value.email = auth.user.email || ''
   if (auth.isLoggedIn) auth.fetchPoints().catch(() => {})
+  loadAddrs()
   /* 购物车页带入的折扣码（?code=） */
   const q = String(route.query.code || '').trim().toUpperCase()
   if (q) { code.value = q; appliedCode.value = q }
@@ -337,6 +380,25 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" placeholder="you@example.com" autocomplete="email">
               <div class="field-msg">{{ i18n.t('co.emailErr') }}</div>
             </div>
+            <!-- 地址簿：登录且有保存地址时展示（设计文档 前端完整设计文档 §checkout：登录用户地址簿选择/新增） -->
+            <template v-if="savedAddrs.length">
+              <label v-for="a in savedAddrs" :key="a.id" class="pay-row addr-sel" :class="{ on: selAddr === a.id }" style="cursor:pointer;align-items:flex-start">
+                <input v-model="selAddr" type="radio" :value="a.id" style="display:none" @change="pickAddr(a)">
+                <span style="flex:1;min-width:0">
+                  <b>{{ a.full_name }}</b>
+                  <span v-if="a.is_default" class="tag tag-paid" style="margin-left:6px">{{ i18n.t('co.defaultTag') }}</span>
+                  <div style="color:var(--gray);font-size:12.5px;margin-top:3px">
+                    {{ a.line1 }}{{ a.line2 ? ' ' + a.line2 : '' }}, {{ a.city }}{{ a.state ? ', ' + a.state : '' }} {{ a.zip }} · {{ a.country }}
+                    <template v-if="a.phone"> · {{ a.phone }}</template>
+                  </div>
+                </span>
+              </label>
+              <label class="pay-row addr-sel" :class="{ on: selAddr === 0 }" style="cursor:pointer">
+                <input v-model="selAddr" type="radio" :value="0" style="display:none" @change="pickNewAddr">
+                <b style="color:var(--plum)">＋ {{ i18n.t('co.addrNew') }}</b>
+              </label>
+            </template>
+            <template v-if="selAddr === 0">
             <div class="co-2col">
               <div class="field" :class="{ error: errors.fname }"><label>{{ i18n.t('co.fname') }} *</label><input v-model="form.fname" class="input" :class="{ error: errors.fname }" autocomplete="given-name"></div>
               <div class="field"><label>{{ i18n.t('co.lname') }}</label><input v-model="form.lname" class="input" autocomplete="family-name"></div>
@@ -364,6 +426,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               </div>
               <div class="field"><label>{{ i18n.t('co.phone') }}</label><input v-model="form.phone" class="input" type="tel" autocomplete="tel"></div>
             </div>
+            </template>
           </div>
 
           <!-- 配送 -->

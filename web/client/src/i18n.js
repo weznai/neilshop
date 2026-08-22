@@ -162,6 +162,7 @@ const dict = {
     /* v16 结算页（CheckoutView） */
     'co.empty': 'Your cart is empty —',
     'co.step1': 'Contact & shipping address',
+    'co.addrNew': 'Use a new address',
     'co.email': 'Email', 'co.emailErr': 'Enter a valid email',
     'co.fname': 'First name', 'co.lname': 'Last name',
     'co.addr': 'Address', 'co.addrPh': 'Street & number',
@@ -448,6 +449,7 @@ const dict = {
     /* v16 结算页（CheckoutView） */
     'co.empty': '购物车是空的——',
     'co.step1': '联系方式与收货地址',
+    'co.addrNew': '使用新地址',
     'co.email': '邮箱', 'co.emailErr': '请输入有效邮箱',
     'co.fname': '名', 'co.lname': '姓',
     'co.addr': '地址', 'co.addrPh': '街道与门牌',
