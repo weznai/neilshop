@@ -43,6 +43,14 @@ const EVENT_LABEL = {
   exchange_diff_paid: '换货差价已付', exchange_shipped: '换货已重发', exchange_completed: '换货完成',
   giftcard_created: '礼品卡购卡', points_granted: '积分发放',
 }
+/* 时间线圆点语义色（支付绿 / 退款退货红 / 物流蓝 / 状态紫 / 其余 rose） */
+const TL_DOT = {
+  payment_succeeded: 'ok', refund_issued: 'err', payment_failed: 'err', label_voided: 'err',
+  rma_created: 'err', exchange_rejected: 'err',
+  shipment_created: 'info', tracking_updated: 'info', exchange_shipped: 'info',
+  status_changed: 'plum', checkout_created: 'rose',
+}
+const dotCls = (ev) => TL_DOT[ev] || ''
 
 onMounted(async () => {
   const no = route.query.no
@@ -54,6 +62,28 @@ onMounted(async () => {
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const dt = (iso) => (iso || '').replace('T', ' ').slice(0, 16)
 const reload = async () => { o.value = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(route.query.no)) }
+async function doReload() {
+  try { await reload() ; toast('已刷新', 'success') } catch (e) { toast('刷新失败：' + (e.message || ''), 'error') }
+}
+
+/* 英雄区主题：按订单状态给浅色底 + 左缘强调条 */
+const HERO_THEME = { 0: 'is-pending', 1: 'is-paid', 2: 'is-paid', 3: 'is-ship', 4: 'is-ship', 5: 'is-done', 8: 'is-error', 9: 'is-error' }
+/* 生命周期步进条：创建→支付→发货→送达→完成；终态(8/9)不展示步进条 */
+const STEPS = ['创建', '支付', '发货', '送达', '完成']
+const stepIdx = computed(() => ({ 0: 0, 1: 1, 2: 1, 3: 2, 4: 3, 5: 4 }[o.value?.status]))
+const isClosed = computed(() => [8, 9].includes(o.value?.status))
+/* 一键复制订单号（clipboard API 不可用时退回 execCommand） */
+function copyNo() {
+  const no = o.value.order_no
+  const fallback = () => {
+    const ta = document.createElement('textarea')
+    ta.value = no; document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy'); toast('订单号已复制', 'success') } catch { toast('复制失败', 'error') }
+    ta.remove()
+  }
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(no).then(() => toast('订单号已复制', 'success')).catch(fallback)
+  else fallback()
+}
 
 /* 可退余额：后端取 status∈{1,4} 的最新一笔支付的 amount − refunded_amount（apply_refund 契约） */
 const refundable = computed(() => {
@@ -178,138 +208,179 @@ async function refundConfirm() {
 <template>
   <div class="topbar">
     <div>
-      <h1 style="font-size:22px">订单详情</h1>
-      <span style="font-size:12.5px;color:var(--gray)">{{ route.query.no }}</span>
+      <h1 class="od-h1">订单详情</h1>
+      <span class="od-sub">{{ route.query.no }}</span>
     </div>
-    <button class="btn btn-secondary btn-sm" @click="backToList">← 返回列表</button>
+    <div class="od-actions">
+      <button class="btn btn-secondary btn-sm" :disabled="!o" @click="doReload">⟳ 刷新</button>
+      <button class="btn btn-secondary btn-sm" @click="backToList">← 返回列表</button>
+    </div>
   </div>
 
   <div v-if="err" class="card" style="padding:32px;text-align:center;color:var(--gray)">{{ err }}</div>
   <div v-else-if="!o" class="card skeleton" style="min-height:240px" />
 
-  <div v-else class="grid-2" style="align-items:start">
-    <div style="display:grid;gap:16px">
-      <div class="card" style="padding:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <h3 style="font-size:15px">商品明细</h3>
-          <span class="tag" :class="OSTATUS[o.status]?.[1] || 'tag-error'">{{ OSTATUS[o.status]?.[0] ?? o.status }}</span>
+  <template v-else>
+    <!-- 状态英雄区：订单号 + 状态 + 总额 + 生命周期步进 + 操作 -->
+    <div class="hero" :class="HERO_THEME[o.status] || ''">
+      <div class="hero-top">
+        <div class="hero-left">
+          <button class="hero-no" title="点击复制订单号" @click="copyNo">
+            <b>{{ o.order_no }}</b><i>⧉</i>
+          </button>
+          <span class="tag hero-tag" :class="OSTATUS[o.status]?.[1] || 'tag-error'">{{ OSTATUS[o.status]?.[0] ?? o.status }}</span>
         </div>
-        <div v-for="(it, i) in o.items || []" :key="i" style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--gray-light);font-size:13px">
-          <div style="flex:1">
-            <b>{{ it.title }}</b>
-            <div style="color:var(--gray)">x{{ it.qty }} · 单价 {{ money(it.unit_price) }}
-              <span v-if="it.refunded_qty">· 已退 {{ it.refunded_qty }}</span></div>
-          </div>
-          <b>{{ money(it.subtotal) }}</b>
-        </div>
-        <div v-if="!(o.items || []).length" style="color:var(--gray);font-size:13px;padding:8px 0">📭 此订单暂无商品</div>
-        <div style="display:grid;gap:6px;margin-top:12px;font-size:13px">
-          <div style="display:flex;justify-content:space-between"><span>小计</span><span>{{ money(o.subtotal) }}</span></div>
-          <div v-if="o.discount_total" style="display:flex;justify-content:space-between;color:var(--success)"><span>折扣</span><span>−{{ money(o.discount_total) }}</span></div>
-          <div v-if="o.points_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>积分抵扣</span><span>−{{ money(o.points_discount) }}</span></div>
-          <div v-if="o.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>礼品卡抵扣</span><span>−{{ money(o.giftcard_discount) }}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>运费</span><span>{{ money(o.shipping_fee) }}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>税费</span><span>{{ money(o.tax) }}</span></div>
-          <div style="display:flex;justify-content:space-between;font-weight:800;font-size:14.5px;border-top:1px solid var(--gray-light);padding-top:6px">
-            <span>总计</span><span style="color:var(--plum)">{{ money(o.grand_total) }}</span>
-          </div>
+        <div class="hero-amount">
+          <span>订单总计</span>
+          <b>{{ money(o.grand_total) }}</b>
         </div>
       </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">时间线</h3>
-        <div style="display:grid;gap:10px">
-          <div v-for="(t, i) in o.timeline || []" :key="i" style="display:flex;gap:12px;font-size:13px">
-            <span style="width:112px;color:var(--gray);flex:none;font-size:12px;padding-top:2px">{{ dt(t.created_at) }}</span>
-            <span style="flex:1">
-              <b>{{ EVENT_LABEL[t.event] || t.event }}</b>
-              <span class="tag tag-done" style="margin-left:6px;font-size:10.5px;padding:1px 7px">{{ ACTOR[t.actor] || t.actor }}</span>
-              <div v-if="eventText(t)" style="color:var(--gray);font-size:12.5px;margin-top:2px">{{ eventText(t) }}</div>
-            </span>
-          </div>
-          <div v-if="!(o.timeline || []).length" style="color:var(--gray);font-size:13px">📭 暂无时间线记录</div>
+      <div v-if="!isClosed" class="steps">
+        <div v-for="(s, i) in STEPS" :key="s" class="step" :class="{ done: i < stepIdx, now: i === stepIdx }">
+          <i class="dot">{{ i < stepIdx ? '✓' : i + 1 }}</i><span>{{ s }}</span>
         </div>
+      </div>
+      <div v-else class="closed-banner">
+        {{ OSTATUS[o.status]?.[0] }} · {{ o.status === 9 ? '本单已全额退款' : '本单已取消，无可用操作' }}
+      </div>
+
+      <div class="hero-meta">
+        <span>下单 <b>{{ dt(o.placed_at) || '—' }}</b></span>
+        <span>支付 <b>{{ dt(o.paid_at) || '—' }}</b></span>
+        <span v-if="o.shipped_at">发货 <b>{{ dt(o.shipped_at) }}</b></span>
+        <span v-if="o.delivered_at">送达 <b>{{ dt(o.delivered_at) }}</b></span>
+        <span v-if="o.tracking_no">物流 <b>{{ o.tracking_no }}</b></span>
+      </div>
+
+      <div class="hero-ops">
+        <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" @click="act('ship')">📦 发货</button>
+        <button v-if="o.status === 3" class="btn btn-secondary btn-sm" @click="act('deliver')">✅ 标记妥投</button>
+        <button v-if="[1, 2, 3, 4, 5].includes(o.status)" class="btn btn-ghost btn-sm hero-refund" @click="act('refund')">💸 退款（余额 {{ money(refundable) }}）</button>
       </div>
     </div>
 
-    <div style="display:grid;gap:16px">
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">订单信息</h3>
-        <div style="display:grid;gap:8px;font-size:13px">
-          <div style="display:flex;justify-content:space-between"><span>客户</span><span>{{ o.email }}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>下单</span><span style="color:var(--gray)">{{ dt(o.placed_at) || '—' }}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>支付</span><span style="color:var(--gray)">{{ dt(o.paid_at) || '—' }}</span></div>
-          <div v-if="o.shipped_at" style="display:flex;justify-content:space-between"><span>发货</span><span style="color:var(--gray)">{{ dt(o.shipped_at) }}</span></div>
-          <div v-if="o.delivered_at" style="display:flex;justify-content:space-between"><span>送达</span><span style="color:var(--gray)">{{ dt(o.delivered_at) }}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>物流单号</span><span>{{ o.tracking_no || '—' }}</span></div>
-          <div style="display:flex;justify-content:space-between"><span>积分</span><span>+{{ o.points_earned ?? 0 }} 得 / −{{ o.points_used ?? 0 }} 用</span></div>
+    <div class="grid-2" style="align-items:start;margin-top:16px">
+      <div style="display:grid;gap:16px">
+        <div class="card od-card" style="padding:20px">
+          <div class="dhead">
+            <h3 class="dtitle">商品明细</h3>
+            <span class="item-cnt" v-if="(o.items || []).length">{{ o.items.length }} 项</span>
+          </div>
+          <div v-for="(it, i) in o.items || []" :key="i" class="oitem">
+            <div class="oitem-main">
+              <b class="oitem-title">{{ it.title }}</b>
+              <div class="oitem-meta">
+                <span class="qtypill">x{{ it.qty }}</span>
+                <span>单价 {{ money(it.unit_price) }}</span>
+                <span v-if="it.refunded_qty" class="refpill">已退 {{ it.refunded_qty }}</span>
+              </div>
+            </div>
+            <b class="oitem-sub">{{ money(it.subtotal) }}</b>
+          </div>
+          <div v-if="!(o.items || []).length" class="empty-line">📭 此订单暂无商品</div>
+          <div class="sum">
+            <div class="sum-row"><span>小计</span><span>{{ money(o.subtotal) }}</span></div>
+            <div v-if="o.discount_total" class="sum-row disc"><span>折扣</span><span>−{{ money(o.discount_total) }}</span></div>
+            <div v-if="o.points_discount" class="sum-row disc"><span>积分抵扣</span><span>−{{ money(o.points_discount) }}</span></div>
+            <div v-if="o.giftcard_discount" class="sum-row disc"><span>礼品卡抵扣</span><span>−{{ money(o.giftcard_discount) }}</span></div>
+            <div class="sum-row"><span>运费</span><span>{{ money(o.shipping_fee) }}</span></div>
+            <div class="sum-row"><span>税费</span><span>{{ money(o.tax) }}</span></div>
+            <div class="sum-total"><span>总计</span><b>{{ money(o.grand_total) }}</b></div>
+          </div>
         </div>
-        <!-- 客户留言（下单时提交，浅底强调） -->
-        <div v-if="o.note" style="margin-top:12px;background:var(--rose-pale);border-left:3px solid var(--rose);border-radius:8px;padding:10px 12px">
-          <div style="font-size:11px;color:var(--gray);letter-spacing:1px;margin-bottom:3px">💬 客户留言</div>
-          <div style="font-size:13px;color:var(--plum);line-height:1.6;white-space:pre-wrap">{{ o.note }}</div>
-        </div>
-      </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">支付信息</h3>
-        <div v-for="p in o.payments || []" :key="p.id" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--gray-light);font-size:13px">
-          <div>
-            <b>{{ money(p.amount) }}</b>
-            <div style="color:var(--gray);font-size:12px">
-              尾号 {{ (p.payment_intent || '').slice(-8) || '—' }}<span v-if="p.refunded_amount"> · 已退 {{ money(p.refunded_amount) }}</span>
+        <div class="card od-card" style="padding:20px;animation-delay:.08s">
+          <div class="dhead">
+            <h3 class="dtitle">时间线</h3>
+            <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
+          </div>
+          <div class="tl">
+            <div v-for="(t, i) in o.timeline || []" :key="i" class="tl-item">
+              <i class="tl-dot" :class="dotCls(t.event)"></i>
+              <div class="tl-head">
+                <b>{{ EVENT_LABEL[t.event] || t.event }}</b>
+                <span class="tl-actor">{{ ACTOR[t.actor] || t.actor }}</span>
+                <span class="tl-time">{{ dt(t.created_at) }}</span>
+              </div>
+              <div v-if="eventText(t)" class="tl-text">{{ eventText(t) }}</div>
             </div>
           </div>
-          <span class="tag" :class="PSTATUS[p.status]?.[1]">{{ PSTATUS[p.status]?.[0] ?? p.status }}</span>
-        </div>
-        <div v-if="!(o.payments || []).length" style="color:var(--gray);font-size:13px">📭 暂无支付记录</div>
-        <div v-else style="display:flex;justify-content:space-between;margin-top:10px;font-size:12.5px;color:var(--gray)">
-          <span>可退余额（最新可退支付）</span><b :style="{ color: refundable > 0 ? 'var(--ink)' : 'var(--gray)' }">{{ money(refundable) }}</b>
+          <div v-if="!(o.timeline || []).length" class="empty-line">📭 暂无时间线记录</div>
         </div>
       </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">物流包裹</h3>
-        <div v-for="s in o.shipments || []" :key="s.shipment_no" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--gray-light);font-size:13px">
-          <div>
-            <b>{{ s.shipment_no }}</b> · {{ s.carrier || '—' }}
-            <div style="color:var(--gray);font-size:12px">
-              {{ s.tracking_no || '无单号' }} · 发货 {{ dt(s.shipped_at) || '—' }}<span v-if="s.delivered_at"> · 送达 {{ dt(s.delivered_at) }}</span>
-            </div>
+      <div style="display:grid;gap:16px">
+        <div class="card od-card" style="padding:20px;animation-delay:.05s">
+          <div class="dhead"><h3 class="dtitle">订单信息</h3></div>
+          <div class="kv">
+            <div class="kv-row"><span>客户</span><b class="kv-val">{{ o.email }}</b></div>
+            <div class="kv-row"><span>下单</span><span class="kv-val">{{ dt(o.placed_at) || '—' }}</span></div>
+            <div class="kv-row"><span>支付</span><span class="kv-val">{{ dt(o.paid_at) || '—' }}</span></div>
+            <div v-if="o.shipped_at" class="kv-row"><span>发货</span><span class="kv-val">{{ dt(o.shipped_at) }}</span></div>
+            <div v-if="o.delivered_at" class="kv-row"><span>送达</span><span class="kv-val">{{ dt(o.delivered_at) }}</span></div>
+            <div class="kv-row"><span>物流单号</span><span class="kv-val">{{ o.tracking_no || '—' }}</span></div>
+            <div class="kv-row"><span>积分</span><span class="kv-val">+{{ o.points_earned ?? 0 }} 得 / −{{ o.points_used ?? 0 }} 用</span></div>
           </div>
-          <span class="tag" :class="SHSTATUS[s.status]?.[1]">{{ SHSTATUS[s.status]?.[0] ?? s.status }}</span>
+          <!-- 客户留言（下单时提交，浅底强调） -->
+          <div v-if="o.note" class="note-box">
+            <div class="note-lb">💬 客户留言</div>
+            <div class="note-txt">{{ o.note }}</div>
+          </div>
         </div>
-        <div v-if="!(o.shipments || []).length" style="color:var(--gray);font-size:13px">📭 暂无物流包裹</div>
-      </div>
 
-      <div v-if="o.redemptions && o.redemptions.length" class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">折扣码核销</h3>
-        <div v-for="(r, i) in o.redemptions" :key="i" style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--gray-light);font-size:13px">
-          <span>折扣码 #{{ r.code_id }}<span style="color:var(--gray)"> · {{ r.email }}</span></span>
-          <b style="color:var(--success)">−{{ money(r.discount_amount) }}</b>
+        <div class="card od-card" style="padding:20px;animation-delay:.1s">
+          <div class="dhead"><h3 class="dtitle">支付信息</h3></div>
+          <div v-for="p in o.payments || []" :key="p.id" class="pay-row">
+            <div class="pay-main">
+              <b>{{ money(p.amount) }}</b>
+              <div class="pay-meta">
+                尾号 {{ (p.payment_intent || '').slice(-8) || '—' }}<span v-if="p.refunded_amount"> · 已退 {{ money(p.refunded_amount) }}</span>
+              </div>
+            </div>
+            <span class="tag" :class="PSTATUS[p.status]?.[1]">{{ PSTATUS[p.status]?.[0] ?? p.status }}</span>
+          </div>
+          <div v-if="!(o.payments || []).length" class="empty-line">📭 暂无支付记录</div>
+          <div v-else class="ref-box" :class="{ on: refundable > 0 }">
+            <span>可退余额（最新可退支付）</span>
+            <b>{{ money(refundable) }}</b>
+          </div>
         </div>
-      </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">收件地址</h3>
-        <div v-if="o.shipping_address" style="font-size:13px;line-height:1.7;color:var(--ink)">
-          {{ o.shipping_address?.full_name }}<br>{{ o.shipping_address?.line1 }} {{ o.shipping_address?.line2 }}<br>
-          {{ o.shipping_address?.city }}, {{ o.shipping_address?.state }} {{ o.shipping_address?.zip }} · {{ o.shipping_address?.country }}
+        <div class="card od-card" style="padding:20px;animation-delay:.15s">
+          <div class="dhead"><h3 class="dtitle">物流包裹</h3></div>
+          <div v-for="s in o.shipments || []" :key="s.shipment_no" class="pay-row">
+            <div class="pay-main">
+              <b>{{ s.shipment_no }}</b> · {{ s.carrier || '—' }}
+              <div class="pay-meta">
+                {{ s.tracking_no || '无单号' }} · 发货 {{ dt(s.shipped_at) || '—' }}<span v-if="s.delivered_at"> · 送达 {{ dt(s.delivered_at) }}</span>
+              </div>
+            </div>
+            <span class="tag" :class="SHSTATUS[s.status]?.[1]">{{ SHSTATUS[s.status]?.[0] ?? s.status }}</span>
+          </div>
+          <div v-if="!(o.shipments || []).length" class="empty-line">📭 暂无物流包裹</div>
         </div>
-        <div v-else style="color:var(--gray);font-size:13px">📭 暂无收件地址</div>
-      </div>
 
-      <div class="card" style="padding:20px">
-        <h3 style="font-size:15px;margin-bottom:12px">履约操作</h3>
-        <div style="display:grid;gap:8px">
-          <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary" @click="act('ship')">📦 发货</button>
-          <button v-if="o.status === 3" class="btn btn-secondary" @click="act('deliver')">✅ 标记妥投</button>
-          <button v-if="[1, 2, 3, 4, 5].includes(o.status)" class="btn btn-ghost" style="color:var(--error)" @click="act('refund')">💸 退款（余额 {{ money(refundable) }}）</button>
-          <div v-if="![1, 2, 3, 4, 5].includes(o.status)" style="color:var(--gray);font-size:13px">📭 当前状态（{{ OSTATUS[o.status]?.[0] ?? o.status }}）无可用操作</div>
+        <div v-if="o.redemptions && o.redemptions.length" class="card od-card" style="padding:20px;animation-delay:.2s">
+          <div class="dhead"><h3 class="dtitle">折扣码核销</h3></div>
+          <div v-for="(r, i) in o.redemptions" :key="i" class="kv-row">
+            <span>折扣码 #{{ r.code_id }}<i class="kv-sub"> · {{ r.email }}</i></span>
+            <b style="color:var(--success)">−{{ money(r.discount_amount) }}</b>
+          </div>
+        </div>
+
+        <div class="card od-card" style="padding:20px;animation-delay:.25s">
+          <div class="dhead"><h3 class="dtitle">收件地址</h3></div>
+          <div v-if="o.shipping_address" class="addr">
+            <b>{{ o.shipping_address?.full_name }}</b>
+            <p>{{ o.shipping_address?.line1 }} {{ o.shipping_address?.line2 }}</p>
+            <p>{{ o.shipping_address?.city }}, {{ o.shipping_address?.state }} {{ o.shipping_address?.zip }} · {{ o.shipping_address?.country }}</p>
+          </div>
+          <div v-else class="empty-line">📭 暂无收件地址</div>
         </div>
       </div>
     </div>
-  </div>
+  </template>
 
   <!-- 发货弹窗 -->
   <div v-if="shipDlg" class="modal open" @click.self="shipDlg = false">
@@ -349,3 +420,137 @@ async function refundConfirm() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* ===== 顶栏 ===== */
+.od-h1{font-family:var(--font-title);font-size:22px;font-weight:700;letter-spacing:-.3px}
+.od-sub{font-size:12.5px;color:var(--gray)}
+.od-actions{display:flex;gap:8px;align-items:center}
+
+/* ===== 状态英雄区 ===== */
+.hero{--tint:#fff;position:relative;overflow:hidden;border-radius:14px;padding:20px 22px;border:1px solid var(--gray-light);
+  background:linear-gradient(135deg,var(--tint),#fff 62%);box-shadow:var(--shadow-card);animation:odRise .45s ease-out backwards}
+.hero::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,var(--rose),var(--plum))}
+.hero::after{content:"";position:absolute;top:-36px;right:-30px;width:170px;height:140px;border-radius:50%;
+  background:radial-gradient(closest-side,rgba(232,180,184,.2),transparent);pointer-events:none}
+.hero.is-pending{--tint:var(--pale-warn)}
+.hero.is-paid{--tint:var(--pale-success)}
+.hero.is-ship{--tint:var(--pale-info)}
+.hero.is-done{--tint:var(--gray-light)}
+.hero.is-error{--tint:var(--pale-error)}
+.hero-top{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap}
+.hero-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+.hero-no{display:inline-flex;align-items:center;gap:8px;background:none;border:none;cursor:pointer;padding:0;
+  font-family:var(--font-title);font-size:20px;font-weight:700;color:var(--ink);letter-spacing:-.2px;transition:color .15s}
+.hero-no:hover{color:var(--plum)}
+.hero-no i{font-style:normal;font-size:13px;color:var(--gray);opacity:0;transform:translateX(-3px);transition:opacity .15s,transform .15s}
+.hero-no:hover i{opacity:1;transform:none}
+.hero-tag{font-size:13px;padding:5px 14px}
+.hero-amount{text-align:right;flex:none}
+.hero-amount span{display:block;font-size:11px;color:var(--gray);letter-spacing:1px}
+.hero-amount b{font-size:24px;font-weight:800;color:var(--plum);font-variant-numeric:tabular-nums;letter-spacing:-.3px}
+/* 生命周期步进条 */
+.steps{display:flex;gap:0;margin:18px 2px 4px;flex-wrap:wrap}
+.step{flex:1;display:flex;align-items:center;gap:8px;min-width:110px;position:relative}
+.step .dot{width:26px;height:26px;border-radius:50%;background:#fff;border:2px solid var(--gray-light);color:var(--gray);
+  font-style:normal;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;transition:all .3s}
+.step span{font-size:12px;color:var(--gray);font-weight:600;white-space:nowrap}
+.step:not(:last-child)::after{content:"";flex:1;height:2px;background:var(--gray-light);margin:0 10px;border-radius:1px;transition:background .3s}
+.step.done .dot{background:var(--success);border-color:var(--success);color:#fff}
+.step.done:not(:last-child)::after{background:var(--success)}
+.step.now .dot{background:var(--plum);border-color:var(--plum);color:#fff;box-shadow:0 0 0 4px rgba(109,46,70,.14)}
+.step.now span{color:var(--plum)}
+/* 终态（取消/退款）横幅 */
+.closed-banner{margin-top:16px;padding:10px 14px;border-radius:10px;background:rgba(229,72,77,.08);
+  border:1px dashed rgba(229,72,77,.35);color:var(--error);font-size:13px;font-weight:600}
+/* 关键节点 chips */
+.hero-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.hero-meta span{font-size:12px;color:var(--gray);background:rgba(255,255,255,.75);border:1px solid var(--gray-light);border-radius:999px;padding:3px 11px;white-space:nowrap}
+.hero-meta b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+/* 操作按钮区 */
+.hero-ops{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.hero-refund{color:var(--error)}
+.hero-refund:hover{background:var(--pale-error)}
+
+/* ===== 卡片标题（渐变竖标，与看板一致） ===== */
+.dhead{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.dtitle{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}
+.dtitle::before{content:"";width:4px;height:16px;border-radius:2px;background:linear-gradient(180deg,var(--rose),var(--plum));flex:none}
+.item-cnt{font-size:12px;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:2px 10px;white-space:nowrap}
+
+/* ===== 商品明细 ===== */
+.oitem{display:flex;gap:12px;align-items:center;padding:12px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.oitem-main{flex:1;min-width:0}
+.oitem-title{display:block;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.oitem-meta{display:flex;align-items:center;gap:8px;color:var(--gray);font-size:12px;margin-top:4px;flex-wrap:wrap}
+.qtypill{background:var(--rose-pale);color:var(--plum);border-radius:6px;padding:0 7px;font-weight:700}
+.refpill{background:var(--pale-error);color:var(--error);border-radius:6px;padding:0 7px;font-weight:700}
+.oitem-sub{flex:none;font-variant-numeric:tabular-nums}
+/* 金额汇总 */
+.sum{display:grid;gap:7px;margin-top:14px;font-size:13px}
+.sum-row{display:flex;justify-content:space-between;color:var(--ink)}
+.sum-row span+span{font-variant-numeric:tabular-nums}
+.sum-row.disc{color:var(--success)}
+.sum-total{display:flex;justify-content:space-between;align-items:center;background:var(--rose-pale);border-radius:10px;
+  padding:10px 14px;margin-top:6px;font-weight:700;font-size:13px}
+.sum-total b{color:var(--plum);font-size:17px;font-weight:800;font-variant-numeric:tabular-nums}
+
+/* ===== 时间线（竖向圆点连线） ===== */
+.tl{position:relative;padding-left:20px}
+.tl::before{content:"";position:absolute;left:5px;top:6px;bottom:10px;width:2px;background:var(--gray-light);border-radius:1px}
+.tl-item{position:relative;padding-bottom:16px}
+.tl-item:last-child{padding-bottom:4px}
+.tl-dot{position:absolute;left:-20px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--rose);
+  border:2.5px solid #fff;box-shadow:0 0 0 1.5px var(--rose-light)}
+.tl-dot.ok{background:var(--success);box-shadow:0 0 0 1.5px var(--pale-success)}
+.tl-dot.err{background:var(--error);box-shadow:0 0 0 1.5px var(--pale-error)}
+.tl-dot.info{background:var(--info);box-shadow:0 0 0 1.5px var(--pale-info)}
+.tl-dot.plum{background:var(--plum);box-shadow:0 0 0 1.5px var(--rose-light)}
+.tl-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.tl-head b{font-size:13.5px}
+.tl-actor{font-size:10.5px;font-weight:700;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:1px 8px}
+.tl-time{font-size:11.5px;color:var(--gray);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tl-text{color:var(--gray);font-size:12.5px;margin-top:3px;line-height:1.6}
+
+/* ===== 键值行 ===== */
+.kv{display:grid;gap:2px}
+.kv-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.kv-row:last-child{border-bottom:none}
+.kv-row>span:first-child{color:var(--gray);flex:none}
+.kv-val{text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.kv-sub{font-style:normal;color:var(--gray);font-size:12px}
+
+/* ===== 客户留言 ===== */
+.note-box{margin-top:12px;background:var(--rose-pale);border-left:3px solid var(--rose);border-radius:10px;padding:10px 13px}
+.note-lb{font-size:11px;color:var(--gray);letter-spacing:1px;margin-bottom:3px}
+.note-txt{font-size:13px;color:var(--plum);line-height:1.6;white-space:pre-wrap}
+
+/* ===== 支付 / 物流行 ===== */
+.pay-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.pay-row:last-of-type{border-bottom:none}
+.pay-main{min-width:0}
+.pay-meta{color:var(--gray);font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 可退余额提示条 */
+.ref-box{display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding:9px 13px;border-radius:10px;
+  background:var(--gray-light);font-size:12.5px;color:var(--gray)}
+.ref-box b{font-variant-numeric:tabular-nums}
+.ref-box.on{background:var(--rose-pale);color:var(--plum)}
+
+/* ===== 收件地址 ===== */
+.addr{font-size:13px;line-height:1.8}
+.addr b{font-size:13.5px}
+.addr p{color:var(--gray)}
+
+/* ===== 空态 / 入场动画 ===== */
+.empty-line{color:var(--gray);font-size:13px;padding:8px 0}
+.od-card{animation:odRise .45s ease-out backwards}
+@keyframes odRise{from{opacity:0;transform:translateY(10px)}}
+
+/* ===== 移动端 ===== */
+@media (max-width:768px) {
+  .hero{padding:16px}
+  .hero-amount{text-align:left}
+  .hero-ops .btn{flex:1}
+  .tl-time{margin-left:0;width:100%;flex-basis:100%}
+}
+</style>
