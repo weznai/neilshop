@@ -20,26 +20,31 @@ router = APIRouter(prefix="/api/admin/catalog", tags=["admin-catalog"])
 @router.get("/products")
 def admin_list_products(
     status: int | None = None,
+    category_id: int | None = None,
     q: str | None = None,
+    sort: str | None = None,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.admin_list_products(db, status=status, q=q, page=page, size=size)
+    return service.admin_list_products(
+        db, status=status, category_id=category_id, q=q, page=page, size=size, sort=sort
+    )
 
 
 @router.get("/variants")
 def admin_list_variants(
     product_id: int | None = None,
     q: str | None = None,
+    sort: str | None = None,
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     return service.admin_list_variants(
-        db, product_id=product_id, q=q, page=page, size=size
+        db, product_id=product_id, q=q, page=page, size=size, sort=sort
     )
 
 

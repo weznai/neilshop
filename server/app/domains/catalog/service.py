@@ -401,9 +401,11 @@ def _log(db: Session, admin: User, action: str, entity: str, entity_id: int,
 
 def admin_list_products(
     db: Session, *, status: int | None, q: str | None, page: int, size: int,
+    category_id: int | None = None, sort: str | None = None,
 ) -> dict:
     total, prods = repo.admin_products(
-        db, status=status, q=q, offset=(page - 1) * size, limit=size
+        db, status=status, category_id=category_id, q=q,
+        offset=(page - 1) * size, limit=size, sort=sort,
     )
     agg = repo.variant_counts(db, [p.id for p in prods])
     empty = {"variant_count": 0, "total_stock": 0, "low_stock_count": 0}
@@ -417,11 +419,14 @@ def admin_list_products(
 
 def admin_list_variants(
     db: Session, *, product_id: int | None, q: str | None, page: int, size: int,
+    sort: str | None = None,
 ) -> dict:
     total, rows = repo.admin_variants(
         db, product_id=product_id, q=q,
-        offset=(page - 1) * size, limit=size,
+        offset=(page - 1) * size, limit=size, sort=sort,
     )
+    # 变体图片批量直出（一次 in_ 查全页 variant_id 再映射，避免 N+1；每变体按序 ≤6）
+    vimgs = repo.variant_images_map(db, [v.id for v, _ in rows])
     return {
         "items": [
             {
@@ -435,6 +440,7 @@ def admin_list_variants(
                 "stock": v.stock,
                 "safety_stock": v.safety_stock,
                 "is_active": bool(v.is_active),
+                "images": vimgs.get(v.id, [])[:6],
             }
             for v, title in rows
         ],

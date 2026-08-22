@@ -1,6 +1,6 @@
 """营销域仓储 —— 纯查询/分页，不掺业务规则"""
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.models import (
@@ -83,13 +83,28 @@ def giftcard_ledgers(db: Session, gift_card_id: int) -> Query:
 
 
 def discount_usages(db: Session, code_id: int) -> Query:
-    """折扣码核销记录（join 订单号，时间倒序）"""
+    """折扣码核销记录（join 订单号+订单总额，时间倒序）"""
     return (
-        db.query(DiscountRedemption, Order.order_no)
+        db.query(DiscountRedemption, Order.order_no, Order.grand_total)
         .outerjoin(Order, Order.id == DiscountRedemption.order_id)
         .filter(DiscountRedemption.code_id == code_id)
         .order_by(DiscountRedemption.created_at.desc(), DiscountRedemption.id.desc())
     )
+
+
+def discount_usage_totals(db: Session, code_id: int) -> tuple[int, int | None]:
+    """核销全量聚合（单条 SUM，不拉全表）：优惠合计恒为 int；
+    订单合计 outerjoin 无任何关联订单时为 None（SUM 全 NULL 语义）"""
+    total_discount, total_order = (
+        db.query(
+            func.coalesce(func.sum(DiscountRedemption.discount_amount), 0),
+            func.sum(Order.grand_total),
+        )
+        .outerjoin(Order, Order.id == DiscountRedemption.order_id)
+        .filter(DiscountRedemption.code_id == code_id)
+        .one()
+    )
+    return int(total_discount or 0), None if total_order is None else int(total_order)
 
 
 def discount_redemption_exists(db: Session, code_id: int) -> bool:

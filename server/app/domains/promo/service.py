@@ -235,11 +235,13 @@ def toggle_discount(db: Session, admin: User, discount_id: int) -> dict:
 
 
 def discount_usages(db: Session, discount_id: int, page: int, size: int) -> dict:
-    """核销明细：redemption join 订单带出 order_no，时间倒序"""
+    """核销明细：redemption join 订单带出 order_no + 订单总额（GMV 估算），时间倒序；
+    另附全量聚合（不受分页影响）：优惠合计 + 关联订单合计（outerjoin 无单为 null）"""
     dc = db.get(DiscountCode, discount_id)
     if not dc:
         raise HTTPException(status_code=404, detail="discount not found")
     rows, total = repo.page(repo.discount_usages(db, dc.id), page, size)
+    total_discount, total_order = repo.discount_usage_totals(db, dc.id)
     return {
         "items": [
             {
@@ -247,13 +249,16 @@ def discount_usages(db: Session, discount_id: int, page: int, size: int) -> dict
                 "order_no": order_no,
                 "email": r.email,
                 "discount_amount_cents": r.discount_amount,
+                "order_total_cents": order_total,
                 "created_at": r.created_at,
             }
-            for r, order_no in rows
+            for r, order_no, order_total in rows
         ],
         "total": total,
         "page": page,
         "size": size,
+        "total_discount_cents": total_discount,
+        "total_order_cents": total_order,
     }
 
 

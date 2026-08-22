@@ -353,18 +353,46 @@ def scheduled_products_count(db: Session, now) -> int:
 
 # ---------- 后台管理 ----------
 
+# 后台商品列表排序白名单（price → price_min 冗余列；-前缀倒序，非法值 .get 落空走默认）
+_ADMIN_PRODUCT_SORTS = {
+    "title": Product.title.asc(),
+    "-title": Product.title.desc(),
+    "price": Product.price_min.asc(),
+    "-price": Product.price_min.desc(),
+    "created_at": Product.created_at.asc(),
+    "-created_at": Product.created_at.desc(),
+}
+
+# 后台变体列表排序白名单（-前缀倒序，非法值 .get 落空走默认）
+_ADMIN_VARIANT_SORTS = {
+    "stock": Variant.stock.asc(),
+    "-stock": Variant.stock.desc(),
+    "sku": Variant.sku.asc(),
+    "-sku": Variant.sku.desc(),
+}
+
+
 def admin_products(
     db: Session, *, status: int | None, q: str | None, offset: int, limit: int,
+    category_id: int | None = None, sort: str | None = None,
 ) -> tuple[int, list[Product]]:
     query = db.query(Product)
     if status is not None:
         query = query.filter(Product.status == status)
+    if category_id is not None:
+        query = query.filter(Product.category_id == category_id)
     if q:
         like = f"%{q}%"
         query = query.filter(or_(Product.title.like(like), Product.slug.like(like)))
     total = query.count()
+    # 排序白名单：非法/缺省走默认 id 倒序
+    order_col = _ADMIN_PRODUCT_SORTS.get(sort or "")
+    order_by_cols = (
+        (order_col, Product.id.desc()) if order_col is not None
+        else (Product.id.desc(),)
+    )
     prods = (
-        query.order_by(Product.id.desc())
+        query.order_by(*order_by_cols)
         .offset(offset)
         .limit(limit)
         .all()
@@ -375,6 +403,7 @@ def admin_products(
 def admin_variants(
     db: Session, *, product_id: int | None, q: str | None,
     offset: int, limit: int, active_only: bool = False,
+    sort: str | None = None,
 ) -> tuple[int, list[tuple[Variant, str]]]:
     """后台变体列表（join 商品标题，供库存中心/变体管理）。"""
     query = db.query(Variant, Product.title).join(
@@ -388,8 +417,14 @@ def admin_variants(
         like = f"%{q}%"
         query = query.filter(or_(Variant.sku.like(like), Product.title.like(like)))
     total = query.count()
+    # 排序白名单：非法/缺省走默认 product_id/id 正序
+    order_col = _ADMIN_VARIANT_SORTS.get(sort or "")
+    order_by_cols = (
+        (order_col, Variant.id.asc()) if order_col is not None
+        else (Variant.product_id.asc(), Variant.id.asc())
+    )
     rows = (
-        query.order_by(Variant.product_id.asc(), Variant.id.asc())
+        query.order_by(*order_by_cols)
         .offset(offset)
         .limit(limit)
         .all()

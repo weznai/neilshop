@@ -380,8 +380,17 @@ def _article_dict(a: Article) -> dict:
     }
 
 
-def list_articles_admin(db: Session, page: int, size: int) -> dict:
-    rows, total = repo.page(repo.admin_articles_desc(db), page, size)
+_ARTICLE_STATUS_FILTER = {"published": 1, "draft": 0}
+
+
+def list_articles_admin(db: Session, status: str | None, page: int, size: int) -> dict:
+    """status 语义参数映射模型 SmallInteger 列（1发布/0草稿），非法值 400"""
+    status_val = None
+    if status is not None:
+        status_val = _ARTICLE_STATUS_FILTER.get(status.strip().lower())
+        if status_val is None:
+            raise HTTPException(status_code=400, detail="invalid status, expect published/draft")
+    rows, total = repo.page(repo.admin_articles_desc(db, status_val), page, size)
     return {"items": [_article_dict(a) for a in rows], "total": total, "page": page, "size": size}
 
 
@@ -454,9 +463,27 @@ def _faq_dict(f: Faq) -> dict:
     }
 
 
-def list_faqs_admin(db: Session) -> dict:
-    rows = repo.admin_faqs_ordered(db)
-    return {"items": [_faq_dict(f) for f in rows]}
+def _faq_category_filter(category: str | None) -> int | None:
+    """分类筛选参数 → 模型 SmallInteger 列：数字串直转，否则按中文名反查，非法 400"""
+    if category is None:
+        return None
+    val = category.strip()
+    if not val:
+        return None
+    if val.isdigit():
+        return int(val)
+    by_name = {name: cid for cid, name in FAQ_CATEGORY.items()}
+    if val not in by_name:
+        raise HTTPException(status_code=400, detail="invalid faq category")
+    return by_name[val]
+
+
+def list_faqs_admin(db: Session, category: str | None, page: int, size: int) -> dict:
+    """后台 FAQ 列表：分类过滤 + 标准分页（默认 size=100 兼容原全量消费方）"""
+    rows, total = repo.page(
+        repo.admin_faqs_ordered(db, _faq_category_filter(category)), page, size
+    )
+    return {"items": [_faq_dict(f) for f in rows], "total": total, "page": page, "size": size}
 
 
 def create_faq(db: Session, admin: User, body: FaqCreateIn) -> dict:

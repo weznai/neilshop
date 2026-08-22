@@ -21,12 +21,11 @@ def active_faqs(db: Session, category: int | None) -> list[Faq]:
     return q.order_by(Faq.sort_order, Faq.id).all()
 
 
-def admin_faqs_ordered(db: Session) -> list[Faq]:
-    return (
-        db.query(Faq)
-        .order_by(Faq.category.asc(), Faq.sort_order.asc(), Faq.id.asc())
-        .all()
-    )
+def admin_faqs_ordered(db: Session, category: int | None = None) -> Query:
+    q = db.query(Faq)
+    if category is not None:
+        q = q.filter(Faq.category == category)
+    return q.order_by(Faq.category.asc(), Faq.sort_order.asc(), Faq.id.asc())
 
 
 def faq_by_id(db: Session, faq_id: int) -> Faq | None:
@@ -52,8 +51,11 @@ def published_article_tags(db: Session) -> list:
     return [r[0] for r in db.query(Article.tags).filter(Article.status == 1).all()]
 
 
-def admin_articles_desc(db: Session) -> Query:
-    return db.query(Article).order_by(Article.id.desc())
+def admin_articles_desc(db: Session, status: int | None = None) -> Query:
+    q = db.query(Article)
+    if status is not None:
+        q = q.filter(Article.status == status)
+    return q.order_by(Article.id.desc())
 
 
 def article_id_by_slug(db: Session, slug: str, exclude_id: int | None = None):

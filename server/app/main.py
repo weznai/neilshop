@@ -28,6 +28,7 @@ from app.domains.trade import (
     router_returns as returns,
 )
 from app.domains.promo import router as promo, router_admin as admin_promo
+from app.domains.media import router_admin as admin_media
 from app.domains.content import router as content, router_admin as admin_content
 from app.domains.support import router as support, router_admin as admin_support
 from app.domains.ops import router as admin_ops
@@ -75,7 +76,7 @@ if _origins:
 _ROUTERS = (
     account, catalog, cart, checkout, orders, payments, returns,
     promo, points, content, support, admin_catalog, admin_trade, admin_ops_all, ai,
-    referrals, subscriptions, exchanges,
+    referrals, subscriptions, exchanges, admin_media,
 )
 for module in _ROUTERS:
     app.include_router(module.router)
@@ -215,5 +216,11 @@ class SPAStaticFiles(StaticFiles):
 
 
 _WEB = Path(__file__).resolve().parents[2] / "web" / "dist"
+
+# 上传媒体静态托管（/static/uploads/...，media 域落盘目录）：先于 SPA "/" 挂载注册，命中优先
+_STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
 if (_WEB / "index.html").exists():
     app.mount("/", SPAStaticFiles(directory=str(_WEB), html=True), name="spa")

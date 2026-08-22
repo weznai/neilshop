@@ -16,12 +16,13 @@ router = APIRouter(tags=["admin-ops"])
 
 @router.get("/api/admin/ops/articles")
 def list_articles(
+    status: str | None = Query(None, description="published/draft 映射模型 status 1/0"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service.list_articles_admin(db, page, size)
+    return service.list_articles_admin(db, status, page, size)
 
 
 @router.post("/api/admin/ops/articles")
@@ -40,8 +41,14 @@ def delete_article(article_id: int, admin: User = Depends(require_admin), db: Se
 
 
 @router.get("/api/admin/ops/faqs")
-def list_faqs(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return service.list_faqs_admin(db)
+def list_faqs(
+    category: str | None = Query(None, description="分类数字或中文名，如 1/尺码"),
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=200),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.list_faqs_admin(db, category, page, size)
 
 
 @router.post("/api/admin/ops/faqs")
