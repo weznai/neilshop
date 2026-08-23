@@ -23,6 +23,12 @@ def list_artists(db: Session = Depends(get_db)):
     return {"items": service.repo.artists_public(db)}
 
 
+@router.get("/quicks")
+def list_quicks(db: Session = Depends(get_db)):
+    """客户聊天窗快捷问题（后台可配置，见 /chat ⚡ 客户快捷问题）"""
+    return service.quick_replies(db)
+
+
 @router.post("/conversations")
 def start_conversation(
     body: ConversationStartIn,

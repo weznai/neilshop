@@ -32,9 +32,7 @@ body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 /* 分组小节标题（交易/商品/运营/系统）：小号字距标签，折叠态隐藏 */
 .anav .group{font-size:10.5px;letter-spacing:2.5px;color:var(--gray);padding:14px 12px 4px;user-select:none;white-space:nowrap}
 .main{padding:24px 28px;min-width:0}
-/* 超宽屏内容宽度约束：主区每个顶层块限 1440px（左对齐），避免表格/卡片在超宽屏无限拉伸；
-   .modal（fixed 全屏遮罩）排除在外 */
-.main>*:not(.modal){max-width:1440px}
+/* 内容拉满主区宽度（工作台表格/双栏聊天利用全屏空间）；.modal（fixed 全屏遮罩）本就不受文档流影响，无需排除 */
 .panel{background:#fff;border-radius:12px;box-shadow:var(--shadow-card);padding:20px;margin-bottom:20px}
 .panel h3{font-size:15px;margin-bottom:14px}
 .stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}

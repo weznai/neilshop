@@ -1,11 +1,13 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { i18n } from '../i18n'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
 import { zulu } from '../composables/datetime'
 
+const router = useRouter()
 const ui = useUiStore()
 const auth = useAuthStore()
 const open = ref(false)
@@ -17,7 +19,10 @@ const typing = ref(false)
 const suggestions = ref([])
 const loadErr = ref(false)
 const inited = ref(false)
-const QUICKS = ['track', 'size', 'return']
+/* 客户快捷问题：后台可配置（/chat ⚡ 客户快捷问题），localStorage 5 分钟缓存，失败回退 i18n 默认 */
+const quicks = ref([])
+const QUICKS_CACHE_KEY = 'gm_chat_quicks'
+const QUICKS_TTL = 5 * 60 * 1000
 /* AI 与人工合并为单一客服 tab：同一会话内部切换（channel 0 AI ↔ 1 人工） */
 const TABS = [
   ['chat', 'chat.tab.chat'],
@@ -101,6 +106,7 @@ async function createConv(channel, extra = {}) {
 
 async function init() {
   loadContact()
+  loadQuicks()
   await refreshConvs()
   if (!convs.chat) {
     /* 后端合并守卫：人工会话进行中会直接复用，不会开平行 AI 会话 */
@@ -108,6 +114,39 @@ async function init() {
   }
   inited.value = true
   scrollBottom()
+}
+
+async function loadQuicks() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(QUICKS_CACHE_KEY) || 'null')
+    if (cached && Array.isArray(cached.items) && Date.now() - cached.at < QUICKS_TTL && cached.items.length) {
+      quicks.value = cached.items
+      return
+    }
+  } catch (_) { /* 坏缓存走网络 */ }
+  try {
+    const d = await req('GET', '/api/chat/quicks')
+    const items = (d && (i18n.lang === 'zh' ? d.zh : d.en)) || []
+    if (items.length) {
+      quicks.value = items
+      try { localStorage.setItem(QUICKS_CACHE_KEY, JSON.stringify({ at: Date.now(), items })) } catch (_) { /* 隐私模式 */ }
+    }
+  } catch (_) { /* 接口失败回退 i18n 默认 chips（模板里兜底渲染） */ }
+}
+/* 兜底（接口失败/未配置）：默认三条提问 chip */
+const quickItems = () => quicks.value.length
+  ? quicks.value
+  : ['track', 'size', 'return'].map((k) => ({ text: i18n.t('chat.q.' + k), action: 'ask' }))
+/* chip 动作分发：ask 发给 AI · link 站内跳转 · human 转人工 */
+function tapQuick(q) {
+  if (busy.value) return
+  if (q.action === 'human') { goHuman(); return }
+  if (q.action === 'link' && q.url) {
+    open.value = false
+    router.push(q.url)
+    return
+  }
+  askText(q.text)
 }
 
 async function refreshConvs() {
@@ -286,8 +325,6 @@ function askText(text) {
   field.value = text
   send()
 }
-function ask(key) { askText(i18n.t('chat.q.' + key)) }
-const shipQ = () => (i18n.lang === 'zh' ? '🚚 运费与配送时效？' : '🚚 Shipping cost & delivery time?')
 
 function sugClick(e) {
   const t = e.target
@@ -389,11 +426,11 @@ function sugClick(e) {
     </div>
 
     <div v-if="curConv()" class="chat-quicks">
-      <!-- 合并客服：AI 态给快捷问题+转人工；人工态给结束 -->
+      <!-- 合并客服：AI 态给后台配置的快捷问题+转人工；人工态给结束 -->
       <template v-if="tab === 'chat' && curConv().channel === 0">
-        <button v-for="k in QUICKS" :key="k" class="chat-quick" @click="ask(k)">{{ i18n.t('chat.q.' + k) }}</button>
-        <button class="chat-quick" @click="askText(shipQ())">{{ i18n.lang === 'zh' ? '🚚 运费/时效' : '🚚 Shipping' }}</button>
-        <button class="chat-quick esc" @click="goHuman">👩‍💼 {{ i18n.t('chat.esc') }}</button>
+        <button v-for="(q, i) in quickItems()" :key="i" class="chat-quick" :class="{ esc: q.action === 'human' }" @click="tapQuick(q)">
+          {{ q.text }}<span v-if="q.action === 'link'" style="opacity:.6"> ↗</span>
+        </button>
       </template>
       <button v-if="curConv().status === 0" class="chat-quick end" :disabled="busy" @click="endChat">✕ {{ i18n.t('chat.close') }}</button>
     </div>

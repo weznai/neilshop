@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.support import service
-from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TicketStatusIn
+from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TemplateIn, TicketStatusIn
 from app.models import User
 
 router = APIRouter(tags=["admin-ops"])
@@ -59,3 +59,38 @@ def admin_set_status(
     admin: User = Depends(require_admin), db: Session = Depends(get_db),
 ):
     return service.admin_set_status(db, admin, ticket_no, body)
+
+
+# ===== 快捷回复模板管理（工单工作台与在线客服工作台共用数据源） =====
+
+
+@router.get("/api/admin/ops/templates")
+def admin_templates(
+    category: int | None = Query(None),
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service.admin_templates(db, category)
+
+
+@router.post("/api/admin/ops/templates")
+def admin_template_create(
+    body: TemplateIn,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service.admin_template_save(db, admin, body, None)
+
+
+@router.put("/api/admin/ops/templates/{tpl_id}")
+def admin_template_update(
+    tpl_id: int, body: TemplateIn,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service.admin_template_save(db, admin, body, tpl_id)
+
+
+@router.delete("/api/admin/ops/templates/{tpl_id}")
+def admin_template_delete(
+    tpl_id: int,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service.admin_template_delete(db, admin, tpl_id)

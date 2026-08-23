@@ -44,6 +44,74 @@ ESCALATE_ASK_EMAIL = {
 CHANNEL_LABEL = {0: "AI", 1: "Human", 2: "Artist"}
 SENDER_LABEL = {1: "Customer", 2: "Agent", 3: "System", 4: "GlowBot", 5: "Artist"}
 
+# 客户聊天窗快捷问题（后台可配置，settings key=chat_quick_replies）
+# 结构：{"zh": [item], "en": [item]}，item = {"text": "...", "action": "ask|link|human", "url": "/path"}
+#   ask=发送文本给 AI · link=站内跳转 · human=直接转人工；兼容旧纯字符串数组（读时归一为 ask）
+QUICK_SETTING_KEY = "chat_quick_replies"
+QUICK_MAX_ITEMS = 6        # 每语言最多条数（防刷屏）
+QUICK_MAX_CHARS = 40       # 单条文案字数上限（chip 展示约束）
+QUICK_ACTIONS = ("ask", "link", "human")
+# link 动作允许的站内路径白名单前缀（防外链钓鱼/开放重定向）
+QUICK_LINK_PREFIXES = ("/",)
+
+
+def quick_defaults() -> dict:
+    return {
+        "zh": [
+            {"text": "📦 我的订单到哪了？", "action": "ask"},
+            {"text": "📐 帮我选尺码", "action": "ask"},
+            {"text": "↩️ 退换政策", "action": "link", "url": "/returns-policy"},
+            {"text": "🚚 运费/时效", "action": "ask"},
+            {"text": "🎟️ 有折扣码吗？", "action": "ask"},
+            {"text": "👩‍💼 转人工", "action": "human"},
+        ],
+        "en": [
+            {"text": "📦 Where is my order?", "action": "ask"},
+            {"text": "📐 Help me size", "action": "ask"},
+            {"text": "↩️ Return policy", "action": "link", "url": "/returns-policy"},
+            {"text": "🚚 Shipping cost & time", "action": "ask"},
+            {"text": "🎟️ Any promo codes?", "action": "ask"},
+            {"text": "👩‍💼 Human agent", "action": "human"},
+        ],
+    }
+
+
+def quick_norm_item(raw) -> dict | None:
+    """单条归一：dict 取字段校验，字符串视为 ask；非法/空文本返回 None"""
+    if isinstance(raw, str):
+        raw = {"text": raw}
+    if not isinstance(raw, dict):
+        return None
+    text = str(raw.get("text") or "").strip()
+    if not text:
+        return None
+    action = str(raw.get("action") or "ask").strip()
+    if action not in QUICK_ACTIONS:
+        action = "ask"
+    url = str(raw.get("url") or "").strip()
+    if action == "link":
+        if not url or not url.startswith(QUICK_LINK_PREFIXES) or url.startswith("//") or "://" in url:
+            url = ""  # 非站内相对路径降级为 ask（防开放重定向）
+        if not url:
+            action = "ask"
+    item = {"text": text[:QUICK_MAX_CHARS], "action": action}
+    if action == "link":
+        item["url"] = url
+    return item
+
+
+def quick_norm(raw) -> dict:
+    """整档归一：兼容旧纯字符串数组；每语言 ≤N 条；未配置回默认"""
+    defaults = quick_defaults()
+    out: dict[str, list[dict]] = {}
+    for lang in ("zh", "en"):
+        items = None
+        if isinstance(raw, dict) and isinstance(raw.get(lang), list):
+            items = [quick_norm_item(x) for x in raw[lang]]
+            items = [x for x in items if x][:QUICK_MAX_ITEMS]
+        out[lang] = items if items else defaults[lang]
+    return out
+
 
 def _clean(v: str | None) -> str:
     return re.sub(r"\s+", " ", (v or "").strip())

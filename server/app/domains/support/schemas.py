@@ -58,3 +58,11 @@ class TicketStatusIn(BaseModel):
 
 class AssignIn(BaseModel):
     admin_id: int
+
+
+class TemplateIn(BaseModel):
+    """快捷回复模板增改：category 1-6 与工单分类同口径"""
+    category: int = Field(ge=1, le=6)
+    title: str = Field(min_length=1, max_length=100)
+    content: str = Field(min_length=1, max_length=2000)
+    active: int = Field(default=1, ge=0, le=1)

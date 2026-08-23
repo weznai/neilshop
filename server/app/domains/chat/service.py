@@ -118,6 +118,20 @@ def _add_msg(db: Session, conv: ChatConversation, sender: int, content: str) -> 
 # ===== 用户侧 =====
 
 
+def quick_replies(db: Session) -> dict:
+    """客户聊天窗快捷问题：settings 可配置，未配置/坏数据回退默认（归一/钳制见 schemas.quick_norm）
+    （不走 ai_repo.setting_value——其 type(default)(value) 钳制面向标量，dict 会恒返默认）"""
+    from app.domains.chat.schemas import QUICK_SETTING_KEY, quick_norm
+    from app.models import Setting
+
+    try:
+        row = db.get(Setting, QUICK_SETTING_KEY)
+        raw = row.value if row else None
+    except Exception:
+        raw = None
+    return quick_norm(raw)
+
+
 def start_conversation(db: Session, body: ConversationStartIn, user: User | None) -> dict:
     artist = None
     if body.channel == 2:

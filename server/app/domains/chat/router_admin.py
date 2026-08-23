@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.chat import service
-from app.domains.chat.schemas import ReplyIn
-from app.models import User
+from app.domains.chat.schemas import (
+    QUICK_SETTING_KEY, ReplyIn, quick_defaults, quick_norm, quick_norm_item,
+)
+from app.models import Setting, User
 
 router = APIRouter(tags=["admin-chat"])
 
@@ -72,3 +74,57 @@ def admin_resume_ai(conv_no: str, admin: User = Depends(require_admin), db: Sess
 @router.post("/api/admin/chat/conversations/{conv_no}/close")
 def admin_close(conv_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return service.admin_close(db, admin, conv_no)
+
+
+@router.put("/api/admin/chat/quicks")
+def save_quicks(
+    body: dict,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """客户快捷问题配置：{"zh": [item], "en": [item]}（结构化校验 + 钳制见 schemas.quick_norm_item）"""
+    clean = {}
+    for lang in ("zh", "en"):
+        items = body.get(lang)
+        if not isinstance(items, list):
+            raise HTTPException(status_code=422, detail=f"{lang} must be a list")
+        normed = [x for x in (quick_norm_item(i) for i in items) if x]
+        if not normed:
+            raise HTTPException(status_code=422, detail=f"{lang} has no valid items")
+        clean[lang] = normed
+    row = db.query(Setting).filter(Setting.key == QUICK_SETTING_KEY).first()
+    if row:
+        row.value = clean
+        row.updated_by = admin.id
+    else:
+        db.add(Setting(key=QUICK_SETTING_KEY, value=clean,
+                       description="客户聊天窗快捷问题（中/英，含动作类型）", updated_by=admin.id))
+    from app.domains.support.service import log_admin
+    log_admin(db, admin, "setting", "chat_quick_replies", 0, {})
+    db.commit()
+    return clean
+
+
+@router.get("/api/admin/chat/quicks")
+def get_quicks(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """配置态读取：当前生效项（归一后）+ 原始是否自定义标记 + 审计（最后修改人/时间）"""
+    row = db.query(Setting).filter(Setting.key == QUICK_SETTING_KEY).first()
+    out = {"items": quick_norm(row.value if row else None), "customized": row is not None}
+    if row is not None:
+        from app.domains.chat import repository as chat_repo
+        names = chat_repo.user_names_by_ids(db, {row.updated_by} if row.updated_by else set())
+        out["updated_by"] = names.get(row.updated_by) if row.updated_by else None
+        out["updated_at"] = row.updated_at
+    return out
+
+
+@router.post("/api/admin/chat/quicks/reset")
+def reset_quicks(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """恢复出厂默认（删除自定义配置行）"""
+    row = db.query(Setting).filter(Setting.key == QUICK_SETTING_KEY).first()
+    if row:
+        db.delete(row)
+        from app.domains.support.service import log_admin
+        log_admin(db, admin, "setting", "chat_quick_replies", 0, {"action": "reset"})
+        db.commit()
+    return quick_defaults()

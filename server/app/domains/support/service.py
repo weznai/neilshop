@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
-from app.models import AdminLog, Ticket, TicketMessage, User
+from app.models import AdminLog, ReplyTemplate, Ticket, TicketMessage, User
 from app.domains.support import repository as repo
 from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TicketCreateIn, TicketMessageIn, TicketStatusIn
 
@@ -117,6 +117,45 @@ def list_templates(db: Session, category: int | None) -> list[dict]:
         {"id": r.id, "category": r.category, "title": r.title, "content": r.content}
         for r in rows
     ]
+
+
+# ===== 后台：快捷回复模板管理 =====
+
+
+def _tpl_dict(r) -> dict:
+    return {"id": r.id, "category": r.category, "title": r.title, "content": r.content, "active": r.active}
+
+
+def admin_templates(db: Session, category: int | None) -> dict:
+    return {"items": [_tpl_dict(r) for r in repo.all_templates(db, category)]}
+
+
+def admin_template_save(db: Session, admin: User, body, tpl_id: int | None) -> dict:
+    if tpl_id is None:
+        row = ReplyTemplate(
+            category=body.category, title=body.title, content=body.content, active=body.active)
+        db.add(row)
+    else:
+        row = repo.template_by_id(db, tpl_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="template not found")
+        row.category = body.category
+        row.title = body.title
+        row.content = body.content
+        row.active = body.active
+    log_admin(db, admin, "template_save", "reply_template", tpl_id or 0, {"title": body.title})
+    db.commit()
+    return _tpl_dict(row)
+
+
+def admin_template_delete(db: Session, admin: User, tpl_id: int) -> dict:
+    row = repo.template_by_id(db, tpl_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="template not found")
+    db.delete(row)
+    log_admin(db, admin, "template_delete", "reply_template", tpl_id, {})
+    db.commit()
+    return {"ok": True}
 
 
 # ===== 后台：工单工作台 =====

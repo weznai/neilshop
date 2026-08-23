@@ -87,3 +87,15 @@ def active_templates(db: Session, category: int | None) -> list[ReplyTemplate]:
     if category is not None:
         q = q.filter(ReplyTemplate.category == category)
     return q.order_by(ReplyTemplate.id).all()
+
+
+def all_templates(db: Session, category: int | None = None) -> list[ReplyTemplate]:
+    """后台模板管理：全量（含停用），可按分类过滤"""
+    q = db.query(ReplyTemplate)
+    if category is not None:
+        q = q.filter(ReplyTemplate.category == category)
+    return q.order_by(ReplyTemplate.category, ReplyTemplate.id).all()
+
+
+def template_by_id(db: Session, tpl_id: int) -> ReplyTemplate | None:
+    return db.get(ReplyTemplate, tpl_id)

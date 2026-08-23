@@ -278,6 +278,95 @@ check("已关闭会话拒收消息 409", r.status_code == 409)
 r = client.get("/api/admin/chat/conversations")
 check("后台聊天未登录 401", r.status_code == 401)
 
+# ---- 快捷模板管理 CRUD（后台维护，工单/聊天工作台共用） ----
+r = client.get("/api/admin/ops/templates", headers=H_OPS)
+base_total = len((r.json() or {}).get("items", [])) if r.status_code == 200 else 0
+check("模板列表 200", r.status_code == 200 and isinstance(base_total, int), r.text[:100])
+
+r = client.post("/api/admin/ops/templates", headers=H_OPS,
+                json={"category": 1, "title": "测试模板", "content": "您好，这是测试内容～", "active": 1})
+j = r.json()
+check("新增模板 200", r.status_code == 200 and j.get("id"), r.text[:150])
+TPL_ID = j.get("id")
+
+r = client.put(f"/api/admin/ops/templates/{TPL_ID}", headers=H_OPS,
+               json={"category": 3, "title": "测试模板改", "content": "内容已改", "active": 0})
+check("修改模板 200（含停用）", r.status_code == 200 and r.json().get("active") == 0)
+
+r = client.get("/api/support/templates")
+active_ids = [t["id"] for t in (r.json() or [])]
+check("停用模板不再出现在公开列表", r.status_code == 200 and TPL_ID not in active_ids)
+
+r = client.delete(f"/api/admin/ops/templates/{TPL_ID}", headers=H_OPS)
+check("删除模板 200", r.status_code == 200 and r.json().get("ok") is True)
+r = client.put(f"/api/admin/ops/templates/{TPL_ID}", headers=H_OPS,
+               json={"category": 1, "title": "x", "content": "x", "active": 1})
+check("删除后更新 404", r.status_code == 404)
+r = client.post("/api/admin/ops/templates", headers=H_OPS,
+                json={"category": 9, "title": "x", "content": "x"})
+check("非法分类 422", r.status_code == 422)
+
+# ---- 客户快捷问题配置（结构化：文案 + 动作 ask/link/human + 站内 url 校验） ----
+r = client.get("/api/chat/quicks")
+j = r.json()
+check("公开 quicks 默认配置（含动作字段）",
+      r.status_code == 200 and isinstance(j.get("zh"), list)
+      and all("text" in x and "action" in x for x in j["zh"]) and len(j["zh"]) > 0, r.text[:150])
+
+r = client.put("/api/admin/chat/quicks", headers=H_OPS, json={
+    "zh": [
+        {"text": "📦 查订单", "action": "ask"},
+        {"text": "📖 退换政策", "action": "link", "url": "/returns-policy"},
+        {"text": "👩‍💼 转人工", "action": "human"},
+        {"text": "🚚 运费", "action": "link", "url": "https://evil.com"},  # 外链 → 降级 ask
+    ],
+    "en": [{"text": "Where is my order?", "action": "ask"}],
+})
+j = r.json()
+check("保存结构化 quicks 200（link 保留 / human 保留）",
+      r.status_code == 200 and j["zh"][1]["action"] == "link"
+      and j["zh"][1]["url"] == "/returns-policy" and j["zh"][2]["action"] == "human", r.text[:200])
+check("外链 url 被降级为 ask（防开放重定向）",
+      j["zh"][3]["action"] == "ask" and "url" not in j["zh"][3])
+
+r = client.get("/api/chat/quicks")
+check("公开端点读回自定义配置",
+      r.json()["zh"][0]["text"] == "📦 查订单")
+
+r = client.get("/api/admin/chat/quicks", headers=H_OPS)
+j = r.json()
+check("管理端读取含 customized 与审计信息",
+      j.get("customized") is True and j.get("updated_by") and j.get("updated_at"), r.text[:200])
+
+r = client.put("/api/admin/chat/quicks", headers=H_OPS,
+               json={"zh": [{"text": " ", "action": "ask"}], "en": []})
+check("全空文本整语言被拒 422", r.status_code == 422)
+r = client.put("/api/admin/chat/quicks", headers=H_OPS, json={"zh": "not-a-list"})
+check("非列表 422", r.status_code == 422)
+
+r = client.post("/api/admin/chat/quicks/reset", headers=H_OPS)
+check("恢复默认 200（含默认转人工项）",
+      r.status_code == 200 and any(x["action"] == "human" for x in r.json()["zh"]))
+r = client.get("/api/admin/chat/quicks", headers=H_OPS)
+check("reset 后 customized 回 False", r.json().get("customized") is False)
+
+# 兼容：旧纯字符串数组读归一
+from app.models import Setting as SettingModel  # noqa: E402
+db2 = SessionLocal()
+try:
+    row = db2.query(SettingModel).filter(SettingModel.key == "chat_quick_replies").first()
+    if row:
+        row.value = {"zh": ["旧格式问题"], "en": ["legacy?"]}
+    else:
+        db2.add(SettingModel(key="chat_quick_replies", value={"zh": ["旧格式问题"], "en": ["legacy?"]}))
+    db2.commit()
+    r = client.get("/api/chat/quicks")
+    j = r.json()
+    check("旧纯字符串数组兼容归一为 ask 动作",
+          j["zh"][0]["text"] == "旧格式问题" and j["zh"][0]["action"] == "ask")
+finally:
+    db2.close()
+
 print(f"\nALL PASS: {PASSED}/{PASSED + len(FAILED)}")
 if FAILED:
     print("FAILED:", FAILED)
