@@ -27,6 +27,15 @@ async function load() {
   col.value = null
   try {
     col.value = await req('GET', '/api/catalog/collections/' + encodeURIComponent(String(route.params.slug || '')))
+    /* 动态 SEO：合集标题/banner 覆盖路由兜底（gm:seo 事件通道，路由切换自动复位） */
+    try {
+      window.dispatchEvent(new CustomEvent('gm:seo', { detail: {
+        title: (col.value.title || 'Collection') + ' · GLOWMAG',
+        description: (col.value.title ? col.value.title + ' — curated press-on nail & magnetic lash sets. ' : '') +
+          'Handmade, salon-quality glam delivered free over $35.',
+        image: col.value.banner_image || undefined,
+      } }))
+    } catch (_) { /* SEO 失败不影响页面 */ }
   } catch (e) {
     if (e && e.status === 404) notFound.value = true
     else failed.value = true

@@ -97,20 +97,35 @@ async function act(sub, action, body) {
 }
 function pause(sub) { act(sub, 'pause', {}) }
 function resume(sub) { act(sub, 'resume') }
-/* 取消订阅：两段式站内确认（替代 window.confirm，对齐 UnsubscribeView 模式）——首次点击进入 arm 态，5 秒未确认自动复位 */
+/* 取消订阅：两段式站内确认（替代 window.confirm，对齐 UnsubscribeView 模式）——首次点击进入 arm 态，5 秒未确认自动复位；
+ * arm 态展示取消原因 chips（后端 cancel_reason 1-4），默认选 1，请求携带所选值 */
 const cancelArm = ref(0)
+const cancelReason = ref(1)
+const cancelReasons = computed(() => [
+  [1, tt('Got what I needed', '已收到不再需要')],
+  [2, tt('Too pricey', '价格太贵')],
+  [3, tt('Prefer buying another way', '想换其他方式购买')],
+  [4, tt('Other reason', '其他')],
+])
 let cancelTimer = null
 onUnmounted(() => clearTimeout(cancelTimer))
-function cancelSub(sub) {
+function armCancel(sub) {
   if (cancelArm.value !== sub.id) {
     cancelArm.value = sub.id
-    clearTimeout(cancelTimer)
-    cancelTimer = setTimeout(() => { cancelArm.value = 0 }, 5000)
-    return
+    cancelReason.value = 1
   }
+  clearTimeout(cancelTimer)
+  cancelTimer = setTimeout(() => { cancelArm.value = 0 }, 5000)
+}
+function pickCancelReason(sub, v) {
+  cancelReason.value = v
+  armCancel(sub)
+}
+function cancelSub(sub) {
+  if (cancelArm.value !== sub.id) { armCancel(sub); return }
   cancelArm.value = 0
   clearTimeout(cancelTimer)
-  act(sub, 'cancel', { cancel_reason: 1 })
+  act(sub, 'cancel', { cancel_reason: cancelReason.value })
 }
 function skipNext(sub) {
   /* 跳过下一盒：skip_until = 下次账单日 + 一个周期 */
@@ -172,6 +187,16 @@ const styleText = (m) => (m === 2 ? tt('Blind box', '盲盒惊喜') : tt('My cho
                 :style="cancelArm === s.id ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
               >{{ cancelArm === s.id ? tt('Tap again to confirm', '再点一次确认取消') : tt('Cancel', '取消订阅') }}</button>
             </div>
+            <div v-if="cancelArm === s.id">
+              <div style="font-size:12px;color:var(--gray);margin:10px 0 0">{{ tt('Why are you cancelling?', '取消原因') }}</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button
+                  v-for="[v, label] in cancelReasons" :key="v" type="button"
+                  class="trend-chip" :class="{ on: cancelReason === v }" :aria-pressed="cancelReason === v"
+                  @click="pickCancelReason(s, v)"
+                >{{ label }}</button>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -182,7 +207,7 @@ const styleText = (m) => (m === 2 ? tt('Blind box', '盲盒惊喜') : tt('My cho
               v-for="p in planList" :key="p.id" class="card" style="padding:22px;cursor:pointer;position:relative"
               :style="{ outline: picked === p.id ? '2px solid var(--plum)' : '' }" @click="picked = p.id"
             >
-              <span v-if="p.id === 2" class="badge badge-best" style="position:absolute;top:-10px;right:14px">MOST LOVED</span>
+              <span v-if="p.id === 2" class="badge badge-best" style="position:absolute;top:-10px;right:14px">{{ tt('MOST LOVED', '最受欢迎') }}</span>
               <b style="font-family:var(--font-title);font-size:20px">{{ tt(`Every ${p.weeks} weeks`, `每 ${p.weeks} 周一盒`) }}</b>
               <div style="margin:10px 0 4px"><b style="font-size:28px">{{ money(p.price_cents) }}</b> <span style="color:var(--gray);font-size:13px">{{ tt('/ box', '/ 盒') }}</span></div>
               <div style="font-size:13.5px;color:var(--gray)">{{ tt('Handpicked seasonal press-on sets', '精选当季新款穿戴甲') }}</div>

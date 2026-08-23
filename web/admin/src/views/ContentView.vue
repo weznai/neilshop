@@ -28,6 +28,7 @@ const errs = reactive({ reviews: false, faqs: false, articles: false, ugc: false
 const REV_SIZE = 50
 const revPage = ref(1)
 const revTotal = ref(0)
+const revPending = ref(0)        /* tab 角标：status=0 的 total（独立探测，不随视图筛选漂移） */
 const revPages = computed(() => Math.max(1, Math.ceil(revTotal.value / REV_SIZE)))
 const revRating = ref(0)          /* 星级筛选：0 全部 / 1-5 星 */
 const revProduct = ref(0)         /* 商品筛选：0 全部 / product_id（选项来自商品标题映射，onMounted 已拉取） */
@@ -90,6 +91,13 @@ async function refreshUgcPending() {
     if (d.total != null) ugcPending.value = d.total
   } catch (_) { /* 探测失败保留旧值 */ }
 }
+/* 待审角标刷新（评价）：独立 status=0 探测，语义与 UGC 角标一致 */
+async function refreshRevPending() {
+  try {
+    const d = await req('GET', '/api/admin/ops/reviews?status=0&page=1&size=1')
+    if (d.total != null) revPending.value = d.total
+  } catch (_) { /* 探测失败保留旧值 */ }
+}
 function ugcTab(sv) { ugcStatus.value = sv; ugcPage.value = 1; loadUgc().catch(() => toast('UGC 列表加载失败', 'error')) }
 function ugcGo(n) {
   if (n >= 1 && n <= ugcPages.value) { ugcPage.value = n; loadUgc().catch(() => toast('UGC 列表加载失败', 'error')) }
@@ -108,13 +116,17 @@ function faqGo(n) {
 
 /* 商品标题映射：评价/UGC 只有 product_id，用商品列表解析标题（翻页拉全，最多 10 页 × 100）；
  * 结果缓存 sessionStorage（带版本号），避免每次挂载全量拉取 */
-const PT_CACHE_KEY = 'admin.productTitles.v1'
+const PT_CACHE_KEY = 'admin.productTitles.v2'   /* v2：{ts,data} 结构，键名升级防旧格式冲突 */
+const PT_TTL = 10 * 60 * 1000                   /* 缓存 10 分钟，超时重拉（商品改名及时生效） */
 const productTitles = reactive({})
 const productName = (id) => productTitles[id] || ('商品 #' + id)
 async function loadProductTitles() {
   try {
     const cached = sessionStorage.getItem(PT_CACHE_KEY)
-    if (cached) { Object.assign(productTitles, JSON.parse(cached)); return }
+    if (cached) {
+      const { ts, data } = JSON.parse(cached)
+      if (data && Date.now() - ts < PT_TTL) { Object.assign(productTitles, data); return }
+    }
   } catch (_) { /* 缓存损坏则重拉 */ }
   for (let p = 1; p <= 10; p++) {
     let rows
@@ -123,7 +135,7 @@ async function loadProductTitles() {
     for (const it of rows) productTitles[it.id] = it.title
     if (rows.length < 100) break
   }
-  try { sessionStorage.setItem(PT_CACHE_KEY, JSON.stringify(productTitles)) } catch (_) { /* 存储不可用忽略 */ }
+  try { sessionStorage.setItem(PT_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: productTitles })) } catch (_) { /* 存储不可用忽略 */ }
 }
 
 /* 评价图片 lightbox */
@@ -141,6 +153,7 @@ async function loadReviews() {
   const d = await req('GET', '/api/admin/ops/reviews?' + qs)
   reviews.value = d.items || []
   revTotal.value = d.total ?? reviews.value.length
+  if (pendingOnly.value && !revRating.value && !revProduct.value) revPending.value = revTotal.value
 }
 async function loadArticles() {
   const qs = new URLSearchParams({ page: artPage.value, size: ART_SIZE })
@@ -160,10 +173,12 @@ async function loadFaqs() {
 async function load() {
   loaded.value = false
   errs.reviews = errs.faqs = errs.articles = errs.ugc = false
-  try { await loadReviews() } catch (_) { errs.reviews = true; reviews.value = []; toast('评价列表加载失败', 'error') }
-  try { await loadFaqs() } catch (_) { errs.faqs = true; faqs.value = []; toast('FAQ 加载失败', 'error') }
-  try { await loadArticles() } catch (_) { errs.articles = true; articles.value = []; toast('文章列表加载失败', 'error') }
-  try { await loadUgc() } catch (_) { errs.ugc = true; ugc.value = []; toast('UGC 列表加载失败', 'error') }
+  /* 首载并行拉取（各列表互不依赖），逐槽保持原错误处理 */
+  const rs = await Promise.allSettled([loadReviews(), loadFaqs(), loadArticles(), loadUgc()])
+  if (rs[0].status === 'rejected') { errs.reviews = true; reviews.value = []; toast('评价列表加载失败', 'error') }
+  if (rs[1].status === 'rejected') { errs.faqs = true; faqs.value = []; toast('FAQ 加载失败', 'error') }
+  if (rs[2].status === 'rejected') { errs.articles = true; articles.value = []; toast('文章列表加载失败', 'error') }
+  if (rs[3].status === 'rejected') { errs.ugc = true; ugc.value = []; toast('UGC 列表加载失败', 'error') }
   loaded.value = true
 }
 /* 深链 ?tab= 直达 + 切换回写 URL（可分享） */
@@ -174,18 +189,28 @@ function setTab(k) {
 }
 onMounted(() => {
   if (TAB_KEYS.includes(route.query.tab)) tab.value = route.query.tab
+  /* 深链 ?pending=1/0：评价待审直达（Dashboard 以 /content?tab=reviews&pending=1 链入）；缺省保持待审 */
+  if (route.query.pending !== undefined) pendingOnly.value = route.query.pending === '1'
   load()
   loadProductTitles()
+  /* 深链 pending=0 进入时 loadReviews 不带 status=0，待审角标不会随列表刷新 → 挂载时独立探测一次 */
+  refreshRevPending()
 })
 
 /* 审核后刷新：评价只重拉评价列表（不动其他 tab、骨架与商品映射） */
 async function reloadReviews() {
   try { await loadReviews() } catch (_) { errs.reviews = true; toast('评价列表加载失败', 'error') }
+  if (!pendingOnly.value) refreshRevPending()   /* 非待审视图时补一发待审计数探测 */
 }
 function revGo(n) {
   if (n >= 1 && n <= revPages.value) { revPage.value = n; loadReviews().catch(() => toast('评价列表加载失败', 'error')) }
 }
-function togglePending() { revPage.value = 1; loadReviews().catch(() => toast('评价列表加载失败', 'error')) }
+function togglePending() {
+  revPage.value = 1
+  /* 待审开关回写 URL（可分享），与 ?tab= 深链同一套 replace 口径 */
+  router.replace({ query: { ...route.query, pending: pendingOnly.value ? '1' : '0' } })
+  loadReviews().catch(() => toast('评价列表加载失败', 'error'))
+}
 function artGo(n) {
   if (n >= 1 && n <= artPages.value) { artPage.value = n; loadArticles().catch(() => toast('文章列表加载失败', 'error')) }
 }
@@ -246,12 +271,12 @@ function unapproveReview(r) {
   }, { confirmText: '撤销' })
 }
 
-/* 批量审核评价（POST /reviews/bulk {ids,action,reason?}）：驳回走 reasonLabel 模式，body 提示将批量通知用户 */
+/* 批量审核评价（POST /reviews/bulk {ids,action,reason?}）：驳回走 reasonLabel 模式，body 提示将记录驳回原因（后端不发通知） */
 function bulkReviews(action) {
   const ids = [...revSel.value]
   if (!ids.length) return
   if (action === 'reject') {
-    askConfirm('批量驳回评价', `驳回选中的 ${ids.length} 条评价？将记录驳回原因并批量通知用户。`, async (reason) => {
+    askConfirm('批量驳回评价', `驳回选中的 ${ids.length} 条评价？将记录驳回原因。`, async (reason) => {
       try {
         const d = await req('POST', '/api/admin/ops/reviews/bulk', { ids, action, reason: reason || DEFAULT_REJECT })
         toast(`已处理 ${d.updated ?? ids.length} 条`, 'success')
@@ -432,7 +457,9 @@ const REV_STATUS = ['待审', '已发布', '已驳回']
 /* 各 tab 当前筛选参数（与列表拉取同口径） */
 function exportParams() {
   if (tab.value === 'reviews') {
-    const qs = { status: 0 }
+    /* 仅「只看待审」勾选时带 status=0，否则导出全量（与页面所见一致） */
+    const qs = {}
+    if (pendingOnly.value) qs.status = 0
     if (revRating.value) qs.rating = revRating.value
     if (revProduct.value) qs.product_id = revProduct.value
     return { url: '/api/admin/ops/reviews', qs }
@@ -505,11 +532,13 @@ async function exportCsv() {
   exporting.value = false
 }
 
-/* 文章新建/编辑（ArticleCreateIn：slug/title/author/content_md/tags/status；slug 后端强制小写且唯一） */
+/* 文章新建/编辑（ArticleCreateIn：slug/title/author/content_md/tags/status/cover；slug 后端强制小写且唯一） */
 const artDlg = ref(false)
-const artForm = reactive({ id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0 })
+const artForm = reactive({ id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0, cover: '' })
+const artCoverDirty = ref(false)   /* 编辑态封面是否被改动过（未动过不提交 → 后端不改；空串=清除） */
 function newArticle() {
-  Object.assign(artForm, { id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0 })
+  Object.assign(artForm, { id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0, cover: '' })
+  artCoverDirty.value = false
   artPrev.value = false
   artDlg.value = true
 }
@@ -522,7 +551,9 @@ function editArticle(a) {
     content_md: a.content_md || '',
     tagsStr: (a.tags || []).join(', '),
     status: a.status ?? 0,
+    cover: a.cover || '',
   })
+  artCoverDirty.value = false
   artPrev.value = false
   artDlg.value = true
 }
@@ -531,6 +562,7 @@ async function saveArticle() {
   if (!slug || !artForm.title.trim() || !artForm.author.trim() || !artForm.content_md.trim()) {
     toast('slug / 标题 / 作者 / 正文均为必填', 'error'); return
   }
+  if (artForm.cover.trim().length > 500) { toast('封面 URL 不能超过 500 字符', 'error'); return }
   const body = {
     slug,
     title: artForm.title.trim(),
@@ -540,6 +572,8 @@ async function saveArticle() {
     /* 编辑态锁定发布状态（弹窗隐藏「立即发布」，发布/转草稿只走列表行按钮）；新建按勾选 */
     status: artForm.status ? 1 : 0,
   }
+  /* 封面：新建恒提交；编辑仅当动过才提交（undefined=不改，空串=清除） */
+  if (!artForm.id || artCoverDirty.value) body.cover = artForm.cover.trim()
   try {
     if (artForm.id) await req('PUT', '/api/admin/ops/articles/' + artForm.id, body)
     else await req('POST', '/api/admin/ops/articles', body)
@@ -565,7 +599,7 @@ async function saveArticle() {
 
   <div class="otab">
     <button
-      v-for="[k, label] in [['reviews', `评价 (${revTotal})`], ['ugc', `UGC (待审 ${ugcPending})`], ['faqs', `FAQ (${faqTotal})`], ['articles', `博客 (${artTotal})`]]"
+      v-for="[k, label] in [['reviews', `评价 (待审 ${revPending})`], ['ugc', `UGC (待审 ${ugcPending})`], ['faqs', `FAQ (${faqTotal})`], ['articles', `博客 (${artTotal})`]]"
       :key="k"
       :class="{ on: tab === k }"
       style="background:none;border:none;cursor:pointer"
@@ -800,6 +834,12 @@ async function saveArticle() {
           <input v-model="artForm.slug" class="input" placeholder="press-on-nails-101" style="text-transform:lowercase"></div>
         <div class="field"><label>作者</label><input v-model="artForm.author" class="input" placeholder="Maya Chen"></div>
         <div class="field" style="grid-column:1/-1"><label>标题 *</label><input v-model="artForm.title" class="input"></div>
+        <div class="field" style="grid-column:1/-1"><label>封面图 URL（可选，空 = 无封面）</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input v-model="artForm.cover" class="input" style="flex:1;min-width:0" placeholder="https://cdn.example.com/covers/nail-101.jpg" @input="artCoverDirty = true">
+            <img v-if="artForm.cover" :src="artForm.cover" alt="" title="封面预览" style="width:52px;height:38px;border-radius:8px;object-fit:cover;flex:none" @error="$event.target.style.display = 'none'" @load="$event.target.style.display = ''">
+          </div>
+        </div>
         <div class="field" style="grid-column:1/-1"><label>正文（Markdown）</label>
           <div class="md-tabs">
             <button :class="{ on: !artPrev }" @click="artPrev = false">编辑</button>

@@ -54,8 +54,10 @@ function initFromQuery() {
   /* sort 白名单校验，脏 query 不回填 */
   if (SORTABLE.includes(rq.sort)) sort.value = rq.sort
 }
-/* 自身 syncUrl 写入的 query 快照（JSON）：route.query watch 比对一致时忽略，区分外部导航 */
+/* 自身 syncUrl 写入的 query 快照（JSON）：route.query watch 比对一致时忽略，区分外部导航
+ * 两侧值统一 String() 归一化后再比较（route.query 落地后均为字符串，防数字型筛选误判外部导航，做法同 useQuerySync） */
 let syncedQuery = ''
+const normQuery = (query) => JSON.stringify(Object.fromEntries(Object.entries(query).map(([k, v]) => [k, String(v)])))
 function syncUrl() {
   const query = {}
   if (q.value.trim()) query.q = q.value.trim()
@@ -65,8 +67,8 @@ function syncUrl() {
   if (page.value > 1) query.page = page.value
   if (perPage.value !== 20) query.per_page = perPage.value
   if (sort.value) query.sort = sort.value
-  syncedQuery = JSON.stringify(query)
-  if (JSON.stringify(route.query) !== syncedQuery) router.replace({ query })
+  syncedQuery = normQuery(query)
+  if (normQuery(route.query) !== syncedQuery) router.replace({ query })
 }
 
 async function load() {
@@ -111,7 +113,7 @@ onMounted(() => { initFromQuery(); load() })
  * 重置筛选并按新 query 加载；与自身 syncUrl 快照一致 → 忽略，避免自我触发重复请求 */
 watch(() => route.query, (rq) => {
   if (route.path !== '/orders') return
-  if (JSON.stringify(rq) === syncedQuery) return
+  if (normQuery(rq) === syncedQuery) return
   q.value = ''; dateFrom.value = ''; dateTo.value = ''
   status.value = null; page.value = 1; perPage.value = 20; sort.value = ''
   initFromQuery()
@@ -253,9 +255,10 @@ async function exportCsv() {
     if (Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES) {
       toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 单，仅导出前 ${all.length} 单`, 'error')
     }
-    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号 */
+    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号；公式注入防护：= + - @ 开头前缀 ' */
     const cell = (v) => {
-      const s = String(v ?? '')
+      let s = String(v ?? '')
+      if (/^[=+\-@]/.test(s)) s = "'" + s
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
     }
     const rows = [['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '留言'],
@@ -375,7 +378,7 @@ async function exportCsv() {
     <div class="modal-box" style="max-width:420px">
       <button class="modal-x" @click="!shipSubmitting && (shipDlg = null)">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">📦 发货 {{ shipDlg.order_no }}</h3>
-      <p style="font-size:13px;color:var(--gray);margin-bottom:14px">发货后扣库存并向客户发送物流邮件。</p>
+      <p style="font-size:13px;color:var(--gray);margin-bottom:14px">发货后向客户发送物流邮件。</p>
       <div class="field">
         <label>承运商</label>
         <select v-model="carrier" class="input">

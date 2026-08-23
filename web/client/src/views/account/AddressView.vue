@@ -240,7 +240,7 @@ async function remove(a) {
         </div>
         <div class="field" style="grid-column:1/-1"><label>{{ tt('Phone (optional)', '电话（可选）') }}</label><input v-model="form.phone" class="input" maxlength="32" type="tel" autocomplete="tel"></div>
       </div>
-      <label style="display:flex;gap:8px;align-items:center;margin:12px 0;font-size:13.5px" :class="{ 'gm-locked': defaultLocked }">
+      <label style="display:flex;gap:8px;align-items:center;margin:12px 0;font-size:13.5px;opacity:.75" :class="{ 'addr-locked': defaultLocked }">
         <input v-model="form.is_default" type="checkbox" style="width:16px;height:16px" :disabled="defaultLocked">
         {{ tt('Set as default address', '设为默认地址') }}
         <span v-if="defaultLocked" style="font-size:12px;color:var(--gray)">（{{ tt('keep at least one default', '需保留至少一个默认地址') }}）</span>
@@ -258,4 +258,6 @@ async function remove(a) {
 <style scoped>
 /* 编辑态表单卡：左缘 3px plum 强调 */
 .addr-editing { border-left: 3px solid var(--plum); }
+/* 默认地址锁定态（原误用全局 gm-locked 滚动锁类名，改局部语义类） */
+.addr-locked { cursor: not-allowed; }
 </style>

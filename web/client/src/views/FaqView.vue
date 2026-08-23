@@ -6,6 +6,7 @@ import { i18n } from '../i18n'
 
 const route = useRoute()
 const router = useRouter()
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const CATS = [
   [0, 'all', '✨'], [1, 'sizing', '📐'], [2, 'wearing', '💅'],
@@ -16,6 +17,7 @@ const cat = ref(parseInt(route.query.cat, 10) >= 1 && parseInt(route.query.cat, 
 const q = ref(String(route.query.q || ''))
 const open = ref(-1)
 const loading = ref(true)
+const loadErr = ref(false)
 
 const shown = computed(() => {
   const kw = q.value.trim().toLowerCase()
@@ -112,11 +114,14 @@ function pushJsonLd() {
   } catch (_) { /* SEO 失败不影响页面 */ }
 }
 
-onMounted(async () => {
-  try { faqs.value = await req('GET', '/api/content/faqs') } catch (_) { faqs.value = [] }
+onMounted(loadFaqs)
+async function loadFaqs() {
+  loading.value = true
+  loadErr.value = false
+  try { faqs.value = await req('GET', '/api/content/faqs') } catch (_) { faqs.value = []; loadErr.value = true }
   loading.value = false
   pushJsonLd()
-})
+}
 </script>
 
 <template>
@@ -144,6 +149,15 @@ onMounted(async () => {
 
       <div v-if="loading" style="display:grid;gap:10px">
         <div v-for="i in 5" :key="i" class="skeleton" style="height:58px;border-radius:12px" />
+      </div>
+
+      <div v-else-if="loadErr" class="card" style="padding:40px;text-align:center">
+        <div style="font-size:34px;margin-bottom:6px">💅</div>
+        <b>{{ tt('Failed to load the FAQs', '常见问题加载失败') }}</b>
+        <p style="font-size:13.5px;color:var(--gray);margin:6px 0 14px">
+          {{ tt('Check your network and try again.', '请检查网络后重试。') }}
+        </p>
+        <button class="btn btn-primary btn-sm" :class="{ loading }" :disabled="loading" @click="loadFaqs">{{ tt('Retry', '重试') }}</button>
       </div>
 
       <div v-else-if="!shown.length" class="card" style="padding:40px;text-align:center">

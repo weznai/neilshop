@@ -409,6 +409,7 @@ def create_article(db: Session, admin: User, body: ArticleCreateIn) -> dict:
         title=body.title.strip(),
         author=body.author.strip(),
         content_md=body.content_md,
+        cover=body.cover,
         tags=body.tags or [],
         status=body.status,
         published_at=utcnow() if body.status == 1 else None,

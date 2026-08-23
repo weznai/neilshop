@@ -8,7 +8,9 @@ import ProductCard from '../components/ProductCard.vue'
 const route = useRoute()
 const router = useRouter()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
-const state = reactive({ items: [], total: 0, page: parseInt(route.query.page, 10) || 1, size: 12 })
+/* page 钳制 ≥1：直链 ?page=-3 等非法值不再透传后端（422 死循环） */
+const clampPage = (v) => Math.max(1, parseInt(v, 10) || 1)
+const state = reactive({ items: [], total: 0, page: clampPage(route.query.page), size: 12 })
 const loaded = ref(false)
 const loadError = ref(false)
 const pendingScroll = ref(false)
@@ -85,13 +87,15 @@ async function load() {
   const tag = activeTag()
   if (tag) params.tag = tag
   if (route.query.q) params.q = route.query.q
+  /* 中文环境消费后端多语言翻译（列表标题与详情口径一致） */
+  if (i18n.lang === 'zh') params.locale = 'zh-CN'
   /* 甲型筛选（后端 shape 参数，支持 almond/square/stiletto/coffin） */
   if (route.query.shape) params.shape = String(route.query.shape)
-  /* 价格区间（后端 min_price/max_price 美分，交集语义；NaN 不发送） */
+  /* 价格区间（后端 min_price/max_price 美分 ≥0，交集语义；NaN/负数钳制不发送） */
   const minV = parseFloat(route.query.min)
-  if (Number.isFinite(minV)) params.min_price = Math.round(minV * 100)
+  if (Number.isFinite(minV) && minV >= 0) params.min_price = Math.round(minV * 100)
   const maxV = parseFloat(route.query.max)
-  if (Number.isFinite(maxV)) params.max_price = Math.round(maxV * 100)
+  if (Number.isFinite(maxV) && maxV >= 0) params.max_price = Math.round(maxV * 100)
   if (route.query.sale) params.on_sale = 1
   const qs = new URLSearchParams(params).toString()
   try {
@@ -118,7 +122,7 @@ watch(() => route.query, (nq, oq) => {
     if (nq.page) { router.replace({ query: { ...nq, page: undefined } }); return }
     state.page = 1
   } else {
-    state.page = parseInt(nq.page, 10) || 1
+    state.page = clampPage(nq.page)
   }
   load()
 })
@@ -173,12 +177,12 @@ function dropFilter(f) {
 }
 function clearAllFilters() { router.push({ path: '/store' }) }
 
-/* 空态热词（品牌化回逛路径） */
+/* 空态热词（品牌化回逛路径；双语） */
 const HOT_LINKS = [
-  ['French', { cat: 'press-on-nails', style: 'french' }],
-  ['Glitter', { cat: 'press-on-nails', style: 'glitter' }],
-  ['Cat-Eye', { cat: 'magnetic-lashes', tag: 'cat-eye' }],
-].map(([label, query]) => ({ label, to: { path: '/store', query } }))
+  [['French', '法式'], { cat: 'press-on-nails', style: 'french' }],
+  [['Glitter', '亮片'], { cat: 'press-on-nails', style: 'glitter' }],
+  [['Cat-Eye', '猫眼'], { cat: 'magnetic-lashes', tag: 'cat-eye' }],
+].map(([[en, zh], query]) => ({ label: tt(en, zh), to: { path: '/store', query } }))
 </script>
 
 <template>

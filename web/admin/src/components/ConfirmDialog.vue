@@ -20,9 +20,11 @@ const emit = defineEmits(['confirm', 'close'])
 const reason = ref('')
 const reasonEl = ref(null)
 const confirmEl = ref(null)
+const cancelEl = ref(null)
 
 /* open 时挂 Esc 监听、重置上次输入；关闭/卸载时移除（非 busy 才允许 Esc/遮罩关闭）；
- * 打开后自动聚焦：reason 模式聚焦输入框，否则聚焦确认按钮（无需完整 focus trap） */
+ * 打开后自动聚焦：reason 模式聚焦输入框；danger 态聚焦取消按钮（防 Enter 误确认危险操作）；
+ * 普通态聚焦确认按钮（无需完整 focus trap） */
 watch(
   () => props.open,
   (v) => {
@@ -31,6 +33,7 @@ watch(
       reason.value = ''
       nextTick(() => {
         if (props.reasonLabel && reasonEl.value) reasonEl.value.focus()
+        else if (props.danger) cancelEl.value?.focus()
         else confirmEl.value?.focus()
       })
     }
@@ -71,7 +74,7 @@ function onConfirm() {
         <input v-else ref="reasonEl" v-model="reason" class="input" type="text" :placeholder="reasonPlaceholder" :disabled="busy" @keydown.enter.prevent="onConfirm">
       </div>
       <div class="cd-foot">
-        <button class="btn btn-secondary btn-sm" :disabled="busy" @click="emit('close')">{{ cancelText }}</button>
+        <button ref="cancelEl" class="btn btn-secondary btn-sm" :disabled="busy" @click="emit('close')">{{ cancelText }}</button>
         <button
           ref="confirmEl"
           class="btn btn-sm"

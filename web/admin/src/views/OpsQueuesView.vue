@@ -18,10 +18,11 @@ const TABS = [
   ['lists', '营销名单'],
 ]
 
-/* tab/分页入 URL（单 page 共用，tab 切换重置页码）；其余筛选为页内状态不污染 URL */
-const st = reactive({ tab: 'abandoned', page: 1 })
-useQuerySync(st, { nums: ['page'], defaults: { tab: 'abandoned', page: 1 } })
+/* tab/分页/lists 二级 sub 入 URL（单 page 共用，切换重置页码）；其余筛选为页内状态不污染 URL */
+const st = reactive({ tab: 'abandoned', page: 1, sub: 'nl' })
+useQuerySync(st, { nums: ['page'], defaults: { tab: 'abandoned', page: 1, sub: 'nl' } })
 if (!TABS.some(([k]) => k === st.tab)) st.tab = 'abandoned'
+if (!['nl', 'sn'].includes(st.sub)) st.sub = 'nl'
 
 /* 各数据槽独立：items/total/pages/loaded/err（err 非空→空态置顶 + 卡内横幅） */
 const slot = () => ({ items: [], total: 0, pages: 1, loaded: false, err: '' })
@@ -60,12 +61,33 @@ function loadAbandoned(p = 1) {
 const rcFrom = ref('')
 const rcTo = ref('')
 function loadReconcile(p = 1) {
+  /* 前置校验：开始日期晚于结束日期时中止查询（YYYY-MM-DD 字符串可直接比较） */
+  if (rcFrom.value && rcTo.value && rcFrom.value > rcTo.value) { toast('开始日期不能晚于结束日期', 'error'); return Promise.resolve() }
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (rcFrom.value) params.set('date_from', rcFrom.value)
   if (rcTo.value) params.set('date_to', rcTo.value)
   return fetchSlot('reconcile', '/api/admin/ops/reconciliations?' + params)
 }
 function resetRcRange() { rcFrom.value = ''; rcTo.value = ''; loadReconcile(1) }
+
+/* 差异告警（status=1）标记已处理：POST /{id}/resolve；409 already resolved → 提示已被处理并刷新 */
+const rcTarget = ref(null)
+const rcDlg = ref(false)
+const rcBusy = ref(false)
+function askRcResolve(r) { rcTarget.value = r; rcDlg.value = true }
+async function rcResolveConfirm() {
+  if (rcBusy.value || !rcTarget.value) return
+  rcBusy.value = true
+  try {
+    await req('POST', `/api/admin/ops/reconciliations/${rcTarget.value.id}/resolve`)
+    toast(`#${rcTarget.value.id} 已标记处理 ✓`, 'success')
+    rcDlg.value = false
+    loadReconcile(st.page)
+  } catch (e) {
+    if (e.status === 409) { toast('该对账记录已被处理', 'error'); rcDlg.value = false; loadReconcile(st.page) }
+    else toast('操作失败：' + (e.data?.detail || e.message), 'error')
+  } finally { rcBusy.value = false }
+}
 
 /* ===== tab=gdpr：type 1导出 2删除；status 0待处理 1已完成 2已驳回 ===== */
 const gType = ref('')
@@ -110,8 +132,7 @@ async function rejConfirm() {
   } finally { gdprBusy.value = false }
 }
 
-/* ===== tab=lists：二级切换 nl Newsletter / sn 到货通知 ===== */
-const sub = ref('nl')
+/* ===== tab=lists：二级切换 nl Newsletter / sn 到货通知（sub 已入 URL，见 st） ===== */
 const nlQ = ref('')       /* Newsletter email 模糊（服务端 q） */
 const snQ = ref('')       /* 到货通知 email：后端无 q，本地兜底过滤当前页 */
 const snProd = ref('')    /* product_id 服务端筛选（可选） */
@@ -136,14 +157,14 @@ const snRows = computed(() => {
 })
 
 /* ===== 调度：lists tab 映射到 nl/sn 槽；tab/二级切换均重置页码 ===== */
-const curKey = computed(() => (st.tab === 'lists' ? (sub.value === 'sn' ? 'sn' : 'nl') : st.tab))
+const curKey = computed(() => (st.tab === 'lists' ? (st.sub === 'sn' ? 'sn' : 'nl') : st.tab))
 const cur = computed(() => d[curKey.value])
 function load(p = 1) {
   const fn = { abandoned: loadAbandoned, reconcile: loadReconcile, gdpr: loadGdpr, nl: loadNl, sn: loadSn }[curKey.value]
   return fn(p)
 }
 function setTab(k) { if (st.tab !== k) { st.tab = k; st.page = 1; load(1) } }
-function setSub(k) { if (sub.value !== k) { sub.value = k; st.page = 1; load(1) } }
+function setSub(k) { if (st.sub !== k) { st.sub = k; st.page = 1; load(1) } }
 onMounted(() => load(st.page))
 </script>
 
@@ -173,7 +194,7 @@ onMounted(() => load(st.page))
         </tr></thead>
         <tbody>
           <tr v-for="c in d.abandoned.items" :key="c.id" style="border-top:1px solid var(--gray-light)">
-            <td style="padding:10px"><b>{{ c.email || '—' }}</b><div style="font-size:11.5px;color:var(--gray)">cart #{{ c.id }}</div></td>
+            <td style="padding:10px"><b v-if="c.email"><router-link :to="{ path: '/members', query: { q: c.email } }" style="color:var(--plum)">{{ c.email }}</router-link></b><b v-else>—</b><div style="font-size:11.5px;color:var(--gray)">cart #{{ c.id }}</div></td>
             <td>{{ c.items_count ?? 0 }}</td>
             <td>{{ c.total_qty ?? 0 }}</td>
             <td style="white-space:nowrap">{{ money(c.amount_cents) }}</td>
@@ -204,7 +225,7 @@ onMounted(() => load(st.page))
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)">
-          <th style="padding:10px">对账日期</th><th>支付总额</th><th>订单总额</th><th>支付差异</th><th>退款差异</th><th>积分差异</th><th>状态</th><th>核对时间</th>
+          <th style="padding:10px">对账日期</th><th>支付总额</th><th>订单总额</th><th>支付差异</th><th>退款差异</th><th>积分差异</th><th>状态</th><th>核对时间</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="r in d.reconcile.items" :key="r.id" style="border-top:1px solid var(--gray-light)">
@@ -216,6 +237,11 @@ onMounted(() => load(st.page))
             <td><span class="tag" :class="r.diff_points ? 'tag-error' : 'tag-done'">{{ (r.diff_points ?? 0).toLocaleString() }}</span></td>
             <td><span class="tag" :class="RC_STATUS[r.status]?.cls || 'tag-pending'">{{ RC_STATUS[r.status]?.label ?? r.status }}</span></td>
             <td style="color:var(--gray);white-space:nowrap">{{ dt(r.checked_at) || '—' }}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <!-- 仅差异告警（status=1）可标记已处理；平/已处理无需操作 -->
+              <button v-if="r.status === 1" class="btn btn-secondary btn-sm" :class="{ loading: rcBusy }" :disabled="rcBusy" @click="askRcResolve(r)">标记已处理</button>
+              <span v-else style="color:var(--gray);font-size:12px">—</span>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -254,7 +280,9 @@ onMounted(() => load(st.page))
             <td style="color:var(--gray);white-space:nowrap">{{ dt(r.fulfilled_at) || '—' }}</td>
             <td style="text-align:right;white-space:nowrap">
               <template v-if="r.status === 0">
-                <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="openExec(r)">{{ r.type === 2 ? '⚠️ 立即执行' : '立即执行' }}</button>
+                <!-- 导出类：真实导出在用户申请时已完成，不显示「立即执行」，仅保留驳回 -->
+                <span v-if="r.type === 1" style="color:var(--gray);font-size:12px" title="导出文件已在用户申请时生成并发送">导出已完成</span>
+                <button v-else class="btn btn-ghost btn-sm" style="color:var(--error)" @click="openExec(r)">⚠️ 立即执行</button>
                 <button class="btn btn-secondary btn-sm" @click="openRej(r)">驳回</button>
               </template>
               <span v-else style="color:var(--gray);font-size:12px">—</span>
@@ -270,12 +298,12 @@ onMounted(() => load(st.page))
   <!-- ===== tab=lists 营销名单（Newsletter / 到货通知 二级切换） ===== -->
   <template v-else>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-      <button class="mtab" :class="{ on: sub === 'nl' }" @click="setSub('nl')">Newsletter</button>
-      <button class="mtab" :class="{ on: sub === 'sn' }" @click="setSub('sn')">到货通知</button>
+      <button class="mtab" :class="{ on: st.sub === 'nl' }" @click="setSub('nl')">Newsletter</button>
+      <button class="mtab" :class="{ on: st.sub === 'sn' }" @click="setSub('sn')">到货通知</button>
     </div>
 
     <!-- Newsletter 订阅者 -->
-    <div v-if="sub === 'nl'">
+    <div v-if="st.sub === 'nl'">
       <div v-if="!d.nl.loaded" class="card skeleton" style="min-height:280px" />
       <EmptyState v-else-if="d.nl.err && !d.nl.items.length" icon="⚠️" title="Newsletter 加载失败" :sub="d.nl.err">
         <template #action><button class="btn btn-secondary btn-sm" @click="loadNl(st.page)">重试</button></template>
@@ -351,6 +379,12 @@ onMounted(() => load(st.page))
   <ConfirmDialog
     :open="rejDlg" title="驳回数据请求" :body="`确认驳回 #${gdprTarget?.id}（${gdprTarget?.email || ''}）？驳回后用户需重新发起申请。`"
     confirm-text="确认驳回" :busy="gdprBusy" @confirm="rejConfirm" @close="rejDlg = false"
+  />
+
+  <!-- 对账标记已处理确认 -->
+  <ConfirmDialog
+    :open="rcDlg" title="标记已处理" :body="`将对账日期 ${String(rcTarget?.reconcile_date || '').slice(0, 10)} 的差异记录标记为已处理？`"
+    confirm-text="确认标记" :busy="rcBusy" @confirm="rcResolveConfirm" @close="rcDlg = false"
   />
 </template>
 

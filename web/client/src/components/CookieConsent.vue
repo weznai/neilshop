@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { i18n } from '../i18n'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
@@ -26,7 +26,42 @@ function openSettings() {
 }
 function onOpenReq() { openSettings() }
 function onEsc(e) { if (e.key === 'Escape' && settings.value) settings.value = false }
-watch(settings, (v) => { ui.consentOpen = v })
+
+/* ===== a11y：settings 弹窗焦点管理（开→入框 / Esc 关 / 关→还焦）+ 简易 focus trap（对齐 MarketingPopups） ===== */
+const settingsBox = ref(null)
+let settingsFrom = null
+function restoreFocus(el) {
+  if (el && el !== document.body && document.contains(el)) {
+    try { el.focus({ preventScroll: true }) } catch (_) { /* 触发元素已卸载 */ }
+  }
+}
+function dialogFocusables(root) {
+  if (!root) return []
+  return [...root.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+}
+function trapKeydown(e) {
+  if (e.key !== 'Tab') return
+  const box = settingsBox.value
+  const f = dialogFocusables(box)
+  if (!f.length) return
+  const first = f[0]
+  const last = f[f.length - 1]
+  const inBox = box.contains(document.activeElement)
+  if (e.shiftKey && (document.activeElement === first || !inBox)) { e.preventDefault(); last.focus() }
+  else if (!e.shiftKey && (document.activeElement === last || !inBox)) { e.preventDefault(); first.focus() }
+}
+watch(settings, async (v) => {
+  ui.consentOpen = v
+  if (!v) {
+    restoreFocus(settingsFrom)
+    settingsFrom = null
+    return
+  }
+  settingsFrom = document.activeElement
+  await nextTick()
+  const f = dialogFocusables(settingsBox.value)
+  if (f.length) f[0].focus({ preventScroll: true })
+})
 onUnmounted(() => { ui.consentOpen = false })
 onMounted(() => {
   window.addEventListener('gm:open-consent', onOpenReq)
@@ -80,8 +115,8 @@ function saveFromModal() {
     </div>
   </div>
 
-  <div v-if="settings" class="modal open" role="dialog" :aria-label="i18n.t('consent.title')" @click.self="settings = false">
-    <div class="modal-box" style="max-width:520px">
+  <div v-if="settings" class="modal open" role="dialog" aria-modal="true" :aria-label="i18n.t('consent.title')" @click.self="settings = false">
+    <div ref="settingsBox" class="modal-box" style="max-width:520px" @keydown="trapKeydown">
       <button class="modal-x" style="font-size:22px" :aria-label="i18n.lang === 'zh' ? '关闭' : 'Close'" @click="settings = false">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ i18n.t('consent.title') }}</h3>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--gray-light)">

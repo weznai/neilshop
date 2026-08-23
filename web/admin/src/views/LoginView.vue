@@ -33,7 +33,8 @@ watch(password, () => { passErr.value = '' })
 function normEmail() {
   let v = (email.value || '').trim().replace(/\s+/g, '')
   v = v.replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
-  if (/^(admin|ops|cs|emma)$/i.test(v)) v += '@glowmag.com'
+  /* 快捷名自动补全仅 DEV 生效（与底部种子账号提示条一致），生产不泄露快捷账号 */
+  if (DEV && /^(admin|ops|cs|emma)$/i.test(v)) v += '@glowmag.com'
   email.value = v.toLowerCase()
 }
 
@@ -64,9 +65,10 @@ async function submit() {
       return
     }
     toast('登录成功，进入管理控制台…', 'success')
-    /* next 白名单校验：仅接受站内单斜杠路径，拒绝 //evil.com 类协议相对跳转 */
+    /* next 白名单校验：仅接受站内单斜杠路径（拒绝 //evil.com 协议相对与 \ ? # 起始），
+     * 含控制字符的输入一并拒绝 */
     const n = String(route.query.next || '/')
-    router.push(/^\/[^/]/.test(n) ? n : '/')
+    router.push(/^\/[^/\\?#]/.test(n) && !/[\x00-\x1f\x7f]/.test(n) ? n : '/')
   } catch (e) {
     console.error('[admin] 登录失败：', e)
     formErr.value = srvMsg(e)

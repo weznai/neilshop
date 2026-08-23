@@ -20,6 +20,7 @@ from app.domains.promo.schemas import (
     REASON_TEXT,
 )
 from app.services import promo_rules
+from app.services.llm import LLM_SETTING_KEY, mask_key
 
 _GIFT_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -388,6 +389,27 @@ def unfreeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
     return _giftcard_dict(card)
 
 
+def void_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
+    """作废：余额>0 先记一条负数流水（change_type=6 作废）清零，再置 status=4；
+    已作废 → 409（不可逆，作废卡不允许借解冻复活）"""
+    card = db.get(GiftCard, gift_card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="giftcard not found")
+    if card.status == 4:
+        raise HTTPException(status_code=409, detail="already void")
+    if card.balance > 0:
+        db.add(GiftCardLedger(
+            gift_card_id=card.id, change_type=6,
+            amount=-card.balance, balance_after=0,
+        ))
+        card.balance = 0
+    card.status = 4
+    log_admin(db, admin, "void", "giftcard", card.id, {"code": card.code, "status": card.status})
+    db.commit()
+    db.refresh(card)
+    return _giftcard_dict(card)
+
+
 def giftcard_ledger(db: Session, gift_card_id: int, page: int, size: int) -> dict:
     card = db.get(GiftCard, gift_card_id)
     if not card:
@@ -479,27 +501,59 @@ def toggle_popup(db: Session, admin: User, popup_id: int) -> dict:
     return _popup_dict(p)
 
 
+def delete_popup(db: Session, admin: User, popup_id: int) -> dict:
+    """删除配置（stats 一并删除，先留审计快照）"""
+    p = db.get(PopupConfig, popup_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="popup not found")
+    log_admin(db, admin, "delete", "popup", p.id,
+              {"scene": p.scene, "title": p.title, "active": p.active})
+    db.delete(p)
+    db.commit()
+    return {"ok": True}
+
+
 # ===== 后台：站点设置 =====
+
+# 设置可写白名单：前端合法保存入口只有 SettingsView 的 6 项运营参数
+# （免邮门槛/标准运费/快递运费/税率/退货窗口/积分比例）+ MarketingView 的 2 项捆绑折扣；
+# 其余 key（llm_config、chat_quick_replies 等）为系统/域专属配置，仅各自专用端点可写
+EDITABLE_SETTING_KEYS = {
+    "free_shipping_threshold", "shipping_standard", "shipping_express", "tax_rate",
+    "return_days", "points_per_dollar_earn", "bundle_2_off", "bundle_3_off",
+}
 
 
 def list_settings(db: Session) -> dict:
     rows = repo.settings_by_key(db)
-    return {
-        "items": [
-            {
-                "key": s.key,
-                "value": s.value,
-                "description": s.description,
-                "updated_by": s.updated_by,
-                "updated_at": s.updated_at,
-            }
-            for s in rows
-        ]
-    }
+    items = []
+    for s in rows:
+        value = s.value
+        # llm_config 含 LLM api_key：原样回显会泄露明文 Key → 掩码后返回
+        # （空串保持空串；形状对齐 ai 域 GET /api/admin/ai/config 的 api_key_set 约定）
+        if s.key == LLM_SETTING_KEY and isinstance(value, dict):
+            masked = dict(value)
+            key = masked.get("api_key")
+            if isinstance(key, str):
+                masked["api_key"] = mask_key(key)
+            masked["api_key_set"] = bool(key)
+            value = masked
+        items.append({
+            "key": s.key,
+            "value": value,
+            "description": s.description,
+            "updated_by": s.updated_by,
+            "updated_at": s.updated_at,
+        })
+    return {"items": items}
 
 
 def upsert_setting(db: Session, admin: User, body: SettingIn) -> dict:
     s = db.get(Setting, body.key)
+    if body.key not in EDITABLE_SETTING_KEYS and admin.role != 9:
+        # 白名单外的 key 仅超管(role==9)可读写：运营/仓库等一律 403——
+        # 已存在的（llm_config/chat_quick_replies 等系统配置）报 readonly，不存在的报 unknown
+        raise HTTPException(status_code=403, detail="readonly setting key" if s is not None else "unknown setting key")
     if s:
         old = s.value
         s.value = body.value

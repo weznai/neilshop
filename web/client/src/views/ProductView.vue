@@ -55,8 +55,11 @@ const media = computed(() => {
 })
 const showVideo = computed(() => galIdx.value >= media.value.length && !!p.value?.video_url)
 const mainIdx = computed(() => Math.min(galIdx.value, media.value.length - 1))
-const filled = computed(() => Math.max(0, Math.min(5, Math.round(p.value?.rating || 0))))
-const hasReviews = computed(() => (p.value?.rating_count || 0) > 0)
+const filled = computed(() => Math.max(0, Math.min(5, Math.round(rvAvg.value))))
+const hasReviews = computed(() => rvCount.value > 0)
+/* 评分口径：优先分布接口实时聚合（已发布全量），回落商品冗余列——避免同屏两个"评价数"不一致 */
+const rvCount = computed(() => (distData.value && distData.value.rating_count) || (p.value?.rating_count || 0))
+const rvAvg = computed(() => ((distData.value && distData.value.rating_avg) || (p.value?.rating || 0)) / 100)
 
 /* 评分分布：优先服务端聚合（已发布全量），未拉到时回退按已加载评价页估算 */
 const distData = ref(null)
@@ -125,7 +128,7 @@ async function load() {
   if (!slug && !id) { p.value = null; loading.value = false; return }
   try {
     const d = slug
-      ? await req('GET', '/api/catalog/products/' + slug + (locale.value ? '?locale=' + locale.value : ''))
+      ? await req('GET', '/api/catalog/products/' + encodeURIComponent(slug) + (locale.value ? '?locale=' + locale.value : ''))
       : await req('GET', '/api/catalog/products-by-id/' + id + (locale.value ? '?locale=' + locale.value : ''))
     if (seq !== ldSeq) return
     p.value = d
@@ -161,7 +164,8 @@ async function load() {
         },
       } }))
     } catch (_) { /* SEO 失败不影响页面 */ }
-    await fetchReviews(true)
+    /* 评价为首屏下方次要内容：不阻塞骨架屏撤除（慢/挂起时详情主体先行渲染） */
+    fetchReviews(true).catch(() => {})
     req('GET', '/api/catalog/reviews/distribution?product_id=' + p.value.id)
       .then((dist) => { if (seq === ldSeq) distData.value = dist })
       .catch(() => { if (seq === ldSeq) distData.value = null })
@@ -172,6 +176,8 @@ async function load() {
   loading.value = false
 }
 watch(() => route.query, load)
+/* 站内切换语言：重拉详情（locale 翻译口径），标题/描述即时跟随 */
+watch(locale, () => { if (p.value || route.query.id || route.query.slug) load() })
 onMounted(load)
 
 watch(vIdx, () => {
@@ -227,6 +233,12 @@ const basePrice = computed(() => (p.value?.variants?.[0]?.price ?? 0) / 100)
 const unit = computed(() => variant.value ? variant.value.price / 100 : basePrice.value)
 /* 组合折扣后端仅统计 press-on-nails 类目：字段缺失时缺省不显示按钮 */
 const bundleable = computed(() => p.value?.category_slug === 'press-on-nails')
+/* 面包屑分类可读名（后端只回 slug，前端就近映射；未知 slug 不渲染该级） */
+const CAT_NAME = { 'press-on-nails': ['Press-on Nails', '穿戴甲'], 'magnetic-lashes': ['Magnetic Lashes', '磁性睫毛'] }
+const catLabel = computed(() => {
+  const row = CAT_NAME[p.value?.category_slug || '']
+  return row ? tt(row[0], row[1]) : ''
+})
 
 function mdHtml(mdText) {
   /* 先整体转义再做 markdown 替换：后台录入的 HTML 不进入 v-html（参考 MarketingPopups） */
@@ -272,7 +284,12 @@ async function bundleAdd() {
     return
   }
   bundling.value = true
-  const ok = await cart.add(variant.value.id, 2, { ...ui, openCart: () => {} })
+  /* 屏蔽 cart.add 通用成功 toast（保留错误 toast），仅弹组合折扣说明一条 */
+  const quietUi = Object.assign({}, ui, {
+    toast: (msg, type) => { if (type !== 'success' || !/added to cart|已加入购物车/i.test(String(msg))) ui.toast(msg, type) },
+    openCart: () => {},
+  })
+  const ok = await cart.add(variant.value.id, 2, quietUi)
   if (ok) {
     ui.toast(zh.value ? '已加 2 套 — 15% 折扣结算时自动生效 🎁' : '2 sets in cart — 15% off applied at checkout 🎁', 'success')
     if (variant.value.stock - 2 <= 0) await load()
@@ -365,11 +382,16 @@ function moreReviews() { rvPage.value++; fetchReviews(false) }
 function openLightbox(src, caption) { lightbox.value = { src, caption } }
 function closeLightbox() { lightbox.value = null }
 function onKey(e) { if (e.key === 'Escape') closeLightbox() }
-/* Lightbox 打开锁滚动（与全站弹层 .gm-locked 同口径） */
-watch(lightbox, (v) => document.body.classList.toggle('gm-locked', !!v))
+/* Lightbox 滚动锁走 ui.lightboxOpen 全局通道（anyOverlay → StoreLayout gm-locked 统一驱动，
+   消除与 StoreLayout watch 的 gm-locked 双写竞态） */
+watch(lightbox, (v) => { ui.lightboxOpen = !!v })
 /* v16: PDP 在场标记（style.css v16 据此让返回顶部避开粘性加购栏） */
 onMounted(() => { document.body.classList.add('gm-pdp'); window.addEventListener('keydown', onKey) })
-onUnmounted(() => { document.body.classList.remove('gm-pdp'); document.body.classList.remove('gm-locked'); window.removeEventListener('keydown', onKey) })
+onUnmounted(() => {
+  document.body.classList.remove('gm-pdp')
+  if (ui.lightboxOpen) ui.lightboxOpen = false /* 卸载时释放浮层位，防 anyOverlay 卡死 */
+  window.removeEventListener('keydown', onKey)
+})
 
 const gmEta = () => {
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -400,8 +422,11 @@ const gmEta = () => {
     <div class="container">
       <nav style="font-size:12.5px;color:var(--gray);margin-bottom:16px">
         <router-link to="/" style="color:var(--gray)">{{ i18n.t('crumb.home') }}</router-link> /
-        <router-link to="/store" style="color:var(--gray)">{{ i18n.t('footer.all') }}</router-link> /
-        <span style="color:var(--plum)">{{ p.title }}</span>
+        <router-link to="/store" style="color:var(--gray)">{{ i18n.t('footer.all') }}</router-link>
+        <template v-if="catLabel"> /
+          <router-link :to="'/store?cat=' + p.category_slug" style="color:var(--gray)">{{ catLabel }}</router-link>
+        </template>
+        / <span style="color:var(--plum)">{{ p.title }}</span>
       </nav>
       <div class="grid-m-1 pdp-grid">
         <!-- 左：媒体（v16：主图区改造为 scroll-snap 滑轨——移动端横滑切图，桌面仅显示 .on 单图与原实现一致） -->
@@ -448,7 +473,7 @@ const gmEta = () => {
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
             <template v-if="hasReviews">
               <span class="stars" style="color:var(--gold)">{{ '★'.repeat(filled) }}<span class="off">{{ '★'.repeat(5 - filled) }}</span></span>
-              <span style="font-size:13px;color:var(--gray)">{{ p.rating.toFixed(1) }} · {{ p.rating_count.toLocaleString() }} {{ zh ? '条评价' : 'reviews' }}</span>
+              <span style="font-size:13px;color:var(--gray)">{{ rvAvg.toFixed(1) }} · {{ rvCount.toLocaleString() }} {{ zh ? '条评价' : 'reviews' }}</span>
             </template>
             <span v-else style="font-size:13px;color:var(--gray)">✨ {{ zh ? '全新上架 · 抢先体验' : 'Just launched — be the first to review' }}</span>
           </div>
@@ -480,8 +505,9 @@ const gmEta = () => {
                 @click="vIdx = i"
               >
                 {{ v.option1_value }}
-                <b v-if="i > 0 && v.price > p.variants[0].price" style="color:var(--plum)">
-                  +${{ ((v.price - p.variants[0].price) / 100).toFixed(2) }}
+                <!-- 与首变体的价差双向展示（+/−），价格感知对称 -->
+                <b v-if="i > 0 && v.price !== p.variants[0].price" :style="{ color: v.price > p.variants[0].price ? 'var(--plum)' : 'var(--success)' }">
+                  {{ v.price > p.variants[0].price ? '+' : '−' }}${{ (Math.abs(v.price - p.variants[0].price) / 100).toFixed(2) }}
                 </b>
                 <i v-if="v.stock_status === 'out'">{{ zh ? '售罄' : 'Sold out' }}</i>
                 <i v-else-if="v.stock_status === 'low'" style="color:var(--warn)">{{ zh ? `仅剩 ${v.stock}` : `${v.stock} left` }}</i>
@@ -561,19 +587,19 @@ const gmEta = () => {
       <section class="section" style="padding-top:44px">
         <div class="section-head">
           <h2 class="section-title">
-            {{ zh ? '买家评价' : 'Reviews' }} ({{ (p.rating_count || 0).toLocaleString() }})
+            {{ zh ? '买家评价' : 'Reviews' }} ({{ rvCount.toLocaleString() }})
             <span v-if="rvRating" style="font-size:14px;font-weight:600;color:var(--plum);vertical-align:middle">
               · {{ rvRating }}★ · {{ zh ? `当前 ${rvTotal} 条` : `${rvTotal} shown` }}
               <button type="button" class="rv-clear" @click="toggleRvStar(rvRating)">{{ zh ? '清除' : 'clear' }}</button>
             </span>
           </h2>
-          <span v-if="hasReviews" style="font-size:14px;color:var(--gray)">{{ p.rating.toFixed(1) }} / 5</span>
+          <span v-if="hasReviews" style="font-size:14px;color:var(--gray)">{{ rvAvg.toFixed(1) }} / 5</span>
         </div>
         <div v-if="hasReviews || reviews.length" class="grid-m-1" style="display:grid;grid-template-columns:240px 1fr;gap:36px;align-items:start">
           <div class="card" style="padding:20px">
-            <div style="font-family:var(--font-title);font-size:40px;font-weight:700;color:var(--plum)">{{ p.rating.toFixed(1) }}</div>
+            <div style="font-family:var(--font-title);font-size:40px;font-weight:700;color:var(--plum)">{{ rvAvg.toFixed(1) }}</div>
             <div class="stars" style="margin:4px 0 6px">{{ '★'.repeat(filled) }}<span class="off">{{ '★'.repeat(5 - filled) }}</span></div>
-            <div style="font-size:12px;color:var(--gray);margin-bottom:12px">{{ p.rating_count.toLocaleString() }} {{ zh ? '条已审核评价' : 'verified reviews' }}</div>
+            <div style="font-size:12px;color:var(--gray);margin-bottom:12px">{{ rvCount.toLocaleString() }} {{ zh ? '条已审核评价' : 'verified reviews' }}</div>
             <button
               v-for="d in dist" :key="d.star" type="button" class="dist-row"
               :class="{ on: rvRating === d.star, dim: !!rvRating && rvRating !== d.star }"

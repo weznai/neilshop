@@ -16,15 +16,18 @@ const loaded = ref(false)
 const loadErr = ref(false)
 const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 
-/* 筛选项（entity 集合与后端 AdminLog 写入方一致）+ page 一并入 URL 同步 */
+/* 筛选项（entity 集合与后端 AdminLog 写入方一致）+ page 一并入 URL 同步；
+ * onPop：浏览器回退/前进导致 query 变化时重拉当前页（见 useQuerySync 外部导航同步） */
 const f = reactive({ entity: '', action: '', admin_id: '', start: '', end: '', page: 1 })
-useQuerySync(f, { nums: ['page'], defaults: { page: 1 } })
+useQuerySync(f, { nums: ['page'], defaults: { page: 1 }, onPop: () => load(f.page) })
 
 const ENTITY_META = {
   order: '订单', return: '退货', exchange: '换货', product: '商品', variant: '变体',
   product_translation: '商品翻译', ticket: '工单', member: '会员', review: '评价', ugc: 'UGC',
   article: '文章', faq: 'FAQ', discount: '折扣', popup: '弹窗', setting: '设置',
   shipping_rate: '运费', collection: '集合', giftcard: '礼品卡', media: '媒体',
+  admin: '管理员账号', data_request: '数据请求', chat_quick_replies: '快捷回复卡',
+  llm_config: 'LLM 配置', llm_rag_reindex: 'RAG 重建',
 }
 /* entity 徽标配色：每个域一个色相（hex 前缀，透明度后缀拼接） */
 const ENTITY_COLOR = {
@@ -32,6 +35,7 @@ const ENTITY_COLOR = {
   product_translation: '#4E7A57', ticket: '#3C5A9A', member: '#7A4A8F', review: '#A8456B', ugc: '#8A6D1B',
   article: '#4A6B8A', faq: '#5F6B7A', discount: '#2F5D8A', popup: '#8F4A5F', setting: '#555B66',
   shipping_rate: '#2F6D6B', collection: '#9A5B2F', giftcard: '#6B4A7A', media: '#6B7A4A',
+  admin: '#5A5F8A', data_request: '#7A5A4A', chat_quick_replies: '#2F5D6B', llm_config: '#5F4A9A', llm_rag_reindex: '#3A7A8A',
 }
 const entLabel = (e) => ENTITY_META[e] || e
 const badgeStyle = (e) => {
@@ -44,10 +48,11 @@ const ACTION_TONE = {
   create: 'tag-paid', approve: 'tag-paid', publish: 'tag-paid',
   update: 'tag-ship', toggle: 'tag-ship', ship: 'tag-ship',
   delete: 'tag-error', reject: 'tag-error', refund: 'tag-error',
+  restore_draft: 'tag-done',   /* 商品批量恢复草稿：与 unpublish 同为状态回退类，中性色 */
 }
 const actClass = (a) => ACTION_TONE[a] || 'tag-done'
 /* action 输入联想：域内常见动作 */
-const ACTIONS = ['refund', 'publish', 'unpublish', 'ship', 'close', 'assign', 'reply', 'risk', 'upsert', 'approve', 'reject']
+const ACTIONS = ['refund', 'publish', 'unpublish', 'ship', 'close', 'assign', 'reply', 'risk', 'upsert', 'approve', 'reject', 'restore_draft']
 
 /* entity 行跳转：按实体域映射到对应管理页（无映射的保持纯文本） */
 const ENT_ROUTE = {
@@ -55,7 +60,9 @@ const ENT_ROUTE = {
   return: () => ({ path: '/returns', query: { tab: 'rma' } }),
   exchange: () => ({ path: '/returns', query: { tab: 'exch' } }),
   product: (id) => ({ path: '/product-edit', query: { id } }),
-  variant: (id) => ({ path: '/product-edit', query: { id } }),
+  /* variant 日志 entity_id 是变体 id，product-edit 需要商品 id：优先取 diff.product_id 深链；
+   * 旧日志 diff 无 product_id → 退回商品列表（不带 id） */
+  variant: (id, l) => (l?.diff_json?.product_id ? { path: '/product-edit', query: { id: l.diff_json.product_id } } : { path: '/products' }),
   product_translation: (id) => ({ path: '/product-edit', query: { id } }),
   collection: () => ({ path: '/marketing', query: { tab: 'collections' } }),
   review: () => ({ path: '/content' }),
@@ -70,7 +77,7 @@ const ENT_ROUTE = {
   setting: () => ({ path: '/settings' }),
   /* media 无独立管理页：保持纯文本展示（不入 ENT_ROUTE） */
 }
-const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id) || null
+const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id, l) || null
 
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
@@ -81,9 +88,16 @@ function buildUrl(p, size = SIZE) {
   /* admin_id 空串/非法输入（NaN）不带参数（即清除筛选），防后端 422 */
   const aid = Math.round(Number(f.admin_id))
   if (f.admin_id && Number.isInteger(aid)) params.set('admin_id', aid)
-  if (f.start) params.set('start', f.start)
-  /* end 为日期选择器值：补当天末时刻，含边界日全天 */
-  if (f.end) params.set('end', f.end + 'T23:59:59')
+  /* 日期筛选时区：本地日期转 UTC ISO 再提交（start=本地00:00 / end=本地23:59:59.999），
+   * 使筛选与本地展示一致；后端 _parse_log_dt 支持显式时区统一落 UTC */
+  if (f.start) {
+    const [y, m, d] = f.start.split('-').map(Number)
+    params.set('start', new Date(y, m - 1, d).toISOString())
+  }
+  if (f.end) {
+    const [y, m, d] = f.end.split('-').map(Number)
+    params.set('end', new Date(y, m - 1, d, 23, 59, 59, 999).toISOString())
+  }
   return '/api/admin/ops/logs?' + params
 }
 
@@ -95,6 +109,8 @@ async function load(p = 1) {
     items.value = d.items || []
     total.value = d.total ?? 0
     f.page = d.page || p
+    /* page 越界钳制：URL 直链/筛选收窄后回退导致页码超出总页数 → 回最后一页重拉一次（空结果 pages=0 不钳制） */
+    if ((d.pages ?? 0) > 0 && f.page > d.pages) { load(d.pages); return }
   } catch (e) {
     loadErr.value = true
     errMsg.value = e.message || ''
@@ -182,10 +198,13 @@ async function exportCsv() {
     }
     if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
     if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
-      toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+      /* 非错误：截断导出属预期行为，用中性提示（非 error 红色） */
+      toast('匹配结果过多，仅导出前 ' + all.length + ' 条')
     }
+    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号；公式注入防护：= + - @ 开头前缀 '（同交易域） */
     const cell = (v) => {
-      const s = String(v ?? '')
+      let s = String(v ?? '')
+      if (/^[=+\-@]/.test(s)) s = "'" + s
       return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
     }
     const rows = [['时间', '管理员', '实体', '动作', '对象ID', '变更内容'],

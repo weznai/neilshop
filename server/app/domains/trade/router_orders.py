@@ -48,10 +48,12 @@ def order_detail(
 def cancel_order(
     order_no: str,
     body: CancelRequest | None = None,
-    user: User = Depends(get_current_user),
+    email: Optional[str] = Query(None),
+    user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
-    return service_orders.cancel_order(db, order_no, user)
+    """登录用户按属主取消；游客（未登录）以 email 双因子取消（与订单详情同口径）。"""
+    return service_orders.cancel_order(db, order_no, user, email)
 
 
 @router.post("/{order_no}/confirm-received")

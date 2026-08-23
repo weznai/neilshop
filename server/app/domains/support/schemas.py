@@ -31,11 +31,11 @@ class TicketCreateIn(BaseModel):
 
 class TicketMessageIn(BaseModel):
     email: str
-    content: str
+    content: str = Field(max_length=2000)  # 与客服回复同上限，超长 422（DB Text 但防垃圾灌入）
 
 
 class ReplyIn(BaseModel):
-    content: str
+    content: str = Field(max_length=2000)  # 超长 422（原静默截断改为显式拒绝）
 
 
 class CloseIn(BaseModel):
@@ -45,7 +45,7 @@ class CloseIn(BaseModel):
 
 
 class TicketStatusIn(BaseModel):
-    """工单状态流转：status 允许 1/2/3/4（0/1 态只能经回复进入；1 仅用于 4→1 重开）"""
+    """工单状态流转：status 允许 1/2/3/4（0/1 态只能经回复进入；1 用于 4→1 重开与 3→1 解除已解决）"""
     status: int = Field(ge=1, le=4)
     close_reason: int | str | None = None
 

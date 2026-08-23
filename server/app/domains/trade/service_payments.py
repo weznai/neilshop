@@ -171,6 +171,14 @@ def mark_order_paid(
         if user:
             user.total_spent += order.grand_total
             user.last_order_at = now
+            # 等级晋升（与 seed 离线重算同口径：≥$100 银 / ≥$300 金，只升不降；
+            # 修复前台进度条"即将升级"承诺后端从不兑现的问题）
+            if user.total_spent >= 30000 and user.tier < 2:
+                user.tier = 2
+                user.tier_updated_at = now
+            elif user.total_spent >= 10000 and user.tier < 1:
+                user.tier = 1
+                user.tier_updated_at = now
 
     if order.discount_code_id:
         amount = _code_discount_of(db, order)

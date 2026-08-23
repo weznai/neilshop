@@ -36,7 +36,7 @@ const PAY_ST = {
   0: ['Pending', '待支付', 'tag-pending'], 1: ['Paid', '成功', 'tag-paid'], 2: ['Failed', '失败', 'tag-error'],
   3: ['Refunded', '已退款', 'tag-error'], 4: ['Partially refunded', '部分退款', 'tag-pending'],
 }
-/* 时间线事件 → [en, zh]（status_changed 特判带状态名） */
+/* 时间线事件 → [en, zh]（status_changed 特判带状态名；对齐后端全部事件名，含 RMA/换货/礼品卡链路） */
 const EVENT_LABEL = {
   status_changed: ['Status updated', '状态变更'], payment_succeeded: ['Payment confirmed', '支付成功'],
   payment_failed: ['Payment failed', '支付失败'], rma_created: ['Return requested', '退货申请'],
@@ -46,6 +46,13 @@ const EVENT_LABEL = {
   points_granted: ['Points granted', '积分发放'], tracking_updated: ['Tracking updated', '物流更新'],
   note_added: ['Note added', '备注'], email_sent: ['Email sent', '邮件通知'],
   ticket_linked: ['Ticket linked', '关联工单'], label_voided: ['Label voided', '面单作废'],
+  checkout_created: ['Order placed', '订单已创建'], shipment_created: ['Package shipped', '包裹已发出'],
+  refund_issued: ['Refund issued', '退款已发放'], rma_label_sent: ['Return label sent', '退货标签已发送'],
+  rma_received: ['Return received', '退货已签收'], rma_canceled: ['Return canceled', '退货已取消'],
+  giftcard_created: ['Gift card issued', '礼品卡已开出'],
+  exchange_withdrawn: ['Exchange withdrawn', '换货已撤回'],
+  exchange_diff_intent: ['Exchange difference payment created', '换货差价待支付'],
+  exchange_diff_refunded: ['Exchange difference refunded', '换货差价已退回'],
 }
 function eventLabel(t) {
   if (t.event === 'status_changed' && t.detail && t.detail.to !== undefined) {
@@ -72,6 +79,9 @@ function detailText(ev) {
 
 async function load() {
   const no = route.query.no
+  /* 每次进入先清残留错误态：切换订单/支付后刷新可正常渲染（修复失败一次后永久错误卡） */
+  err.value = ''
+  o.value = null
   if (!no) { err.value = tt('Missing order number', '缺少订单号'); loading.value = false; return }
   try {
     o.value = await req('GET', '/api/orders/' + encodeURIComponent(no))
@@ -121,9 +131,18 @@ async function payNow() {
   busy.value = true
   const em = guestEmail.value || undefined
   try {
-    const intent = await req('POST', '/api/payments/create-intent', { order_no: o.value.order_no, email: em })
+    let provider = ''
+    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
+    const ib = { order_no: o.value.order_no, email: em }
+    if (provider && provider !== 'mock') ib.provider = provider
+    const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intentNoChannel(intent)) {
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
+    /* hosted 通道（Stripe Checkout / PayPal 等）：跳转收银台，回来后由 webhook 推进状态 */
+    if (provider !== 'mock' && intent && intent.redirect_url) {
+      window.location.href = intent.redirect_url
       return
     }
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, email: em, succeed: true })
@@ -201,7 +220,8 @@ async function buyAgain() {
   rebuying.value = true
   try {
     const d = await req('POST', '/api/cart/items-batch', { items })
-    if (d && d.view) cart._apply(d.view)
+    /* add_batch 返回 view 顶层展开（token/items/subtotal_cents + added/failed），直接应用 */
+    if (d && d.items) cart._apply(d)
     else await cart.refresh().catch(() => {})
     /* 后端 added 为成功加入的 variant_id 数组 */
     const added = ((d && d.added) || []).length
@@ -225,7 +245,8 @@ async function buyAgain() {
   } finally { rebuying.value = false }
 }
 
-/* ---------- 弹层 a11y 工具：ESC 关闭 + 焦点圈禁 + 打开锁滚动（参照 MarketingPopups 成熟实现，样式 scoped） ---------- */
+/* ---------- 弹层 a11y 工具：ESC 关闭 + 焦点圈禁（开闭状态走 ui.openModalId 通道 →
+      anyOverlay 统一锁滚动（gm-locked）+ App 根 ESC 委托自动关闭，替代第三套内联 overflow 写法） ---------- */
 const rmaBox = ref(null)
 const exBox = ref(null)
 let rmaFrom = null
@@ -245,11 +266,13 @@ function trapKeydown(e, boxEl) {
     else if (!e.shiftKey && (document.activeElement === last || !inBox)) { e.preventDefault(); first.focus() }
   }
 }
-function anyModalOpen() { return rma.open || ex.open }
+const rmaOpen = computed(() => ui.openModalId === 'rma')
+const exOpen = computed(() => ui.openModalId === 'ex')
+function closeModal() { ui.closeModal() }
 function onEscKey(e) {
+  /* App 根 ESC 委托已处理 ui.openModalId；此处仅兜底（如焦点在 iframe 内时根监听收不到） */
   if (e.key !== 'Escape') return
-  if (rma.open) rma.open = false
-  else if (ex.open) ex.open = false
+  if (rmaOpen.value || exOpen.value) ui.closeModal()
 }
 function restoreFocus(el) {
   if (el && el !== document.body && document.contains(el)) {
@@ -258,9 +281,10 @@ function restoreFocus(el) {
 }
 
 /* ---------- 退货 RMA ---------- */
-const rma = reactive({ open: false, item: null, qty: 1, reason: 1, detail: '', busy: false })
+const rma = reactive({ item: null, qty: 1, reason: 1, detail: '', busy: false })
 function openRma(it) {
-  Object.assign(rma, { open: true, item: it, qty: 1, reason: 1, detail: '', busy: false })
+  Object.assign(rma, { item: it, qty: 1, reason: 1, detail: '', busy: false })
+  ui.openModal('rma')
 }
 async function submitRma() {
   rma.busy = true
@@ -273,7 +297,7 @@ async function submitRma() {
       reason_detail: rma.detail || null,
     })
     ui.toast(tt(`Return request submitted (${d.rma_no}) — pending review`, `退货申请已提交（${d.rma_no}），请耐心等待审核`), 'success')
-    rma.open = false
+    ui.closeModal()
     await load()
   } catch (e) {
     const d = (e && e.data && e.data.detail) || ''
@@ -285,7 +309,7 @@ async function submitRma() {
 }
 
 /* ---------- 换货（siblings 一次拉取同款变体，替换旧的 N+1 搜索） ---------- */
-const ex = reactive({ open: false, item: null, loading: false, variants: [], picked: null, qty: 1, reason: '', busy: false, error: '', netFail: false })
+const ex = reactive({ item: null, loading: false, variants: [], picked: null, qty: 1, reason: '', busy: false, error: '', netFail: false })
 async function loadSiblings() {
   ex.loading = true
   ex.error = ''
@@ -312,7 +336,8 @@ async function loadSiblings() {
   ex.loading = false
 }
 async function openExchange(it) {
-  Object.assign(ex, { open: true, item: it, loading: true, variants: [], picked: null, qty: 1, reason: '', busy: false, error: '', netFail: false })
+  Object.assign(ex, { item: it, loading: true, variants: [], picked: null, qty: 1, reason: '', busy: false, error: '', netFail: false })
+  ui.openModal('ex')
   await loadSiblings()
 }
 function exStockText(v) {
@@ -322,7 +347,8 @@ function exStockText(v) {
 }
 function exSelectable(v) { return (v.stock || 0) > 0 && v.stock_status !== 'out' }
 function exDiff(v) {
-  const diff = (v.price || 0) - (ex.item?.unit_price || 0)
+  /* 差价 = 单件差 × 换货数量（后端 price_diff 口径），避免 qty>1 时提示金额与实际扣款不符 */
+  const diff = ((v.price || 0) - (ex.item?.unit_price || 0)) * (ex.qty || 1)
   if (diff > 0) return tt(`Pay difference ${money(diff)}`, `需补差价 ${money(diff)}`)
   if (diff < 0) return tt(`Refund difference ${money(-diff)}`, `退差价 ${money(-diff)}`)
   return tt('Even swap', '同价换货')
@@ -339,7 +365,7 @@ async function submitExchange() {
       reason: ex.reason.trim() || null,
     })
     ui.toast(tt(`Exchange request submitted (${d.exchange_no})`, `换货申请已提交（${d.exchange_no}）`), 'success')
-    ex.open = false
+    ui.closeModal()
     await load()
   } catch (e) {
     const d = (e && e.data && e.data.detail) || ''
@@ -352,31 +378,25 @@ async function submitExchange() {
   } finally { ex.busy = false }
 }
 
-/* 弹层打开锁 body 滚动 + 初始聚焦（两弹层互斥，关闭时仅在无其它弹层时恢复；rma/ex 已声明） */
-watch(() => rma.open, async (v, old) => {
-  if (v === old) return
+/* 弹层打开：初始聚焦 + 关闭还原焦点（滚动锁由 ui.anyOverlay → StoreLayout gm-locked 统一驱动） */
+watch(rmaOpen, async (v) => {
   if (v) {
     rmaFrom = document.activeElement
-    document.body.style.overflow = 'hidden'
     await nextTick()
     const f = dialogFocusables(rmaBox.value)
     if (f.length) f[0].focus({ preventScroll: true })
   } else {
-    if (!anyModalOpen()) document.body.style.overflow = ''
     restoreFocus(rmaFrom)
     rmaFrom = null
   }
 })
-watch(() => ex.open, async (v, old) => {
-  if (v === old) return
+watch(exOpen, async (v) => {
   if (v) {
     exFrom = document.activeElement
-    document.body.style.overflow = 'hidden'
     await nextTick()
     const f = dialogFocusables(exBox.value)
     if (f.length) f[0].focus({ preventScroll: true })
   } else {
-    if (!anyModalOpen()) document.body.style.overflow = ''
     restoreFocus(exFrom)
     exFrom = null
   }
@@ -385,7 +405,8 @@ onMounted(() => document.addEventListener('keydown', onEscKey))
 onUnmounted(() => {
   document.removeEventListener('keydown', onEscKey)
   clearTimeout(rvPvTimer)
-  if (!anyModalOpen()) document.body.style.overflow = ''
+  /* 组件卸载时弹层仍开着 → 释放全局模态位，避免 anyOverlay 卡死锁滚动 */
+  if (rmaOpen.value || exOpen.value) ui.closeModal()
 })
 
 /* ---------- 商品评价（status≥3 已发货/送达/完成可评；成功后按钮置灰） ---------- */
@@ -459,7 +480,10 @@ async function submitReview(it) {
   <div>
     <div v-if="err" class="card" style="padding:30px;text-align:center;color:var(--gray)">
       {{ err }}
-      <div style="margin-top:10px"><router-link class="btn btn-secondary btn-sm" to="/account/orders">{{ tt('← Back to orders', '← 返回订单列表') }}</router-link></div>
+      <div style="margin-top:10px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" @click="load">⟳ {{ tt('Retry', '重试') }}</button>
+        <router-link class="btn btn-secondary btn-sm" to="/account/orders">{{ tt('← Back to orders', '← 返回订单列表') }}</router-link>
+      </div>
     </div>
     <div v-else-if="loading" style="display:grid;gap:16px">
       <div class="skeleton" style="height:110px;border-radius:14px" />
@@ -647,8 +671,8 @@ async function submitReview(it) {
       </div>
     </div>
 
-    <!-- 退货弹层（ESC/焦点圈禁/锁滚动见 script） -->
-    <div v-if="rma.open" class="gm-modal-mask" @click.self="rma.open = false">
+    <!-- 退货弹层（开闭走 ui.openModalId：anyOverlay 统一锁滚动，App 根 ESC 委托关闭） -->
+    <div v-if="rmaOpen" class="gm-modal-mask" @click.self="closeModal">
       <div
         ref="rmaBox" class="card gm-modal" style="padding:22px;max-width:420px"
         role="dialog" aria-modal="true" :aria-label="tt('Request a return', '申请退货')"
@@ -657,7 +681,7 @@ async function submitReview(it) {
         <h3 style="font-size:16px;margin-bottom:6px">{{ tt('Request a return', '申请退货') }}</h3>
         <div style="font-size:12.5px;color:var(--gray);margin-bottom:14px">{{ rma.item?.title }}</div>
         <div class="field"><label>{{ tt(`Return quantity (max ${avail(rma.item)})`, `退货数量（最多 ${avail(rma.item)}）`) }}</label>
-          <input v-model.number="rma.qty" class="input" type="number" min="1" :max="avail(rma.item)">
+          <input v-model.number="rma.qty" class="input" type="number" min="1" step="1" :max="avail(rma.item)">
         </div>
         <div class="field"><label>{{ tt('Reason', '退货原因') }}</label>
           <select v-model.number="rma.reason" class="input">
@@ -668,14 +692,14 @@ async function submitReview(it) {
           <textarea v-model="rma.detail" class="input" rows="3" maxlength="500" style="height:auto;padding:10px 14px" :placeholder="tt('Tell us more…', '告诉我们更多细节…')"></textarea>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end">
-          <button class="btn btn-ghost" @click="rma.open = false">{{ tt('Cancel', '取消') }}</button>
-          <button class="btn btn-primary" :class="{ loading: rma.busy }" :disabled="rma.busy || rma.qty < 1 || rma.qty > avail(rma.item)" @click="submitRma">{{ tt('Submit request', '提交申请') }}</button>
+          <button class="btn btn-ghost" @click="closeModal">{{ tt('Cancel', '取消') }}</button>
+          <button class="btn btn-primary" :class="{ loading: rma.busy }" :disabled="rma.busy || !Number.isInteger(rma.qty) || rma.qty < 1 || rma.qty > avail(rma.item)" @click="submitRma">{{ tt('Submit request', '提交申请') }}</button>
         </div>
       </div>
     </div>
 
     <!-- 换货弹层（siblings 一次拉取 + 数量选择） -->
-    <div v-if="ex.open" class="gm-modal-mask" @click.self="ex.open = false">
+    <div v-if="exOpen" class="gm-modal-mask" @click.self="closeModal">
       <div
         ref="exBox" class="card gm-modal" style="padding:22px;max-width:460px"
         role="dialog" aria-modal="true" :aria-label="tt('Request an exchange', '申请换货')"
@@ -719,7 +743,7 @@ async function submitReview(it) {
           <textarea v-model="ex.reason" class="input" rows="2" maxlength="500" style="height:auto;padding:10px 14px" :placeholder="tt('Tell us more…', '告诉我们更多细节…')"></textarea>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
-          <button class="btn btn-ghost" @click="ex.open = false">{{ tt('Cancel', '取消') }}</button>
+          <button class="btn btn-ghost" @click="closeModal">{{ tt('Cancel', '取消') }}</button>
           <button class="btn btn-primary" :class="{ loading: ex.busy }" :disabled="ex.busy || !ex.picked" @click="submitExchange">{{ tt('Submit exchange request', '提交换货申请') }}</button>
         </div>
       </div>
@@ -728,7 +752,7 @@ async function submitReview(it) {
 </template>
 
 <style scoped>
-.gm-modal-mask { position: fixed; inset: 0; background: rgba(31,27,30,.45); display: flex; align-items: center; justify-content: center; z-index: 60; padding: 16px; }
+.gm-modal-mask { position: fixed; inset: 0; background: rgba(31,27,30,.45); display: flex; align-items: center; justify-content: center; z-index: 300; padding: 16px; }
 .gm-modal { width: 100%; }
 .item-actions { display: flex; gap: 8px; margin-top: 8px; padding-left: 68px; flex-wrap: wrap; align-items: center; }
 @media (max-width: 640px) {

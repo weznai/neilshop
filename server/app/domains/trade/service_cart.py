@@ -33,10 +33,25 @@ def get_view(db: Session, cart: Cart, token: str | None) -> dict:
     subtotal = 0
     for e in entries:
         v = variants.get(e.get("variantId"))
-        if not v or not v.is_active:
-            continue
-        p = products.get(v.product_id)
-        if not p or p.status != 1:
+        p = products.get(v.product_id) if v else None
+        # 失效行（变体停用/删除或商品下架）：不再静默吞掉 —— 带标记返回供前端
+        # 展示"已下架"并提供删除，避免 preview/place 409 后 UI 无行可删的死锁
+        if not v or not v.is_active or not p or p.status != 1:
+            qty = int(e.get("qty", 0))
+            items.append({
+                "variant_id": e.get("variantId"),
+                "product_id": v.product_id if v else None,
+                "qty": qty,
+                "price": int(v.price) if v else 0,
+                "title": f"{p.title} · {v.option1_value}" if (p and v) else "",
+                "variant_label": v.option1_value if v else "",
+                "image": p.hero_image if p else None,
+                "product_slug": p.slug if p else "",
+                "stock": 0,
+                "stock_status": "out",
+                "line_total": 0,
+                "inactive": True,
+            })
             continue
         qty = int(e.get("qty", 0))
         line_total = v.price * qty

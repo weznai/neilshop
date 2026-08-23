@@ -13,14 +13,16 @@ const route = useRoute()
 const router = useRouter()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const ready = ref(false)
-/* [href, [en, zh], icon] */
+/* [href, [en, zh], icon]；订阅/推荐入口挂在账户侧栏（后端已有全量接口，此前仅独立页承载） */
 const NAV = [
   ['/account', ['Overview', '总览'], '👤'],
   ['/account/orders', ['Orders', '订单'], '📦'],
   ['/account/returns', ['Returns & Exchanges', '退换货'], '↩️'],
+  ['/subscribe', ['Nail Club', '美甲月盒'], '🗓'],
   ['/account/points', ['Glow Points', '积分'], '⭐'],
   ['/account/address', ['Address Book', '地址簿'], '📍'],
   ['/account/wishlist', ['Wishlist', '心愿单'], '💜'],
+  ['/refer', ['Refer & Earn', '推荐有礼'], '💌'],
   ['/account/settings', ['Settings', '设置'], '⚙️'],
 ]
 /* User.tier：0普通 1银 2金 → 等级色点 */

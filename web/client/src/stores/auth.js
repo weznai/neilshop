@@ -18,6 +18,11 @@ export const useAuthStore = defineStore('auth', {
       if (u) localStorage.setItem('gm_user', JSON.stringify(u))
       else localStorage.removeItem('gm_user')
     },
+    /* 会话过期本地收口（App.vue 401 广播调用）：清用户缓存与积分，降级游客 */
+    expireLocal() {
+      this._cache(null)
+      this.points = null
+    },
     async login(email, password) {
       const d = await req('POST', '/api/account/login', { email, password })
       this._cache(d.user)

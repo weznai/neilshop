@@ -104,8 +104,8 @@ def append_message(db: Session, ticket_no: str, body: TicketMessageIn) -> dict:
     if t.status == 4:
         raise HTTPException(status_code=409, detail="ticket closed")
     db.add(TicketMessage(ticket_id=t.id, sender=1, content=body.content))
-    if t.status == 2:
-        # 等待客户(2) 下客户追加回复 → 自动回流处理中(1)，免客服手动捞单
+    if t.status in (2, 3):
+        # 等待客户(2)/已解决待关(3) 下客户追加回复 → 自动回流处理中(1)，免客服手动捞单
         t.status = 1
     db.commit()
     return {"ok": True}
@@ -269,8 +269,10 @@ def _norm_close_reason(value) -> int | None:
     return int(s) if s.lstrip("-").isdigit() else 9
 
 
-# 状态机：1→2/3/4、2→3/4、3→4；4→1 为重开（0/1 态只能经回复进入）
-_ALLOWED_TRANSITIONS = {(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4), (4, 1)}
+# 状态机：1→2/3/4、2→3/4、3→1/4；4→1 为重开（清空关单审计）；3→1 仅切状态不清 close 字段
+_ALLOWED_TRANSITIONS = {
+    (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 1), (3, 4), (4, 1),
+}
 
 
 def admin_set_status(db: Session, admin: User, ticket_no: str, body: TicketStatusIn) -> dict:

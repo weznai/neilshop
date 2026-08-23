@@ -151,17 +151,22 @@ def _get_by_id(db: Session, sub_id: int) -> Subscription:
     return sub
 
 
-def admin_list(db: Session, status: int | None, page: int, size: int) -> dict:
-    """后台订阅列表：分页 + status 筛选，按 created_at 倒序；
+def admin_list(
+    db: Session, status: int | None, page: int, size: int, q: str | None = None,
+) -> dict:
+    """后台订阅列表：分页 + status 筛选，按 created_at 倒序；q 按用户 email 模糊搜索；
     用户 email 批量回填（避免逐行查询）"""
-    q = (
+    query = (
         db.query(Subscription)
+        .outerjoin(User, User.id == Subscription.user_id)
         .order_by(Subscription.created_at.desc(), Subscription.id.desc())
     )
+    if q:
+        query = query.filter(User.email.ilike(f"%{q}%"))
     if status is not None:
-        q = q.filter(Subscription.status == status)
-    total = q.count()
-    rows = q.offset((page - 1) * size).limit(size).all()
+        query = query.filter(Subscription.status == status)
+    total = query.count()
+    rows = query.offset((page - 1) * size).limit(size).all()
     users = {
         u.id: u for u in repo.users_by_ids(db, {r.user_id for r in rows})
     } if rows else {}
@@ -179,6 +184,7 @@ def admin_list(db: Session, status: int | None, page: int, size: int) -> dict:
                 "status_text": STATUS_TEXT.get(r.status, str(r.status)),
                 "next_billing_at": r.next_billing_at,
                 "resume_at": r.resume_at,
+                "skip_until": r.skip_until,
                 "cancel_reason": r.cancel_reason,
                 "created_at": r.created_at,
             }

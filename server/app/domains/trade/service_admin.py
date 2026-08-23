@@ -79,6 +79,10 @@ def _refund_giftcard_debit(db: Session, order: Order) -> None:
         gc = repo.get_gift_card(db, row.gift_card_id)
         if not gc:
             continue
+        if gc.status == 4:
+            # 作废卡不可复活：余额已清零且作废负流水已记账，跳过回填与流水，
+            # 该笔退款资金走原路退回（卡支付部分）/人工处理，不复活卡余额
+            continue
         gc.balance += row.amount
         if gc.status == 3 and gc.balance > 0:
             gc.status = 1

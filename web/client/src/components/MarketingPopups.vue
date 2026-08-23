@@ -144,10 +144,10 @@ function onConsentThen(p) {
 function onExitOut(e) {
   if (e.relatedTarget || e.clientY > 0) return
   if (Date.now() - landedAt < 15000) return
+  if (readConsent().mar === false) return
   const p = exitPop.value
   if (!p || exitSeen() || showWelcome.value) return
   markExitSeen()
-  exitPop.value = p
   showExit.value = true
   report('shown', p.id)
 }
@@ -168,7 +168,14 @@ onMounted(async () => {
   if (w) {
     const r = w.trigger_rules || {}
     if (r.mobileOnly && !isMobile()) return
-    if (r.exitIntent) return
+    if (r.exitIntent) {
+      /* welcome 配置了 exitIntent：不再定时弹，转为 exit 候选（exit_intent 场景配置优先） */
+      if (!exitPop.value) {
+        exitPop.value = w
+        document.addEventListener('mouseout', onExitOut)
+      }
+      return
+    }
     const delay = Math.max(0, Number(r.delaySec == null ? 7 : r.delaySec)) * 1000
     setTimeout(() => {
       if (showExit.value || seenToday(w)) return

@@ -57,6 +57,11 @@ router.beforeEach((to) => {
   if (!to.meta.public && !session.user) {
     return { path: '/login', query: { next: to.fullPath } }
   }
+  /* 美甲师（role=4）前端作用域：仅在线客服/登录页可达，其余路由重定向 /chat
+   * （后端已对非 chat 的 admin API 收口 403 "artist scope"，此处对齐防止直接输 URL 白屏） */
+  if (session.user && (session.user.role | 0) === 4 && to.path !== '/chat' && to.path !== '/login') {
+    return { path: '/chat' }
+  }
   return true
 })
 

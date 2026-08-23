@@ -36,7 +36,6 @@ const form = ref({ email: '', order_no: '', category: 1, subject: '', content: '
 const errors = ref({})
 const created = ref(null)
 const templates = ref([])
-const tplLoading = ref(false)
 
 const lookup = ref({ email: '', ticket_no: '' })
 const tickets = ref(null)
@@ -63,14 +62,13 @@ function catLabel(c) {
 const fmtTime = (s) => (s ? fmtDateTime(s, '') : '')
 
 async function loadTemplates(cat) {
-  tplLoading.value = true
   try {
     templates.value = await req('GET', '/api/support/templates?category=' + cat) || []
   } catch (_) { templates.value = [] }
-  tplLoading.value = false
 }
 watch(() => form.value.category, (c) => loadTemplates(c), { immediate: true })
 function useTpl(t) {
+  if (form.value.content.trim() && !window.confirm(tt('Replace your drafted message with this template?', '用模板替换你已输入的内容？'))) return
   form.value.content = t.content
   if (!form.value.subject.trim()) form.value.subject = t.title
 }
@@ -136,17 +134,24 @@ async function query() {
     lookupErr.value = tt('Enter the email used on the ticket.', '请填写创建工单时使用的邮箱')
     return
   }
+  /* 登录态用非账户邮箱查询：后端要求 email+ticket_no 双因子 */
+  const foreignEmail = auth.isLoggedIn && !!auth.user
+    && l.email.trim().toLowerCase() !== String(auth.user.email || '').toLowerCase()
   if (!auth.isLoggedIn && !l.ticket_no.trim()) {
     lookupErr.value = tt('Ticket number (TK…) is needed — or sign in to see all your tickets.', '未登录需提供工单号（TK…），或登录后按账户邮箱查看全部工单')
+    return
+  }
+  if (foreignEmail && !l.ticket_no.trim()) {
+    lookupErr.value = tt('That email differs from your account — enter the ticket number (TK…) too.', '该邮箱与账户邮箱不一致，请同时填写工单号（TK…）')
     return
   }
   lookupBusy.value = true
   tickets.value = null
   activeNo.value = ''
   try {
-    /* 登录态：仅凭账户 email 拉取全部工单（后端校验 email 须与账户一致） */
+    /* 登录态且账户邮箱一致：仅凭 email 拉取全部工单（后端校验 email 须与账户一致） */
     let url = '/api/support/tickets?email=' + encodeURIComponent(l.email.trim())
-    if (!auth.isLoggedIn) url += '&ticket_no=' + encodeURIComponent(l.ticket_no.trim())
+    if (!auth.isLoggedIn || foreignEmail) url += '&ticket_no=' + encodeURIComponent(l.ticket_no.trim())
     const d = await req('GET', url)
     tickets.value = d.items || []
     if (!tickets.value.length) lookupErr.value = tt('No ticket found with that combination.', '未找到符合条件的工单')
@@ -171,7 +176,8 @@ async function sendReply() {
     replyBox.value = ''
     await query()
   } catch (e) {
-    ui.toast(e.status === 409 ? tt('This ticket is closed — please open a new one', '该工单已关闭，请提交新工单') : tt('Could not send — please retry', '发送失败，请稍后再试'), 'error')
+    /* 422：TicketMessageIn.content max_length=2000（maxlength 已挡输入，兜底提示） */
+    ui.toast(e.status === 409 ? tt('This ticket is closed — please open a new one', '该工单已关闭，请提交新工单') : e.status === 422 ? tt('Message too long (max 2000 characters)', '内容过长（最多 2000 字）') : tt('Could not send — please retry', '发送失败，请稍后再试'), 'error')
   } finally { replyBusy.value = false }
 }
 
@@ -309,7 +315,7 @@ onMounted(() => {
               ⏳ {{ tt('Our team is waiting for your reply below.', '客服正在等待你的回复，请在下方继续对话。') }}
             </div>
             <div v-else style="margin-top:16px">
-              <textarea v-model="replyBox" class="input" rows="3" style="height:auto;padding-top:10px" :placeholder="tt('Add a reply — it goes straight to our team', '追加回复——直达客服团队')"></textarea>
+              <textarea v-model="replyBox" class="input" rows="3" maxlength="2000" style="height:auto;padding-top:10px" :placeholder="tt('Add a reply — it goes straight to our team', '追加回复——直达客服团队')"></textarea>
               <button class="btn btn-primary btn-sm" :class="{ loading: replyBusy }" :disabled="replyBusy || !replyBox.trim()" style="margin-top:10px" @click="sendReply">{{ tt('Send reply', '发送回复') }}</button>
             </div>
           </div>

@@ -69,6 +69,8 @@ async function loadVariants() {
     variants.value = d.items || []
     varTotal.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(varTotal.value / 50))
+    /* 当前页删空回落：本页 SKU 被删光且不在第 1 页时回退一页重拉一次，防停留在空页 */
+    if (!variants.value.length && state.page > 1) { state.page--; loadVariants(); return }
   } catch (e) { if (t !== varSeq) return; varErr.value = e.message || '请求失败'; toast('SKU 列表加载失败：' + (e.message || ''), 'error') }
 }
 async function loadLow() {

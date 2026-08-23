@@ -356,7 +356,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   .section-title { font-size: 26px; }
   .page-title { font-size: 30px; }
   .pcard-quick { opacity: 1; transform: none; }
-  .footer-grid { grid-template-columns: 1fr; gap: 28px; }
   .footer-links-group { grid-template-columns: 1fr; gap: 16px; }
   .split, .split-side, .split-wide, .acct { grid-template-columns: 1fr; }
   .grid-m-1 { grid-template-columns: 1fr !important; }

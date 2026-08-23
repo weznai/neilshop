@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { useQuerySync } from '../composables/useQuerySync'
+import { money } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 
 const d = ref(null)
@@ -23,10 +24,10 @@ async function refresh() {
 }
 onMounted(refresh)
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const fmtHMS = (dt) => (dt ? dt.toTimeString().slice(0, 8) : '')
 const cur = computed(() => (d.value ? d.value[st.range] : null))
-const aov = computed(() => (cur.value && cur.value.orders ? Math.round(cur.value.gmv_cents / cur.value.orders) : 0))
+/* AOV 已支付口径：gmv_cents 与 paid_count 分子分母一致（后端 _win 契约）；无支付单时为 0 */
+const aov = computed(() => (cur.value && cur.value.paid_count ? Math.round(cur.value.gmv_cents / cur.value.paid_count) : 0))
 
 /* 14 天日序列（daily[].date 后端已是 "MM-DD"） */
 const daily = computed(() => (d.value?.daily || []).slice(-14))
@@ -67,7 +68,7 @@ function sparkH(vals, i) {
 const STATS = computed(() => [
   { lb: '销售额', vl: money(cur.value?.gmv_cents), pct: weekDelta.value.gmv, series: 'gmv' },
   { lb: '订单量', vl: String(cur.value?.orders ?? 0), pct: weekDelta.value.orders, series: 'orders' },
-  { lb: '客单价 AOV', vl: money(aov.value), pct: weekDelta.value.aov, series: 'aov' },
+  { lb: '客单价 AOV', vl: money(aov.value), pct: weekDelta.value.aov, series: 'aov', note: '已支付口径' },
   { lb: '待处理', vl: String(d.value?.pending_orders ?? 0), note: '待发货', series: null, hot: true },
 ])
 
@@ -134,7 +135,7 @@ const reconcile = computed(() => d.value?.reconcile)
           </span>
           <span v-else-if="s.note" class="delta">{{ s.note }}</span>
         </div>
-        <div class="vl">{{ s.vl }}</div>
+        <div class="vl">{{ s.vl }}<small v-if="s.note && s.pct != null" class="vl-note">{{ s.note }}</small></div>
         <!-- 14 天迷你柱状图（rose-light 柱 + 末柱 plum） -->
         <div v-if="s.series && spark[s.series].length" class="spark" aria-hidden="true">
           <div
@@ -185,7 +186,7 @@ const reconcile = computed(() => d.value?.reconcile)
             <span class="todo-txt">待发货订单<i class="todo-arrow">→</i></span>
             <b class="todo-cnt" :class="(d.pending_orders ?? 0) > 0 ? 'c-on' : ''">{{ d.pending_orders ?? 0 }}</b>
           </router-link>
-          <router-link class="todo-row" to="/content">
+          <router-link class="todo-row" to="/content?tab=reviews&pending=1">
             <span class="todo-ico">⭐</span>
             <span class="todo-txt">待审评价<i class="todo-arrow">→</i></span>
             <b class="todo-cnt" :class="(d.pending_reviews ?? 0) > 0 ? 'c-on' : ''">{{ d.pending_reviews ?? 0 }}</b>
@@ -220,8 +221,8 @@ const reconcile = computed(() => d.value?.reconcile)
         </div>
         <div v-if="reconcile" class="recon">
           对账 {{ reconcile.reconcile_date }}：
-          <span :style="{ color: reconcile.diff_payment > 0 ? 'var(--error)' : 'var(--success)' }" title="支付差额，非 0 需人工核对">支付 diff {{ money(reconcile.diff_payment) }}{{ reconcile.diff_payment > 0 ? ' ⚠️' : '' }}</span> ·
-          <span :style="{ color: reconcile.diff_points > 0 ? 'var(--error)' : 'var(--success)' }" title="积分差额，非 0 需人工核对">积分 diff {{ reconcile.diff_points }} 分{{ reconcile.diff_points > 0 ? ' ⚠️' : '' }}</span>
+          <span :style="{ color: reconcile.diff_payment !== 0 ? 'var(--error)' : 'var(--success)' }" title="支付差额，非 0 需人工核对">支付 diff {{ money(reconcile.diff_payment) }}{{ reconcile.diff_payment !== 0 ? ' ⚠️' : '' }}</span> ·
+          <span :style="{ color: reconcile.diff_points !== 0 ? 'var(--error)' : 'var(--success)' }" title="积分差额，非 0 需人工核对">积分 diff {{ reconcile.diff_points }} 分{{ reconcile.diff_points !== 0 ? ' ⚠️' : '' }}</span>
         </div>
       </div>
 
@@ -281,6 +282,8 @@ const reconcile = computed(() => d.value?.reconcile)
 .stat::before{content:"";position:absolute;top:-30px;right:-30px;width:130px;height:110px;border-radius:50%;background:radial-gradient(closest-side,rgba(232,180,184,.16),transparent);pointer-events:none}
 .stat-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .stat .vl{font-size:26px;margin-top:6px;letter-spacing:-.3px}
+/* 卡值旁小注（如 AOV「已支付口径」）：不占行高，灰色弱化 */
+.vl-note{font-size:11px;color:var(--gray);font-weight:400;margin-left:6px;letter-spacing:0}
 .stat .delta{margin-top:0;font-size:11.5px;font-weight:700;padding:2px 9px;border-radius:999px;background:var(--gray-light);color:var(--gray);font-variant-numeric:tabular-nums;white-space:nowrap}
 .stat .delta.up{background:var(--pale-success);color:var(--success)}
 .stat .delta.down{background:var(--pale-error);color:var(--error)}

@@ -152,6 +152,7 @@ async function runPreview() {
     if (/^insufficient_points/.test(m)) pvError.value = i18n.t('co.errPoints')
     else if (/login_required_for_points/.test(m)) pvError.value = i18n.t('co.errLoginPts')
     else if (/^insufficient_stock/.test(m)) pvError.value = i18n.t('co.errStock')
+    else if (/^variant_(inactive|not_found)/.test(m)) pvError.value = tt('Some items are no longer available — please remove them first', '部分商品已下架，请先移除后再下单')
   } finally {
     if (seq === pvSeq) pvBusy.value = false
   }
@@ -196,8 +197,9 @@ async function applyGiftCard() {
 function removeGiftCard() { appliedGc.value = null; gcInput.value = ''; runPreview() }
 
 function useMaxPoints() {
+  /* 后端口径：积分上限 = subtotal - discount_total（积分先于礼品卡抵扣，不预减 GC） */
   const coverable = pv.value
-    ? Math.max(0, pv.value.subtotal - pv.value.discount_total - (pv.value.giftcard_discount || 0))
+    ? Math.max(0, pv.value.subtotal - pv.value.discount_total)
     : cart.subtotalC
   pointsInput.value = String(Math.max(0, Math.min(pointsUsable.value, coverable)))
   schedulePreview()
@@ -211,6 +213,7 @@ async function loadShipMethods() {
   try {
     const d = await req('GET', '/api/checkout/shipping-methods?country=' + country.value)
     shipMethods.value = (d.items && d.items.length) ? d.items : FALLBACK_METHODS
+    if (d.free_shipping_threshold) shipThreshold.value = Number(d.free_shipping_threshold) || 3500
   } catch (_) { shipMethods.value = FALLBACK_METHODS }
   /* 国家切换后原方式可能不存在（如该国无 express 模板）→ 回落首个可选 */
   if (shipMethods.value.length && !shipMethods.value.some((m) => m.method === shipMethod.value)) {
@@ -232,9 +235,12 @@ async function loadPayMethods() {
 }
 
 const methodLabel = (m) => i18n.t(m.method === 'express' ? 'co.express' : 'co.standard')
+/* 免邮门槛：settings 下发（shipping-methods 响应），运营改配置后三处展示统一生效 */
+const shipThreshold = ref(3500)
+const selMethod = computed(() => shipMethods.value.find((m) => m.method === shipMethod.value))
 const freeShipThreshold = computed(() => {
-  const std = shipMethods.value.find((m) => m.method === 'standard')
-  return (std && std.free_over) || 3500 /* settings.free_shipping_threshold 默认 3500 */
+  const m = selMethod.value
+  return (m && m.free_over != null) ? m.free_over : shipThreshold.value
 })
 
 /* 免邮提示（FREESHIP 码 / 满额）：基于 preview 分项推算 */
@@ -256,6 +262,8 @@ function validate() {
   if (!f.addr1.trim()) e.addr1 = true
   if (!f.city.trim()) e.city = true
   if (country.value === 'US' && !US_STATES.includes((f.state || '').trim().toUpperCase())) e.state = true
+  /* 非 US 州/省软必填：DHL 等跨境承运配送单需要省/州信息 */
+  if (country.value !== 'US' && !(f.state || '').trim()) e.state = true
   if (!(f.zip || '').trim()) e.zip = true
   else if (country.value === 'US' && !/^\d{5}(-\d{4})?$/.test(f.zip.trim())) e.zip = true
   errors.value = e
@@ -276,6 +284,12 @@ function mapPlaceError(e) {
   if (m === 'empty_cart') return i18n.t('co.emptyCart')
   if (m === 'gift_card_not_available') return giftCardText(m)
   if (m === 'gift_card_expired') return giftCardText(m)
+  if (m === 'gift_card_insufficient') return tt('Gift card balance changed — please re-apply', '礼品卡余额已变动，请重新应用')
+  if (m.startsWith('variant_inactive') || m.startsWith('variant_not_found')) {
+    cart.refresh().catch(() => {})
+    return tt('Some items are no longer available — please remove them first', '部分商品已下架，请先移除后再下单')
+  }
+  if (m === 'account_blocked') return tt('This account cannot place orders. Contact support.', '该账户暂无法下单，请联系客服')
   return m
 }
 
@@ -307,13 +321,26 @@ async function saveAddrBook() {
 
 async function place() {
   if (placing.value) return
+  if (noPayChannel.value) {
+    ui.toast(tt('Payment is temporarily unavailable — please try again later', '支付通道暂不可用，请稍后再试'), 'error')
+    return
+  }
   if (!validate()) { ui.toast(i18n.t('co.incomplete'), 'error'); return }
   /* 折扣码无效时拦截（后端 place 也会 409，前端先给中文原因） */
   if (appliedCode.value && pv.value && !pv.value.code_valid) {
     ui.toast(reasonText(pv.value.code_reason), 'error'); return
   }
+  if (cart.items.some((i) => i.inactive)) {
+    ui.toast(tt('Some items are no longer available — please remove them first', '部分商品已下架，请先移除后再下单'), 'error')
+    return
+  }
   if (itemsView.value.some((i) => (i.stock || 0) <= 0)) {
     ui.toast(tt('Some items are out of stock — please remove them first', '部分商品缺货，请先移除后再下单'), 'error')
+    return
+  }
+  const overRow = itemsView.value.find((i) => i.stock > 0 && i.qty > i.stock)
+  if (overRow) {
+    ui.toast(tt(`Only ${overRow.stock} left of "${overRow.title}" — please adjust the quantity`, `「${overRow.title}」库存仅剩 ${overRow.stock} 件，请调整数量`), 'error')
     return
   }
   placing.value = true
@@ -331,9 +358,11 @@ async function place() {
       },
       shipping_method: shipMethod.value,
     }
-    if (appliedCode.value && pv.value && pv.value.code_valid) body.code = appliedCode.value
+    /* 折扣码/礼品卡无条件携带（preview 网络失败时不再静默丢折扣；
+       无效码/失效卡由后端 place 409 拦截并回给明确原因） */
+    if (appliedCode.value) body.code = appliedCode.value
     if (pointsApplied.value > 0 && auth.isLoggedIn) body.points = pointsApplied.value
-    if (appliedGc.value && pv.value && !pv.value.gift_card_error) body.gift_card_code = appliedGc.value
+    if (appliedGc.value) body.gift_card_code = appliedGc.value
     if (f.note.trim()) body.note = f.note.trim().slice(0, 255)
     if (gift.value) {
       body.gift_flag = 1
@@ -345,15 +374,19 @@ async function place() {
     /* 下单成功即清折扣码残留（与 SuccessView 同一 key/方式），避免弃单后旧码被自动带上 */
     try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
     if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) await saveAddrBook()
+    /* 记住支付方式选择：SuccessView 二次支付沿用同一 provider */
+    try { localStorage.setItem('gm_pay_provider', paySel.value || '') } catch (_) { /* 隐私模式 */ }
     /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock） */
     const useMock = paySel.value === 'mock'
     try {
       const ib = { order_no: d.order_no, email: f.email.trim() }
       if (paySel.value && paySel.value !== 'mock' && paySel.value !== payDefault.value) ib.provider = paySel.value
       const intent = await req('POST', '/api/payments/create-intent', ib)
-      /* 真实通道仅返回 client_secret 而无 redirect_url：本页无法完成支付，提示并留在当前页 */
+      /* 真实通道仅返回 client_secret 而无 redirect_url：本页无法完成支付 →
+         待支付订单转 /success 托管（有"立即支付"入口），不再滞留在已清空的购物车页 */
       if (intentNoChannel(intent)) {
         ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+        router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
         return
       }
       /* hosted checkout：非 mock 通道返回 redirect_url 时跳转 provider 收银台；
@@ -400,16 +433,23 @@ onMounted(async () => {
 const itemsView = computed(() => {
   if (pv.value && pv.value.items) {
     return pv.value.items.map((l) => ({
-      id: l.variant_id, img: l.image, qty: l.qty, stock: l.stock,
+      id: l.variant_id, img: l.image, qty: l.qty, stock: l.stock, inactive: false,
       title: (l.title || '').split(' · ')[0], variant: (l.title || '').split(' · ')[1] || '',
       lineC: l.line_subtotal,
     }))
   }
-  return cart.items.map((i) => ({ id: i.vid, img: i.img, qty: i.qty, stock: i.stock, title: i.title, variant: i.variant, lineC: (i.priceC || Math.round(i.price * 100)) * i.qty }))
+  return cart.items.map((i) => ({ id: i.vid, img: i.img, qty: i.qty, stock: i.stock, inactive: !!i.inactive, title: i.title, variant: i.variant, lineC: (i.priceC || Math.round(i.price * 100)) * i.qty }))
 })
+/* 无可用支付通道（非 dev 且未配置真实 provider）：禁止下单，避免订单悬挂等超时关单 */
+const noPayChannel = computed(() => payDefault.value === 'none')
+/* 一键移除失效（下架/删除）商品行：解除 preview/place 409 死锁 */
+async function removeInactive() {
+  const dead = cart.items.filter((i) => i.inactive).map((i) => i.vid)
+  for (const vid of dead) await cart.remove(vid, ui)
+}
 const totalC = computed(() => (pv.value && pv.value.grand_total != null
   ? pv.value.grand_total
-  : cart.subtotalC + (shipMethod.value === 'express' ? 1499 : 499)))
+  : cart.subtotalC + (selMethod.value ? selMethod.value.price : 499)))
 </script>
 
 <template>
@@ -461,13 +501,14 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
             <div class="co-3col">
               <div class="field" :class="{ error: errors.city }"><label>{{ i18n.t('co.city') }} *</label><input v-model="form.city" class="input" :class="{ error: errors.city }" autocomplete="address-level2"></div>
               <div class="field" :class="{ error: errors.state }">
-                <label>{{ country === 'US' ? i18n.t('co.state') : i18n.t('co.stateProv') }}<template v-if="country === 'US'"> *</template></label>
+                <label>{{ country === 'US' ? i18n.t('co.state') : i18n.t('co.stateProv') }} *</label>
                 <select v-if="country === 'US'" v-model="form.state" class="input" :class="{ error: errors.state }">
                   <option value="">—</option>
                   <option v-for="s in US_STATES" :key="s" :value="s">{{ s }}</option>
                 </select>
-                <input v-else v-model="form.state" class="input" placeholder="ON">
+                <input v-else v-model="form.state" class="input" :class="{ error: errors.state }" placeholder="ON">
                 <div v-if="country === 'US'" class="field-msg">{{ tt('Select a state', '请选择州') }}</div>
+                <div v-else class="field-msg">{{ tt('Province / state required for international shipping', '国际配送需要省/州信息') }}</div>
               </div>
               <div class="field" :class="{ error: errors.zip }"><label>{{ i18n.t('co.zip') }} *</label><input v-model="form.zip" class="input" :class="{ error: errors.zip }" autocomplete="postal-code"></div>
             </div>
@@ -511,6 +552,9 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               <span v-if="p.id === payDefault" class="tag tag-paid" style="margin-left:8px">{{ i18n.t('co.defaultTag') }}</span>
               <span v-if="p.klarna" class="pay-pill" style="margin-left:8px">KLARNA</span>
             </label>
+            <p v-if="noPayChannel" style="font-size:12.5px;color:var(--error);margin-top:8px">
+              {{ tt('Online payment is temporarily unavailable. Your order can still be placed later — please try again soon.', '在线支付通道暂不可用，请稍后再来下单。') }}
+            </p>
             <p style="font-size:12px;color:var(--gray);margin-top:12px">
               🔒 {{ i18n.t('co.payNote') }}
             </p>
@@ -582,7 +626,9 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
                   <span style="position:absolute;top:-6px;right:-6px;background:var(--ink);color:#fff;font-size:10px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center">{{ i.qty }}</span>
                 </div>
                 <div style="flex:1;min-width:0;font-size:13px">
-                  <b>{{ i.title }}</b><span v-if="(i.stock || 0) <= 0" style="color:var(--error);font-size:11px;font-weight:700;margin-left:6px">{{ tt('Out of stock', '缺货') }}</span>
+                  <b>{{ i.title }}</b><span v-if="i.inactive" style="color:var(--error);font-size:11px;font-weight:700;margin-left:6px">{{ tt('Unavailable', '已下架') }}</span>
+                  <span v-else-if="(i.stock || 0) <= 0" style="color:var(--error);font-size:11px;font-weight:700;margin-left:6px">{{ tt('Out of stock', '缺货') }}</span>
+                  <span v-else-if="i.qty > i.stock" style="color:var(--error);font-size:11px;font-weight:700;margin-left:6px">{{ tt('Only ' + i.stock + ' left', '仅剩 ' + i.stock + ' 件') }}</span>
                   <div style="color:var(--gray);font-size:12px">{{ i.variant }}</div>
                 </div>
                 <b style="font-size:13px;font-variant-numeric:tabular-nums">{{ money(i.lineC) }}</b>
@@ -612,7 +658,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               <span>{{ i18n.t('co.shipping') }}</span>
               <b class="num">
                 <span v-if="pv && pv.shipping_fee === 0" style="color:var(--success)">{{ i18n.t('cart.free') }}</span>
-                <template v-else>{{ money(pv ? pv.shipping_fee : (shipMethod === 'express' ? 1499 : 499)) }}</template>
+                <template v-else>{{ money(pv ? pv.shipping_fee : (selMethod ? selMethod.price : 499)) }}</template>
               </b>
             </div>
             <div v-if="pv && pv.tax != null" class="srow">
@@ -628,7 +674,10 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               {{ money(totalC) }}<span v-if="!pv" style="font-size:11px;color:var(--gray);font-weight:400;margin-left:4px">{{ tt('≈ estimate, final at checkout', '≈ 估算，以下单为准') }}</span>
             </span>
           </div>
-          <button class="btn btn-primary btn-block btn-lg" :class="{ loading: placing }" :disabled="placing" @click="place">
+          <button v-if="cart.items.some((i) => i.inactive)" class="btn btn-secondary btn-block" style="margin-bottom:10px" type="button" @click="removeInactive">
+            {{ tt('Remove unavailable items', '移除已下架商品') }}
+          </button>
+          <button class="btn btn-primary btn-block btn-lg" :class="{ loading: placing }" :disabled="placing || noPayChannel" @click="place">
             {{ placing ? '' : i18n.t('co.place') + ' · ' + money(totalC) }}
           </button>
           <p style="font-size:11.5px;color:var(--gray);margin-top:10px;text-align:center">

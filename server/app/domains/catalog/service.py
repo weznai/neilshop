@@ -18,9 +18,9 @@ from app.services.cache import _cache, cached
 
 from app.domains.catalog import repository as repo
 from app.domains.catalog.schemas import (
-    CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn, CollectionProductsIn,
-    CollectionUpdateIn, ProductBulkIn, ProductCreateIn, ProductUpdateIn,
-    TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
+    BatchStatusIn, CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn,
+    CollectionProductsIn, CollectionUpdateIn, ProductBulkIn, ProductCreateIn,
+    ProductUpdateIn, TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
 )
 _SORTS = ("new", "best", "price_asc", "price_desc")
 
@@ -50,6 +50,8 @@ def _card(p: Product, stock: dict) -> dict:
         "price_max": p.price_max,
         "compare_at_price": p.compare_at_price,
         "hero_image": p.hero_image,
+        # 列表卡 hover 副图（最多 2 张，详情页 gallery 不受此限）
+        "images": (p.images or [])[:2],
         "tags": p.tags or [],
         "is_new": p.is_new,
         "is_best_seller": p.is_best_seller,
@@ -460,6 +462,7 @@ def admin_list_variants(
                 "price": v.price,
                 "stock": v.stock,
                 "safety_stock": v.safety_stock,
+                "weight_gram": v.weight_gram,
                 "is_active": bool(v.is_active),
                 "images": vimgs.get(v.id, [])[:6],
             }
@@ -685,7 +688,8 @@ def admin_create_variant(
     if body.images is not None:
         repo.add_variant_images(db, v.id, body.images)
     _sync_price_range(db, product_id)
-    _log(db, admin, "create", "variant", v.id)
+    # diff 带 product_id：前端 LogsView 深链跳商品编辑页用（entity_id 仍是变体 id）
+    _log(db, admin, "create", "variant", v.id, {"product_id": v.product_id})
     db.commit()
     _invalidate_cache()
     db.refresh(v)
@@ -711,11 +715,55 @@ def admin_update_variant(
         repo.replace_variant_images(db, v.id, images)
     if diff:
         _sync_price_range(db, v.product_id)
+        # diff 带 product_id：前端 LogsView 深链跳商品编辑页用（entity_id 仍是变体 id）
+        diff.setdefault("product_id", v.product_id)
         _log(db, admin, "update", "variant", v.id, diff)
         db.commit()
         _invalidate_cache()
         db.refresh(v)
     return _admin_variant_out(v, repo.variant_images(db, v.id))
+
+
+def admin_batch_status(db: Session, admin: User, body: BatchStatusIn) -> dict:
+    """批量上下架：逐条处理（部分成功语义，失败行返回原因不回滚已成功行）。
+    status=1 发布（任意状态可，校验参照单条 publish 语义：slug/分类完备）；
+    status=2 归档（unpublish 语义，任意状态可）；status=0 恢复草稿（仅归档态 2 可）"""
+    updated = 0
+    failed: list[dict] = []
+    for pid in body.ids:
+        try:
+            p = repo.get_product(db, pid)
+            if not p:
+                raise HTTPException(status_code=404, detail="product not found")
+            if body.status == 1:
+                if not (p.slug or "").strip():
+                    raise HTTPException(status_code=400, detail="slug required")
+                if p.category_id is None or not repo.get_category(db, p.category_id):
+                    raise HTTPException(status_code=400, detail="category not found")
+                p.status = 1
+                # 定时上架不被覆盖：与单条 publish 同口径
+                if not (p.published_at and p.published_at > utcnow()):
+                    p.published_at = utcnow()
+                action = "publish"
+            elif body.status == 2:
+                p.status = 2
+                action = "unpublish"
+            else:
+                if p.status != 2:
+                    raise HTTPException(
+                        status_code=409, detail="only archived can be restored to draft"
+                    )
+                p.status = 0
+                action = "restore_draft"
+            _log(db, admin, action, "product", p.id)
+            db.commit()
+            updated += 1
+        except HTTPException as exc:
+            db.rollback()
+            failed.append({"id": pid, "reason": exc.detail})
+    if updated:
+        _invalidate_cache()
+    return {"updated": updated, "failed": failed}
 
 
 def admin_list_categories(db: Session) -> list[dict]:
@@ -744,11 +792,37 @@ def _category_out(c: Category) -> dict:
     }
 
 
+_CATEGORY_MAX_DEPTH = 32  # parent 链深度上限（兜底防脏数据成环死循环）
+
+
+def _check_category_chain(db: Session, parent_id: int | None, self_id: int | None = None) -> None:
+    """沿 parent 链上溯防环：链上出现自身（self_id，更新时）或既有数据成环/超深
+    → 400 category cycle detected。一次取全表 id→parent_id 映射后内存遍历，不逐级查库。"""
+    if parent_id is None:
+        return
+    parent_map = {c.id: c.parent_id for c in repo.all_categories(db)}
+    seen = {parent_id}
+    cur: int | None = parent_id
+    for _ in range(_CATEGORY_MAX_DEPTH):
+        if self_id is not None and cur == self_id:
+            raise HTTPException(status_code=400, detail="category cycle detected")
+        nxt = parent_map.get(cur)
+        if nxt is None:
+            return  # 走到根，链干净
+        if nxt in seen:
+            raise HTTPException(status_code=400, detail="category cycle detected")
+        seen.add(nxt)
+        cur = nxt
+    raise HTTPException(status_code=400, detail="category cycle detected")
+
+
 def admin_create_category(db: Session, admin: User, body: CategoryCreateIn) -> dict:
     if repo.category_slug_taken(db, body.slug):
         raise HTTPException(status_code=409, detail="slug already exists")
     if body.parent_id is not None and not repo.get_category(db, body.parent_id):
         raise HTTPException(status_code=400, detail="parent category not found")
+    # 新建无自身 id，仅防挂在已成环/超深的脏链下
+    _check_category_chain(db, body.parent_id)
     c = Category(slug=body.slug, name=body.name, parent_id=body.parent_id)
     repo.add_category(db, c)
     db.commit()
@@ -771,6 +845,8 @@ def admin_update_category(db: Session, admin: User, category_id: int, body: Cate
             raise HTTPException(status_code=400, detail="parent is self")
         if not repo.get_category(db, data["parent_id"]):
             raise HTTPException(status_code=400, detail="parent category not found")
+        # 沿新 parent 链上溯：链上出现自身（如 A→B→A）→ 400 成环
+        _check_category_chain(db, data["parent_id"], self_id=c.id)
     if data.get("is_active") is not None:
         data["is_active"] = int(data["is_active"])
     diff: dict = {}

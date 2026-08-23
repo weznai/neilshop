@@ -7,6 +7,9 @@ import { useUiStore } from './ui'
 
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
+/* setQty 请求序列守卫：并发改量响应乱序时，只应用最新一次的视图（对齐 preview 的 pvSeq） */
+let _qtySeq = 0
+
 function readCartCache() {
   try { return JSON.parse(localStorage.getItem('gm_cart') || '[]') || [] } catch (_) { return [] }
 }
@@ -28,6 +31,8 @@ function viewToItems(view) {
     img: i.image,
     stock: i.stock,
     stockStatus: i.stock_status || '',
+    /* 失效行（变体停用/删除或商品下架，服务端带 inactive 标记返回）：只允许删除 */
+    inactive: !!i.inactive,
   }))
 }
 
@@ -83,8 +88,9 @@ export const useCartStore = defineStore('cart', {
     async setQty(variantId, qty, ui) {
       try {
         if (qty < 1) return this.remove(variantId, ui)
+        const seq = ++_qtySeq
         /* 前端按库存上限先夹紧（后端 /api/cart/items/{id} 也会 409 拒绝）；
-           OOS 行不允许增量（stock<=0 时上限冻结在当前数量，防止 +1 死循环 409） */
+            OOS 行不允许增量（stock<=0 时上限冻结在当前数量，防止 +1 死循环 409） */
         const it = this.items.find((x) => x.vid === variantId)
         if (it && it.stock <= 0 && qty > it.qty) {
           if (ui) ui.toast(tt('Out of stock', '库存不足'), 'error')
@@ -96,9 +102,14 @@ export const useCartStore = defineStore('cart', {
           qty = max
           if (it && it.qty === qty) return
         }
-        this._apply(await req('PUT', '/api/cart/items/' + variantId, { qty }))
+        const view = await req('PUT', '/api/cart/items/' + variantId, { qty })
+        if (seq !== _qtySeq) return /* 已有更新的改量在途，丢弃过期响应 */
+        this._apply(view)
         this.removed = null
-      } catch (e) { this._err(e, ui) }
+      } catch (e) {
+        if (e && e.status === 404) { /* 行已被服务端剔除（如变体删除）→ 刷新对齐 */ }
+        this._err(e, ui)
+      }
     },
     async remove(variantId, ui) {
       const snap = this.items.find((x) => x.vid === variantId) || null
@@ -118,15 +129,17 @@ export const useCartStore = defineStore('cart', {
       } catch (e) { this._err(e, ui) }
     },
     dismissRemoved() { this.removed = null },
-    /* 登录后合并游客车（登录流程调用）：无游客车时服务端幂等成功，抛错均为真实失败 */
+    /* 登录后合并游客车（登录流程调用）：无游客 token 时不发请求（空串会被 422 拒绝） */
     async mergeAfterLogin() {
       let token = ''
       try { token = localStorage.getItem('gm_cart_token') || '' } catch (_) { /* 隐私模式 */ }
-      try {
-        await req('POST', '/api/cart/merge', { token })
-      } catch (e) {
-        if (!e || e.status !== 404) {
-          useUiStore().toast(tt('Failed to merge your cart, some items may be missing', '购物车合并失败，部分商品可能未带入'), 'error')
+      if (token) {
+        try {
+          await req('POST', '/api/cart/merge', { token })
+        } catch (e) {
+          if (!e || e.status !== 404) {
+            useUiStore().toast(tt('Failed to merge your cart, some items may be missing', '购物车合并失败，部分商品可能未带入'), 'error')
+          }
         }
       }
       await this.refresh().catch(() => {})

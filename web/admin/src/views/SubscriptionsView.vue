@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
-import { money, dt } from '../composables/format'
+import { money, dt, dDate } from '../composables/format'
 import { useQuerySync } from '../composables/useQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -39,11 +39,9 @@ async function load(p = 1) {
     const params = new URLSearchParams({ page: p, size: SIZE })
     if (st.status !== '') params.set('status', st.status)
     const s = st.q.trim()
-    if (s) params.set('q', s)   /* 后端列表暂未接 q：下发兼容 + 下方本地兜底过滤 */
+    if (s) params.set('q', s)   /* 后端已支持 q 服务端搜索（邮箱），无需本地兜底 */
     const d = await req('GET', '/api/admin/member/subscriptions?' + params)
-    let items = d.items || []
-    if (s) items = items.filter((r) => (r.email || '').toLowerCase().includes(s.toLowerCase()))
-    subs.value = items
+    subs.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, d.pages ?? 1)
     st.page = d.page || p
@@ -163,16 +161,17 @@ async function cancelConfirm() {
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
         <th style="padding:10px">订阅</th><th>方案</th><th>金额</th><th>状态</th>
-        <th>下一期扣款</th><th>恢复时间</th><th>创建时间</th><th style="text-align:right">操作</th>
+        <th>下一期扣款</th><th>恢复时间</th><th>跳过至</th><th>创建时间</th><th style="text-align:right">操作</th>
       </tr></thead>
       <tbody>
         <tr v-for="r in subs" :key="r.id" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:10px"><b>#{{ r.id }}</b><div style="font-size:11.5px;color:var(--gray)">{{ r.email || ('user#' + r.user_id) }}</div></td>
+          <td style="padding:10px"><b>#{{ r.id }}</b><div style="font-size:11.5px;color:var(--gray)"><router-link v-if="r.email" :to="{ path: '/members', query: { q: r.email } }" style="color:var(--plum)">{{ r.email }}</router-link><template v-else>user#{{ r.user_id }}</template></div></td>
           <td>{{ r.plan_text || '—' }}<span v-if="r.style_mode" style="font-size:11.5px;color:var(--gray)"> · {{ r.style_mode === 2 ? '盲盒惊喜' : '自选' }}</span></td>
           <td style="white-space:nowrap">{{ r.price_cents != null ? money(r.price_cents) : '—' }}</td>
           <td><span class="tag" :class="stCls(r.status)">{{ r.status_text || r.status }}</span></td>
           <td style="color:var(--gray);white-space:nowrap">{{ dt(r.next_billing_at) || '—' }}</td>
           <td style="color:var(--gray);white-space:nowrap">{{ r.resume_at ? dt(r.resume_at) : '—' }}</td>
+          <td style="color:var(--gray);white-space:nowrap">{{ r.skip_until ? '跳过至 ' + dDate(r.skip_until) : '—' }}</td>
           <td style="color:var(--gray);white-space:nowrap">{{ dt(r.created_at) || '—' }}</td>
           <td style="text-align:right;white-space:nowrap">
             <template v-if="r.status === 1">
@@ -195,7 +194,7 @@ async function cancelConfirm() {
       <button class="modal-x" @click="!actBusy && (pauseDlg = false)">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">⏸ 暂停订阅 #{{ target?.id }}</h3>
       <p style="font-size:13px;color:var(--gray);margin-bottom:14px">
-        暂停期间不扣款、不发货；可指定恢复时间（可选，留空则手动恢复）。
+        暂停期间不扣款、不发货；恢复时间仅作记录备忘（到期不会自动恢复，需手动恢复）。
       </p>
       <div class="field">
         <label>恢复时间（可选）</label>

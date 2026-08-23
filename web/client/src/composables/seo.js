@@ -25,6 +25,9 @@ const SITE = {
 const ROUTE_SEO = {
   store: 'Shop all handmade press-on nail sets and magnetic lashes — every shape, length and finish. Reusable, salon-quality glam shipped free over $35.',
   product: 'Handmade press-on nails with a salon-quality finish — pick your shape, length and art. 2-week wear, application in 5 minutes.',
+  collections: 'Explore curated GLOWMAG collections — themed press-on nail and magnetic lash sets for every mood, occasion and vibe.',
+  collection: 'A curated GLOWMAG collection — themed press-on nail and magnetic lash sets picked by our stylists.',
+  search: 'Search GLOWMAG — handmade press-on nails and magnetic lashes in every shape, style and finish.',
   sale: 'Limited-time deals on handmade press-on nails and magnetic lashes — save on best sellers and last-chance glam while sets last.',
   bundles: 'Bundle & save on press-on nails, magnetic lashes and care kits — curated GLOWMAG sets at a better price.',
   gallery: 'Real GLOWMAG glam from the community — press-on nails and magnetic lashes worn by customers worldwide. #GLOWMAGGlam',

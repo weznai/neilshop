@@ -6,25 +6,34 @@ import ProductCard from '../components/ProductCard.vue'
 
 const items = ref([])
 const loaded = ref(false)
+const loadErr = ref(false)
 const zh = () => i18n.lang === 'zh'
 
 /* 后端已支持 on_sale 筛选（compare_at_price > price_min）；
  * 促销来源 = on_sale=1 ∪ tag=sale（运营打标但未设划线价的商品），按折扣力度排序 */
-onMounted(async () => {
+async function load() {
+  loaded.value = false
+  loadErr.value = false
   const isDeal = (p) => p.compare_at_price && p.compare_at_price > (p.price_min ?? p.price ?? 0)
   const offPct = (p) => (isDeal(p) ? 1 - (p.price_min ?? p.price) / p.compare_at_price : 0)
+  const locale = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
   try {
     const [onSale, tagged] = await Promise.all([
-      req('GET', '/api/catalog/products?on_sale=1&size=100').catch(() => null),
-      req('GET', '/api/catalog/products?tag=sale&size=100').catch(() => null),
+      req('GET', '/api/catalog/products?on_sale=1&size=100' + locale).catch(() => null),
+      req('GET', '/api/catalog/products?tag=sale&size=100' + locale).catch(() => null),
     ])
+    if (!onSale && !tagged) throw new Error('load failed') /* 两路全失败 → 错误态（区别于无促销品） */
     const map = new Map()
     for (const p of ((onSale && onSale.items) || [])) map.set(p.id, p)
     for (const p of ((tagged && tagged.items) || [])) if (!map.has(p.id)) map.set(p.id, p)
     items.value = [...map.values()].sort((a, b) => offPct(b) - offPct(a))
-  } catch (_) { items.value = [] }
+  } catch (_) {
+    items.value = []
+    loadErr.value = true
+  }
   loaded.value = true
-})
+}
+onMounted(load)
 
 /* 头图折扣宣称按真实数据计算：划线价 > 现价的最大折扣百分比（向下取整） */
 const maxOff = computed(() => {
@@ -63,7 +72,12 @@ const maxOff = computed(() => {
         </template>
         <ProductCard v-for="p in items" :key="p.id" :p="p" />
       </div>
-      <div v-if="loaded && !items.length" style="text-align:center;color:var(--gray);padding:40px 0">
+      <div v-if="loaded && loadErr" style="text-align:center;color:var(--gray);padding:40px 0">
+        <div style="font-size:44px;margin-bottom:10px">⚠️</div>
+        {{ zh() ? '促销商品加载失败，请稍后重试' : 'Failed to load sale items — please retry' }}
+        <div style="margin-top:14px"><button class="btn btn-secondary" @click="load">⟳ {{ zh() ? '重试' : 'Retry' }}</button></div>
+      </div>
+      <div v-else-if="loaded && !items.length" style="text-align:center;color:var(--gray);padding:40px 0">
         <div style="font-size:44px;margin-bottom:10px">💅</div>
         {{ zh() ? '促销补货中，先去逛逛新品' : 'Sale restocking — check back soon' }} ·
         <router-link to="/store?sort=new" style="color:var(--plum)">{{ zh() ? '新品专区' : 'New arrivals' }}</router-link>

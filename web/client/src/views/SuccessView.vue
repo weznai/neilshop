@@ -7,11 +7,13 @@ import { useCartStore } from '../stores/cart'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { statusLabel, statusTag } from '../composables/orderStatus'
+import { useArmConfirm } from '../composables/useArmConfirm'
 
 const route = useRoute()
 const cart = useCartStore()
 const auth = useAuthStore()
 const ui = useUiStore()
+const { is: armIs, hit: armHit } = useArmConfirm()
 
 const zh = computed(() => i18n.lang === 'zh')
 const t = (en, cn) => (zh.value ? cn : en)
@@ -59,15 +61,24 @@ async function refreshStatus() {
 }
 onUnmounted(stopPolling)
 
-/* 待支付订单：创建支付意向 + mock 支付（演示通道；真实 provider 走 webhook）；游客单带下单 email 过归属校验 */
+/* 待支付订单：创建支付意向 + mock 支付（演示通道；真实 provider 走 webhook）；游客单带下单 email 过归属校验
+   provider 沿用结算页选择（localStorage gm_pay_provider，place 成功时写入）；hosted 通道跳转收银台 */
 async function payNow() {
   if (paying.value || !orderNo.value) return
   paying.value = true
   const em = email.value || undefined
   try {
-    const intent = await req('POST', '/api/payments/create-intent', { order_no: orderNo.value, email: em })
+    let provider = ''
+    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
+    const ib = { order_no: orderNo.value, email: em }
+    if (provider && provider !== 'mock') ib.provider = provider
+    const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intentNoChannel(intent)) {
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
+    if (provider !== 'mock' && intent && intent.redirect_url) {
+      window.location.href = intent.redirect_url
       return
     }
     try {
@@ -83,6 +94,24 @@ async function payNow() {
     if (/order_not_pending/.test(m)) { ui.toast(t('This order is already paid', '该订单已支付'), 'success'); await fetchOrder() }
     else ui.toast(m || i18n.t('pay.failed'), 'error')
   } finally { paying.value = false }
+}
+
+/* 待支付订单自助取消：游客 email 双因子 / 登录属主（后端与详情页同口径），两段式确认防误触 */
+async function cancelOrder() {
+  if (!orderNo.value) return
+  try {
+    const q = email.value ? '?email=' + encodeURIComponent(email.value) : ''
+    await req('POST', '/api/orders/' + encodeURIComponent(orderNo.value) + '/cancel' + q)
+    ui.toast(t('Order canceled', '订单已取消'), 'success')
+    stopPolling()
+    await fetchOrder()
+  } catch (e) {
+    const m = (e.data && e.data.detail) || ''
+    ui.toast(/not_cancellable/.test(m)
+      ? t('This order can no longer be canceled', '该订单已无法取消')
+      : m || t('Failed to cancel, please try again', '取消失败，请重试'), 'error')
+    await fetchOrder()
+  }
 }
 
 async function copyNo() {
@@ -141,6 +170,11 @@ onMounted(async () => {
             {{ t(`Pay now · ${money(order.grand_total)}`, `立即支付 · ${money(order.grand_total)}`) }}
           </button>
           <button v-if="pollTimedOut" class="btn btn-secondary" @click="refreshStatus">⟳ {{ t('Refresh status', '刷新状态') }}</button>
+          <button
+            class="btn btn-ghost btn-sm" :class="{ arm: armIs('cancel') }"
+            style="margin-left:auto"
+            @click="armHit('cancel', cancelOrder)"
+          >{{ armIs('cancel') ? t('Tap again to cancel', '再点一次确认取消') : t('Cancel order', '取消订单') }}</button>
         </div>
       </div>
 
@@ -155,7 +189,7 @@ onMounted(async () => {
         <div style="display:flex;justify-content:space-between"><span>{{ t('Total', '合计') }}</span><b style="color:var(--plum)">{{ money(order.grand_total) }}</b></div>
         <div v-if="order.discount_total" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ t('Discounts', '优惠') }}</span><span>−{{ money(order.discount_total) }}</span></div>
         <div v-if="order.points_used" style="display:flex;justify-content:space-between;color:var(--gray)"><span>⭐ {{ t('Points used', '使用积分') }}</span><span>{{ order.points_used }} pts (−{{ money(order.points_discount) }})</span></div>
-        <div v-if="order.points_earned" style="display:flex;justify-content:space-between;color:var(--success)"><span>🎁 {{ t('Points earned (frozen till delivery)', '本单获得积分（确认收货后解冻）') }}</span><b style="color:var(--gold)">+{{ order.points_earned }} pts</b></div>
+        <div v-if="order.points_earned" style="display:flex;justify-content:space-between;color:var(--success)"><span>🎁 {{ t('Points earned (unfreeze after return window)', '本单获得积分（退货期结束后解冻）') }}</span><b style="color:var(--gold)">+{{ order.points_earned }} pts</b></div>
         <div v-if="order.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>💳 {{ t('Gift card', '礼品卡') }}</span><span>−{{ money(order.giftcard_discount) }}</span></div>
         <div style="display:flex;justify-content:space-between"><span>{{ t('Status', '状态') }}</span>
           <span class="tag" :class="statusTag(order.status)">{{ statusLabel(order.status) }}</span>

@@ -15,6 +15,7 @@ const page = ref(1)
 const size = 12
 const loading = ref(false)
 const loaded = ref(false)
+const loadErr = ref(false)
 const lbIdx = ref(-1)
 const moreErr = ref(false)
 
@@ -85,6 +86,7 @@ async function load(reset) {
   if (loading.value) return
   loading.value = true
   moreErr.value = false
+  if (reset) loadErr.value = false
   const target = reset ? 1 : page.value + 1
   try {
     const d = await req('GET', `/api/content/ugc?page=${target}&size=${size}`)
@@ -92,7 +94,7 @@ async function load(reset) {
     total.value = d.total || 0
     page.value = target
   } catch (_) {
-    if (reset) shots.value = []
+    if (reset) { shots.value = []; loadErr.value = true }
     else moreErr.value = true
   } finally {
     loading.value = false
@@ -169,8 +171,8 @@ function lbTe(e) {
   if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) (dx < 0 ? lbNext : lbPrev)()
 }
 
-/* API 无数据时的占位示例卡（不可点开灯箱） */
-const usingSeed = computed(() => !shots.value.length)
+/* 成功加载且无数据时的占位示例卡（不可点开灯箱；加载失败走错误卡） */
+const usingSeed = computed(() => !loadErr.value && !shots.value.length)
 const SEED = Array.from({ length: 8 }, (_, i) => ({
   image_url: `https://placehold.co/300x300/F5D8DA/6D2E46?text=Look+${i + 1}`,
   instagram_handle: '@glowmag_fan',
@@ -202,6 +204,14 @@ function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/55
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="skeleton g-sk"></div>
         </template>
+        <div v-else-if="loadErr" class="card" style="padding:48px;text-align:center">
+          <div style="font-size:36px;margin-bottom:8px">💅</div>
+          <b>{{ tt('Failed to load the gallery', '买家秀加载失败') }}</b>
+          <p style="font-size:13.5px;color:var(--gray);margin:6px 0 14px">
+            {{ tt('Check your network and try again — community looks are waiting.', '请检查网络后重试，社区穿搭都在等你。') }}
+          </p>
+          <button class="btn btn-primary btn-sm" :class="{ loading }" :disabled="loading" @click="load(true)">{{ tt('Retry', '重试') }}</button>
+        </div>
         <template v-else>
           <div
             v-for="(u, i) in usingSeed ? SEED : shots" :key="u.id || i"

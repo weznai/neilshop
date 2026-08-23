@@ -28,6 +28,7 @@ const EVENT_LABEL = {
   rma_canceled: '退货申请已取消', rma_rejected: '退货申请已拒绝',
   exchange_created: '换货申请', exchange_approved: '换货已批准', exchange_rejected: '换货已拒绝',
   exchange_diff_paid: '换货差价已付', exchange_shipped: '换货已重发', exchange_completed: '换货完成',
+  exchange_withdrawn: '用户撤回换货', exchange_diff_intent: '换货差价建单', exchange_diff_refunded: '换货差价退款',
   giftcard_created: '礼品卡购卡', points_granted: '积分发放',
   address_updated: '收件地址修改',
 }
@@ -49,14 +50,22 @@ const tlItems = computed(() => {
   return t.length > TL_LIMIT && !tlOpen.value ? t.slice(0, TL_LIMIT) : t
 })
 
-/* 按订单号加载详情（初载/深链切换共用） */
+/* 按订单号加载详情（初载/深链切换共用）：请求序号守卫，no 快速变化时旧响应不覆盖新数据 */
+let fetchSeq = 0
 async function fetchOrder(no) {
   if (!no) { err.value = '缺少订单号'; o.value = null; return }
+  const seq = ++fetchSeq
   err.value = ''
   o.value = null
   tlOpen.value = false
-  try { o.value = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(no)) }
-  catch (e) { err.value = (e.status === 404 ? '订单不存在' : '加载失败 ' + (e.message || '')) }
+  try {
+    const d = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(no))
+    if (seq !== fetchSeq) return
+    o.value = d
+  } catch (e) {
+    if (seq !== fetchSeq) return
+    err.value = (e.status === 404 ? '订单不存在' : '加载失败 ' + (e.message || ''))
+  }
 }
 onMounted(() => fetchOrder(route.query.no))
 /* 深链响应：已停留在 /order-detail 时 no 变化（列表跳转另一单）重新加载 */
@@ -105,6 +114,8 @@ function eventText(t) {
       else if (d.reason === 'user') s += '（用户取消）'
       else if (d.reason === 'admin') s += '（管理员操作）'
       else if (d.reason === 'user_cancel_paid') s += '（用户支付后取消）'
+      else if (d.reason === 'admin_confirm') s += '（管理员代确认）'
+      else if (d.reason === 'user_confirm_received') s += '（客户确认收货）'
       return s
     }
     case 'refund_issued':
@@ -182,7 +193,7 @@ async function deliverConfirm() {
     toast('已标记妥投 ✓', 'success')
     deliverDlg.value = false
     await reload()
-  } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  } catch (e) { toast('操作失败：' + (mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message), 'error') }
   submitting.value = false
 }
 async function shipConfirm() {
@@ -196,7 +207,7 @@ async function shipConfirm() {
     toast('已发货 ✓', 'success')
     shipDlg.value = false
     await reload()
-  } catch (e) { toast('发货失败：' + (e.data?.detail || e.message), 'error') }
+  } catch (e) { toast('发货失败：' + (mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message), 'error') }
   submitting.value = false
 }
 async function refundConfirm() {
@@ -257,7 +268,7 @@ async function noteConfirm() {
     toast('备注已添加', 'success')
     noteDlg.value = false
     await reload()
-  } catch (e) { toast('添加失败：' + (e.data?.detail || e.message), 'error') }
+  } catch (e) { toast('添加失败：' + (mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message), 'error') }
   submitting.value = false
 }
 
@@ -277,14 +288,14 @@ async function prepareConfirm() {
   submitting.value = false
 }
 
-/* ===== 代确认完成（status=4→5）：替代客户 confirm_received，完成时解冻积分 ===== */
+/* ===== 代确认完成（status=4→5）：替代客户 confirm_received（积分解冻由 worker 按退货期驱动，非此处） ===== */
 const doneDlg = ref(false)
 async function doneConfirm() {
   if (submitting.value) return
   submitting.value = true
   try {
     await req('POST', `/api/admin/trade/orders/${o.value.order_no}/mark-completed`)
-    toast('订单已完成，冻结积分已解冻发放 ✓', 'success')
+    toast('订单已完成，积分将由系统在退货期满后自动解冻发放 ✓', 'success')
     doneDlg.value = false
     await reload()
   } catch (e) {
@@ -523,7 +534,7 @@ async function addrConfirm() {
     <div class="modal-box" style="max-width:420px">
       <button class="modal-x" @click="!submitting && (shipDlg = false)">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">📦 发货 {{ o.order_no }}</h3>
-      <p style="font-size:13px;color:var(--gray);margin-bottom:14px">发货后扣库存并向客户发送物流邮件。</p>
+      <p style="font-size:13px;color:var(--gray);margin-bottom:14px">发货后向客户发送物流邮件。</p>
       <div class="field">
         <label>承运商</label>
         <select v-model="carrier" class="input">
@@ -532,7 +543,7 @@ async function addrConfirm() {
       </div>
       <div class="field">
         <label>物流单号</label>
-        <input v-model="tracking" class="input" placeholder="9400…">
+        <input v-model="tracking" class="input" placeholder="9400…" @keydown.enter.prevent="shipConfirm">
       </div>
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="submitting" @click="shipConfirm">{{ submitting ? '发货中…' : '确认发货' }}</button>
     </div>
@@ -610,7 +621,7 @@ async function addrConfirm() {
   <ConfirmDialog
     :open="doneDlg"
     title="代确认完成"
-    :body="`确认代替客户完成 ${o?.order_no}？本单冻结积分将解冻发放，订单进入终态「已完成」，此后不可再发货/退款。`"
+    :body="`确认代替客户完成 ${o?.order_no}？订单将进入「已完成」，积分将由系统在退货期满后自动解冻发放。`"
     confirm-text="确认完成"
     :busy="submitting"
     @confirm="doneConfirm"

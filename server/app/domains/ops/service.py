@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.core.security import hash_password
-from app.models import AdminLog, Review, UgcSubmission, User
+from app.models import AdminLog, ReconciliationDaily, Review, UgcSubmission, User
 from app.domains.content import service as content_service
 from app.domains.content.schemas import ReasonIn
 from app.domains.member.service_account import _gdpr_delay_days, anonymize_user
@@ -46,7 +46,10 @@ def dashboard(db: Session) -> dict:
     def _win(start):
         orders = repo.orders_placed_since(db, start)
         gmv = repo.paid_gmv_since(db, start)
-        return {"gmv_cents": int(gmv), "orders": int(orders)}
+        paid = repo.paid_orders_since(db, start)
+        # gmv_cents 与 paid_count 同为已支付口径：AOV = gmv_cents / paid_count（分子分母一致）；
+        # orders 仍为下单数（漏斗/下单卡展示），paid_count 供前端算 AOV
+        return {"gmv_cents": int(gmv), "orders": int(orders), "paid_count": int(paid)}
 
     views = repo.newsletter_count(db) + repo.cookie_consent_count(db)
     add_to_cart = repo.carts_with_items_count(db)
@@ -190,10 +193,11 @@ def member_risk(db: Session, admin: User, user_id: int, body: RiskIn) -> dict:
 
 
 def list_admins(db: Session) -> dict:
-    """管理账号列表（供工单指派选择器）：role>=2 且启用中，按 id 升序"""
+    """管理账号列表（供工单指派选择器）：role>=2 且启用中，按 id 升序；
+    美甲师(role=4)虽可登录后台但只处理聊天会话，不进工单指派候选"""
     rows = (
         db.query(User)
-        .filter(User.role >= 2, User.status == 1)
+        .filter(User.role >= 2, User.role != 4, User.status == 1)
         .order_by(User.id.asc())
         .all()
     )
@@ -422,6 +426,20 @@ def reconciliations(
         "size": size,
         "pages": (total + size - 1) // size,
     }
+
+
+def resolve_reconciliation(db: Session, admin: User, rec_id: int) -> dict:
+    """对账差异人工核销：0平/1告警 → 2已处理（死胡同出口，操作留审计）；
+    已处理 → 409"""
+    rec = db.get(ReconciliationDaily, rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="reconciliation not found")
+    if rec.status == 2:
+        raise HTTPException(status_code=409, detail="already resolved")
+    rec.status = 2
+    log_admin(db, admin, "resolve", "reconcile", rec.id, {})
+    db.commit()
+    return {"ok": True}
 
 
 # DataRequest 状态：0受理 1完成（worker/用户侧既有语义）+ 2驳回（后台审核扩展）

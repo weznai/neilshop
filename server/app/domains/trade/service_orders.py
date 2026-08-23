@@ -185,9 +185,15 @@ def _cancel_paid_unshipped(db: Session, order: Order, user: User) -> dict:
     return {"order_no": order.order_no, "status": order.status, "refund": refund}
 
 
-def cancel_order(db: Session, order_no: str, user: User) -> dict:
+def cancel_order(
+    db: Session, order_no: str, user: Optional[User],
+    email: Optional[str] = None,
+) -> dict:
     order = _get_order(db, order_no.strip().upper())
-    if order.user_id != user.id:
+    # 归属判定与 order_detail 同口径：登录属主 或 email 双因子（游客待付单自助取消）
+    is_owner = user is not None and order.user_id == user.id
+    is_email = email is not None and email.strip().lower() == order.email.lower()
+    if not (is_owner or is_email):
         raise HTTPException(status_code=404, detail="order_not_found")
     if order.status == 0:
         return _cancel_pending(db, order, user)

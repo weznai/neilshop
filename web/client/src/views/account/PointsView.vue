@@ -125,6 +125,9 @@ const RULES = [
         <div v-for="(r, i) in expiring.slice(0, 3)" :key="i" class="exp-row">
           +{{ r.change }} {{ tt('pts ·', '分 ·') }} <span class="exp-chip">{{ fmtDate(r.expires_at) }}</span> {{ tt('expires', '过期') }}（{{ reasonText(r) }}）
         </div>
+        <div v-if="expiring.length > 3" style="color:var(--gray);font-size:12px">
+          {{ tt(`+ ${expiring.length - 3} more — see details in points history`, `还有 ${expiring.length - 3} 笔——详见积分流水`) }}
+        </div>
       </div>
     </div>
 
@@ -157,11 +160,12 @@ const RULES = [
                 <div class="pl-bal">{{ tt('Balance', '余额') }} {{ h.balance_after }}</div>
               </span>
             </div>
-            <div v-if="pages() > 1" style="display:flex;gap:8px;align-items:center;justify-content:center;padding-top:10px">
-              <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="go(page - 1)">←</button>
-              <span style="font-size:12.5px;color:var(--gray)">{{ tt(`Page ${page} / ${pages()}`, `第 ${page} / ${pages()} 页`) }}</span>
-              <button class="btn btn-secondary btn-sm" :disabled="page >= pages()" @click="go(page + 1)">→</button>
-            </div>
+          </div>
+          <!-- 分页控件置于滚动容器外：不滚到底也可见 -->
+          <div v-if="ledger.length && pages() > 1" style="display:flex;gap:8px;align-items:center;justify-content:center;padding-top:10px">
+            <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="go(page - 1)">←</button>
+            <span style="font-size:12.5px;color:var(--gray)">{{ tt(`Page ${page} / ${pages()}`, `第 ${page} / ${pages()} 页`) }}</span>
+            <button class="btn btn-secondary btn-sm" :disabled="page >= pages()" @click="go(page + 1)">→</button>
           </div>
           <div v-else style="font-size:13.5px;color:var(--gray)">{{ tt('No points yet — place an order to start earning ✨', '暂无积分记录，下单即可开始攒分 ✨') }}</div>
         </template>

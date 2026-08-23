@@ -5,6 +5,7 @@ import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
 import { useQuerySync } from '../composables/useQuerySync'
+import { ROLE_LABEL, ROLE_BADGE } from '../constants/roles'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -83,6 +84,8 @@ const aiPrev = ref(null)          /* 提示词预览 {prompt, default_persona, s
 const aiPrevOpen = ref(false)
 const aiPrevBusy = ref(false)
 const aiReidx = ref(false)
+/* RAG 全量重建：danger 确认弹窗（覆盖所有 FAQ 向量） */
+const rebuildDlg = ref(false)
 /* 用户是否输入了新 Key（空=沿用已保存的，不回传覆盖） */
 const aiDirtyKey = computed(() => aiForm.api_key.trim().length > 0)
 
@@ -107,6 +110,7 @@ async function loadAi() {
   }
 }
 
+/* 保存 AI 配置：成功 true / 失败 false（内部已 toast 具体原因），供预览/测试前判断是否继续 */
 async function saveAi() {
   const body = {
     base_url: aiForm.base_url.trim(), model: aiForm.model.trim(),
@@ -115,7 +119,7 @@ async function saveAi() {
     embedding_model: aiForm.embedding_model.trim(),
   }
   if (aiDirtyKey.value) body.api_key = aiForm.api_key.trim()
-  if (!body.model) { toast('模型名必填', 'error'); return }
+  if (!body.model) { toast('模型名必填', 'error'); return false }
   aiSaving.value = true
   try {
     await req('PUT', '/api/admin/ai/config', body)
@@ -123,16 +127,19 @@ async function saveAi() {
     aiForm.api_key = ''
     aiPrev.value = null /* 配置变了，旧预览失效 */
     await loadAi()
-  } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+    return true
+  } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error'); return false }
   finally { aiSaving.value = false }
 }
 
 async function loadPreview() {
   aiPrevBusy.value = true
   try {
-    /* 预览前先保存未保存修改，保证看到的就是将生效的 */
+    /* 预览前先保存未保存修改，保证看到的就是将生效的；保存失败即中止（避免预览到未生效配置） */
     if (aiDirtyKey.value || aiForm.model.trim() !== aiCfg.model || aiForm.base_url.trim() !== (aiCfg.base_url || '')
-      || aiForm.persona.trim() !== (aiCfg.persona || '') || aiForm.prompt_extra.trim() !== (aiCfg.prompt_extra || '')) await saveAi()
+      || aiForm.persona.trim() !== (aiCfg.persona || '') || aiForm.prompt_extra.trim() !== (aiCfg.prompt_extra || '')) {
+      if (!(await saveAi())) { toast('请先正确保存 AI 配置', 'error'); return }
+    }
     aiPrev.value = await req('GET', '/api/admin/ai/prompt-preview')
     aiPrevOpen.value = true
   } catch (e) { toast('预览失败：' + (e.data?.detail || e.message), 'error') }
@@ -143,7 +150,8 @@ async function reindexRag(full) {
   if (!aiCfg.api_key_set) { toast('先配置 API Key 并保存，再建索引', 'error'); return }
   aiReidx.value = true
   try {
-    const d = await req('POST', '/api/admin/ai/rag/reindex', { full: !!full })
+    /* 全量重建逐条调 embedding 接口，放宽超时至 120s（默认 30s 会中途 abort） */
+    const d = await req('POST', '/api/admin/ai/rag/reindex', { full: !!full }, { timeout: 120000 })
     if (d.ok) toast(`索引完成 ✓ 新建 ${d.indexed} 条` + (d.failed ? ` · 失败 ${d.failed} 条` : ''), 'success')
     else toast('索引失败：' + (d.reason || `失败 ${d.failed} 条`), 'error')
     await loadAi()
@@ -151,8 +159,10 @@ async function reindexRag(full) {
   finally { aiReidx.value = false }
 }
 
+/* 清除 API Key：danger 确认弹窗（回退规则引擎，服务面变更） */
+const clearDlg = ref(false)
 async function clearAiKey() {
-  if (!confirm('确认清除已保存的 API Key？清除后 AI 客服回退内置规则引擎（环境变量配置不受影响）。')) return
+  clearDlg.value = false
   aiSaving.value = true
   try {
     await req('PUT', '/api/admin/ai/config', { api_key: '' })
@@ -166,8 +176,10 @@ async function testAi() {
   aiTesting.value = true
   aiTest.done = false
   try {
-    /* 先保存未保存的修改再测试（保证测的是生效配置） */
-    if (aiDirtyKey.value || aiForm.model.trim() !== aiCfg.model || aiForm.base_url.trim() !== (aiCfg.base_url || '')) await saveAi()
+    /* 先保存未保存的修改再测试（保证测的是生效配置）；保存失败即中止 */
+    if (aiDirtyKey.value || aiForm.model.trim() !== aiCfg.model || aiForm.base_url.trim() !== (aiCfg.base_url || '')) {
+      if (!(await saveAi())) { toast('请先正确保存 AI 配置', 'error'); return }
+    }
     const d = await req('POST', '/api/admin/ai/test')
     aiTest.done = true
     aiTest.ok = !!d.ok
@@ -177,6 +189,12 @@ async function testAi() {
 }
 
 const saving = ref('')
+/* 设置保存 403 detail → 中文（后端 key 白名单校验：只读 key / 未知 key） */
+const SETTING_ERR = {
+  'readonly setting key': '该配置项不允许在此修改',
+  'unknown setting key': '未知配置项',
+}
+const serr = (e) => SETTING_ERR[e.data?.detail] || e.data?.detail || e.message
 async function saveKey(key) {
   if (settingsErr.value) { toast('配置加载失败，已禁用保存（防止默认值覆盖线上配置），请先重试加载', 'error'); return }
   const n = Number(drafts[key])
@@ -188,7 +206,7 @@ async function saveKey(key) {
     await req('PUT', '/api/admin/ops/settings', { key, value: n })
     settings[key] = { ...settings[key], value: n }   /* 展开保留 updated_by/updated_at 等旧值 */
     toast(`「${EDITABLE[key].label}」已保存 ✓`, 'success')
-  } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+  } catch (e) { toast('保存失败：' + serr(e), 'error') }
   finally { saving.value = '' }
 }
 
@@ -217,7 +235,7 @@ async function saveAll() {
     toast(`已保存 ${done} 项修改 ✓`, 'success')
     load()
   } catch (e) {
-    toast(`保存中断（${done}/${keys.length} 已保存）：` + (e.data?.detail || e.message), 'error')
+    toast(`保存中断（${done}/${keys.length} 已保存）：` + serr(e), 'error')
     load()
   } finally { savingAll.value = false }
 }
@@ -238,9 +256,8 @@ const rawRows = computed(() => {
 /* ===== 管理员账号 tab（写操作仅超管；列表接口 role>=2 可读，仅含启用中账号） ===== */
 const session = useSessionStore()
 const isSuper = computed(() => session.user?.role === 9)
-/* 角色文案对齐 AdminLayout ROLE_BADGE：2运营 3仓库 9超管 */
-const ROLE_LABEL = { 2: '运营', 3: '仓库', 9: '超管' }
-const roleCls = (r) => (r === 9 ? 'tag-error' : r === 3 ? 'tag-ship' : 'tag-pending')
+/* 角色文案/徽标配色收敛至 constants/roles.js（2运营 3仓库 4美甲师 9超管） */
+const roleCls = (r) => ROLE_BADGE[r] || 'tag-done'
 const admins = ref([])
 const adminsLoaded = ref(false)
 const adminsErr = ref('')
@@ -403,7 +420,16 @@ async function onPickFile(e) {
     toast('上传成功 ✓（新文件排在最前）', 'success')
     loadMedia(1)
   } catch (err) {
+    /* 会话失效全局广播（App.vue 监听 gm-admin-401 接管跳登录）；403 事件全站无监听，
+     * 改为与 api/client.js 403 分支同构的即时处理：提示 + 动态引入 router（避循环依赖）回登录页带 next */
     const s = err.status
+    if (s === 401) window.dispatchEvent(new CustomEvent('gm-admin-401'))
+    else if (s === 403) {
+      toast('权限不足或已变更，请重新登录', 'error')
+      if (!location.pathname.includes('/login')) {
+        import('../router').then((m) => m.default.push({ path: '/login', query: { next: m.default.currentRoute.value.fullPath } }))
+      }
+    }
     toast(s === 413 ? '文件不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
   }
   finally { uploading.value = false }
@@ -488,7 +514,7 @@ onMounted(() => {
     <EmptyState v-if="loaded && !tplErr && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
   </div>
 
-  <!-- AI 客服大模型配置 -->
+  <!-- AI 客服大模型配置：状态带 + 分区表单（接入/风格/RAG）+ 操作区 + 说明区 -->
   <div v-else-if="st.tab === 'ai'" class="card" style="padding:0">
     <div v-if="aiErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
       <span>⚠️ AI 配置加载失败</span>
@@ -496,78 +522,113 @@ onMounted(() => {
     </div>
     <div v-if="!aiLoaded && !aiErr" class="skeleton" style="min-height:200px" />
     <template v-else>
-      <div class="setrow" style="padding:14px 18px;border-bottom:1px solid var(--gray-light);align-items:center">
-        <div>
-          <b>AI 客服（GlowBot）状态</b>
-          <div style="font-size:12px;color:var(--gray);margin-top:3px">
+      <!-- 状态带 -->
+      <div class="ai-status">
+        <div class="ai-status-ico" :class="{ on: aiCfg.api_key_set }">🤖</div>
+        <div style="flex:1;min-width:0">
+          <b style="font-size:14px">AI 客服 · GlowBot</b>
+          <div class="ai-status-sub">
             <template v-if="aiCfg.api_key_set">
-              🟢 大模型已启用 · Key <code>{{ aiCfg.api_key_masked }}</code> · 来源 {{ aiCfg.source === 'db' ? '后台配置' : '环境变量' }}<template v-if="aiCfg.updated_at && aiCfg.source === 'db'"> · {{ dt(aiCfg.updated_at) }}</template>
+              大模型已启用 · Key <code>{{ aiCfg.api_key_masked }}</code> · 来源 {{ aiCfg.source === 'db' ? '后台配置' : '环境变量' }}<template v-if="aiCfg.updated_at && aiCfg.source === 'db'"> · 更新于 {{ dt(aiCfg.updated_at) }}</template>
             </template>
-            <template v-else>⚪ 未配置大模型 —— AI 客服走<b>内置规则引擎</b>（订单查询/FAQ 检索不受影响），配置后自动升级为大模型回复</template>
+            <template v-else>未配置大模型 —— AI 客服走<b>内置规则引擎</b>（订单查询 / FAQ 检索不受影响），配置后自动升级为大模型回复</template>
           </div>
         </div>
-        <span class="tag" :class="aiCfg.api_key_set ? 'tag-done' : 'tag-pending'">{{ aiCfg.api_key_set ? '已启用' : '规则引擎' }}</span>
+        <span class="tag" :class="aiCfg.api_key_set ? 'tag-paid' : 'tag-pending'">{{ aiCfg.api_key_set ? '已启用' : '规则引擎' }}</span>
       </div>
 
-      <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
-        <div class="field">
-          <label>API Key {{ aiCfg.api_key_set ? '（留空 = 沿用已保存的 Key）' : '' }}</label>
-          <div style="display:flex;gap:8px">
-            <input v-model="aiForm.api_key" class="input" type="password" style="flex:1" :placeholder="aiCfg.api_key_set ? aiCfg.api_key_masked : 'sk-…（OpenAI 兼容网关的密钥）'" autocomplete="new-password">
-            <button v-if="aiCfg.source === 'db' && aiCfg.api_key_set" class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="aiSaving" @click="clearAiKey">清除</button>
+      <!-- 接入配置 -->
+      <section class="ai-sec">
+        <div class="ai-sec-head">
+          <div class="dtitle">接入配置</div>
+          <span class="ai-hint">OpenAI 兼容接口 · 保存即时生效</span>
+        </div>
+        <div class="ai-grid">
+          <div class="field s12" style="margin:0">
+            <label>API Key <span v-if="aiCfg.api_key_set" class="ai-hint">（留空 = 沿用已保存的 Key）</span></label>
+            <div style="display:flex;gap:8px">
+              <input v-model="aiForm.api_key" class="input" type="password" style="flex:1" :placeholder="aiCfg.api_key_set ? aiCfg.api_key_masked : 'sk-…（OpenAI 兼容网关的密钥）'" autocomplete="new-password">
+              <button v-if="aiCfg.source === 'db' && aiCfg.api_key_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" :disabled="aiSaving" @click="clearDlg = true">清除</button>
+            </div>
+            <p class="ai-note">密钥仅存服务端，界面以掩码显示</p>
           </div>
-        </div>
-        <div class="field">
-          <label>接口地址 Base URL（OpenAI 兼容；默认官方 https://api.openai.com/v1，国内网关填对应地址）</label>
-          <input v-model="aiForm.base_url" class="input" placeholder="https://api.openai.com/v1">
-        </div>
-        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
-          <div class="field">
+          <div class="field s12" style="margin:0">
+            <label>接口地址 Base URL</label>
+            <input v-model="aiForm.base_url" class="input" placeholder="https://api.openai.com/v1">
+            <p class="ai-note">默认官方 https://api.openai.com/v1，国内网关填对应地址</p>
+          </div>
+          <div class="field s6" style="margin:0">
             <label>模型名</label>
             <input v-model="aiForm.model" class="input" placeholder="gpt-4o-mini">
           </div>
-          <div class="field">
-            <label>超时（3-60 秒）</label>
+          <div class="field s3" style="margin:0">
+            <label>超时（秒）</label>
             <input v-model.number="aiForm.timeout" class="input" type="number" min="3" max="60">
+            <p class="ai-note">3 - 60</p>
           </div>
-          <div class="field">
-            <label>回复上限（50-2000 tokens）</label>
+          <div class="field s3" style="margin:0">
+            <label>回复上限（tokens）</label>
             <input v-model.number="aiForm.max_tokens" class="input" type="number" min="50" max="2000">
+            <p class="ai-note">50 - 2000</p>
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 130px;gap:10px">
-          <div class="field">
-            <label>人设 Persona（留空 = 默认 GlowBot；≤500 字符）</label>
-            <textarea v-model="aiForm.persona" class="input" rows="2" placeholder="You are GlowBot, the friendly AI assistant of GLOWMAG…（身份/语气/称呼）"></textarea>
+      </section>
+
+      <!-- 对话风格 -->
+      <section class="ai-sec">
+        <div class="ai-sec-head">
+          <div class="dtitle">对话风格</div>
+          <span class="ai-hint">最终提示词可点下方「提示词预览」核对</span>
+        </div>
+        <div class="ai-grid">
+          <div class="field s8" style="margin:0">
+            <label>人设 Persona</label>
+            <textarea v-model="aiForm.persona" class="input" rows="3" placeholder="You are GlowBot, the friendly AI assistant of GLOWMAG…（身份 / 语气 / 称呼）"></textarea>
+            <p class="ai-note">留空 = 默认 GlowBot · ≤500 字符</p>
           </div>
-          <div class="field">
+          <div class="field s4" style="margin:0">
             <label>创造性 Temperature</label>
             <input v-model.number="aiForm.temperature" class="input" type="number" min="0" max="2" step="0.1">
-            <div style="font-size:10.5px;color:var(--gray);margin-top:4px">0 严谨 · 0.4 均衡 · 1+ 活泼</div>
+            <p class="ai-note">0 严谨 · 0.4 均衡 · 1+ 活泼</p>
+          </div>
+          <div class="field s12" style="margin:0">
+            <label>补充指令</label>
+            <textarea v-model="aiForm.prompt_extra" class="input" rows="3" placeholder="例如：本月大促期间主动提及「满 $35 免邮」；周末回复结尾加一句周末快乐 💅"></textarea>
+            <p class="ai-note">追加在安全规则之后，适合活动话术 / 临时规则 · ≤2000 字符</p>
           </div>
         </div>
-        <div class="field">
-          <label>补充指令（追加在安全规则之后；活动话术/临时规则，≤2000 字符）</label>
-          <textarea v-model="aiForm.prompt_extra" class="input" rows="3" placeholder="例如：本月大促期间主动提及「满 $35 免邮」；周末回复结尾加一句周末快乐 💅"></textarea>
+      </section>
+
+      <!-- FAQ 知识库（RAG） -->
+      <section class="ai-sec">
+        <div class="ai-sec-head">
+          <div class="dtitle">FAQ 知识库 · RAG</div>
+          <span class="tag" :class="aiCfg.rag?.ready ? 'tag-paid' : 'tag-pending'">{{ aiCfg.rag?.ready ? '已就绪' : '未启用' }}</span>
         </div>
-        <!-- RAG：FAQ 向量检索 -->
-        <div style="border:1px solid var(--gray-light);border-radius:12px;padding:12px 14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-          <span class="tag" :class="aiCfg.rag?.ready ? 'tag-done' : 'tag-pending'">{{ aiCfg.rag?.ready ? 'RAG 已就绪' : 'RAG 未启用' }}</span>
-          <div style="flex:1;min-width:200px;font-size:12px;color:var(--gray)">
-            FAQ 向量检索（问答仅注入与客户问题最相关的 top-5 片段）· 已索引 <b>{{ aiCfg.rag?.embedded || 0 }}/{{ aiCfg.rag?.total || 0 }}</b> 条
-            <template v-if="!aiCfg.rag?.ready"> · {{ aiCfg.api_key_set ? '覆盖率不足或未建索引，当前为全量注入模式' : '未配置 API Key，当前为全量注入模式' }}</template>
+        <p class="ai-note" style="margin:0 0 12px">
+          问答仅注入与客户问题最相关的 top-5 片段 · 已索引 <b style="color:var(--ink)">{{ aiCfg.rag?.embedded || 0 }} / {{ aiCfg.rag?.total || 0 }}</b> 条
+          <template v-if="!aiCfg.rag?.ready"> · {{ aiCfg.api_key_set ? '覆盖率不足或未建索引' : '未配置 API Key' }}，当前为全量注入模式</template>
+        </p>
+        <div class="ai-rag-row">
+          <div class="field" style="margin:0;flex:1;min-width:220px">
+            <label>向量模型</label>
+            <input v-model="aiForm.embedding_model" class="input" placeholder="text-embedding-3-small">
           </div>
-          <div class="field" style="margin:0;width:220px">
-            <input v-model="aiForm.embedding_model" class="input" placeholder="向量模型（默认 text-embedding-3-small）">
-          </div>
-          <button class="btn btn-secondary btn-sm" :class="{ loading: aiReidx }" :disabled="aiReidx || aiSaving" title="为未索引的 FAQ 生成向量（保存配置后使用）" @click="reindexRag(false)">📥 补建索引</button>
-          <button class="btn btn-ghost btn-sm" :class="{ loading: aiReidx }" :disabled="aiReidx || aiSaving" title="全部重建（更换向量模型后使用）" @click="confirm('全量重建将覆盖所有 FAQ 向量，继续？') && reindexRag(true)">♻️ 全量重建</button>
+          <button class="btn btn-secondary" :class="{ loading: aiReidx }" :disabled="aiReidx || aiSaving" title="为未索引的 FAQ 生成向量（保存配置后使用）" @click="reindexRag(false)">📥 补建索引</button>
+          <button class="btn btn-ghost" style="color:var(--error)" :class="{ loading: aiReidx }" :disabled="aiReidx || aiSaving" title="全部重建（更换向量模型后使用）" @click="rebuildDlg = true">♻️ 全量重建</button>
         </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      </section>
+
+      <!-- 保存与验证 -->
+      <section class="ai-sec ai-sec-foot">
+        <div class="ai-btn-row">
           <button class="btn btn-primary" :class="{ loading: aiSaving }" :disabled="aiSaving || aiTesting" @click="saveAi">保存配置</button>
           <button class="btn btn-secondary" :class="{ loading: aiPrevBusy }" :disabled="aiSaving || aiPrevBusy" title="查看实际下发的大模型系统提示词（含 FAQ 知识库注入结果）" @click="loadPreview">📄 提示词预览</button>
-          <button class="btn btn-secondary" :class="{ loading: aiTesting }" :disabled="aiSaving || aiTesting" title="用当前配置发一条测试消息，验证 Key/网关/模型是否可用" @click="testAi">⚡ 测试连接</button>
-          <span v-if="aiTest.done" class="tag" :class="aiTest.ok ? 'tag-done' : 'tag-error'" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="aiTest.msg">{{ aiTest.msg }}</span>
+          <button class="btn btn-secondary" :class="{ loading: aiTesting }" :disabled="aiSaving || aiTesting" title="用当前配置发一条测试消息，验证 Key / 网关 / 模型是否可用" @click="testAi">⚡ 测试连接</button>
+        </div>
+        <div v-if="aiTest.done" class="ai-test" :class="aiTest.ok ? 'ok' : 'err'">
+          <span>{{ aiTest.ok ? '✅' : '⚠️' }}</span>
+          <span style="flex:1">{{ aiTest.msg }}</span>
         </div>
         <div v-if="aiPrevOpen && aiPrev" class="ai-prev">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -576,13 +637,15 @@ onMounted(() => {
           </div>
           <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.7;color:var(--ink)">{{ aiPrev.prompt }}</pre>
         </div>
-        <p style="font-size:11.5px;color:var(--gray);line-height:1.7">
-          · 后台配置<b>优先于</b>服务器环境变量（GM_LLM_*），保存即时生效，无需重启<br>
-          · 提示词 = 人设（可配）+ 安全红线（固定不可配）+ 补充指令（可配）+ 运营政策/FAQ 知识库（自动注入）<br>
-          · AI 问答以「内容管理 → FAQ」为知识库；订单/物流等数据类问题始终走规则引擎查库（大模型不接触订单数据）<br>
-          · 配置异常时自动回退规则引擎，前台客服不中断
-        </p>
-      </div>
+      </section>
+
+      <!-- 机制说明 -->
+      <section class="ai-sec ai-sec-foot ai-foot">
+        <div class="ai-foot-row"><b>优先级</b><span>后台配置优先于服务器环境变量（GM_LLM_*），保存即时生效，无需重启</span></div>
+        <div class="ai-foot-row"><b>提示词</b><span>人设（可配）+ 安全红线（固定不可配）+ 补充指令（可配）+ 运营政策 / FAQ 知识库（自动注入）</span></div>
+        <div class="ai-foot-row"><b>知识边界</b><span>AI 问答以「内容管理 → FAQ」为知识库；订单 / 物流等数据类问题始终走规则引擎查库，大模型不接触订单数据</span></div>
+        <div class="ai-foot-row"><b>兜底</b><span>配置异常时自动回退规则引擎，前台客服不中断</span></div>
+      </section>
     </template>
   </div>
 
@@ -596,49 +659,53 @@ onMounted(() => {
       <span>⚠️ 管理员列表加载失败</span>
       <button class="btn btn-secondary btn-sm" @click="loadAdmins">重试</button>
     </div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="padding:12px 18px">账号</th><th>角色</th><th style="text-align:right">操作</th>
-      </tr></thead>
-      <tbody>
-        <tr v-for="a in admins" :key="a.id" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:12px 18px">
-            <template v-if="editId === a.id && isSuper">
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <input v-model="editDraft.name" class="input" style="width:160px" placeholder="姓名">
-                <select v-model="editDraft.role" class="input" style="width:auto" :disabled="a.id === session.user?.id" :title="a.id === session.user?.id ? '不能修改自己的角色' : ''">
-                  <option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
-                </select>
-              </div>
-              <div style="font-size:11.5px;color:var(--gray);margin-top:4px">{{ a.email }}<span v-if="a.id === session.user?.id"> · 当前登录账号</span></div>
-            </template>
-            <template v-else>
-              <b>{{ a.name || '—' }}</b><span v-if="a.id === session.user?.id" class="tag tag-pending" style="margin-left:6px;font-size:10px">我</span>
-              <div style="font-size:11.5px;color:var(--gray)">{{ a.email }}</div>
-            </template>
-          </td>
-          <td><span class="tag" :class="roleCls(a.role)">{{ ROLE_LABEL[a.role] || a.role }}</span></td>
-          <td style="text-align:right;white-space:nowrap">
-            <template v-if="isSuper">
-              <template v-if="editId === a.id">
-                <button class="btn btn-primary btn-sm" :class="{ loading: savingAdmin === a.id }" :disabled="savingAdmin" @click="saveAdmin(a)">保存</button>
-                <button class="btn btn-secondary btn-sm" :disabled="savingAdmin" @click="cancelEditAdmin">取消</button>
+    <!-- tbl-wrap：sticky 表头 + 限高内滚（与 raw 日志表格一致，账号多时页内滚动） -->
+    <div class="tbl-wrap">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--gray)">
+          <th style="padding:12px 18px">账号</th><th>角色</th><th style="text-align:right">操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="a in admins" :key="a.id" style="border-top:1px solid var(--gray-light)">
+            <td style="padding:12px 18px">
+              <template v-if="editId === a.id && isSuper">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <input v-model="editDraft.name" class="input" style="width:160px" placeholder="姓名">
+                  <select v-model="editDraft.role" class="input" style="width:auto" :disabled="a.id === session.user?.id" :title="a.id === session.user?.id ? '不能修改自己的角色' : ''">
+                    <option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
+                  </select>
+                </div>
+                <div style="font-size:11.5px;color:var(--gray);margin-top:4px">{{ a.email }}<span v-if="a.id === session.user?.id"> · 当前登录账号</span></div>
               </template>
               <template v-else>
-                <button class="btn btn-secondary btn-sm" :class="{ loading: savingAdmin === a.id }" :disabled="savingAdmin" @click="openEditAdmin(a)">编辑</button>
-                <button
-                  class="btn btn-ghost btn-sm" style="color:var(--error)"
-                  :disabled="savingAdmin || a.id === session.user?.id"
-                  :title="a.id === session.user?.id ? '不能停用自己' : '停用后该账号无法登录后台'"
-                  @click="openOffAdmin(a)"
-                >停用</button>
+                <b>{{ a.name || '—' }}</b><span v-if="a.id === session.user?.id" class="tag tag-pending" style="margin-left:6px;font-size:10px">我</span>
+                <div style="font-size:11.5px;color:var(--gray)">{{ a.email }}</div>
               </template>
-            </template>
-            <span v-else style="color:var(--gray);font-size:12px">—</span>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+            </td>
+            <td><span class="tag" :class="roleCls(a.role)">{{ ROLE_LABEL[a.role] || a.role }}</span></td>
+            <td style="text-align:right;white-space:nowrap">
+              <template v-if="isSuper">
+                <template v-if="editId === a.id">
+                  <button class="btn btn-primary btn-sm" :class="{ loading: savingAdmin === a.id }" :disabled="savingAdmin" @click="saveAdmin(a)">保存</button>
+                  <button class="btn btn-secondary btn-sm" :disabled="savingAdmin" @click="cancelEditAdmin">取消</button>
+                </template>
+                <template v-else>
+                  <button class="btn btn-secondary btn-sm" :class="{ loading: savingAdmin === a.id }" :disabled="savingAdmin" @click="openEditAdmin(a)">编辑</button>
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    style="color:var(--error)"
+                    :disabled="savingAdmin || a.id === session.user?.id"
+                    :title="a.id === session.user?.id ? '不能停用自己' : '停用后该账号无法登录后台'"
+                    @click="openOffAdmin(a)"
+                  >停用</button>
+                </template>
+              </template>
+              <span v-else style="color:var(--gray);font-size:12px">—</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <EmptyState v-if="adminsLoaded && !adminsErr && !admins.length" icon="👤" title="暂无管理账号" sub="role≥2 的启用账号将显示在这里" />
 
     <!-- 新建表单（仅超管） -->
@@ -670,26 +737,29 @@ onMounted(() => {
       <span>⚠️ 媒体库加载失败</span>
       <button class="btn btn-secondary btn-sm" @click="loadMedia(mPage)">重试</button>
     </div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="padding:12px 14px">预览</th><th>文件名</th><th>大小</th><th>修改时间</th><th style="text-align:right">操作</th>
-      </tr></thead>
-      <tbody>
-        <tr v-for="m in media" :key="m.name" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:8px 14px">
-            <a :href="mediaSrc(m)" target="_blank" rel="noopener" title="在新窗口查看原图">
-              <img :src="mediaSrc(m)" :alt="m.name" loading="lazy" style="width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--gray-light);display:block" @error="$event.target.style.visibility='hidden'">
-            </a>
-          </td>
-          <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="m.name"><code>{{ m.name }}</code></td>
-          <td style="white-space:nowrap">{{ fmtBytes(m.bytes) }}</td>
-          <td style="color:var(--gray);white-space:nowrap">{{ dt(m.modified_at) || '—' }}</td>
-          <td style="text-align:right">
-            <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="openDelMedia(m)">删除</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <!-- tbl-wrap：sticky 表头 + 限高内滚（缩略图较多时页内滚动） -->
+    <div class="tbl-wrap">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="text-align:left;color:var(--gray)">
+          <th style="padding:12px 14px">预览</th><th>文件名</th><th>大小</th><th>修改时间</th><th style="text-align:right">操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="m in media" :key="m.name" style="border-top:1px solid var(--gray-light)">
+            <td style="padding:8px 14px">
+              <a :href="mediaSrc(m)" target="_blank" rel="noopener" title="在新窗口查看原图">
+                <img :src="mediaSrc(m)" :alt="m.name" loading="lazy" style="width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--gray-light);display:block" @error="$event.target.style.visibility='hidden'">
+              </a>
+            </td>
+            <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="m.name"><code>{{ m.name }}</code></td>
+            <td style="white-space:nowrap">{{ fmtBytes(m.bytes) }}</td>
+            <td style="color:var(--gray);white-space:nowrap">{{ dt(m.modified_at) || '—' }}</td>
+            <td style="text-align:right">
+              <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="openDelMedia(m)">删除</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <EmptyState v-if="mLoaded && !mErr && !media.length" :icon="mQ.trim() ? '🔍' : '🖼'" :title="mQ.trim() ? '未找到匹配的文件' : '媒体库为空'" :sub="mQ.trim() ? '试试调整或清除搜索' : '上传的商品图片将显示在这里'" />
     <Pagination embed :page="mPage" :pages="mPages" :total="mTotal" unit="个" @go="loadMedia" />
   </div>
@@ -705,7 +775,11 @@ onMounted(() => {
       <tbody>
         <tr v-for="[key, v] in rawRows" :key="key" style="border-top:1px solid var(--gray-light)">
           <td style="padding:10px"><b>{{ key }}</b></td>
-          <td><code>{{ JSON.stringify(v.value) }}</code></td>
+          <td>
+            <code>{{ JSON.stringify(v.value) }}</code>
+            <!-- llm_config 的 api_key 后端已掩码（api_key_set 标记真实存在性）：提示不可复制原 Key -->
+            <span v-if="key === 'llm_config'" class="tag tag-pending" style="margin-left:6px;font-size:10px" title="敏感字段（API Key）由服务端掩码存储，此处展示非原值">敏感项已脱敏</span>
+          </td>
           <td style="color:var(--gray)">{{ v.description || '—' }}</td>
           <td style="color:var(--gray);white-space:nowrap">{{ v.updated_by != null ? '#' + v.updated_by : '—' }} · {{ dt(v.updated_at) || '—' }}</td>
         </tr>
@@ -714,6 +788,20 @@ onMounted(() => {
     <EmptyState v-if="loaded && !Object.keys(settings).length" icon="⚙️" title="暂无参数" sub="服务端暂无预置参数，保存后将写入并即时生效" />
     <EmptyState v-else-if="loaded && !rawRows.length" icon="🔍" title="没有匹配的参数" :sub="'没有匹配「' + rawFilter + '」的参数'" />
   </div>
+
+  <!-- 清除 API Key 确认（danger）：清除后回退规则引擎，前台客服不中断 -->
+  <ConfirmDialog
+    :open="clearDlg" title="清除 API Key" danger confirm-text="确认清除" :busy="aiSaving"
+    body="确认清除已保存的 API Key？清除后 AI 客服回退内置规则引擎（环境变量配置不受影响）。"
+    @confirm="clearAiKey" @close="clearDlg = false"
+  />
+
+  <!-- RAG 全量重建确认（danger）：覆盖所有 FAQ 向量 -->
+  <ConfirmDialog
+    :open="rebuildDlg" title="全量重建 FAQ 索引" danger confirm-text="确认重建" :busy="aiReidx"
+    body="全量重建将覆盖所有 FAQ 向量并重新调用 embedding 接口（更换向量模型后使用），耗时与 FAQ 数量相关。"
+    @confirm="rebuildDlg = false; reindexRag(true)" @close="rebuildDlg = false"
+  />
 
   <!-- 模板预览弹窗（iframe 沙箱渲染 html，宽度自适应邮件版式） -->
   <div v-if="previewTpl" class="modal open" @click.self="previewTpl = null">
@@ -745,4 +833,41 @@ onMounted(() => {
 @media(max-width:768px){.set-grid{grid-template-columns:1fr}}
 /* AI 提示词预览框 */
 .ai-prev{background:var(--bg-page);border:1px solid var(--gray-light);border-radius:10px;padding:10px 12px;max-height:260px;overflow-y:auto}
+/* ===== AI 客服 tab：状态带 + 分区表单 ===== */
+/* 状态带：图标圆片 + 主/副文案 + 状态 tag（启用时图标染品牌色） */
+.ai-status{display:flex;gap:14px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--gray-light)}
+.ai-status-ico{width:42px;height:42px;border-radius:12px;background:var(--gray-light);display:flex;align-items:center;justify-content:center;font-size:21px;flex:none}
+.ai-status-ico.on{background:var(--rose-pale)}
+.ai-status-sub{font-size:12px;color:var(--gray);margin-top:3px;line-height:1.6}
+.ai-status-sub code{background:var(--gray-light);border-radius:5px;padding:1px 5px;font-size:11.5px}
+/* 分区：上边线分隔，标题行用全局 .dtitle（plum 指示条）；hint 右对齐灰字 */
+.ai-sec{padding:18px 20px;border-top:1px solid var(--gray-light)}
+.ai-sec:first-of-type{border-top:none}
+.ai-sec-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px}
+.ai-hint{font-size:11.5px;color:var(--gray);font-weight:400}
+/* 12 列栅格：字段跨列由 s3/s4/s6/s8/s12 控制，窄屏全部整行 */
+.ai-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.ai-grid .s3{grid-column:span 3}
+.ai-grid .s4{grid-column:span 4}
+.ai-grid .s6{grid-column:span 6}
+.ai-grid .s8{grid-column:span 8}
+.ai-grid .s12{grid-column:span 12}
+@media(max-width:768px){.ai-grid .s3,.ai-grid .s4,.ai-grid .s6,.ai-grid .s8{grid-column:span 12}}
+/* 字段下小注（范围/默认值/用途），替代塞进 label 的长括号说明 */
+.ai-note{font-size:11.5px;color:var(--gray);margin-top:5px;line-height:1.6}
+/* RAG 行：向量模型输入 + 两个操作按钮底对齐 */
+.ai-rag-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+.ai-rag-row .btn{height:38px;flex:none}
+/* 底部操作/说明区：浅底与表单区分，形成页脚带 */
+.ai-sec-foot{background:var(--bg-page)}
+.ai-btn-row{display:flex;gap:10px;flex-wrap:wrap}
+/* 测试连接结果条：成功/失败语义色底（替代挤在按钮行内的 tag） */
+.ai-test{display:flex;gap:8px;align-items:flex-start;margin-top:12px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.6;word-break:break-all}
+.ai-test.ok{background:var(--pale-success);color:#1E7A45}
+.ai-test.err{background:var(--pale-error);color:var(--error)}
+.ai-sec-foot .ai-prev{margin-top:12px;background:#fff}
+/* 机制说明：标签列 + 说明列，替代 br 堆叠的灰字墙 */
+.ai-foot{padding-top:14px;padding-bottom:14px}
+.ai-foot-row{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11.5px;color:var(--gray);line-height:1.7;padding:2px 0}
+.ai-foot-row b{color:var(--plum);font-weight:600}
 </style>

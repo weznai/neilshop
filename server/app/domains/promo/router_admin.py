@@ -71,6 +71,11 @@ def unfreeze_giftcard(gift_card_id: int, admin: User = Depends(require_admin), d
     return service.unfreeze_giftcard(db, admin, gift_card_id)
 
 
+@router.put("/api/admin/promo/giftcards/{gift_card_id}/void")
+def void_giftcard(gift_card_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.void_giftcard(db, admin, gift_card_id)
+
+
 @router.get("/api/admin/promo/giftcards/{gift_card_id}/ledger")
 def giftcard_ledger(
     gift_card_id: int,
@@ -119,6 +124,11 @@ def update_popup(popup_id: int, body: PopupUpdateIn, admin: User = Depends(requi
 @router.post("/api/admin/ops/popups/{popup_id}/toggle")
 def toggle_popup(popup_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return service.toggle_popup(db, admin, popup_id)
+
+
+@router.delete("/api/admin/ops/popups/{popup_id}")
+def delete_popup(popup_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service.delete_popup(db, admin, popup_id)
 
 
 @router.get("/api/admin/ops/settings")

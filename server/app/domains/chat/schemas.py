@@ -4,7 +4,7 @@ import re
 
 from pydantic import BaseModel, field_validator
 
-MAX_CHAT_CHARS = 2000     # 单条消息上限（超长截断）
+MAX_CHAT_CHARS = 2000     # 单条消息上限（客户侧超长截断；后台回复超长 422）
 TOKEN_RX = re.compile(r"^[0-9a-zA-Z_-]{8,64}$")  # 游客会话 token（前端 localStorage uuid）
 EMAIL_RX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -209,4 +209,7 @@ class ReplyIn(BaseModel):
         v = (v or "").strip()
         if not v:
             raise ValueError("empty content")
-        return v[:MAX_CHAT_CHARS]
+        # 后台回复不静默截断：超长显式 422，避免长文被无声砍尾
+        if len(v) > MAX_CHAT_CHARS:
+            raise ValueError("reply too long (max 2000)")
+        return v

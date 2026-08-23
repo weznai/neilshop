@@ -75,19 +75,22 @@ def messages_asc(db: Session, conversation_id: int, limit: int | None = None) ->
 
 
 def last_messages_map(db: Session, conv_ids: list[int]) -> dict[int, ChatMessage]:
-    """每会话最后一条消息（单条 IN 批查防 N+1）；升序遍历覆盖留最新"""
+    """每会话最后一条消息：SQL 聚合（group by conv_id 取 MAX(id)）后按主键 IN 批查
+    目标行，避免全量拉取到 Python 过滤（4 秒轮询 _pending_total 放大）；
+    id 自增与 (created_at, id) 排序口径一致，返回形状 {conv_id: 消息行} 不变"""
     if not conv_ids:
         return {}
-    rows = (
-        db.query(ChatMessage)
+    max_ids = (
+        db.query(func.max(ChatMessage.id))
         .filter(ChatMessage.conversation_id.in_(conv_ids))
-        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+        .group_by(ChatMessage.conversation_id)
         .all()
     )
-    out: dict[int, ChatMessage] = {}
-    for m in rows:
-        out[m.conversation_id] = m
-    return out
+    ids = [r[0] for r in max_ids]
+    if not ids:
+        return {}
+    rows = db.query(ChatMessage).filter(ChatMessage.id.in_(ids)).all()
+    return {m.conversation_id: m for m in rows}
 
 
 def user_names_by_ids(db: Session, ids: set[int]) -> dict[int, str]:

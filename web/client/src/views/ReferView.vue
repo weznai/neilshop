@@ -130,7 +130,7 @@ async function sendInvite() {
               <button class="btn btn-secondary" :class="{ loading: inviteBusy }" :disabled="inviteBusy" @click="sendInvite">{{ tt('Invite (simulate)', '邀请（模拟）') }}</button>
             </div>
             <div style="font-size:12px;color:var(--gray);margin-top:6px">
-              {{ tt('Demo only: marks the invitee as “registered”; real points are granted after their first paid order.', '仅演示：登记后状态为「已注册」；好友完成首单支付后自动发放双方积分。') }}
+              {{ tt('Demo only: the invite shows as “sign-up pending”; both rewards land after the friend signs up via your referral link and completes their first order.', '仅演示：登记后状态为「待注册」，好友经推荐链接注册并完成首单后双方奖励到账。') }}
             </div>
           </div>
 

@@ -1,10 +1,12 @@
 <script setup>
 import { useTocSpy } from '../composables/useTocSpy'
+import { i18n } from '../i18n'
 
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const SECS = [
-  ['rates', 'Rates & speeds'],
-  ['process', 'Processing & tracking'],
-  ['lost', 'Lost or delayed'],
+  ['rates', 'Rates & speeds', '费率与时效'],
+  ['process', 'Processing & tracking', '处理与物流跟踪'],
+  ['lost', 'Lost or delayed', '丢件与延误'],
 ]
 const { active } = useTocSpy(SECS.map((s) => s[0]))
 function go(id) {
@@ -17,40 +19,40 @@ function printPage() { window.print() }
 <template>
   <section class="section">
     <div class="container" style="max-width:960px">
-      <h1 class="page-title" style="font-family:var(--font-title);font-size:30px;margin-bottom:6px">Shipping Policy</h1>
+      <h1 class="page-title" style="font-family:var(--font-title);font-size:30px;margin-bottom:6px">{{ tt('Shipping Policy', '配送政策') }}</h1>
       <div class="meta-row">
-        <span>Last updated: Aug 2026</span><span class="meta-dot" /><span>Delivered by USPS / UPS / DHL</span>
-        <button class="print-link" type="button" @click="printPage">🖨 Print / Save PDF</button>
+        <span>{{ tt('Last updated: Aug 2026', '最后更新：2026 年 8 月') }}</span><span class="meta-dot" /><span>{{ tt('Delivered by USPS / UPS / DHL', '由 USPS / UPS / DHL 承运') }}</span>
+        <button class="print-link" type="button" @click="printPage">{{ tt('🖨 Print / Save PDF', '🖨 打印 / 保存 PDF') }}</button>
       </div>
       <div class="policy-grid" style="display:grid;grid-template-columns:200px 1fr;gap:32px">
         <aside class="policy-side">
           <div class="toc-card">
-            <span class="toc-title">On this page</span>
-            <a v-for="[id, label] in SECS" :key="id" class="toc-link" :class="{ on: active === id }" :href="'#' + id" @click.prevent="go(id)">{{ label }}</a>
+            <span class="toc-title">{{ tt('On this page', '本页目录') }}</span>
+            <a v-for="[id, en, zh] in SECS" :key="id" class="toc-link" :class="{ on: active === id }" :href="'#' + id" @click.prevent="go(id)">{{ tt(en, zh) }}</a>
           </div>
         </aside>
         <article class="prose">
-          <h2 id="rates" style="scroll-margin-top:90px">Rates &amp; speeds</h2>
+          <h2 id="rates" style="scroll-margin-top:90px">{{ tt('Rates & speeds', '费率与时效') }}</h2>
           <!-- v19 移动端补漏：4 列费率表在 375px 强行压列换行难读——外套横滑容器 + min-width（对齐 SizeGuide 表做法） -->
           <div class="rates-wrap">
             <div class="card" style="padding:12px">
               <table style="width:100%;border-collapse:collapse;font-size:13.5px">
-                <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">Region</th><th style="padding:10px">Method</th><th style="padding:10px">ETA</th><th style="padding:10px">Fee</th></tr></thead>
+                <thead><tr style="text-align:left;color:var(--gray)"><th style="padding:10px">{{ tt('Region', '地区') }}</th><th style="padding:10px">{{ tt('Method', '方式') }}</th><th style="padding:10px">{{ tt('ETA', '时效') }}</th><th style="padding:10px">{{ tt('Fee', '运费') }}</th></tr></thead>
                 <tbody>
-                  <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>USPS Standard</td><td>3–6 business days</td><td>$4.99 — <b>free over $35</b></td></tr>
-                  <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 US</td><td>UPS Express</td><td>1–3 business days</td><td>$14.99</td></tr>
-                  <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🌍 International</td><td>DHL Standard</td><td>6–12 business days</td><td>$12.99</td></tr>
+                  <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 {{ tt('US', '美国') }}</td><td>USPS Standard</td><td>{{ tt('3–6 business days', '3–6 个工作日') }}</td><td>$4.99 — <b>{{ tt('free over $35', '满 $35 包邮') }}</b></td></tr>
+                  <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🇺🇸 {{ tt('US', '美国') }}</td><td>UPS Express</td><td>{{ tt('1–3 business days', '1–3 个工作日') }}</td><td>$14.99</td></tr>
+                  <tr style="border-top:1px solid var(--gray-light)"><td style="padding:10px">🌍 {{ tt('International', '国际') }}</td><td>DHL Standard</td><td>{{ tt('6–12 business days', '6–12 个工作日') }}</td><td>$12.99</td></tr>
                 </tbody>
               </table>
             </div>
           </div>
-          <p>Rates above are our standard quotes — the exact fee and free-shipping threshold shown at <b>checkout always apply</b> (they can be updated by our ops team). Duties and taxes for international orders are the recipient's responsibility.</p>
+          <p>{{ tt('Rates above are our standard quotes — the exact fee and free-shipping threshold shown at ', '以上费率为标准报价——结算页显示的确切运费与包邮门槛') }}<b>{{ tt('checkout always apply', '始终适用') }}</b>{{ tt(' (they can be updated by our ops team). Duties and taxes for international orders are the recipient\u2019s responsibility.', '（运营团队可能随时调整）。国际订单的关税与税费由收件人承担。') }}</p>
 
-          <h2 id="process" style="scroll-margin-top:90px">Processing &amp; tracking</h2>
-          <p>Orders are packed within <b>24 hours</b> of payment. You'll get tracking by email the moment your box moves — no login needed to follow it on our <router-link to="/track" style="color:var(--plum)">Track Order</router-link> page. Pre-orders and backorders show their ETA on the product page.</p>
+          <h2 id="process" style="scroll-margin-top:90px">{{ tt('Processing & tracking', '处理与物流跟踪') }}</h2>
+          <p>{{ tt('Orders are packed within ', '订单在付款后') }}<b>{{ tt('24 hours', '24 小时') }}</b>{{ tt(' of payment. You\u2019ll get tracking by email the moment your box moves — no login needed to follow it on our ', '内完成打包。包裹一经发出，物流单号即会通过邮件发送——无需登录即可在我们的') }}<router-link to="/track" style="color:var(--plum)">{{ tt('Track Order', '订单跟踪') }}</router-link>{{ tt(' page. Pre-orders and backorders show their ETA on the product page.', '页面查询物流。预售与缺货商品的预计发货时间以商品页显示为准。') }}</p>
 
-          <h2 id="lost" style="scroll-margin-top:90px">Lost or delayed packages</h2>
-          <p>Parcel stuck 7+ days past the ETA? <router-link to="/contact" style="color:var(--plum)">Contact us</router-link> — we reship first and investigate second.</p>
+          <h2 id="lost" style="scroll-margin-top:90px">{{ tt('Lost or delayed packages', '丢件与延误包裹') }}</h2>
+          <p>{{ tt('Parcel stuck 7+ days past the ETA? ', '包裹超过预计时效 7 天以上仍无进展？') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('Contact us', '联系我们') }}</router-link>{{ tt(' — we reship first and investigate second.', '——我们优先补发，其次排查。') }}</p>
         </article>
       </div>
     </div>

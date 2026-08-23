@@ -60,6 +60,13 @@ function loadContact() {
 }
 const needContact = () => !auth.isLoggedIn && !contact.email
 const lang = () => (i18n.lang === 'zh' ? 'zh' : 'en')
+const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
+/* 转人工/美甲师提交失败：常见后端错误映射双语，兜底通用文案 */
+function submitErrText(e) {
+  const m = String((e && e.message) || '').toLowerCase()
+  if (m.includes('email')) return tt('Please enter your email first', '请先填写邮箱')
+  return tt('Failed to submit, please try again', '提交失败，请重试')
+}
 
 /* 纳入全局 ESC（capture 阶段先于 App 的 document 委托）：其它浮层开着时让全局先关；
    仅面板独立在场时才自关并阻断后续监听 */
@@ -110,16 +117,22 @@ async function init() {
   await refreshConvs()
   if (!convs.chat) {
     /* 后端合并守卫：人工会话进行中会直接复用，不会开平行 AI 会话 */
-    try { convs.chat = await createConv(0) } catch (e) { loadErr.value = true }
+    try { convs.chat = await createConv(0); loadErr.value = false } catch (e) { loadErr.value = true }
   }
   inited.value = true
   scrollBottom()
 }
+async function retryInit() {
+  loadErr.value = false
+  await init()
+}
 
 async function loadQuicks() {
+  /* 缓存对象内带 lang：语言不一致视作未命中（后台 quicks 按 zh/en 双语下发） */
+  const cur = lang()
   try {
     const cached = JSON.parse(localStorage.getItem(QUICKS_CACHE_KEY) || 'null')
-    if (cached && Array.isArray(cached.items) && Date.now() - cached.at < QUICKS_TTL && cached.items.length) {
+    if (cached && cached.lang === cur && Array.isArray(cached.items) && Date.now() - cached.at < QUICKS_TTL && cached.items.length) {
       quicks.value = cached.items
       return
     }
@@ -129,7 +142,7 @@ async function loadQuicks() {
     const items = (d && (i18n.lang === 'zh' ? d.zh : d.en)) || []
     if (items.length) {
       quicks.value = items
-      try { localStorage.setItem(QUICKS_CACHE_KEY, JSON.stringify({ at: Date.now(), items })) } catch (_) { /* 隐私模式 */ }
+      try { localStorage.setItem(QUICKS_CACHE_KEY, JSON.stringify({ at: Date.now(), lang: cur, items })) } catch (_) { /* 隐私模式 */ }
     }
   } catch (_) { /* 接口失败回退 i18n 默认 chips（模板里兜底渲染） */ }
 }
@@ -215,7 +228,7 @@ async function doEscalate() {
     wantHuman.value = false
     scrollBottom()
   } catch (e) {
-    contactErr.value = (e && e.message) || 'error'
+    contactErr.value = submitErrText(e)
   } finally { busy.value = false }
 }
 function cancelEscalate() { wantHuman.value = false; contactErr.value = '' }
@@ -233,7 +246,7 @@ async function startArtist() {
     pickArtist.value = null
     scrollBottom()
   } catch (e) {
-    contactErr.value = (e && e.message) || 'error'
+    contactErr.value = submitErrText(e)
   } finally { busy.value = false }
 }
 
@@ -422,7 +435,10 @@ function sugClick(e) {
         </template>
       </template>
 
-      <div v-if="loadErr" class="chat-err">{{ i18n.t('chat.loadErr') }}</div>
+      <div v-if="loadErr" class="chat-err">
+        {{ i18n.t('chat.loadErr') }}
+        <button class="chat-quick" style="display:block;margin:8px auto 0" @click="retryInit">{{ i18n.t('chat.retry') }}</button>
+      </div>
     </div>
 
     <div v-if="curConv()" class="chat-quicks">

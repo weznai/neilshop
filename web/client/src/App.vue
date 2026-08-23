@@ -22,14 +22,14 @@ function onKey(e) {
 let _authExpiredAt = 0
 function onAuthExpired() {
   const wasLoggedIn = !!auth.user
-  auth._cache(null)
-  auth.points = null
+  auth.expireLocal()
   if (!wasLoggedIn) return
   const now = Date.now()
   if (now - _authExpiredAt < 3000) return
   _authExpiredAt = now
   const cur = router.currentRoute.value
   if (cur.path !== '/login' && cur.path !== '/register') {
+    ui.closeAll() /* 跳登录前收起购物车抽屉/搜索/移动导航等浮层，防跳转后悬挂 */
     ui.toast(i18n.t('err.session'), 'error')
     router.push({ path: '/login', query: { next: cur.fullPath } })
   }

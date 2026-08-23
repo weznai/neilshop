@@ -17,8 +17,10 @@ router = APIRouter(prefix="/api/checkout", tags=["checkout"])
 
 @router.get("/shipping-methods")
 def get_shipping_methods(country: str = "US", db: Session = Depends(get_db)):
-    """公开：可用配送方式（运费模板聚合，checkout 页展示）。"""
-    return {"items": shipping_methods(db, country)}
+    """公开：可用配送方式（运费模板聚合，checkout 页展示）+ 免邮门槛（settings 回退）。"""
+    from app.services.pricing import DEFAULT_FREE_SHIPPING_THRESHOLD, _setting
+    threshold = int(_setting(db, "free_shipping_threshold", DEFAULT_FREE_SHIPPING_THRESHOLD))
+    return {"items": shipping_methods(db, country), "free_shipping_threshold": threshold}
 
 
 @router.post("/preview")

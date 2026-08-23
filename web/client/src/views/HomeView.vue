@@ -43,11 +43,13 @@ function seedCards() {
 }
 
 /* LCP：请求前置到 setup 顶层立即发出（不等 onMounted）；
-   两组卡片并行拉取（allSettled：单接口失败回落种子数据，不拖住另一组） */
+   两组卡片并行拉取（allSettled：单接口失败回落种子数据，不拖住另一组）；
+   中文环境带 locale 消费后端多语言标题 */
 ;(async () => {
+  const loc = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
   const [nr, br] = await Promise.allSettled([
-    req('GET', '/api/catalog/products?sort=new&size=4'),
-    req('GET', '/api/catalog/products?sort=best&size=4'),
+    req('GET', '/api/catalog/products?sort=new&size=4' + loc),
+    req('GET', '/api/catalog/products?sort=best&size=4' + loc),
   ])
   newProducts.value = nr.status === 'fulfilled' && nr.value.items && nr.value.items.length
     ? nr.value.items : seedCards().slice(0, 4)
@@ -96,7 +98,7 @@ function heroFallback(e) {
           <span>🚚 {{ i18n.t('home.hero.fship') }}</span><span>↩️ {{ i18n.t('home.hero.ret') }}</span><span>🔒 {{ i18n.t('home.hero.pay') }}</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:16px">
-          <span class="pay-pill">VISA</span><span class="pay-pill">MC</span><span class="pay-pill">PAYPAL</span><span class="pay-pill">KLARNA</span><span class="pay-pill">APPLE PAY</span>
+          <span class="pay-pill">VISA</span><span class="pay-pill">MC</span><span class="pay-pill">AMEX</span><span class="pay-pill">PAYPAL</span><span class="pay-pill">KLARNA</span><span class="pay-pill">APPLE PAY</span>
         </div>
       </div>
       <div style="position:relative">

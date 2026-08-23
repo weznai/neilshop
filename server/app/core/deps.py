@@ -10,7 +10,7 @@
 import secrets
 from typing import Optional
 
-from fastapi import Cookie, Depends, Header, HTTPException, Response
+from fastapi import Cookie, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -101,8 +101,12 @@ def get_current_user(user: Optional[User] = Depends(get_current_user_optional)) 
     return user
 
 
-def require_admin(user: User = Depends(get_current_user)) -> User:
-    """后台接口守卫：role >= 2（运营/仓库/超管）"""
+def require_admin(request: Request, user: User = Depends(get_current_user)) -> User:
+    """后台接口守卫：role >= 2（运营/仓库/超管）；
+    美甲师(role=4)为受限后台账号，仅放行聊天域 /api/admin/chat/*（会话接管），
+    访问其余后台面（订单/会员/设置等）一律 403 artist scope"""
+    if user.role == 4 and not request.url.path.startswith("/api/admin/chat/"):
+        raise HTTPException(status_code=403, detail="artist scope")
     if user.role < 2:
         raise HTTPException(status_code=403, detail="Admin only")
     return user

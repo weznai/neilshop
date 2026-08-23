@@ -13,13 +13,21 @@ const zh = () => i18n.lang === 'zh'
  * 页面按同一口径展示，实际以购物车/结算为准 */
 const items = ref([])
 const loaded = ref(false)
+const loadErr = ref(false)
 const busy = ref({})
 
-onMounted(async () => {
-  try { items.value = (await req('GET', '/api/catalog/products?size=9&sort=best&category=press-on-nails')).items || [] }
-  catch (_) { items.value = [] }
+async function load() {
+  loaded.value = false
+  loadErr.value = false
+  const locale = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
+  try { items.value = (await req('GET', '/api/catalog/products?size=9&sort=best&category=press-on-nails' + locale)).items || [] }
+  catch (_) {
+    items.value = []
+    loadErr.value = true
+  }
   loaded.value = true
-})
+}
+onMounted(load)
 
 const bundles = computed(() => {
   const p = items.value
@@ -116,7 +124,12 @@ async function addBundle(b) {
           </div>
         </div>
       </div>
-      <div v-if="loaded && !bundles.length" style="text-align:center;color:var(--gray);padding:40px 0">
+      <div v-if="loaded && loadErr" style="text-align:center;color:var(--gray);padding:40px 0">
+        <div style="font-size:44px;margin-bottom:10px">⚠️</div>
+        {{ zh() ? '组套商品加载失败，请稍后重试' : 'Failed to load bundles — please retry' }}
+        <div style="margin-top:14px"><button class="btn btn-secondary" @click="load">⟳ {{ zh() ? '重试' : 'Retry' }}</button></div>
+      </div>
+      <div v-else-if="loaded && !bundles.length" style="text-align:center;color:var(--gray);padding:40px 0">
         <div style="font-size:44px;margin-bottom:10px">🎁</div>
         {{ zh() ? '组套整理中 — 单买 2 件同样享 85 折' : 'Bundles restocking — any 2 sets still get 15% off in cart' }} ·
         <router-link to="/store" style="color:var(--plum)">{{ zh() ? '去逛全场' : 'Shop all' }}</router-link>

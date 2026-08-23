@@ -31,7 +31,8 @@ export function fmtDetail(detail) {
   return String(detail)
 }
 
-/* opts 可选：{ credentials } 透传 fetch（默认 'include'；'omit' 用于匿名端点不发 cookie） */
+/* opts 可选：{ credentials } 透传 fetch（默认 'include'；'omit' 用于匿名端点不发 cookie）；
+ * { timeout } 覆盖默认 30s 超时（毫秒，如 RAG 全量重建等长耗时操作） */
 export async function req(method, path, body, opts) {
   const o = {
     method,
@@ -41,7 +42,7 @@ export async function req(method, path, body, opts) {
   if (body !== undefined) o.body = JSON.stringify(body)
   const ctrl = new AbortController()
   o.signal = ctrl.signal
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => ctrl.abort(), opts?.timeout || TIMEOUT_MS)
   let r
   try {
     r = await fetch(API_BASE + path, o)
@@ -66,8 +67,10 @@ export async function req(method, path, body, opts) {
       toast('权限不足或已变更，请重新登录', 'error')
       window.dispatchEvent(new CustomEvent('gm-admin-403'))
       if (!location.pathname.includes('/login')) {
-        /* 动态引入 router 规避静态循环依赖（router → stores/session → 本模块） */
-        import('../router').then((m) => m.default.push({ path: '/login', query: { next: location.pathname + location.search } }))
+        /* 动态引入 router 规避静态循环依赖（router → stores/session → 本模块）；
+         * next 取 router 路由层 fullPath（不含 /admin base），登录后 push 才能匹配到目标路由
+         * （location.pathname 带 base 会导致回跳被 catch-all 弹回首页） */
+        import('../router').then((m) => m.default.push({ path: '/login', query: { next: m.default.currentRoute.value.fullPath } }))
       }
       setTimeout(() => { fired403 = false }, 3000)
     }

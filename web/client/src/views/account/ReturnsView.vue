@@ -12,6 +12,7 @@ const returns = ref([])
 const exchanges = ref([])
 const loaded = ref(false)
 const failed = ref(false)
+const partErr = ref('') /* 单侧列表加载失败提示（不隐藏另一侧） */
 const cancelingNo = ref('')
 
 /* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
@@ -66,13 +67,18 @@ function fmt(iso) {
 
 async function load() {
   loaded.value = false
+  failed.value = false
+  partErr.value = ''
   const [r, x] = await Promise.allSettled([
     req('GET', '/api/returns'),
     req('GET', '/api/exchanges'),
   ])
   if (r.status === 'fulfilled') returns.value = r.value.items || []
   if (x.status === 'fulfilled') exchanges.value = x.value.items || []
-  failed.value = r.status === 'rejected' && x.status === 'rejected'
+  /* 单侧失败也要如实提示（避免换货区块静默消失）；双侧失败显示整卡错误态 */
+  if (r.status === 'rejected' && x.status === 'rejected') failed.value = true
+  else if (r.status === 'rejected') partErr.value = tt('Returns list failed to load —', '退货记录加载失败，')
+  else if (x.status === 'rejected') partErr.value = tt('Exchanges list failed to load —', '换货记录加载失败，')
   loaded.value = true
 }
 onMounted(load)
@@ -146,9 +152,15 @@ async function payDiff(x) {
     <div v-if="!loaded" style="display:grid;gap:12px">
       <div v-for="i in 2" :key="i" class="skeleton" style="height:120px;border-radius:14px" />
     </div>
-    <div v-else-if="failed" class="card" style="padding:30px;text-align:center;color:var(--gray)">{{ tt('Load failed — please refresh and retry', '加载失败，请刷新重试') }}</div>
+    <div v-else-if="failed" class="card" style="padding:30px;text-align:center;color:var(--gray)">
+      {{ tt('Load failed — please refresh and retry', '加载失败，请刷新重试') }}
+      <div style="margin-top:10px"><button class="btn btn-secondary btn-sm" @click="load">⟳ {{ tt('Retry', '重试') }}</button></div>
+    </div>
 
     <template v-else>
+      <div v-if="partErr" class="card" style="padding:12px 16px;margin-bottom:12px;font-size:13px;color:var(--error)">
+        {{ partErr }} <a href="javascript:void(0)" style="color:var(--plum)" @click="load">{{ tt('retry', '重试') }}</a>
+      </div>
       <!-- 退货 RMA -->
       <h3 v-if="returns.length" style="font-size:16px;margin-bottom:12px">{{ tt('Returns', '退货记录') }}</h3>
       <div v-if="returns.length" style="display:grid;gap:12px">

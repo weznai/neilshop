@@ -27,6 +27,7 @@ const PREF_LABELS = [
 ]
 const prefs = ref(null)
 const prefsBusy = ref(false)
+const prefsErr = ref(false)
 
 /* 删除请求：POST → {request_id, effective_at}；DELETE 撤销 */
 const deletePending = ref(null) /* { effective_at } */
@@ -41,8 +42,14 @@ onMounted(async () => {
     const u = await auth.me()
     if (u && u.delete_request) deletePending.value = { effective_at: u.delete_request.effective_at }
   } catch (_) { /* 网络失败保留本地状态（AccountShell 亦会重试） */ }
-  try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { /* */ }
+  loadPrefs()
 })
+
+async function loadPrefs() {
+  prefsErr.value = false
+  try { prefs.value = await req('GET', '/api/account/email-preferences') }
+  catch (_) { prefsErr.value = true }
+}
 
 async function save() {
   if (!form.name.trim()) { ui.toast(tt('Name cannot be empty', '昵称不能为空'), 'error'); return }
@@ -182,6 +189,10 @@ async function cancelDelete() {
         <div v-if="prefs.unsubscribed_at" style="font-size:12.5px;color:var(--warn);margin-top:8px">
           ⚠️ {{ tt(`Fully unsubscribed since ${fmtDate(prefs.unsubscribed_at)} — turn on any toggle to resubscribe.`, `当前处于全退订状态（${fmtDate(prefs.unsubscribed_at)}），开启任一开关即可恢复订阅。`) }}
         </div>
+      </div>
+      <div v-else-if="prefsErr" style="font-size:13px;color:var(--error);padding:16px 0">
+        {{ tt('Could not load email preferences —', '邮件偏好加载失败，') }}
+        <a href="javascript:void(0)" style="color:var(--plum)" @click="loadPrefs">{{ tt('retry', '重试') }}</a>
       </div>
       <div v-else class="skeleton" style="min-height:90px;border-radius:10px" />
     </div>

@@ -365,14 +365,20 @@ with TestClient(app) as client:
     check("停用后前台 204", r.status_code == 204)
 
     print("admin: settings/members/logs")
-    r = client.put("/api/admin/ops/settings", headers=ADMIN_H,
+    # 白名单收紧后：不存在的 key 仅超管(role=9)可创建（ops_test_flag 非白名单项，运营 403）
+    super_admin = User(email="super@glowmag.test", name="Super Admin", role=9, status=1,
+                       password_hash=hash_password("x"))
+    db.add(super_admin)
+    db.commit()
+    SUPER_H = {"Authorization": f"Bearer {create_token(super_admin.id, super_admin.role)}"}
+    r = client.put("/api/admin/ops/settings", headers=SUPER_H,
                    json={"key": "ops_test_flag", "value": {"v": 1}})
     check("settings upsert 新键", r.status_code == 200 and r.json()["value"] == {"v": 1})
     r = client.get("/api/admin/ops/settings", headers=ADMIN_H)
     kv = {s["key"]: s["value"] for s in r.json()["items"]}
     check("settings 旧值不受影响(checkout 免邮门槛)", kv.get("free_shipping_threshold") == 3500
           and kv.get("ops_test_flag") == {"v": 1})
-    r = client.put("/api/admin/ops/settings", headers=ADMIN_H,
+    r = client.put("/api/admin/ops/settings", headers=SUPER_H,
                    json={"key": "ops_test_flag", "value": 2})
     check("settings 二次 upsert 覆盖", r.json()["value"] == 2)
     r = client.get("/api/admin/ops/members", params={"q": "cindy"}, headers=ADMIN_H)

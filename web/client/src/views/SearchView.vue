@@ -12,8 +12,9 @@ const zh = () => i18n.lang === 'zh'
 const q = ref(String(route.query.q || ''))
 const items = ref([])
 const total = ref(0)
-const page = ref(1)
+const page = ref(Math.max(1, parseInt(route.query.page, 10) || 1))
 const loaded = ref(false)
+const loadErr = ref(false)
 const pages = ref(1)
 const cats = ref([])
 const recent = ref([])
@@ -21,7 +22,7 @@ const pendingScroll = ref(false)
 const gridEl = ref(null)
 const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-/* 排序白名单（对齐 StoreView）：缺省 best，非法值回落 best */
+/* 排序白名单（对齐 StoreView）：缺省 new，非法值回落 new */
 const SORTS = [
   ['new', 'store.sort.new'], ['best', 'store.sort.best'],
   ['price_asc', 'store.sort.priceAsc'], ['price_desc', 'store.sort.priceDesc'],
@@ -29,8 +30,8 @@ const SORTS = [
 const SORT_KEYS = ['new', 'best', 'price_asc', 'price_desc']
 const curSort = () => {
   const s = route.query.sort
-  if (!s) return 'best'
-  return SORT_KEYS.includes(s) ? s : 'best'
+  if (!s) return 'new'
+  return SORT_KEYS.includes(s) ? s : 'new'
 }
 /* 每页条数白名单：12（缺省）/24/48 */
 const SIZES = [12, 24, 48]
@@ -60,14 +61,17 @@ let sSeq = 0
 async function search() {
   const seq = ++sSeq
   loaded.value = false
+  loadErr.value = false
   const term = q.value.trim()
   if (!term) {
     items.value = []; total.value = 0; cats.value = []; pages.value = 1
     loaded.value = true
     return
   }
+  page.value = Math.max(1, page.value || 1)
   const sz = curSize()
   const params = new URLSearchParams({ q: term, page: page.value, size: sz, sort: curSort() })
+  if (i18n.lang === 'zh') params.set('locale', 'zh-CN') /* 列表消费后端多语言 */
   try {
     const [d, s] = await Promise.all([
       req('GET', '/api/catalog/products?' + params.toString()),
@@ -80,7 +84,9 @@ async function search() {
     cats.value = (s && s.categories) || []
   } catch (_) {
     if (seq !== sSeq) return
+    /* 网络失败 ≠ 无结果：错误态独立展示并可重试，不再误导为"没有匹配" */
     items.value = []; total.value = 0; pages.value = 1; cats.value = []
+    loadErr.value = true
   }
   loaded.value = true
   if (pendingScroll.value) {
@@ -93,7 +99,7 @@ async function search() {
 function setSort(v) {
   if (curSort() === v) return
   page.value = 1
-  router.replace({ query: { ...route.query, sort: v === 'best' ? undefined : v, page: undefined } })
+  router.replace({ query: { ...route.query, sort: v === 'new' ? undefined : v, page: undefined } })
 }
 function setSize(n) {
   if (curSize() === n) return
@@ -140,9 +146,11 @@ watch(() => route.query.q, (v) => {
 })
 
 /* page/sort/size 全部双向同步 URL（replace 不产生历史）：query 变化回读驱动 search
-   （浏览器前进/后退亦覆盖；q 的变化由上方独立 watcher 处理） */
+   （浏览器前进/后退亦覆盖；q 的变化由上方独立 watcher 处理；manualAt 窗口内的
+   手动提交已自带 search，跳过避免双请求 —— 典型为 URL 残留 page>1 时 submit） */
 watch(() => [route.query.page, route.query.sort, route.query.size].join('|'), () => {
-  const p = parseInt(route.query.page, 10) || 1
+  if (Date.now() - manualAt < 450) return
+  const p = Math.max(1, parseInt(route.query.page, 10) || 1)
   const changed = p !== page.value
   if (changed) page.value = p
   if (changed || q.value.trim()) search()
@@ -220,7 +228,12 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
         </template>
         <ProductCard v-for="p in items" :key="p.id" :p="p" />
       </div>
-      <div v-if="loaded && !q.trim()" style="text-align:center;padding:50px 0;color:var(--gray)">
+      <div v-if="loaded && loadErr" style="text-align:center;padding:50px 0;color:var(--gray)">
+        <div style="font-size:44px;margin-bottom:10px">⚠️</div>
+        {{ zh() ? '搜索加载失败，请检查网络后重试' : 'Search failed to load — check your connection and retry' }}
+        <div style="margin-top:14px"><button class="btn btn-secondary" @click="search">⟳ {{ zh() ? '重试' : 'Retry' }}</button></div>
+      </div>
+      <div v-else-if="loaded && !q.trim()" style="text-align:center;padding:50px 0;color:var(--gray)">
         <div style="font-size:44px;margin-bottom:10px">🔍</div>
         {{ zh() ? '输入关键词开始搜索，或点上方热门词逛逛' : 'Type a keyword to start searching, or try the trending picks above' }} ·
         <router-link to="/store" style="color:var(--plum)">{{ zh() ? '浏览全部' : 'browse all' }}</router-link>

@@ -20,12 +20,13 @@ router = APIRouter(prefix="/api/admin/member", tags=["admin-member"])
 @router.get("/subscriptions")
 def admin_subscriptions(
     status: int | None = Query(None, description="按订阅状态过滤（1生效中 2已暂停 5已取消）"),
+    q: str | None = Query(None, description="按用户 email 模糊搜索"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    return service_subscriptions.admin_list(db, status, page, size)
+    return service_subscriptions.admin_list(db, status, page, size, q)
 
 
 @router.post("/subscriptions/{sub_id}/pause")

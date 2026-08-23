@@ -35,7 +35,8 @@ function onSessionExpired() {
  * v3：z-index 9999 → 1200（对齐 admin.css 顶部刻度表）；新增左侧状态图标（白底圆片 + 语义色描边，深浅底 toast 均可读） */
 .gm-toast-wrap{position:fixed;top:18px;right:18px;z-index:1200;display:grid;gap:8px}
 .gm-toast{background:var(--ink);color:#fff;font-size:13px;padding:10px 12px 10px 14px;border-radius:10px;box-shadow:var(--shadow-pop);animation:gmTIn .25s ease-out;max-width:340px;display:flex;align-items:flex-start;gap:10px}
-.gm-toast.success{background:var(--success)}
+/* success 底色由 --success(#3EBD93) 加深为 #1F9D74：白字对比度不足（WCAG），保持同色系 */
+.gm-toast.success{background:#1F9D74}
 .gm-toast.error{background:var(--error)}
 .gm-toast.out{animation:gmTOut .2s ease-in forwards}
 .gm-toast-ico{flex:none;width:18px;height:18px;margin-top:1px;border-radius:50%;background:rgba(255,255,255,.92);display:inline-flex;align-items:center;justify-content:center}

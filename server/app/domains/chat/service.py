@@ -341,6 +341,17 @@ def _admin_names(db: Session, convs: list[ChatConversation]) -> dict[int, str]:
     return _names_for(db, convs)
 
 
+def _pending_total(db: Session, mine_admin_id: int | None) -> int:
+    """全局待回复总数（与 per-item pending_reply 同谓词：status=0 且最后一条为客户消息）。
+    忽略分页与 channel/status/q 筛选；mine 作用域保留（美甲师只见本人范围的计数）。"""
+    convs = repo.admin_conversations_query(db, None, 0, None, mine_admin_id).all()
+    lmap = repo.last_messages_map(db, [c.id for c in convs])
+    return sum(
+        1 for c in convs
+        if (m := lmap.get(c.id)) is not None and m.sender == int(ChatSender.CUSTOMER)
+    )
+
+
 def admin_list(
     db: Session, channel: int | None, status: int | None, q: str | None,
     mine_admin_id: int | None, page: int, size: int,
@@ -352,20 +363,37 @@ def admin_list(
     return {
         "items": [_conv_dict(c, names=names, last=lmap.get(c.id)) for c in rows],
         "total": total, "page": page, "size": size,
+        "pending_total": _pending_total(db, mine_admin_id),
     }
 
 
-def admin_conversation(db: Session, conv_no: str) -> dict:
+def admin_conversation(db: Session, admin: User, conv_no: str) -> dict:
     conv = repo.conversation_by_no(db, conv_no)
     if not conv:
         raise HTTPException(status_code=404, detail="conversation not found")
+    # 读路径同样接入美甲师作用域（与写操作同款归属校验，防 role4 越权读他人会话）
+    _assert_artist_scope(admin, conv)
     return _conv_detail(db, conv)
+
+
+def _assert_artist_scope(admin: User, conv: ChatConversation) -> None:
+    """美甲师(role=4)写操作作用域：目标会话须确属其名下（人工=本人接手 / 美甲师=本人，
+    与列表 mine 过滤谓词同源取反），越权 403；其他角色不受限"""
+    if admin.role != int(UserRole.ARTIST):
+        return
+    owned = (
+        (conv.channel == 1 and conv.agent_admin_id == admin.id)
+        or (conv.channel == 2 and conv.artist_id == admin.id)
+    )
+    if not owned:
+        raise HTTPException(status_code=403, detail="not your conversation")
 
 
 def admin_reply(db: Session, admin: User, conv_no: str, content: str) -> dict:
     conv = repo.conversation_by_no(db, conv_no)
     if not conv:
         raise HTTPException(status_code=404, detail="conversation not found")
+    _assert_artist_scope(admin, conv)
     if conv.status == 1:
         raise HTTPException(status_code=400, detail="conversation closed")
     # 美甲师本人回复美甲师渠道 → sender=5；其余（运营/超管代答）→ sender=2 客服
@@ -398,6 +426,7 @@ def admin_resume_ai(db: Session, admin: User, conv_no: str) -> dict:
     conv = repo.conversation_by_no(db, conv_no)
     if not conv:
         raise HTTPException(status_code=404, detail="conversation not found")
+    _assert_artist_scope(admin, conv)
     if conv.channel != 1:
         raise HTTPException(status_code=400, detail="not a human conversation")
     if conv.status == 1:
@@ -414,6 +443,7 @@ def admin_take(db: Session, admin: User, conv_no: str) -> dict:
     conv = repo.conversation_by_no(db, conv_no)
     if not conv:
         raise HTTPException(status_code=404, detail="conversation not found")
+    _assert_artist_scope(admin, conv)
     if conv.channel != 1:
         raise HTTPException(status_code=400, detail="not a human conversation")
     if conv.status == 1:
@@ -433,6 +463,7 @@ def admin_close(db: Session, admin: User, conv_no: str) -> dict:
     conv = repo.conversation_by_no(db, conv_no)
     if not conv:
         raise HTTPException(status_code=404, detail="conversation not found")
+    _assert_artist_scope(admin, conv)
     if conv.status == 1:
         raise HTTPException(status_code=409, detail="conversation already closed")
     conv.status = 1

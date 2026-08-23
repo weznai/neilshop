@@ -238,6 +238,8 @@ def price_cart(
         "giftcard_discount": giftcard_discount,
         "shipping_method": shipping_method,
         "shipping_fee": shipping_fee,
+        # 免邮门槛回传（前端进度条/文案统一消费，替代三处硬编码 3500）
+        "free_shipping_threshold": threshold,
         "tax_rate": tax_rate,
         "tax_state": tax_state,
         "tax": tax,

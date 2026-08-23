@@ -19,8 +19,8 @@ const reasonText = (r) => {
   return v === 'promo.' + r ? r : v
 }
 
-/* 免邮门槛 $35：后端 settings.free_shipping_threshold 默认 3500（preview 未返回阈值时以此展示） */
-const FREE_SHIP_C = 3500
+/* 免邮门槛：以 shipping-methods 下发的 settings 值为准（运营改配置后进度条即时对齐），失败回落 3500 */
+const FREE_SHIP_C = ref(3500)
 const FALLBACK_SHIP_C = 499 /* settings.shipping_standard 默认 */
 
 const code = ref('')
@@ -107,6 +107,13 @@ function onQtyInput(i, e) {
 
 onMounted(() => {
   cart.refresh().catch(() => {})
+  /* 免邮门槛（settings 下发；失败回落默认） */
+  req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
+    if (d && d.free_shipping_threshold) FREE_SHIP_C.value = Number(d.free_shipping_threshold) || 3500
+  }).catch(() => {})
+  /* 跨页恢复已应用的折扣码（抽屉/checkout 同一 localStorage 键，保持三入口一致） */
+  const saved = (localStorage.getItem('gm_applied_code') || '').trim().toUpperCase()
+  if (saved && !appliedCode.value) { code.value = saved; appliedCode.value = saved }
 })
 watch(
   () => cart.items.map((i) => i.vid + ':' + i.qty).join('|'),
@@ -119,7 +126,7 @@ const subC = computed(() => cart.subtotalC)
 const bundleC = computed(() => (pv.value && pv.value.bundle_discount) || 0)
 const codeC = computed(() => (pv.value && pv.value.code_valid && pv.value.code === appliedCode.value && pv.value.code_discount) || 0)
 const shipC = computed(() => {
-  if (!pv.value) return subC.value >= FREE_SHIP_C ? 0 : FALLBACK_SHIP_C
+  if (!pv.value) return subC.value >= FREE_SHIP_C.value ? 0 : FALLBACK_SHIP_C
   return pv.value.free_shipping ? 0 : (pv.value.shipping_fee != null ? pv.value.shipping_fee : FALLBACK_SHIP_C)
 })
 const freeShip = computed(() => shipC.value === 0)
@@ -137,12 +144,12 @@ const awayC = computed(() => {
   if (pv.value) {
     if (pv.value.free_shipping || pv.value.shipping_fee === 0) return 0
     const after = pv.value.subtotal - (pv.value.discount_total || 0)
-    return Math.max(0, FREE_SHIP_C - after)
+    return Math.max(0, FREE_SHIP_C.value - after)
   }
-  return Math.max(0, FREE_SHIP_C - subC.value)
+  return Math.max(0, FREE_SHIP_C.value - subC.value)
 })
 const totalD = computed(() => ((subC.value - bundleC.value - codeC.value + shipC.value) / 100).toFixed(2))
-const shipPct = computed(() => Math.min(100, ((FREE_SHIP_C - awayC.value) / FREE_SHIP_C) * 100))
+const shipPct = computed(() => Math.min(100, ((FREE_SHIP_C.value - awayC.value) / FREE_SHIP_C.value) * 100))
 
 /* 穿戴甲组合进度（后端规则：press-on 2 件 85 折 / 3 件 8 折，只算 press-on-nails 类目） */
 const pressQty = computed(() => (pv.value && pv.value.bundle_qty) || 0)
@@ -151,7 +158,12 @@ const bundleHint = computed(() => i18n.t(pressQty.value >= 3
   : pressQty.value === 2 ? 'cart.bundle.2' : pressQty.value === 1 ? 'cart.bundle.1' : 'cart.bundle.0'))
 
 const checkoutLink = computed(() => '/checkout' + (appliedCode.value ? `?code=${encodeURIComponent(appliedCode.value)}` : ''))
-const hasOos = computed(() => cart.items.some((i) => (i.stock || 0) <= 0 || i.stockStatus === 'out'))
+const hasOos = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0 || i.stockStatus === 'out'))
+const hasInactive = computed(() => cart.items.some((i) => i.inactive))
+async function removeInactive() {
+  const dead = cart.items.filter((i) => i.inactive).map((i) => i.vid)
+  for (const vid of dead) await cart.remove(vid, ui)
+}
 function isLash(i) {
   const l = pv.value && pv.value.items ? pv.value.items.find((x) => x.variant_id === i.vid) : null
   if (l && l.category_slug) return l.category_slug === 'magnetic-lashes'
@@ -183,25 +195,30 @@ const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
             class="cart-row"
             style="display:flex;gap:14px;padding:18px 12px;margin:0 -12px;border-bottom:1px solid var(--gray-light)"
           >
-            <router-link :to="`/product?id=${i.pid}`">
+            <router-link v-if="!i.inactive && i.pid" :to="`/product?id=${i.pid}`">
               <img :src="i.img" :alt="i.title" style="width:88px;height:88px;border-radius:12px;object-fit:cover" loading="lazy" @error="imgFallback">
             </router-link>
+            <img v-else :src="i.img || IMG_FALLBACK" :alt="i.title || ''" style="width:88px;height:88px;border-radius:12px;object-fit:cover;opacity:.6" loading="lazy" @error="imgFallback">
             <div style="flex:1;min-width:0">
               <div style="display:flex;justify-content:space-between;gap:10px">
                 <div>
-                  <b style="font-size:15px">{{ i.title }}</b>
+                  <b style="font-size:15px">{{ i.title || tt('Unavailable item', '已失效商品') }}</b>
+                  <span v-if="i.inactive" class="tag" style="background:var(--gray-light);color:var(--error);font-size:11px;margin-left:6px">{{ tt('Delisted', '已下架') }}</span>
                   <div style="font-size:12.5px;color:var(--gray)">{{ i.variant }}</div>
-                  <div v-if="i.stock > 0 && i.stock <= 5" style="font-size:12px;color:var(--warn);font-weight:600;margin-top:2px">
+                  <div v-if="i.inactive" style="font-size:12px;color:var(--error);font-weight:600;margin-top:2px">
+                    {{ tt('No longer available — please remove it', '该商品已不可购买，请移除') }}
+                  </div>
+                  <div v-else-if="i.stock > 0 && i.stock <= 5" style="font-size:12px;color:var(--warn);font-weight:600;margin-top:2px">
                     {{ i18n.t('cart.lowStock', i.stock) }}
                   </div>
                   <div v-else-if="i.stock <= 0" style="font-size:12px;color:var(--error);font-weight:600;margin-top:2px">
                     {{ i18n.t('cart.oos') }}
                   </div>
                 </div>
-                <b style="font-size:15px;color:var(--plum);font-variant-numeric:tabular-nums">${{ ((i.priceC || i.price * 100) * i.qty / 100).toFixed(2) }}</b>
+                <b v-if="!i.inactive" style="font-size:15px;color:var(--plum);font-variant-numeric:tabular-nums">${{ ((i.priceC || i.price * 100) * i.qty / 100).toFixed(2) }}</b>
               </div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
-                <div style="display:flex;align-items:center;border:1px solid var(--gray-light);border-radius:8px">
+                <div v-if="!i.inactive" style="display:flex;align-items:center;border:1px solid var(--gray-light);border-radius:8px">
                   <button class="qbtn" :disabled="i.qty <= 1" @click="cart.setQty(i.vid, i.qty - 1, ui)">−</button>
                   <input
                     class="qty-in" type="number" min="1" inputmode="numeric" :value="i.qty"
@@ -272,8 +289,11 @@ const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
           </div>
           <router-link v-if="!hasOos" :to="checkoutLink" class="btn btn-primary btn-block btn-lg">{{ i18n.t('cart.checkout') }} · ${{ totalD }}</router-link>
           <button v-else class="btn btn-primary btn-block btn-lg" disabled>{{ i18n.t('cart.checkout') }}</button>
+          <button v-if="hasInactive" class="btn btn-secondary btn-block" style="margin-top:8px" type="button" @click="removeInactive">
+            {{ tt('Remove unavailable items', '移除已下架商品') }}
+          </button>
           <div v-if="hasOos" style="font-size:12.5px;color:var(--error);font-weight:600;margin-top:10px;text-align:center">
-            {{ tt('Please remove out-of-stock items before checkout', '请先移除缺货商品后再结算') }}
+            {{ tt('Please remove out-of-stock items before checkout', '请先移除缺货/下架商品后再结算') }}
           </div>
           <router-link to="/store" style="display:block;text-align:center;margin-top:12px;font-size:13px;color:var(--gray);text-decoration:underline">
             {{ i18n.t('cart.continue') }}

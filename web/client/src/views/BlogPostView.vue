@@ -192,7 +192,7 @@ onMounted(load)
               :to="{ path: '/blog/post', query: { slug: r.slug } }"
             >
               <div style="height:110px;overflow:hidden;background:var(--rose-pale)">
-                <img :src="r.cover" :alt="r.title" style="width:100%;height:100%;object-fit:cover" loading="lazy">
+                <img :src="r.cover || PH" :alt="r.title" style="width:100%;height:100%;object-fit:cover" loading="lazy" @error="coverFallback">
               </div>
               <div style="padding:12px 14px">
                 <b style="display:block;font-size:13.5px;font-family:var(--font-title)">{{ r.title }}</b>
@@ -214,6 +214,8 @@ onMounted(load)
 /* 正文排版补全（v-html 内容经 :deep 穿透）：68ch 可读行宽 + h3/h4 层级 + 品牌链接/图片样式
  * + 列表（ul/ol）+ 引用块（rose 左边条 + rose-pale 底）+ 行内代码 */
 .prose { max-width: 68ch; }
+/* markdown # 一级标题映射为 h2：比 h3/h4 高一级的字号与边距 */
+.prose :deep(h2) { font-family: var(--font-title); font-size: 22px; margin: 30px 0 12px; color: var(--ink); }
 .prose :deep(h3) { font-family: var(--font-title); font-size: 19px; margin: 26px 0 10px; color: var(--ink); }
 .prose :deep(h4) { font-family: var(--font-title); font-size: 16px; margin: 20px 0 8px; color: var(--ink); }
 .prose :deep(a) { color: var(--plum); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rose); }

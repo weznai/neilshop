@@ -61,6 +61,8 @@ const sceneLabel = (s) => POPUP_SCENES[s] || s
 const sceneOptions = computed(() => [...Object.keys(POPUP_SCENES), ...[...new Set(popups.value.map((p) => p.scene).filter((s) => s && !(s in POPUP_SCENES)))]])
 const popupDlg = ref(false)
 const popupForm = reactive({ id: null, scene: 'welcome', title: '', content_md: '', coupon_code: '', delaySec: 7, exitIntent: false, mobileOnly: false, start_at: '', end_at: '', active: 0 })
+/* 编辑时初始券码快照：券码未改动则提交跳过存在性校验（防「不在当前页 discounts」误伤未改码的编辑） */
+let popupCoupon0 = ''
 /* 弹窗有效期：与折扣码同一套「本地输入 → 提交转 UTC」口径——编辑回填走 dtLocalIn，提交 dtOut 统一 new Date().toISOString() */
 const dtOut = (v) => (v ? new Date(v).toISOString().slice(0, 19) : null)
 /* naive UTC → 本地 datetime-local（提交时 new Date().toISOString() 转回 UTC，与新建口径一致） */
@@ -86,19 +88,24 @@ function initTabFromQuery() {
 async function load() {
   loaded.value = false
   loadErr.value = false
+  /* 首载并行（各源互不依赖），逐源保持原错误处理 */
+  const rs = await Promise.allSettled([
+    loadDiscounts(),
+    req('GET', '/api/admin/trade/shipping-rates').then((r) => { rates.value = r.items || [] }),
+    req('GET', '/api/admin/ops/popups').then((r) => { popups.value = r.items || [] }),
+    req('GET', '/api/admin/ops/settings').then((r) => { for (const row of r.items || []) if (row.key in settings) settings[row.key] = row.value }),
+  ])
   let failed = 0
-  try { await loadDiscounts() }
-  catch (e) { failed++; toast('折扣码加载失败：' + (e.message || ''), 'error') }
-  try { rates.value = (await req('GET', '/api/admin/trade/shipping-rates')).items || [] }
-  catch (e) { failed++; toast('运费模板加载失败：' + (e.message || ''), 'error') }
-  try { popups.value = (await req('GET', '/api/admin/ops/popups')).items || [] }
-  catch (e) { failed++; toast('弹窗配置加载失败：' + (e.message || ''), 'error') }
-  try {
-    const rows = (await req('GET', '/api/admin/ops/settings')).items || []
-    for (const r of rows) if (r.key in settings) settings[r.key] = r.value
-  } catch (e) { failed++; toast('捆绑折扣参数加载失败：' + (e.message || ''), 'error') }
+  const msgs = ['折扣码加载失败：', '运费模板加载失败：', '弹窗配置加载失败：', '捆绑折扣参数加载失败：']
+  rs.forEach((r, i) => { if (r.status === 'rejected') { failed++; toast(msgs[i] + (r.reason?.message || ''), 'error') } })
   if (failed) loadErr.value = true
   loaded.value = true
+}
+/* 顶部错误横幅重试：按当前 tab 分发（礼品卡/集合重试各自懒加载源，其余走首载 load） */
+function retryTop() {
+  if (tab.value === 'giftcards') { loadGiftcards(); return }
+  if (tab.value === 'collections') { loadCollections(); return }
+  load()
 }
 onMounted(() => { initTabFromQuery(); load() })
 
@@ -135,9 +142,9 @@ async function addCode() {
   if (!newCode.code) { toast('折扣码必填', 'error'); return }
   if (newCode.type === 1 && (newCode.value <= 0 || newCode.value > 100)) { toast('百分比折扣需在 1-100 之间', 'error'); return }
   if (newCode.type === 2 && !(newCode.value > 0)) { toast('固定减免金额需大于 $0', 'error'); return }
-  /* 有效期校验：starts 空=现在；days 天后的结束需晚于开始（开始设在未来时天数太短会被拦截） */
+  /* 有效期校验：starts 空=现在；ends_at 以「max(开始时间, now)」为基准加 days（开始设在过去时以 now 兜底，不缩短有效期） */
   const startMs = newCode.starts_at ? new Date(newCode.starts_at).getTime() : Date.now()
-  const endMs = newCode.days > 0 ? Date.now() + newCode.days * 864e5 : null
+  const endMs = newCode.days > 0 ? Math.max(startMs, Date.now()) + newCode.days * 864e5 : null
   if (endMs != null && endMs <= startMs) { toast('结束时间需晚于开始时间（有效天数过短）', 'error'); return }
   try {
     await req('POST', '/api/admin/ops/discounts', {
@@ -152,7 +159,7 @@ async function addCode() {
       first_order_only: newCode.first_order_only ? 1 : 0,
       /* 开始时间：填了按本地时间转 UTC ISO（datetime-local → Date → toISOString），空=当前时刻立即生效 */
       starts_at: newCode.starts_at ? new Date(newCode.starts_at).toISOString().slice(0, 19) : new Date().toISOString().slice(0, 19),
-      ends_at: newCode.days > 0 ? new Date(Date.now() + newCode.days * 864e5).toISOString().slice(0, 19) : null, /* days=0/空 → null 永久 */
+      ends_at: newCode.days > 0 ? new Date(Math.max(startMs, Date.now()) + newCode.days * 864e5).toISOString().slice(0, 19) : null, /* days=0/空 → null 永久；基准=max(开始,now) */
     })
     showNew.value = false
     Object.assign(newCode, NEW_CODE)
@@ -305,7 +312,7 @@ async function loadGiftcards() {
     gc.value = d.items || []
     gcTotal.value = d.total ?? gc.value.length
     gcLoaded.value = true
-  } catch (e) { gcErr.value = true; gc.value = []; toast('礼品卡加载失败：' + (e.message || ''), 'error') }
+  } catch (e) { gcErr.value = true; toast('礼品卡加载失败：' + (e.message || ''), 'error') }   /* 保留旧数据：卡内横幅提示（见模板） */
 }
 function gcGo(n) {
   if (n >= 1 && n <= gcPages.value) { gcPage.value = n; loadGiftcards() }
@@ -326,9 +333,12 @@ const gcNew = reactive({ ...GC_NEW })
 function openGcNew() { Object.assign(gcNew, GC_NEW); gcNewDlg.value = true }
 async function createGiftcard() {
   if (!(gcNew.amount > 0)) { toast('面额需大于 0', 'error'); return }
+  /* 自定义卡号格式校验：1-19 位字母/数字（留空=自动生成） */
+  const code = gcNew.code.trim()
+  if (code && !/^[A-Za-z0-9]{1,19}$/.test(code)) { toast('自定义卡号需为 1-19 位字母或数字', 'error'); return }
   try {
     await req('POST', '/api/admin/promo/giftcards', {
-      ...(gcNew.code.trim() ? { code: gcNew.code.trim().toUpperCase() } : {}),
+      ...(code ? { code: code.toUpperCase() } : {}),
       initial_cents: Math.round(gcNew.amount * 100),
       expires_days: gcNew.days > 0 ? Math.round(gcNew.days) : null,
       note: gcNew.note.trim() || null,
@@ -363,7 +373,30 @@ async function doGcFreeze() {
   gcFrzBusy.value = false
 }
 
-/* 流水明细（GET /{id}/ledger：分页 embed；amount 恒为正，符号由 change_type 决定：
+/* 作废（PUT /{id}/void：status→4 作废、余额清零、流水 change_type=6；409 already void → 提示并刷新） */
+const gcVoidDlg = ref(false)
+const gcVoidBusy = ref(false)
+const gcVoidTarget = ref(null)
+const gcVoidBody = computed(() => `作废礼品卡 ${gcVoidTarget.value?.code || ''}？作废后余额清零且不可恢复。`)
+function askGcVoid(g) { gcVoidTarget.value = g; gcVoidDlg.value = true }
+async function doGcVoid() {
+  const g = gcVoidTarget.value
+  if (!g) return
+  gcVoidBusy.value = true
+  try {
+    await req('PUT', `/api/admin/promo/giftcards/${g.id}/void`)
+    toast('已作废 ✓', 'success')
+    gcVoidDlg.value = false
+    await loadGiftcards()
+  } catch (e) {
+    if (e.status === 409) { toast('该礼品卡已作废', 'error'); gcVoidDlg.value = false; loadGiftcards() }
+    else toast('作废失败：' + (e.data?.detail || e.message), 'error')
+  }
+  gcVoidBusy.value = false
+}
+
+/* 流水明细（GET /{id}/ledger：分页 embed；delta_cents 可正可负（后端消费确认/作废等会写负值流水），
+ * 展示统一 Math.abs 取绝对值，符号由 change_type 决定：
  * 1激活(+) 2消费冻结(-) 3消费确认(-) 4解冻(+) 5退款返还(+) 6作废(-)） */
 const LED_SIZE = 10
 const ledgerDlg = ref(false)
@@ -395,6 +428,7 @@ function ledGo(n) {
 /* ===== 弹窗管理（GET/POST /api/admin/ops/popups + PUT/{id} + /{id}/toggle，stats 保留不清零） ===== */
 function newPopup() {
   Object.assign(popupForm, { id: null, scene: 'welcome', title: '', content_md: '', coupon_code: '', delaySec: 7, exitIntent: false, mobileOnly: false, start_at: '', end_at: '', active: 0 })
+  popupCoupon0 = ''
   popupDlg.value = true
 }
 function editPopup(p) {
@@ -411,15 +445,20 @@ function editPopup(p) {
     end_at: dtLocalIn(p.end_at),
     active: p.active ? 1 : 0,
   })
+  popupCoupon0 = (p.coupon_code || '').trim().toUpperCase()
   popupDlg.value = true
 }
 async function savePopup() {
   if (!popupForm.title.trim()) { toast('标题必填', 'error'); return }
+  /* 绑定券码严格校验：仅「新建」或「券码已改动」时要求存在于折扣码列表（当前页），防绑定错误码；
+   * 编辑未改码跳过校验（原券码可能不在当前页 discounts 中） */
+  const code = popupForm.coupon_code ? popupForm.coupon_code.trim().toUpperCase() : ''
+  if (code && (!popupForm.id || code !== popupCoupon0) && !discounts.value.some((c) => c.code === code)) { toast('券码不存在或不在当前页，请核对', 'error'); return }
   const body = {
     scene: popupForm.scene.trim().toLowerCase(),
     title: popupForm.title.trim(),
     content_md: popupForm.content_md || null,
-    coupon_code: popupForm.coupon_code ? popupForm.coupon_code.trim().toUpperCase() : null,
+    coupon_code: code || null,
     trigger_rules: { delaySec: Math.round(popupForm.delaySec || 0), exitIntent: !!popupForm.exitIntent, mobileOnly: !!popupForm.mobileOnly },
     start_at: dtOut(popupForm.start_at),
     end_at: dtOut(popupForm.end_at),
@@ -439,6 +478,25 @@ async function togglePopup(p) {
     p.active = p.active ? 0 : 1
     toast(p.active ? '已启用 ✓' : '已停用 ✓', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+}
+
+/* 删除弹窗配置：危险确认；DELETE /ops/popups/{id} → 重拉列表 */
+const delPopDlg = ref(false)
+const delPopBusy = ref(false)
+const delPopTarget = ref(null)
+const delPopBody = computed(() => `删除弹窗「${delPopTarget.value?.title || ''}」？删除后不可恢复。`)
+function delPopup(p) { delPopTarget.value = p; delPopDlg.value = true }
+async function doDelPopup() {
+  const p = delPopTarget.value
+  if (!p) return
+  delPopBusy.value = true
+  try {
+    await req('DELETE', '/api/admin/ops/popups/' + p.id)
+    toast('已删除', 'success')
+    delPopDlg.value = false
+    popups.value = (await req('GET', '/api/admin/ops/popups')).items || []
+  } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
+  delPopBusy.value = false
 }
 async function saveBundle(key) {
   /* 0-50 越界拦截（超 5 折不合理） */
@@ -474,6 +532,8 @@ function editRate(r) {
   })
   rateDlg.value = true
 }
+/* 限重提交：后端 max_weight_g 校验 ge=1，无「0=不限重」语义 → 0/负/空/非法一律回落默认 500 */
+const mwOut = () => { const n = Math.round(Number(rateForm.max_weight_g)); return Number.isFinite(n) && n >= 1 ? n : 500 }
 async function saveRate() {
   if (rateForm.eta_max_days < rateForm.eta_min_days) { toast('最大时效不能小于最小时效', 'error'); return }
   try {
@@ -484,7 +544,7 @@ async function saveRate() {
         method: rateForm.method, price: Math.round(rateForm.price),
         free_over: rateForm.free_over ? Math.round(rateForm.free_over) : null,
         eta_min_days: rateForm.eta_min_days | 0, eta_max_days: rateForm.eta_max_days | 0,
-        max_weight_g: rateForm.max_weight_g | 0 || 500,
+        max_weight_g: mwOut(),
       })
       toast('运费模板已保存 ✓', 'success')
     } else {
@@ -493,7 +553,7 @@ async function saveRate() {
         method: rateForm.method, price: Math.round(rateForm.price),
         free_over: rateForm.free_over ? Math.round(rateForm.free_over) : null,
         eta_min_days: rateForm.eta_min_days | 0, eta_max_days: rateForm.eta_max_days | 0,
-        max_weight_g: rateForm.max_weight_g | 0 || 500,
+        max_weight_g: mwOut(),
       })
       toast('运费模板已创建 ✓', 'success')
     }
@@ -778,7 +838,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
   <!-- 加载失败横幅：所有 tab 共用（初始加载/重试失败时置位，重试走 load） -->
   <div v-if="loadErr" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 14px;margin-bottom:14px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
     <span>⚠️ 部分数据加载失败，展示的可能不是最新配置</span>
-    <button class="btn btn-secondary btn-sm" @click="load">重试</button>
+    <button class="btn btn-secondary btn-sm" @click="retryTop">重试</button>
   </div>
 
   <!-- 折扣码 -->
@@ -925,12 +985,14 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
 
   <!-- 礼品卡（/promo/giftcards：搜索/状态筛选/分页；冻结↔解冻；流水） -->
   <template v-else-if="tab === 'giftcards'">
-    <EmptyState v-if="gcErr" icon="⚠️" title="礼品卡列表加载失败" sub="服务端可能未启动或端点暂不可用">
+    <!-- 首屏失败（无旧数据）：错误空态；刷新失败（有旧数据）：保留旧数据 + 卡内横幅 -->
+    <EmptyState v-if="gcErr && !gc.length" icon="⚠️" title="礼品卡列表加载失败" sub="服务端可能未启动或端点暂不可用">
       <template #action><button class="btn btn-secondary btn-sm" @click="loadGiftcards">重试</button></template>
     </EmptyState>
     <template v-else>
       <div v-if="!gcLoaded" class="card skeleton" style="min-height:220px"></div>
       <div v-else class="card card-flush tbl-wrap">
+        <div v-if="gcErr" class="err-banner"><span>⚠️ 刷新失败：网络异常，下方为旧数据</span><button class="btn btn-secondary btn-sm" @click="loadGiftcards">重试</button></div>
         <div class="dhead" style="padding:14px 16px 0">
           <h3 class="dtitle">礼品卡</h3>
           <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
@@ -968,6 +1030,8 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
               <td style="color:var(--gray);font-size:12px">{{ g.expired_at ? dt(g.expired_at) : '永久' }}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button v-if="g.status === 1 || g.status === 2" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="askGcFreeze(g)">{{ g.status === 1 ? '冻结' : '解冻' }}</button>
+                <!-- 非用尽(3)/作废(4) 状态可作废（余额清零不可恢复） -->
+                <button v-if="g.status !== 3 && g.status !== 4" class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="askGcVoid(g)">作废</button>
                 <button class="btn btn-secondary btn-sm" @click="openLedger(g)">流水</button>
               </td>
             </tr>
@@ -989,10 +1053,11 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
           <span style="font-size:12px;color:var(--gray)">卡号留空自动生成，流水可查</span>
         </div>
         <div style="display:grid;gap:12px">
-          <div class="field"><label>自定义卡号（可选，留空自动生成）</label><input v-model="gcNew.code" class="input" placeholder="留空自动生成" style="text-transform:uppercase"></div>
+          <div class="field"><label>自定义卡号（可选，留空自动生成，≤19 位字母/数字）</label><input v-model="gcNew.code" class="input" maxlength="19" placeholder="留空自动生成" style="text-transform:uppercase"></div>
           <div class="field"><label>面额（美元）*</label><input v-model.number="gcNew.amount" class="input" type="number" min="0.01" step="0.01"></div>
           <div class="field"><label>有效天数（空 = 永久）</label><input v-model.number="gcNew.days" class="input" type="number" min="1"></div>
-          <div class="field"><label>备注（可选）</label><input v-model="gcNew.note" class="input" placeholder="如：客服补偿"></div>
+          <div class="field"><label>备注（可选）</label><input v-model="gcNew.note" class="input" placeholder="如：客服补偿">
+            <p style="font-size:11.5px;color:var(--gray);margin-top:4px">备注将记入操作日志（礼品卡流水不含备注）。</p></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="gcNewDlg = false">取消</button>
@@ -1024,6 +1089,9 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
 
     <!-- 冻结/解冻确认（按当前状态切换动作与文案；冻结为危险态） -->
     <ConfirmDialog :open="gcFrzDlg" :title="gcFrzFreezing ? '冻结礼品卡' : '解冻礼品卡'" :body="gcFrzBody" :danger="gcFrzFreezing" :confirm-text="gcFrzFreezing ? '冻结' : '解冻'" :busy="gcFrzBusy" @confirm="doGcFreeze" @close="gcFrzDlg = false" />
+
+    <!-- 作废确认（余额清零不可恢复，危险态） -->
+    <ConfirmDialog :open="gcVoidDlg" title="作废礼品卡" :body="gcVoidBody" danger confirm-text="作废" :busy="gcVoidBusy" @confirm="doGcVoid" @close="gcVoidDlg = false" />
   </template>
 
   <!-- 运费模板 -->
@@ -1092,7 +1160,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
           <div class="field"><label>免邮门槛（美分，可空）</label><input v-model.number="rateForm.free_over" class="input" type="number"></div>
           <div class="field"><label>最小时效（天）</label><input v-model.number="rateForm.eta_min_days" class="input" type="number"></div>
           <div class="field"><label>最大时效（天）</label><input v-model.number="rateForm.eta_max_days" class="input" type="number"></div>
-          <div class="field"><label>限重（g）</label><input v-model.number="rateForm.max_weight_g" class="input" type="number"></div>
+          <div class="field"><label>限重（g，留空默认 500）</label><input v-model.number="rateForm.max_weight_g" class="input" type="number" min="1"></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="rateDlg = false">取消</button>
@@ -1179,6 +1247,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
             <td style="text-align:right;white-space:nowrap">
               <button class="btn btn-secondary btn-sm" @click="editPopup(p)">编辑</button>
               <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="togglePopup(p)">{{ p.active ? '停用' : '启用' }}</button>
+              <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delPopup(p)">删除</button>
             </td>
           </tr>
         </tbody>
@@ -1228,6 +1297,9 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
         </div>
       </div>
     </div>
+
+    <!-- 删除弹窗配置确认 -->
+    <ConfirmDialog :open="delPopDlg" title="删除弹窗" :body="delPopBody" danger confirm-text="删除" :busy="delPopBusy" @confirm="doDelPopup" @close="delPopDlg = false" />
   </div>
 
   <!-- 集合页（GET/POST /api/admin/catalog/collections + PUT/DELETE /{id} + GET/PUT /{id}/products） -->
@@ -1374,6 +1446,8 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
 </template>
 
 <style scoped>
+/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部（对齐其他列表页 old-data 模式） */
+.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
 /* 捆绑折扣双卡：宽屏左右并排，≤900px 单列堆叠 */
 .bundle-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
 @media(max-width:900px){.bundle-grid{grid-template-columns:1fr}}

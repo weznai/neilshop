@@ -65,6 +65,8 @@ async function load() {
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(total.value / 50))
+    /* 当前页删空回落：本页记录被删光且不在第 1 页时回退一页重拉一次，防停留在空页 */
+    if (!items.value.length && state.page > 1) { state.page--; load(); return }
   } catch (e) {
     if (token !== reqSeq) return
     /* 首载失败记错误走错误空态（不再误导为「暂无商品」）；刷新失败保留旧数据仅 toast */
@@ -112,39 +114,42 @@ const batchBody = computed(() => {
   return s
 })
 function askBatch(action) { if (batchBusy.value) return; batchDlg.action = action; batchDlg.open = true }
-/* 循环逐个调 publish/unpublish 端点（无批量接口），确认弹窗内实时进度，失败明细 toast 列出 slug 与原因 */
+/* 批量上下架走后端批量端点（单次 POST batch-status：1=上架、2=归档，ids ≤100），failed 明细按「#id reason」汇总 toast */
 async function runBatch(action) {
   const ids = [...selIds.value]
   if (!ids.length || batchBusy.value) return
   batchBusy.value = true
   batchProg.total = ids.length
   batchProg.done = 0
-  const fails = []
-  for (let i = 0; i < ids.length; i++) {
-    try { await req('POST', `/api/admin/catalog/products/${ids[i]}/${action}`) }
-    catch (e) { fails.push({ id: ids[i], err: e.data?.detail || e.message || '' }) }
-    batchProg.done = i + 1
-  }
-  const ok = ids.length - fails.length
-  if (fails.length) {
-    const lines = fails.map((f) => `${items.value.find((x) => x.id === f.id)?.slug || '#' + f.id}（${failText(f.err)}）`)
-    toast(`批量${action === 'publish' ? '上架' : '归档'}失败 ${fails.length} 项：` + lines.join('、'), 'error')
-  }
-  toast(`批量${action === 'publish' ? '上架' : '归档'}完成：成功 ${ok}${fails.length ? '，失败 ' + fails.length : ''}`, fails.length ? 'error' : 'success')
+  let fails = []
+  try {
+    const d = await req('POST', '/api/admin/catalog/products/batch-status', { ids, status: action === 'publish' ? 1 : 2 })
+    batchProg.done = ids.length
+    fails = d.failed || []
+    if (fails.length) {
+      const lines = fails.map((f) => `#${f.id} ${failText(f.reason)}`)
+      toast(`批量${action === 'publish' ? '上架' : '归档'}失败 ${fails.length} 项：` + lines.join('、'), 'error')
+    }
+    const ok = d.updated ?? (ids.length - fails.length)
+    toast(`批量${action === 'publish' ? '上架' : '归档'}完成：成功 ${ok}${fails.length ? '，失败 ' + fails.length : ''}`, fails.length ? 'error' : 'success')
+  } catch (e) { toast('批量操作失败：' + (e.data?.detail || e.message), 'error') }
   batchBusy.value = false
   batchDlg.open = false
   selIds.value = []
   load()
 }
 
-/* ===== CSV 导出：按当前状态tab+搜索+分类+排序循环翻页拉全量（size=50，上限 20 页）；转义/BOM 照抄 OrdersView ===== */
+/* ===== CSV 导出：按当前状态tab+搜索+分类+排序循环翻页拉全量（size=100，上限 20 页）；转义/BOM 照抄 OrdersView ===== */
 const exporting = ref(false)
-const EXPORT_PER_PAGE = 50
+const EXPORT_PER_PAGE = 100
 const EXPORT_MAX_PAGES = 20
 async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
   try {
+    /* 分类兜底：导出前分类仍为空先重拉一次，仍失败仅警告（分类列留空，不阻断导出） */
+    if (!categories.value.length) await loadCategories()
+    if (!categories.value.length) toast('分类列缺失（分类数据加载失败）', 'error')
     const params = { page: 1, size: EXPORT_PER_PAGE }
     if (state.q.trim()) params.q = state.q.trim()
     if (status.value !== null) params.status = status.value
@@ -163,9 +168,9 @@ async function exportCsv() {
       )
       for (const d of batch) all.push(...(d.items || []))
     }
-    if (Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES) {
-      toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 款，仅导出前 ${all.length} 款`, 'error')
-    }
+    /* 达到页数上限截断：toast + 文件名均标注「已截断至 N 条」 */
+    const truncated = Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES
+    if (truncated) toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 款，已截断至 ${all.length} 条`, 'error')
     /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号 */
     const cell = (v) => {
       const s = String(v ?? '')
@@ -174,14 +179,15 @@ async function exportCsv() {
     const catName = (p) => categories.value.find((c) => c.id === p.category_id)?.name || ''
     const rows = [['ID', '标题', 'slug', '状态', '分类', '价格区间', '变体数', '创建时间'],
       ...all.map((p) => [p.id, p.title, p.slug, SMeta[p.status]?.[0] || p.status, catName(p),
-        p.price_max > p.price_min ? money(p.price_min) + '~' + money(p.price_max) : money(p.price_min),
+        /* 区间第二个金额去掉 $ 前缀（money 恒带 '$'），避免 $15.99~$19.99 双 $ */
+        p.price_max > p.price_min ? money(p.price_min) + '~' + money(p.price_max).slice(1) : money(p.price_min),
         p.variant_count ?? '', dt(p.created_at)])]
     const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
     const stLabel = TABS.find(([sv]) => sv === status.value)?.[1] || '全部'
     const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = `products-${stLabel}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `products-${stLabel}-${new Date().toISOString().slice(0, 10)}${truncated ? `-已截断至${all.length}条` : ''}.csv`
     a.click()
     URL.revokeObjectURL(url)
     toast('已导出 ' + all.length + ' 款 ✓', 'success')
@@ -214,6 +220,16 @@ async function doToggle() {
     load()
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
   finally { dlg.busy = false }
+}
+
+/* 归档行「恢复草稿」：走批量端点单条 status=0（仅归档态可恢复），失败显示后端原因，成功后刷新 */
+async function restoreDraft(p) {
+  try {
+    const d = await req('POST', '/api/admin/catalog/products/batch-status', { ids: [p.id], status: 0 })
+    const fails = d.failed || []
+    if (fails.length) toast(`恢复草稿失败：#${fails[0].id} ${failText(fails[0].reason)}`, 'error')
+    else { toast('已恢复为草稿 ✓', 'success'); load() }
+  } catch (e) { toast('恢复草稿失败：' + (e.data?.detail || e.message), 'error') }
 }
 
 /* 关闭批量导入弹窗时清空草稿、上次结果与待确认导入 */
@@ -270,6 +286,7 @@ const CAT_ERR = {
   'category in use': '分类下仍有商品',
   'category has children': '存在子分类，需先处理子分类',
   'parent is self': '父分类不能是自己',
+  'category cycle detected': '不能将分类移到自己的子分类下（会形成循环）',
   'parent category not found': '父分类不存在',
   'category not found': '分类不存在',
 }
@@ -323,6 +340,8 @@ async function doDelCat() {
     toast('分类已删除', 'success')
     catDelDlg.value = false
     loadCategories()
+    /* 被删分类恰为当前筛选：清空筛选并重载，防列表对已删 id 恒空 */
+    if (state.category_id === c.id) { state.category_id = ''; state.page = 1; load() }
   } catch (e) {
     const d = e.data?.detail
     toast('删除失败：' + (CAT_ERR[d] || d || e.message), 'error')
@@ -430,6 +449,7 @@ async function doDelCat() {
             <router-link class="btn btn-secondary btn-sm" :to="{ path: '/product-edit', query: { id: p.id } }">编辑</router-link>
             <button class="btn btn-ghost btn-sm" style="margin-left:6px" title="复制商品" @click="router.push('/product-edit?copy=' + p.id)">⧉</button>
             <button class="btn btn-ghost btn-sm" style="margin-left:6px" @click="toggle(p)">{{ p.status === 1 ? '归档' : '上架' }}</button>
+            <button v-if="p.status === 2" class="btn btn-ghost btn-sm" style="margin-left:6px" @click="restoreDraft(p)">恢复草稿</button>
           </td>
         </tr>
       </tbody>

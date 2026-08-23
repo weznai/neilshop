@@ -151,6 +151,15 @@ def reconciliations(
     return service.reconciliations(db, page, size, date_from, date_to)
 
 
+@router.post("/api/admin/ops/reconciliations/{rec_id}/resolve")
+def resolve_reconciliation(
+    rec_id: int,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    """差异人工核销：置 status=2 已处理（已处理 → 409）"""
+    return service.resolve_reconciliation(db, admin, rec_id)
+
+
 @router.get("/api/admin/ops/data-requests")
 def data_requests(
     type: int | None = Query(None, ge=1, le=2, description="1导出 2删除"),

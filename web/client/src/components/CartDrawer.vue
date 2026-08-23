@@ -59,8 +59,16 @@ function undoRemove() {
 }
 
 const subtotalD = computed(() => (cart.subtotalC / 100).toFixed(2))
+/* 免邮门槛（settings 下发，与 CartView/Checkout 同源；失败回落 $35 文案） */
+const freeShipC = ref(3500)
+req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
+  if (d && d.free_shipping_threshold) freeShipC.value = Number(d.free_shipping_threshold) || 3500
+}).catch(() => {})
 /* 抽屉不跑 preview，无法按折后口径精确计算免邮进度 → 弱化为静态提示，进度条隐藏（以结算页试算为准） */
-const shipHint = computed(() => tt('Free shipping on orders over $35 (calculated on discounted subtotal, final at checkout)', '满 $35 可享免邮（按折后金额计算，以结算页为准）'))
+const shipHint = computed(() => tt(
+  `Free shipping on orders over $${(freeShipC.value / 100).toFixed(0)} (calculated on discounted subtotal, final at checkout)`,
+  `满 $${(freeShipC.value / 100).toFixed(0)} 可享免邮（按折后金额计算，以结算页为准）`,
+))
 
 /* 去结算携带已验证折扣码（CartView applyCode 成功时写入 gm_applied_code；CheckoutView 支持 ?code=） */
 function checkoutLink() {
@@ -141,17 +149,20 @@ function drawerKeydown(e) {
           v-for="i in cart.items" :key="i.id"
           style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--gray-light)"
         >
-          <img :src="i.img" style="width:72px;height:72px;border-radius:8px;object-fit:cover" :alt="i.title" loading="lazy" @error="imgFallback">
+          <img :src="i.img || IMG_FALLBACK" style="width:72px;height:72px;border-radius:8px;object-fit:cover;opacity:.6" :alt="i.title || ''" loading="lazy" @error="imgFallback">
           <div style="flex:1;min-width:0">
-            <div style="font-weight:600;font-size:14px">{{ i.title }}</div>
+            <div style="font-weight:600;font-size:14px">{{ i.title || tt('Unavailable item', '已失效商品') }}</div>
             <div style="font-size:12px;color:var(--gray)">{{ i.variant }}</div>
-            <div v-if="i.stock > 0 && i.stock <= 5" style="font-size:11.5px;color:var(--warn);font-weight:600;margin-top:2px">
+            <div v-if="i.inactive" style="font-size:11.5px;color:var(--error);font-weight:600;margin-top:2px">
+              {{ zh ? '已下架，请移除' : 'Delisted — please remove' }}
+            </div>
+            <div v-else-if="i.stock > 0 && i.stock <= 5" style="font-size:11.5px;color:var(--warn);font-weight:600;margin-top:2px">
               {{ zh ? `仅剩 ${i.stock} 件` : `Only ${i.stock} left` }}
             </div>
             <div v-else-if="i.stock <= 0" style="font-size:11.5px;color:var(--error);font-weight:600;margin-top:2px">
               {{ zh ? '库存不足' : 'Out of stock' }}
             </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+            <div v-if="!i.inactive" style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
               <div style="display:flex;align-items:center;gap:0;border:1px solid var(--gray-light);border-radius:8px">
                 <button
                   class="qbtn"

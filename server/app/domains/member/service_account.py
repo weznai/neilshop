@@ -161,6 +161,9 @@ def update_profile(db: Session, user: User, body: ProfileUpdateIn) -> dict:
         user.name = body.name
     if body.birthday is not None:
         user.birthday = body.birthday
+    elif "birthday" in body.model_fields_set:
+        # 显式传 null = 清空生日（修复前端清空后端静默忽略的假成功）
+        user.birthday = None
     db.commit()
     return _user_out(user)
 

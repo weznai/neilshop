@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -39,6 +39,7 @@ const thread = ref(null)      /* {messages: [{sender, content, created_at}]} */
 const reply = ref('')
 const busy = ref(false)
 const closeDlg = ref(false)
+const threadBox = ref(null)   /* 线程滚动容器（回复成功后跟随拉底） */
 
 /* 后端错误码 → 中文（invalid_status_transition 等），无匹配回退原始 detail/message */
 const terr = (e) => mapErr(e.data?.detail, TICKET_ERR) || e.data?.detail || e.message
@@ -93,7 +94,7 @@ const filtered = computed(() => st.tab !== 'all' || st.priority !== '' || st.cat
 /* 快捷回复模板：GET /api/support/templates（公开端点，支持 ?category= 过滤，返回 [{id,category,title,content}]） */
 const templates = ref([])          /* 全量模板（当前工单分类无匹配时兜底显示） */
 const templatesLoaded = ref(false)
-const catTpl = ref(null)           /* { cat, items } 当前工单分类的模板缓存 */
+const catTpl = reactive(new Map()) /* category → 模板列表（按分类缓存，避免来回切换重复请求） */
 async function loadTemplates() {
   if (templatesLoaded.value) return
   try {
@@ -101,18 +102,19 @@ async function loadTemplates() {
     templatesLoaded.value = true
   } catch (_) { /* 下拉里提示加载失败，可重选再试 */ }
 }
-/* 打开线程时按当前工单分类带参拉取；返回项含 category 字段，二次过滤兜底 */
+/* 打开线程时按当前工单分类带参拉取（Map 按分类缓存）；返回项含 category 字段，二次过滤兜底 */
 async function loadCatTemplates(cat) {
-  if (catTpl.value?.cat === cat) return
+  if (catTpl.has(cat)) return
   try {
     const items = (await req('GET', '/api/support/templates?category=' + cat)) || []
-    catTpl.value = { cat, items: items.filter((x) => x.category === cat) }
-  } catch (_) { catTpl.value = { cat, items: [] } }   /* 失败置空，下拉回退全量 */
+    catTpl.set(cat, items.filter((x) => x.category === cat))
+  } catch (_) { catTpl.set(cat, []) }   /* 失败置空缓存，下拉回退全量 */
 }
 /* 下拉数据源：当前工单分类模板优先，无匹配回退全量 */
 const tplOptions = computed(() => {
   const c = active.value?.category
-  if (c && catTpl.value?.cat === c && catTpl.value.items.length) return catTpl.value.items
+  const items = c ? catTpl.get(c) : null
+  if (items && items.length) return items
   return templates.value
 })
 const tplLabel = computed(() => (!templatesLoaded.value && !tplOptions.value.length ? '加载快捷模板…' : tplOptions.value.length ? '快捷模板…' : '暂无模板'))
@@ -126,21 +128,45 @@ function applyTemplate(e) {
 
 /* 工单线程走用户侧查询接口：匿名路径需 ticket_no+email，与后台会话无关 → credentials:'omit' 不发 cookie */
 async function openTicket(t) {
+  /* 区分「同票刷新」（回复成功/⟳ 重拉，按替换前是否在底部跟随）与「切换工单」（强制拉底） */
+  const same = !!active.value && active.value.ticket_no === t.ticket_no
+  const prevCount = same ? (thread.value?.messages || []).length : 0
+  /* 替换线程数据「前」测是否在底部：DOM 增长后再测「距底 <80px」会把本在底部、
+   * 但新消息高于 80px 的用户误判为不在底部而不跟随 */
+  const el = threadBox.value
+  const wasBottom = !same || !el || el.scrollHeight - el.scrollTop - el.clientHeight < 80
   active.value = t
   thread.value = null
   loadAdmins()   /* 懒加载指派候选人（首次打开工单时拉取一次，缓存） */
   if (t.category) loadCatTemplates(t.category)   /* 预取该分类快捷模板（不阻塞线程加载） */
+  const no = t.ticket_no   /* 竞态守卫：响应回来时已切换工单则丢弃 */
   try {
     const d = await req('GET', `/api/support/tickets?email=${encodeURIComponent(t.email)}&ticket_no=${encodeURIComponent(t.ticket_no)}`, undefined, { credentials: 'omit' })
-    thread.value = d.items?.[0] || { messages: [] }
+    if (!active.value || active.value.ticket_no !== no) return
+    const next = d.items?.[0] || { messages: [] }
+    thread.value = next
+    /* 切票 force；同票按 wasBottom（消息变少也视为 force） */
+    scrollThread(!same || wasBottom || (next.messages || []).length < prevCount)
   } catch (e) {
+    if (!active.value || active.value.ticket_no !== no) return
     thread.value = { messages: [], loadErr: true }
     toast('对话加载失败：' + (e.message || ''), 'error')
   }
 }
 
+/* 线程容器滚动：follow 由调用方在「替换线程数据前」测得的 wasBottom 传入（或强制 true）；
+ * 上翻历史（follow=false）不拽回 */
+function scrollThread(follow) {
+  nextTick(() => {
+    const el = threadBox.value
+    if (!el || !follow) return
+    el.scrollTop = el.scrollHeight
+  })
+}
+
 async function send() {
   if (!reply.value.trim() || !active.value) return
+  if (reply.value.length > 2000) { toast('回复内容过长（最多 2000 字）', 'error'); return }
   busy.value = true
   try {
     const t = await req('POST', `/api/admin/ops/tickets/${active.value.ticket_no}/reply`, { content: reply.value })
@@ -148,8 +174,13 @@ async function send() {
     toast('回复已发送 ✓', 'success')
     Object.assign(active.value, t)   /* 同步右侧面板状态（0→1 处理中） */
     await openTicket(active.value)
+    scrollThread(true)   /* 回复成功直接拉底（不依赖距底判定，新消息再高也跟随） */
     load(st.page)
-  } catch (e) { toast('回复失败：' + terr(e), 'error') }
+  } catch (e) {
+    /* 422 超长（pydantic 校验）识别为中文提示 */
+    const det = JSON.stringify(e.data?.detail ?? e.message ?? '')
+    toast('回复失败：' + (e.status === 422 && det.includes('2000') ? '回复内容过长（最多 2000 字）' : terr(e)), 'error')
+  }
   finally { busy.value = false }
 }
 
@@ -197,16 +228,31 @@ async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
   try {
-    /* 固化筛选快照：导出期间用户切换筛选不影响本次结果 */
-    const stt = TABS.find((t) => t[0] === st.tab)?.[2]
-    const first = await req('GET', buildUrl(stt, 1, EXPORT_SIZE))
-    const all = [...(first.items || [])]
+    /* 固化筛选快照（status/category/priority/mine/q 固化为常量逐页复用）：导出期间用户切换筛选不影响本次结果 */
+    const snap = {
+      status: TABS.find((t) => t[0] === st.tab)?.[2],
+      cat: st.cat, priority: st.priority,
+      assignee: st.mine === '1' ? (session.user?.id || null) : null,
+      q: st.q.trim(),
+    }
+    const pageUrl = (p) => {
+      const params = new URLSearchParams({ page: p, size: EXPORT_SIZE })
+      if (snap.status !== null && snap.status !== undefined) params.set('status', snap.status)
+      if (snap.cat !== '') params.set('category', snap.cat)
+      if (snap.priority !== '') params.set('priority', snap.priority)
+      if (snap.assignee) params.set('assignee', snap.assignee)
+      if (snap.q) params.set('q', snap.q)
+      return '/api/admin/ops/tickets?' + params
+    }
+    /* 按 ticket_no 去重：导出期间新插入的工单翻页可能重复出现 */
+    const seen = new Set()
+    const all = []
+    const push = (arr) => { for (const t of arr || []) if (!seen.has(t.ticket_no)) { seen.add(t.ticket_no); all.push(t) } }
+    const first = await req('GET', pageUrl(1))
+    push(first.items)
     const totalMatch = first.total ?? all.length
     const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_SIZE) || 1, Math.ceil(EXPORT_MAX_ROWS / EXPORT_SIZE))
-    for (let p = 2; p <= maxPage; p++) {
-      const d = await req('GET', buildUrl(stt, p, EXPORT_SIZE))
-      all.push(...(d.items || []))
-    }
+    for (let p = 2; p <= maxPage && all.length < EXPORT_MAX_ROWS; p++) push((await req('GET', pageUrl(p))).items)
     if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
     if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
       toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
@@ -271,7 +317,7 @@ async function assignTo(idStr) {
   finally { busy.value = false }
 }
 
-/* 重开已关闭工单：PUT status=1（后端支持 4→1），成功后面板回到可回复态并刷新行 */
+/* 重开工单：PUT status=1（后端支持 3→1 已解决重开 / 4→1 已关闭重开），成功后面板回到可回复态并刷新行 */
 async function reopen() {
   if (busy.value || !active.value) return
   busy.value = true
@@ -372,15 +418,17 @@ async function reopen() {
           <span class="tag" :class="TSTATUS[active.status]?.cls">{{ TSTATUS[active.status]?.label }}</span>
         </div>
         <div class="page-sub" style="margin-bottom:12px">
-          {{ active.subject }} · {{ active.email }}<span v-if="active.order_no"> · 订单 <router-link class="ono" :to="{ path: '/order-detail', query: { no: active.order_no } }">{{ active.order_no }}</router-link></span> · 创建 {{ dt(active.created_at) }}
+          {{ active.subject }} · <router-link class="ono" :to="{ path: '/members', query: { q: active.email } }">{{ active.email }}</router-link><span v-if="active.order_no"> · 订单 <router-link class="ono" :to="{ path: '/order-detail', query: { no: active.order_no } }">{{ active.order_no }}</router-link></span> · 创建 {{ dt(active.created_at) }}
           <span v-if="active.assignee_admin_id"> · {{ assigneeText(active) }}</span>
         </div>
 
         <div class="dhead" style="margin-bottom:6px">
           <div class="dtitle">对话记录</div>
           <span v-if="thread" class="item-cnt">{{ (thread.messages || []).length }} 条</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-secondary btn-sm" style="height:28px" title="重新拉取当前工单对话" @click="openTicket(active)">⟳ 刷新</button>
         </div>
-        <div style="display:grid;gap:10px;max-height:320px;overflow-y:auto;margin-bottom:14px">
+        <div ref="threadBox" style="display:grid;gap:10px;max-height:320px;overflow-y:auto;margin-bottom:14px">
           <div v-if="!thread" style="color:var(--gray);font-size:13px;text-align:center;padding:20px 0">加载对话…</div>
           <template v-else>
             <template v-for="(m, i) in thread.messages || []" :key="i">
@@ -417,7 +465,8 @@ async function reopen() {
               <option v-for="a in admins" :key="a.id" :value="a.id">{{ a.name }} {{ (a.email || '').split('@')[0] }}{{ a.id === active.assignee_admin_id ? '（当前）' : '' }}</option>
             </select>
           </div>
-          <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…（Ctrl+Enter 发送）" style="margin-bottom:10px" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send"></textarea>
+          <textarea v-model="reply" class="input" rows="3" maxlength="2000" placeholder="输入回复…（Ctrl+Enter 发送）" style="margin-bottom:10px" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send"></textarea>
+          <div v-if="reply.length >= 1800" style="font-size:11px;color:var(--gray);text-align:right;margin:-6px 0 8px">还可输入 {{ 2000 - reply.length }} 字</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-primary" style="flex:1" :class="{ loading: busy }" :disabled="busy || !reply.trim()" @click="send">发送回复</button>
             <template v-if="active.status === 1">
@@ -425,6 +474,7 @@ async function reopen() {
               <button class="btn btn-secondary" :disabled="busy" title="处理中 → 已解决（1→3）" @click="setStatus(3)">标记解决</button>
             </template>
             <button v-else-if="active.status === 2" class="btn btn-secondary" :disabled="busy" title="等待客户 → 已解决（2→3）" @click="setStatus(3)">标记解决</button>
+            <button v-else-if="isResolved" class="btn btn-secondary" :disabled="busy" title="已解决 → 处理中（3→1）" @click="reopen">重新打开</button>
             <button class="btn btn-ghost" style="color:var(--error)" :disabled="busy" :title="isResolved ? '已解决 → 确认关闭（3→4）' : '关闭后可随时重新打开'" @click="openClose">{{ isResolved ? '确认关闭' : '关闭' }}</button>
           </div>
         </div>

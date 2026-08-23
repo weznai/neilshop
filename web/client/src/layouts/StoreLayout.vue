@@ -1,5 +1,6 @@
 <script>
 /* 模块级：编辑精选卡商品详情内存缓存（布局重建不重复请求）；{ok:true,d}|{ok:false}，404 视为下架缓存命中 */
+import { req } from '../api/client'
 const _picksCache = {}
 function pickDetail(slug) {
   if (!_picksCache[slug]) {
@@ -153,7 +154,8 @@ onUnmounted(() => {
 
 <template>
   <div class="announce" aria-live="off">
-    <Transition name="ann" mode="out-in"><span :key="annIdx">{{ i18n.t(ANN[annIdx]) }}</span></Transition>
+    <!-- 文案含 <b> 强调（本地字典，无注入面）：v-html 渲染，修复 {{}} 转义出字面标签 -->
+    <Transition name="ann" mode="out-in"><span :key="annIdx" v-html="i18n.t(ANN[annIdx])"></span></Transition>
   </div>
 
   <header class="header" :class="{ scrolled: headerScrolled }">
@@ -182,7 +184,7 @@ onUnmounted(() => {
                   <span><b>{{ zh ? p.titleZh : p.title }}</b><i>${{ p.price.toFixed(2) }}</i></span>
                 </router-link>
               </div>
-              <router-link class="mega-promo" to="/sale">{{ zh ? '季末特惠 · 最高 75 折 →' : 'END OF SEASON · Up to 25% off →' }}</router-link>
+              <router-link class="mega-promo" to="/sale">{{ zh ? '季末特惠 · 低至 8 折 →' : 'END OF SEASON · Up to 20% off →' }}</router-link>
             </div>
           </span>
           <span v-else-if="item.key === 'nav.lashes'" class="nav-item">
@@ -208,11 +210,11 @@ onUnmounted(() => {
           <span :class="{ on: i18n.lang === 'en' }">EN</span><i>/</i><span :class="{ on: i18n.lang === 'zh' }">中</span>
         </button>
         <button class="icon-btn" :aria-label="i18n.t('aria.search')" @click="ui.openSearch()"><GmIcon name="search" /></button>
-        <router-link class="icon-btn" to="/account/wishlist" :aria-label="i18n.t('aria.wishlist')">
+        <router-link class="icon-btn hd-extra" to="/account/wishlist" :aria-label="i18n.t('aria.wishlist')">
           <GmIcon name="heart" />
           <span v-show="auth.isLoggedIn && wlCount" class="cart-badge">{{ wlCount }}</span>
         </router-link>
-        <router-link class="icon-btn" to="/account" :aria-label="i18n.t('aria.account')"><GmIcon name="user" /></router-link>
+        <router-link class="icon-btn hd-extra" to="/account" :aria-label="i18n.t('aria.account')"><GmIcon name="user" /></router-link>
         <button class="icon-btn" :aria-label="i18n.t('aria.cart')" @click="ui.openCart()">
           <GmIcon name="cart" />
           <span v-show="cart.count" class="cart-badge">{{ cart.count > 99 ? '99+' : cart.count }}</span>
@@ -388,6 +390,13 @@ onUnmounted(() => {
 .header-inner{transition:height .25s ease-out}
 .header.scrolled{background:rgba(255,255,255,.86);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 6px 24px rgba(31,27,30,.08)}
 .header.scrolled .header-inner{height:56px}
+
+/* 移动端顶栏收纳：心愿单/账户由底部 tabbar 承载（功能重复），顶栏只留 语言+搜索+购物车，
+   避免小屏 5 按钮+菜单+logo 挤压变形（~440px 需求 vs 375px 屏宽） */
+@media (max-width:768px){
+  .hd-extra{display:none}
+  .header-actions{gap:4px}
+}
 
 /* v15 全局面包屑 */
 .crumb-sep{stroke:var(--gray);opacity:.7;margin:-2px 2px 0}

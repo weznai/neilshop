@@ -9,9 +9,9 @@ from app.models import User
 
 from app.domains.catalog import service
 from app.domains.catalog.schemas import (
-    CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn, CollectionProductsIn,
-    CollectionUpdateIn, ProductBulkIn, ProductCreateIn, ProductUpdateIn,
-    TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
+    BatchStatusIn, CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn,
+    CollectionProductsIn, CollectionUpdateIn, ProductBulkIn, ProductCreateIn,
+    ProductUpdateIn, TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
 )
 
 router = APIRouter(prefix="/api/admin/catalog", tags=["admin-catalog"])
@@ -87,6 +87,16 @@ def admin_bulk_products(
     db: Session = Depends(get_db),
 ):
     return service.admin_bulk_products(db, admin, body)
+
+
+@router.post("/products/batch-status")
+def admin_batch_status(
+    body: BatchStatusIn,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """批量上下架：1 发布 / 2 归档 / 0 恢复草稿（逐条部分成功，失败返回明细）"""
+    return service.admin_batch_status(db, admin, body)
 
 
 @router.put("/products/{product_id}")

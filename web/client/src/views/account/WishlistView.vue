@@ -32,7 +32,11 @@ onMounted(async () => {
 
 async function add(pid) {
   addingId.value = pid
-  const ok = await cart.addByProductId(pid, 1, ui)
+  /* 屏蔽 cart.add 内的通用"已加入购物车"toast（覆写法与 ProductCard quickAdd 一致），只弹规格选择说明一条 */
+  const quietUi = Object.assign({}, ui, {
+    toast: (msg, type) => { if (type !== 'success' || !/added to cart|已加入购物车/i.test(String(msg))) ui.toast(msg, type) },
+  })
+  const ok = await cart.addByProductId(pid, 1, quietUi)
   if (ok) ui.toast(tt('First in-stock variant auto-selected — adjust in cart if needed', '已自动选择首个有货规格，可在购物车调整'), 'success')
   addingId.value = 0
 }

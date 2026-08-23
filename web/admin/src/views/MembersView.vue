@@ -29,7 +29,6 @@ if (!['', '0', '1', '2'].includes(st.tier)) st.tier = ''
 /* 等级口径与后端一致：tier 0普通(Glow) / 1银卡(Silver) / 2金卡(Gold)，值域 0-2 */
 const TIER = ['Glow', 'Silver', 'Gold']
 /* 等级视觉分档：Glow 淡玫瑰、Silver 银灰、Gold 金 */
-const tierCls = (t) => ''
 const tierStyle = (t) => (t === 2 ? 'background:#C9A227;color:#fff' : t === 1 ? 'background:#E8ECF2;color:#4A5568' : 'background:var(--rose-pale);color:var(--plum)')
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
@@ -173,6 +172,7 @@ async function applyRisk(flag = 2) {
     members.value = members.value.map((x) => (x.id === active.value.id ? { ...x, risk_flag: flag } : x))
     toast(flag === 2 ? '已加入黑名单（下单将被风控拦截）' : '风控状态已更新 ✓', 'success')
     banDlg.value = false
+    load(st.page)   /* 静默重拉当前页（保持筛选一致）：拉黑会员从「正常」筛选视图消失 */
   } catch (e) {
     riskDraft.value = String(active.value.risk_flag || 0)   /* 失败：受控回滚 */
     toast('操作失败：' + (e.data?.detail || e.message), 'error')
@@ -233,7 +233,7 @@ async function applyRisk(flag = 2) {
               <div><b>{{ m.name || '—' }}</b><div style="font-size:11.5px;color:var(--gray)">{{ m.email }}</div></div>
             </div>
           </td>
-          <td><span class="tag" :class="tierCls(m.tier || 0)" :style="tierStyle(m.tier || 0)">{{ TIER[m.tier || 0] || '—' }}</span></td>
+          <td><span class="tag" :style="tierStyle(m.tier || 0)">{{ TIER[m.tier || 0] || '—' }}</span></td>
           <td><b style="color:var(--plum)">{{ (m.points || 0).toLocaleString() }}</b></td>
           <td>{{ money(m.total_spent) }}</td>
           <td style="color:var(--gray)">{{ dDate(m.last_order_at) || '—' }}</td>
@@ -255,7 +255,7 @@ async function applyRisk(flag = 2) {
       <button class="modal-x" @click="active = null">×</button>
       <div class="dhead">
         <div class="dtitle">{{ active.name || active.email }}</div>
-        <span class="tag" :class="tierCls(active.tier || 0)" :style="tierStyle(active.tier || 0)">{{ TIER[active.tier || 0] || '—' }}</span>
+        <span class="tag" :style="tierStyle(active.tier || 0)">{{ TIER[active.tier || 0] || '—' }}</span>
       </div>
       <div class="kv" style="margin-bottom:14px">
         <div class="kv-row"><span>邮箱</span><span class="kv-val">{{ active.email }}</span></div>

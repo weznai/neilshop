@@ -76,11 +76,12 @@ export const TSTATUS = {
 /* ===== 后端错误码 → 中文文案 =====
  * detail 形如 "not_shippable:1"（冒号后带参数），需按前缀匹配，见 mapErr() */
 
-/* 订单写操作（not_prepable/not_completable 带状态码后缀，前缀匹配可命中） */
+/* 订单写操作（not_shippable/not_prepable/not_completable/not_in_transit 带状态码后缀，前缀匹配可命中） */
 export const ORDER_ERR = {
   not_shippable: '当前状态不可发货',
   not_prepable: '当前状态不能开始备货',
   not_completable: '当前状态不能代确认完成',
+  not_in_transit: '订单不在运输中，请刷新后重试',
   'order already shipped': '订单已发货，不能修改地址',
   order_not_found: '订单不存在',
   only_pending_can_cancel: '仅待支付订单可取消',

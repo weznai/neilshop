@@ -32,6 +32,7 @@ class ArticleCreateIn(BaseModel):
     title: str
     author: str
     content_md: str
+    cover: str | None = Field(default=None, max_length=500)  # 封面图 URL/路径，空串清除
     tags: list | None = None
     status: int = Field(default=0, ge=0, le=1)
 
@@ -41,6 +42,7 @@ class ArticleUpdateIn(BaseModel):
     title: str | None = None
     author: str | None = None
     content_md: str | None = None
+    cover: str | None = Field(default=None, max_length=500)  # 传空串清除封面
     tags: list | None = None
     status: int | None = Field(default=None, ge=0, le=1)
 

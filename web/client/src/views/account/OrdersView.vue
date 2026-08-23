@@ -29,9 +29,11 @@ const cancelArm = useArmConfirm()
 const recvArm = useArmConfirm()
 
 const SHIP = { 0: '', 1: [' · partially shipped', ' · 部分发货'], 2: [' · all shipped', ' · 全部发货'] }
-/* 服务端筛选（GET /api/orders?status=&page=，每页 10 条）；标签 tt 双语 [en, zh]；后端无置 2 路径，无备货中 tab */
+/* 服务端筛选（GET /api/orders?status=&page=，每页 10 条）；标签 tt 双语 [en, zh]；
+   s2 备货中：后台"开始备货"将订单 1→2（prepare_order CAS），需可筛选 */
 const TABS = [
   ['all', ['All', '全部'], null], ['s0', ['Unpaid', '待付款'], 0], ['s1', ['Paid', '已支付'], 1],
+  ['s2', ['Packing', '备货中'], 2],
   ['s3', ['Shipped', '已发货'], 3], ['s4', ['Delivered', '已送达'], 4],
   ['s5', ['Completed', '已完成'], 5], ['s8', ['Cancelled', '已取消'], 8], ['s9', ['Refunded', '已退款'], 9],
 ]
@@ -87,9 +89,21 @@ function applyQuery(q) {
 tab.value = tabFromQuery(route.query.tab)
 page.value = Math.max(1, Number(route.query.page) || 1)
 onMounted(load)
-watch(tab, () => { page.value = 1; syncQuery(); load() })
-/* 浏览器回退/前进（同路由 query 变化）时恢复状态 */
-watch(() => route.query, (q) => { if (applyQuery(q)) load() })
+/* 双发守卫：route.query 变化引发的 tab 赋值会再触发本 watcher → 用标志位跳过本次，避免回退时双请求 */
+let _byQuery = false
+watch(tab, () => {
+  if (_byQuery) { _byQuery = false; syncQuery(); return }
+  page.value = 1; syncQuery(); load()
+})
+/* 浏览器回退/前进（同路由 query 变化）时恢复状态；
+   _byQuery 仅在 query 驱动真的改了 tab 时置位，跳过随后触发的 tab watcher，避免双请求 */
+watch(() => route.query, (q) => {
+  const prevTab = tab.value
+  const changed = applyQuery(q)
+  if (!changed) return
+  _byQuery = tab.value !== prevTab
+  load()
+})
 
 function go(p) {
   if (p < 1 || p > pages.value || p === page.value) return
@@ -98,13 +112,21 @@ function go(p) {
   load()
 }
 
-/* 待付订单支付：先建支付意图再 mock 支付（与 Checkout 一致）；积分由后端确认后发放，前端不自算 */
+/* 待付订单支付：与 Checkout 同口径 —— hosted 通道（redirect_url）跳收银台，mock 通道直付 */
 async function pay(o) {
   payingNo.value = o.order_no
   try {
-    const intent = await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    let provider = ''
+    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
+    const ib = { order_no: o.order_no }
+    if (provider && provider !== 'mock') ib.provider = provider
+    const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intentNoChannel(intent)) {
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
+    if (provider !== 'mock' && intent && intent.redirect_url) {
+      window.location.href = intent.redirect_url
       return
     }
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })

@@ -64,13 +64,21 @@ async function reload() {
   loaded.value = true
 }
 
-/* 待付订单支付：先建支付意图再 mock 支付（与 OrdersView 一致） */
+/* 待付订单支付：与 OrdersView/Checkout 同口径 —— hosted 通道（redirect_url）跳收银台，mock 直付 */
 async function pay(o) {
   payingNo.value = o.order_no
   try {
-    const intent = await req('POST', '/api/payments/create-intent', { order_no: o.order_no })
+    let provider = ''
+    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
+    const ib = { order_no: o.order_no }
+    if (provider && provider !== 'mock') ib.provider = provider
+    const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intentNoChannel(intent)) {
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
+    if (provider !== 'mock' && intent && intent.redirect_url) {
+      window.location.href = intent.redirect_url
       return
     }
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })

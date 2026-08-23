@@ -18,8 +18,14 @@ const pid = computed(() => {
   return Number.isFinite(n) && n >= 1 ? n : null
 })
 const idInvalid = computed(() => route.query.id !== undefined && pid.value === null)
-/* 复制模式：?copy={id} 载入源商品作底稿，但保持新建态（不设 id、slug 置空、定时清空） */
-const copyId = computed(() => (route.query.copy ? parseInt(route.query.copy, 10) : null))
+/* 复制模式：?copy={id} 载入源商品作底稿，但保持新建态（不设 id、slug 置空、定时清空）
+ * 非法 copy（NaN/<1）与 pid 同款拦截，防落 NaN 请求或静默变新建 */
+const copyId = computed(() => {
+  if (route.query.copy === undefined) return null
+  const n = parseInt(Array.isArray(route.query.copy) ? route.query.copy[0] : route.query.copy, 10)
+  return Number.isFinite(n) && n >= 1 ? n : null
+})
+const copyInvalid = computed(() => route.query.copy !== undefined && copyId.value === null)
 
 const form = reactive({
   slug: '', title: '', subtitle: '', price_min: 1599, price_max: 1599,
@@ -132,7 +138,8 @@ async function onPickFile(e) {
   try { applyUpUrl(await uploadFile(f)) }
   catch (err) {
     const s = err.status
-    toast(s === 413 ? '图片不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
+    /* 400=后端不支持该类型（unsupported image type）、422=校验失败，均归一为格式提示 */
+    toast(s === 413 ? '图片不能超过 5MB' : s === 400 || s === 422 ? '仅支持 PNG/JPG/WebP/GIF 图片' : '上传失败：' + (err.message || ''), 'error')
   }
   finally { uploading.value = false }
 }
@@ -211,6 +218,8 @@ async function loadVariants(id) {
     if (!(d.items || []).length) break
     p++
   }
+  /* 拉满 50 页（50×200 条）仍不足 total：明确提示截断，防误以为已全量 */
+  if (all.length < total) toast(`变体过多，仅加载前 ${all.length} 条`, 'error')
   /* 变体图片：优先用列表 item 的 images 字段（新契约）；老后端未回传（undefined）时
    * fallback 借前台 by-id 详情补齐（角标/编辑回显用），草稿商品或停用变体取不到则静默降级 */
   const lack = all.filter((v) => v.id && v.images === undefined)
@@ -271,6 +280,12 @@ onMounted(async () => {
   /* 非法 id（NaN/<1）：报错并跳回列表，不静默落入新建模式 */
   if (idInvalid.value) {
     toast('无效的商品 id：' + route.query.id, 'error')
+    router.replace('/products')
+    return
+  }
+  /* 非法 copy id（NaN/<1）：同上拦截，不落 NaN 请求 */
+  if (copyInvalid.value) {
+    toast('无效的商品 id：' + route.query.copy, 'error')
     router.replace('/products')
     return
   }
@@ -424,7 +439,7 @@ async function addVariant() {
   if (fullSku.length > 64) toast(`SKU 超长（${fullSku.length} 字符），已截断到 64 字符`, 'error')
   const sku = fullSku.slice(0, 64)
   try {
-    /* weight_gram 仅创建时支持（VariantUpdateIn 无此字段） */
+    /* weight_gram 创建必填校验在上方；编辑态走 saveEdit（空=不修改） */
     await req('POST', `/api/admin/catalog/products/${pid.value}/variants`, {
       sku, option1_value: newVar.option1, option2_value: newVar.option2,
       price: newVar.price, stock: newVar.stock, weight_gram: newVar.weight_gram, images: imgs,
@@ -478,11 +493,15 @@ async function doDelVar() {
   }
   delVarBusy.value = false
 }
-function startEdit(v) { editing.value = { id: v.id, price: v.price, safety: v.safety_stock ?? 0, imgs: (v.images || []).join('\n'), hadImgs: (v.images || []).length > 0 } }
+/* weight_gram 回显：无值（null/undefined）置空=不修改；PUT 契约 0..100000 */
+function startEdit(v) { editing.value = { id: v.id, price: v.price, safety: v.safety_stock ?? 0, weight: v.weight_gram ?? null, imgs: (v.images || []).join('\n'), hadImgs: (v.images || []).length > 0 } }
 async function saveEdit() {
   const ed = editing.value
   if (!ed) return
   if (!Number.isFinite(ed.price) || !Number.isFinite(ed.safety) || ed.price < 0 || ed.safety < 0) { toast('价格与安全库存需为非负数字', 'error'); return }
+  /* 重量：空=不修改；填写才提交且须为 0..100000 整数 */
+  const hasW = ed.weight !== null && ed.weight !== ''
+  if (hasW && (!Number.isInteger(ed.weight) || ed.weight < 0 || ed.weight > 100000)) { toast('重量需为 0~100000 的整数（克）', 'error'); return }
   const imgs = imgLines(ed.imgs)
   if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
   const ei = imgs.findIndex(badUrl)
@@ -490,10 +509,11 @@ async function saveEdit() {
   try {
     /* images 仅在有输入或原有图时提交：后端缺省/null=保持原值、[]=清空，避免改价时误清图 */
     const body = { price: ed.price, safety_stock: ed.safety }
+    if (hasW) body.weight_gram = ed.weight
     if (imgs.length || ed.hadImgs) body.images = imgs
     const d = await req('PUT', '/api/admin/catalog/variants/' + ed.id, body)
     const v = variants.value.find((x) => x.id === ed.id)
-    if (v) { v.price = ed.price; v.safety_stock = ed.safety; v.images = d.images || [] }
+    if (v) { v.price = ed.price; v.safety_stock = ed.safety; if (body.weight_gram !== undefined) v.weight_gram = body.weight_gram; v.images = d.images || [] }
     editing.value = null
     markVarsClean()
     toast('变体已更新 ✓', 'success')
@@ -503,6 +523,9 @@ async function saveEdit() {
  * rawSku 保留全长用于超长提示，调用处 slice(0,64) 截断（与后端一致） */
 const rawSku = (...parts) => parts.filter((p) => p && String(p).trim()).join('-').toUpperCase().replace(/\s+/g, '-')
 
+/* 已落库且在售的变体（复制模式预览行 id=null 不算）：仅此时价格区间由在售变体自动汇总，前端只读防手工值被覆盖；
+ * 全部停用时后端 _sync_price_range 保留原值 → 允许手工改价 */
+const hasRealVars = computed(() => variants.value.some((v) => v.id && v.is_active))
 /* 变体区头部汇总：总库存 / 变体数 / 低于安全线数量（口径同列表页 low_stock_count：stock ≤ safety） */
 const varSum = computed(() => ({
   stock: variants.value.reduce((s, v) => s + (v.stock || 0), 0),
@@ -588,7 +611,7 @@ async function doDelTr() {
   <div class="topbar">
     <div>
       <h1 class="page-title">{{ pid ? '编辑商品 #' + pid : '新建商品' }}</h1>
-      <span class="page-sub">保存即生效 · 上架/下架在列表页操作</span>
+      <span class="page-sub">{{ pid ? '保存即生效 · 上架/下架在列表页操作' : '草稿保存后可在列表页上架' }}</span>
     </div>
     <div style="display:flex;gap:10px">
       <a v-if="pid" class="btn btn-secondary" :href="'/product?id=' + pid" target="_blank" rel="noopener">前台预览 ↗</a>
@@ -630,7 +653,8 @@ async function doDelTr() {
           <select v-model="form.category_id" class="input" :disabled="!cats.length">
             <option v-for="c in cats" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select>
-          <p v-if="!cats.length" style="font-size:11.5px;color:var(--error);margin-top:4px">分类{{ catsFailed ? '加载失败' : '为空' }}，保存会报「category not found」，请刷新重试</p>
+          <!-- 编辑态提交原 category_id 能保存成功，不吓唬用户；新建/复制才会因缺分类报错 -->
+          <p v-if="!cats.length" :style="'font-size:11.5px;margin-top:4px;color:' + (pid ? 'var(--warn)' : 'var(--error)')">{{ pid ? '分类' + (catsFailed ? '加载失败' : '为空') + '，将按原分类保存，如需更换请刷新重试' : '分类' + (catsFailed ? '加载失败' : '为空') + '，保存会报「category not found」，请刷新重试' }}</p>
         </div>
         <div class="field"><label>描述（Markdown）</label>
           <div class="md-tabs">
@@ -643,10 +667,13 @@ async function doDelTr() {
       </div>
 
       <div id="sec-pricing" class="card" style="padding:20px">
-        <div class="dhead"><h3 class="dtitle">定价（分）</h3></div>
+        <div class="dhead">
+          <h3 class="dtitle">定价（分）</h3>
+          <span v-if="hasRealVars" style="font-size:11.5px;color:var(--gray)">存在变体时价格区间由在售变体自动汇总，手工值会被覆盖</span>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-          <div class="field"><label>最低价</label><input v-model.number="form.price_min" class="input" type="number" min="0" step="1"><p class="phint">≈ {{ money(form.price_min) }}</p></div>
-          <div class="field"><label>最高价</label><input v-model.number="form.price_max" class="input" type="number" min="0" step="1"><p class="phint">≈ {{ money(form.price_max) }}</p></div>
+          <div class="field"><label>最低价</label><input v-model.number="form.price_min" class="input" type="number" min="0" step="1" :disabled="hasRealVars" :style="hasRealVars ? 'background:var(--rose-pale)' : ''"><p class="phint">≈ {{ money(form.price_min) }}</p></div>
+          <div class="field"><label>最高价</label><input v-model.number="form.price_max" class="input" type="number" min="0" step="1" :disabled="hasRealVars" :style="hasRealVars ? 'background:var(--rose-pale)' : ''"><p class="phint">≈ {{ money(form.price_max) }}</p></div>
           <div class="field"><label>划线价</label><input v-model.number="form.compare_at_price" class="input" type="number" min="0" step="1"><p v-if="form.compare_at_price" class="phint">≈ {{ money(form.compare_at_price) }}</p></div>
         </div>
         <p style="font-size:12px;color:var(--gray)">当前展示：{{ money(form.price_min) }}<span v-if="form.compare_at_price">（划线 {{ money(form.compare_at_price) }}）</span></p>
@@ -666,6 +693,7 @@ async function doDelTr() {
                 <div class="field"><label style="font-size:11px">SKU</label><input class="input" :value="v.sku" disabled maxlength="64" style="background:var(--rose-pale)"></div>
                 <div class="field"><label style="font-size:11px">价格（分）</label><input v-model.number="editing.price" class="input" type="number" min="0" step="1"></div>
                 <div class="field"><label style="font-size:11px">安全库存</label><input v-model.number="editing.safety" class="input" type="number" min="0" step="1"></div>
+                <div class="field"><label style="font-size:11px">重量（克）</label><input v-model.number="editing.weight" class="input" type="number" min="0" max="100000" step="1" placeholder="空=不修改"></div>
               </div>
               <div class="var-edit-row2">
                 <div class="field">
@@ -688,6 +716,8 @@ async function doDelTr() {
                 <span v-if="v.sku" style="color:var(--gray);font-size:12px">{{ v.sku }}</span>
                 <span v-else class="tag tag-sched" style="font-size:10px" title="SKU 将依新 slug 自动生成">保存后创建</span>
                 <span v-if="v.images && v.images.length" class="tag" style="font-size:10px" :title="v.images.join('\n')">🖼×{{ v.images.length }}</span>
+                <!-- 重量列：有值显示 g，无值 — -->
+                <span style="color:var(--gray);font-size:12px" title="重量（克）">{{ v.weight_gram != null ? v.weight_gram + ' g' : '—' }}</span>
                 <b style="margin-left:auto">{{ money(v.price) }}</b>
                 <!-- 颜色语义与列表页统一：为 0 红 error、≤安全线黄 warn、充足灰 done -->
                 <span class="tag" :class="!v.stock ? 'tag-error' : (v.stock <= (v.safety_stock ?? 0) ? 'tag-pending' : 'tag-done')" :title="`安全库存 ${v.safety_stock ?? 0}`">{{ v.stock }}</span>
@@ -868,10 +898,10 @@ async function doDelTr() {
 .load-mask{position:absolute;inset:0;z-index:6;background:rgba(255,255,255,.72);display:flex;align-items:flex-start;justify-content:center;gap:10px;padding-top:110px;font-size:13.5px;color:var(--gray);border-radius:12px}
 .load-mask::before{content:"";width:15px;height:15px;flex:none;margin-top:-1px;border:2px solid var(--gray-light);border-top-color:var(--plum);border-radius:50%;animation:gmSpin 1s linear infinite}
 @keyframes gmSpin{to{transform:rotate(360deg)}}
-/* 变体卡片行：编辑态两行 grid（规格/SKU/价格/安全库存 + 图片/操作） */
+/* 变体卡片行：编辑态两行 grid（规格/SKU/价格/安全库存/重量 + 图片/操作） */
 .var-card{border:1px solid var(--gray-light);border-radius:10px;padding:10px 12px}
 .var-card .field{margin-bottom:0}
-.var-edit-grid{display:grid;grid-template-columns:1.2fr 1.6fr .8fr .8fr;gap:10px}
+.var-edit-grid{display:grid;grid-template-columns:1.2fr 1.6fr .8fr .8fr .7fr;gap:10px}
 .var-edit-row2{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:end;margin-top:10px}
 /* 新增变体表单：6 列 → <900px 3 列 → <600px 2 列 */
 .var-new-grid{display:grid;grid-template-columns:1.2fr 1fr .6fr .5fr .5fr auto;gap:8px;align-items:end}

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import require_admin
+from app.core.enums import UserRole
 from app.domains.chat import service
 from app.domains.chat.schemas import (
     QUICK_SETTING_KEY, ReplyIn, quick_defaults, quick_norm, quick_norm_item,
@@ -41,15 +42,18 @@ def admin_conversations(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    # 美甲师(role=4)受限视图：忽略请求参数强制 mine=1，只见本人名下会话
+    mine_effective = 1 if admin.role == int(UserRole.ARTIST) else mine
     return service.admin_list(
         db, _parse_channel(channel), _parse_status(status), q,
-        admin.id if mine == 1 else None, page, size,
+        admin.id if mine_effective == 1 else None, page, size,
     )
 
 
 @router.get("/api/admin/chat/conversations/{conv_no}")
 def admin_conversation(conv_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return service.admin_conversation(db, conv_no)
+    # 读路径接入美甲师(role=4)归属校验（service 层 _assert_artist_scope，越权 403）
+    return service.admin_conversation(db, admin, conv_no)
 
 
 @router.post("/api/admin/chat/conversations/{conv_no}/reply")

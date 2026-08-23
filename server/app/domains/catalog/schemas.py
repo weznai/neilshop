@@ -68,7 +68,7 @@ class VariantCreateIn(BaseModel):
     option2_value: str = Field(min_length=1, max_length=50)
     price: int = Field(ge=0)
     stock: int = Field(default=0, ge=0)
-    weight_gram: int = Field(default=30, ge=0)
+    weight_gram: int = Field(default=30, ge=0, le=100000)
     images: list[str] | None = Field(default=None, max_length=6)
 
 
@@ -76,7 +76,14 @@ class VariantUpdateIn(BaseModel):
     price: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
     safety_stock: int | None = Field(default=None, ge=0)
+    weight_gram: int | None = Field(default=None, ge=0, le=100000)
     images: list[str] | None = Field(default=None, max_length=6)
+
+
+class BatchStatusIn(BaseModel):
+    """批量上下架：1 发布（任意状态）/ 2 归档（任意状态）/ 0 恢复草稿（仅归档态可）"""
+    ids: list[int] = Field(min_length=1, max_length=100)
+    status: int = Field(ge=0, le=2)
 
 
 class CategoryCreateIn(BaseModel):

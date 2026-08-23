@@ -3,10 +3,14 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { req } from '../api/client'
 import { statusLabel } from '../composables/orderStatus'
-import { zulu } from '../composables/datetime'
+import { fmtDateTime } from '../composables/datetime'
+import { useArmConfirm } from '../composables/useArmConfirm'
+import { useUiStore } from '../stores/ui'
 import { i18n } from '../i18n'
 
 const route = useRoute()
+const ui = useUiStore()
+const { is: armIs, hit: armHit } = useArmConfirm()
 const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -61,9 +65,25 @@ function eventLabel(ev) {
   return (ev.event || '').replace(/_/g, ' ')
 }
 function fmtTime(iso) {
-  if (!iso) return ''
-  const d = new Date(zulu(iso))
-  return isNaN(d) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return fmtDateTime(iso) /* 统一订单域时间口径（MM-DD HH:mm），与账户中心一致 */
+}
+
+/* 待付订单自助取消（游客 email 双因子，与后端 cancel 同口径），两段式确认防误触 */
+const cancelBusy = ref(false)
+async function cancelOrder() {
+  if (cancelBusy.value || !result.value) return
+  cancelBusy.value = true
+  try {
+    await req('POST', '/api/orders/' + encodeURIComponent(result.value.order_no) + '/cancel?email=' + encodeURIComponent(email.value.trim()))
+    ui.toast(tt('Order canceled', '订单已取消'), 'success')
+    await track()
+  } catch (e) {
+    const m = (e.data && e.data.detail) || ''
+    ui.toast(/not_cancellable/.test(m)
+      ? tt('This order can no longer be canceled', '该订单已无法取消')
+      : tt('Failed to cancel, please try again', '取消失败，请重试'), 'error')
+    await track()
+  } finally { cancelBusy.value = false }
 }
 function shipState(s) {
   if (s.delivered_at) return { text: tt('Delivered ✓', '已送达 ✓'), cls: 'tag-paid' }
@@ -128,6 +148,15 @@ onMounted(() => {
         </div>
         <div v-else class="ship-bar" style="background:var(--pale-error);margin-bottom:4px">
           <b style="color:var(--error)">{{ tt('This order was cancelled or refunded.', '该订单已取消或已退款。') }}</b>
+        </div>
+
+        <!-- 待付订单：自助取消（email 双因子，无需登录） -->
+        <div v-if="result.status === 0" style="margin-top:14px;text-align:right">
+          <button
+            class="btn btn-ghost btn-sm" :class="{ arm: armIs('cancel') }"
+            :disabled="cancelBusy"
+            @click="armHit('cancel', cancelOrder)"
+          >{{ armIs('cancel') ? tt('Tap again to cancel', '再点一次确认取消') : tt('Cancel order', '取消订单') }}</button>
         </div>
 
         <!-- 包裹（track 响应 shipments：carrier/tracking_no/时间） -->

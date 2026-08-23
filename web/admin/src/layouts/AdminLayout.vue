@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
+import { ROLE_LABEL } from '../constants/roles'
 import RouteProgress from '../components/RouteProgress.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
@@ -14,9 +15,8 @@ const guard = ref(true)
 const guardErr = ref('')
 const collapsed = ref(localStorage.getItem('gm_side_min') === '1')
 
-/* 当前登录人角色 badge（UserRole：9=超管 3=仓库 2=运营 4=美甲师；1=客服被守卫拒绝，不进后台） */
-const ROLE_BADGE = { 9: '超管', 3: '仓库', 2: '运营', 4: '美甲师' }
-const roleBadge = computed(() => ROLE_BADGE[session.role] || '管理')
+/* 当前登录人角色徽标文案（UserRole 常量收敛至 constants/roles.js：9超管 3仓库 2运营 4美甲师；1客服被守卫拒绝，不进后台） */
+const roleBadge = computed(() => ROLE_LABEL[session.role] || '管理')
 
 /* 导航高亮：详情页别名 + 前缀匹配（/order-detail → 订单管理，/product-edit → 商品管理） */
 const ALIAS = { '/order-detail': '/orders', '/product-edit': '/products' }
@@ -50,7 +50,7 @@ const P = {
 }
 /* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营/系统），数组 = [图标, 名称, 路径]；
  * 营销工具/内容管理/会员归「运营」组；审计日志/系统设置归「系统」组；
- * 美甲师（role=4）受限视图：仅数据看板 + 在线客服（处理本人名下美甲师会话） */
+ * 美甲师（role=4）受限视图：仅在线客服（处理本人名下美甲师会话），其余路由守卫统一重定向 /chat */
 const ITEMS = [
   ['dash', '数据看板', '/'],
   '交易',
@@ -71,9 +71,9 @@ const ITEMS = [
   ['logs', '审计日志', '/logs'],
   ['settings', '系统设置', '/settings'],
 ]
-/* 美甲师菜单白名单：看板 + 在线客服 */
+/* 美甲师菜单白名单：仅在线客服（数据看板等其余路由已被 router.beforeEach 重定向 /chat） */
 const navItems = computed(() => (
-  session.role === 4 ? ITEMS.filter((it) => Array.isArray(it) && (it[2] === '/' || it[2] === '/chat')) : ITEMS
+  session.role === 4 ? ITEMS.filter((it) => Array.isArray(it) && it[2] === '/chat') : ITEMS
 ))
 
 function toggleSide() {
@@ -132,6 +132,8 @@ function onGlobalKey(e) {
     const top = opens[opens.length - 1]
     if (top) top.querySelector('.modal-x')?.click()
   } else if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+    /* 弹窗打开时不抢焦点：确认框/预览层内按 / 是输入场景，跳过聚焦搜索框 */
+    if (document.querySelector('.modal.open')) return
     const ae = document.activeElement
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) return
     e.preventDefault()

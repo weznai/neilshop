@@ -288,9 +288,10 @@ def main() -> int:
         r = client.put("/api/admin/support/tickets/OPS26TK0001/status", headers=H_OPS,
                        json={"status": 3})
         check("重开后 1→3 仍走既有状态机", r.status_code == 200, r.status_code)
+        # 行为收紧同步修改：3→1 已放开（已解决待关可重开），改用 3→2 验证非法流转仍 409
         r = client.put("/api/admin/support/tickets/OPS26TK0001/status", headers=H_OPS,
-                       json={"status": 1})
-        check("非 4→1 的进入 1 → 409 invalid_status_transition",
+                       json={"status": 2})
+        check("非法流转（3→2）→ 409 invalid_status_transition",
               r.status_code == 409
               and r.json()["detail"] == "invalid_status_transition",
               (r.status_code, r.json().get("detail")))
