@@ -5,12 +5,11 @@ import { req } from '../api/client'
 import { fmtDateTime } from '../composables/datetime'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
 const route = useRoute()
 const ui = useUiStore()
 const auth = useAuthStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 /* TicketCategory（server/app/core/enums.py）：1物流 2质量 3退换 4账户 5售前 6其他 */
 const CATEGORIES = [

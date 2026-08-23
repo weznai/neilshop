@@ -3,10 +3,9 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 /* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
 const arm = useArmConfirm()

@@ -3,11 +3,10 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../../api/client'
 import { fmtDate, fmtDateTime } from '../../composables/datetime'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const route = useRoute()
 const router = useRouter()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 /* 积分流水原因 → [en, zh]（文案对齐 server member/service_points.py REASON_TEXT；未知 code 回落后端原文） */
 const REASON = {

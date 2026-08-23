@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { req } from '../api/client'
@@ -9,7 +9,6 @@ import { catalogById } from '../data/catalog'
 const cart = useCartStore()
 const ui = useUiStore()
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const zh = computed(() => i18n.lang === 'zh')
 const recs = ref([])

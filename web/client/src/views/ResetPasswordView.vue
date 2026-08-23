@@ -4,12 +4,11 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
 const route = useRoute()
 const router = useRouter()
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const token = ref(String(route.query.token || ''))

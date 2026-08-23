@@ -4,11 +4,10 @@ import { req } from '../api/client'
 import { zulu } from '../composables/datetime'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
 const auth = useAuthStore()
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const isDev = !!import.meta.env.DEV
 const me = ref(null)

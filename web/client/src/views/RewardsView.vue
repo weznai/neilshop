@@ -2,10 +2,9 @@
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
 const auth = useAuthStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const pts = ref(null)
 const failed = ref(false)
 async function load() {

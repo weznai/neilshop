@@ -2,10 +2,9 @@
  * （localStorage gm_cart 仅作渲染缓存快照，供下次进入前先画一帧） */
 import { defineStore } from 'pinia'
 import { productDetail, req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useUiStore } from './ui'
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 /* setQty 请求序列守卫：并发改量响应乱序时，只应用最新一次的视图（对齐 preview 的 pvSeq） */
 let _qtySeq = 0

@@ -1,11 +1,10 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const zh = () => i18n.lang === 'zh'
 const auth = useAuthStore()
 const ui = useUiStore()

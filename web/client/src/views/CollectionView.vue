@@ -1,16 +1,24 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import ProductCard from '../components/ProductCard.vue'
 
-/* GET /api/catalog/collections/{slug} → {id, slug, title, banner_image, products: [卡片]}；404 = 合集不存在 */
+/* GET /api/catalog/collections/{slug} → {id, slug, title, banner_image, products: [卡片]}；404 = 合集不存在
+   后端全量返回（物化合集）/规则合集上限 100：前端客户端分页（首屏 12 + Load more），大合集不一次性渲染 */
 const route = useRoute()
 const col = ref(null)
 const loaded = ref(false)
 const failed = ref(false)
 const notFound = ref(false)
+const PAGE_SIZE = 12
+const shownCount = ref(PAGE_SIZE)
+
+const allProducts = computed(() => (col.value && col.value.products) || [])
+const shown = computed(() => allProducts.value.slice(0, shownCount.value))
+const remaining = computed(() => Math.max(0, allProducts.value.length - shownCount.value))
+function loadMore() { shownCount.value += PAGE_SIZE }
 
 const IMG_FALLBACK = 'https://placehold.co/1200x400/E8B4B8/552338?text=GLOWMAG'
 function imgFallback(e) {
@@ -25,6 +33,7 @@ async function load() {
   failed.value = false
   notFound.value = false
   col.value = null
+  shownCount.value = PAGE_SIZE
   try {
     col.value = await req('GET', '/api/catalog/collections/' + encodeURIComponent(String(route.params.slug || '')))
     /* 动态 SEO：合集标题/banner 覆盖路由兜底（gm:seo 事件通道，路由切换自动复位） */
@@ -75,8 +84,15 @@ watch(() => route.params.slug, () => load())
           <h1>{{ col.title }}</h1>
         </div>
 
-        <div v-if="col.products && col.products.length" class="grid grid-4">
-          <ProductCard v-for="p in col.products" :key="p.id" :p="p" />
+        <div v-if="col.products && col.products.length">
+          <div class="grid grid-4">
+            <ProductCard v-for="p in shown" :key="p.id" :p="p" />
+          </div>
+          <div v-if="remaining" style="text-align:center;margin-top:26px">
+            <button class="btn btn-secondary" @click="loadMore">
+              {{ tt(`Load more (${remaining} left)`, `加载更多（还剩 ${remaining} 件）`) }}
+            </button>
+          </div>
         </div>
         <div v-else style="text-align:center;padding:50px 0;color:var(--gray)">
           <div style="font-size:44px;margin-bottom:10px">▣</div>

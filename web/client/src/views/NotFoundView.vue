@@ -2,11 +2,10 @@
 import { onMounted, ref } from 'vue'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import ProductCard from '../components/ProductCard.vue'
 
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const hot = ref([])
 const SUGGEST = [
   ['Best sellers', '热卖爆款', '/store?sort=best'],

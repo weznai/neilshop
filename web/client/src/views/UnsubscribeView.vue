@@ -1,13 +1,12 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
 import { useArmConfirm } from '../composables/useArmConfirm'
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 /* 退订链接：/unsubscribe?email=xx&token=us_HMAC（token 为 us_ 前缀 HMAC）
  * 无参数时回退登录会话（Cookie）读取自身偏好 */
 const route = useRoute()

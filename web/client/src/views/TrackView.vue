@@ -6,12 +6,11 @@ import { statusLabel } from '../composables/orderStatus'
 import { fmtDateTime } from '../composables/datetime'
 import { useArmConfirm } from '../composables/useArmConfirm'
 import { useUiStore } from '../stores/ui'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
 const route = useRoute()
 const ui = useUiStore()
 const { is: armIs, hit: armHit } = useArmConfirm()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 

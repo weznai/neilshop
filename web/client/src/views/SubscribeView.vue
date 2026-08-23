@@ -2,11 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '../api/client'
 import { fmtDate, zulu } from '../composables/datetime'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const auth = useAuthStore()
 const ui = useUiStore()
 const subs = ref([])

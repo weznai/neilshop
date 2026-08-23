@@ -5,13 +5,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const auth = useAuthStore()
 const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const ready = ref(false)
 /* [href, [en, zh], icon]；订阅/推荐入口挂在账户侧栏（后端已有全量接口，此前仅独立页承载） */
 const NAV = [

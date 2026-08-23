@@ -1,7 +1,6 @@
 <script setup>
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 /* seed 目录无 collab 专属 tag —— CTA 指向最新上架；卡片为编辑部精选合辑（非在售联名系列） */
 const PICKS = [
   ['@nailbedbynia', 'Nia x GLOWMAG', 'Editorial pick — her favorite chrome & glass looks', '编辑部精选——她最爱的铬玻璃质感造型', 'https://placehold.co/400x500/DDD6E8/552338?text=NIA+x+GM'],

@@ -4,10 +4,9 @@ import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { zulu } from '../../composables/datetime'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const returns = ref([])
 const exchanges = ref([])
 const loaded = ref(false)

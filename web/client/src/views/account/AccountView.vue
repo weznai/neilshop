@@ -5,11 +5,10 @@ import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { fmtDateTime } from '../../composables/datetime'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const auth = useAuthStore()
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const orders = ref([])
 const orderTotal = ref(0)
 const wlCount = ref(null)

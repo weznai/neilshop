@@ -7,13 +7,12 @@ import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { fmtDateTime, zulu } from '../../composables/datetime'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const route = useRoute()
 const router = useRouter()
 const ui = useUiStore()
 const cart = useCartStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const o = ref(null)
 const err = ref('')
 const loading = ref(true)

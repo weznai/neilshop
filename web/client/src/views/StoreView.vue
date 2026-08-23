@@ -2,12 +2,11 @@
 import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import ProductCard from '../components/ProductCard.vue'
 
 const route = useRoute()
 const router = useRouter()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 /* page 钳制 ≥1：直链 ?page=-3 等非法值不再透传后端（422 死循环） */
 const clampPage = (v) => Math.max(1, parseInt(v, 10) || 1)
 const state = reactive({ items: [], total: 0, page: clampPage(route.query.page), size: 12 })

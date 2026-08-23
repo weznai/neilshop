@@ -6,12 +6,11 @@ import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { fmtDateTime } from '../../composables/datetime'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const orders = ref([])
 const loaded = ref(false)

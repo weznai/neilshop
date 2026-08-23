@@ -6,13 +6,12 @@ import { useCartStore } from '../../stores/cart'
 import { useUiStore } from '../../stores/ui'
 import { useAuthStore } from '../../stores/auth'
 import { useArmConfirm } from '../../composables/useArmConfirm'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
 const cart = useCartStore()
 const auth = useAuthStore()
 const router = useRouter()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const items = ref([])
 const loaded = ref(false)
 const failed = ref(false)

@@ -9,6 +9,21 @@ const loaded = ref(false)
 const loadErr = ref(false)
 const zh = () => i18n.lang === 'zh'
 
+/* 全量翻页拉取：单页上限 100（后端 size le=100），促销品超 100 件时不再静默截断；
+   防御上限 5 页（500 件）+ 末页不满即止 */
+async function fetchAll(query) {
+  const out = []
+  let total = Infinity
+  for (let page = 1; out.length < total && page <= 5; page++) {
+    const d = await req('GET', `/api/catalog/products?${query}&page=${page}&size=100`).catch(() => null)
+    if (!d) return out.length ? out : null
+    out.push(...(d.items || []))
+    total = d.total ?? out.length
+    if (!d.items || d.items.length < 100) break
+  }
+  return out
+}
+
 /* 后端已支持 on_sale 筛选（compare_at_price > price_min）；
  * 促销来源 = on_sale=1 ∪ tag=sale（运营打标但未设划线价的商品），按折扣力度排序 */
 async function load() {
@@ -19,13 +34,13 @@ async function load() {
   const locale = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
   try {
     const [onSale, tagged] = await Promise.all([
-      req('GET', '/api/catalog/products?on_sale=1&size=100' + locale).catch(() => null),
-      req('GET', '/api/catalog/products?tag=sale&size=100' + locale).catch(() => null),
+      fetchAll('on_sale=1' + locale),
+      fetchAll('tag=sale' + locale),
     ])
     if (!onSale && !tagged) throw new Error('load failed') /* 两路全失败 → 错误态（区别于无促销品） */
     const map = new Map()
-    for (const p of ((onSale && onSale.items) || [])) map.set(p.id, p)
-    for (const p of ((tagged && tagged.items) || [])) if (!map.has(p.id)) map.set(p.id, p)
+    for (const p of (onSale || [])) map.set(p.id, p)
+    for (const p of (tagged || [])) if (!map.has(p.id)) map.set(p.id, p)
     items.value = [...map.values()].sort((a, b) => offPct(b) - offPct(a))
   } catch (_) {
     items.value = []

@@ -1,7 +1,7 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
@@ -60,7 +60,6 @@ function loadContact() {
 }
 const needContact = () => !auth.isLoggedIn && !contact.email
 const lang = () => (i18n.lang === 'zh' ? 'zh' : 'en')
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 /* 转人工/美甲师提交失败：常见后端错误映射双语，兜底通用文案 */
 function submitErrText(e) {
   const m = String((e && e.message) || '').toLowerCase()

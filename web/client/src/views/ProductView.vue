@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req, wishlistAdd, wishlistHas, wishlistRemove } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { catalogById } from '../data/catalog'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
@@ -29,7 +29,6 @@ const notifyEmail = ref('')
 const notifyState = ref(0)          /* 0 未订阅 / 1 提交中 / 2 已订阅 */
 const lightbox = ref(null)          /* { src, caption } */
 const zh = computed(() => i18n.lang === 'zh')
-const tt = (en, cn) => (zh.value ? cn : en)
 
 /* 主图/缩略图加载失败兜底：回落 placehold 常量 + dataset 守卫防循环（对齐 HomeView heroFallback） */
 const IMG_FALLBACK = 'https://placehold.co/600x600/E8B4B8/552338?text=GLOWMAG'

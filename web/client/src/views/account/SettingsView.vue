@@ -5,11 +5,10 @@ import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { fmtDate } from '../../composables/datetime'
-import { i18n } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const auth = useAuthStore()
 const ui = useUiStore()
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const form = reactive({ name: '', birthday: '' })
 const saving = ref(false)
 const exporting = ref(false)

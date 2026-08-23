@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req, intentNoChannel } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
@@ -13,7 +13,6 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 

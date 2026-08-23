@@ -24,13 +24,6 @@ const dict = {
     'chat.contact.name': 'Your name (optional)', 'chat.contact.email': 'Email (so we can reach you)',
     'chat.contact.err': 'Please enter a valid email address',
     'chat.q.track': '📦 Where is my order?', 'chat.q.size': '📐 Help me size', 'chat.q.return': '↩️ Returns & exchanges', 'chat.q.human': '👩‍💼 Talk to a human',
-    'chat.r.track': 'I can check that for you! Track any order (no login needed) at our <a href="/track" target="_blank">Track Order</a> page — or share your order number (NS…) and I\'ll pull it up.',
-    'chat.r.size': 'Great question — sizing is everything with press-ons! 📏 Start with the interactive <a href="/size-guide" target="_blank">Size Guide</a> (60 seconds). Most customers match 2–3 sizes per hand; between sizes? Size up & file the sides.',
-    'chat.r.return': 'No worries — returns are free within 30 days and <b>exchanges are always free</b> (we reship instantly, you keep the original). Start at <a href="/account/orders" target="_blank">Account → Orders</a> or read the <a href="/returns-policy" target="_blank">full policy</a>.',
-    'chat.r.human': 'Connecting you to our glam team… 💜 Meanwhile, you can also open a ticket at <a href="/contact" target="_blank">Contact Us</a> — average first reply is under 4 hours.',
-    'chat.r.cart': 'Your cart is right here — tap the 🛒 icon up top. Psst: orders over $35 ship <b>FREE</b> and you can stack 100 pts = $1 off.',
-    'chat.r.code': 'Codes! 🎟️ Try <b>WELCOME20</b> (20% off, new customers) — one code per order. Sale items are already discounted, no code needed.',
-    'chat.r.fallback': "I'm still learning! 🤖 Try one of the quick questions below — or <a href=\"/contact\" target=\"_blank\">reach our team</a> for anything else.",
     'announce.a': '✨ New Season drops are live — <b>EARLYBIRD 20% off</b>',
     'announce.b': '🚚 Free shipping on orders over $35 — no code needed',
     'announce.c': '⭐ Reviews month: leave a review, earn 2× points',
@@ -357,13 +350,6 @@ const dict = {
     'chat.contact.name': '怎么称呼你（选填）', 'chat.contact.email': '邮箱（方便联系你）',
     'chat.contact.err': '请填写有效的邮箱地址',
     'chat.q.track': '📦 我的订单到哪了？', 'chat.q.size': '📐 帮我选尺码', 'chat.q.return': '↩️ 退换货', 'chat.q.human': '👩‍💼 转人工',
-    'chat.r.track': '可以帮你查！任意订单免登录查询请戳 <a href="/track" target="_blank">物流追踪</a>——或直接把订单号（NS 开头）发给我。',
-    'chat.r.size': '问得好——穿戴甲尺码是关键！📏 从 60 秒交互式<a href="/size-guide" target="_blank">尺码指南</a>开始；两只手通常 2–3 个码混用，介于两码之间选大一号再修边。',
-    'chat.r.return': '别担心——30 天内免费退货，<b>换货永久免费</b>（立即补发，旧款不用寄回）。入口在 <a href="/account/orders" target="_blank">账户 → 订单</a>，完整条款见<a href="/returns-policy" target="_blank">退换政策</a>。',
-    'chat.r.human': '正在为你转接真人客服…💜 也可以到<a href="/contact" target="_blank">联系我们</a>提交工单，平均 4 小时内首次回复。',
-    'chat.r.cart': '购物车就在顶部 🛒 图标里。悄悄说：满 $35 包邮，积分 100 分可抵 $1。',
-    'chat.r.code': '折扣码！🎟️ 新客试试 <b>WELCOME20</b>（8 折）——一单限一码；促销商品已是折后价，无需用码。',
-    'chat.r.fallback': '这个我还在学习中 🤖 试试下面的快捷问题，或<a href="/contact" target="_blank">联系人工</a>。',
     'announce.a': '✨ 新季新品已开售 — <b>早鸟码 EARLYBIRD 享 8 折</b>',
     'announce.b': '🚚 满 $35 包邮——无需折扣码',
     'announce.c': '⭐ 评价月：写评价得双倍积分',
@@ -696,5 +682,9 @@ export const i18n = reactive({
 })
 
 export { dict }
+
+/* 共享双语闭包：全站组件 tt(en, zh) 单一来源（原先 30+ 处逐字重复定义；
+   i18n 为 reactive，模板内调用 tt() 切换语言即时生效，行为与组件内定义完全一致） */
+export const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 if (typeof document !== 'undefined') document.documentElement.lang = i18n.lang === 'zh' ? 'zh-CN' : 'en'

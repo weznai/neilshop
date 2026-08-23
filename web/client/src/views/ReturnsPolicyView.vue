@@ -1,8 +1,7 @@
 <script setup>
 import { useTocSpy } from '../composables/useTocSpy'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 const SECS = [
   ['returns', 'Returns', '退货'],
   ['exchanges', 'Exchanges', '换货'],

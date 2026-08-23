@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
@@ -10,7 +10,6 @@ const cart = useCartStore()
 const ui = useUiStore()
 const auth = useAuthStore()
 
-const tt = (en, zh) => (i18n.lang === 'zh' ? zh : en)
 
 /* 折扣码失败原因走 i18n promo.*（对齐后端 promo REASON_TEXT；preview 返回裸 reason 码），
    t() 缺键返回键本身 → 回退展示原始 reason 码 */
