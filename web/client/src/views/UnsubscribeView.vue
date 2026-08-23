@@ -152,5 +152,5 @@ async function unsubAll() {
 .unsub-chk:checked + .unsub-sw { background: var(--success); }
 .unsub-chk:checked + .unsub-sw::after { left: 21px; }
 .unsub-chk:disabled + .unsub-sw { opacity: .55; }
-.unsub-chk:focus-visible + .unsub-sw { outline: 2px solid rgba(109,46,70,.6); outline-offset: 2px; }
+.unsub-chk:focus-visible + .unsub-sw { outline: 2px solid rgba(138,74,99,.6); outline-offset: 2px; }
 </style>

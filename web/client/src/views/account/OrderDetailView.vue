@@ -784,7 +784,7 @@ async function submitReview(it) {
 
 /* 换货变体行：picked 态 2px plum 边框 + 柔光 */
 .ex-opt { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; border: 1.5px solid var(--gray-light); border-radius: 10px; font-size: 13.5px; }
-.ex-opt.picked { border: 2px solid var(--plum); background: var(--rose-pale); box-shadow: 0 2px 10px rgba(109, 46, 70, .12); padding: 9.5px 11.5px; }
+.ex-opt.picked { border: 2px solid var(--plum); background: var(--rose-pale); box-shadow: 0 2px 10px rgba(138,74,99, .12); padding: 9.5px 11.5px; }
 .ex-stock { font-size: 11px; color: var(--gray); background: var(--gray-light); border-radius: 999px; padding: 1px 8px; flex: none; }
 .ex-stock.out { color: var(--error); background: var(--pale-error); }
 </style>

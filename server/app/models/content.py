@@ -46,6 +46,7 @@ class Faq(Base):
     answer_md = Column(Text, nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
     active = Column(SmallInteger, nullable=False, default=1)
+    embedding = Column(JSON)  # RAG 向量（chat/retrieval.py 写入；NULL=未索引，回退全量注入）
 
 
 class UgcSubmission(Base):

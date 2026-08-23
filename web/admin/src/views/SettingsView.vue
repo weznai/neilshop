@@ -9,7 +9,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 
-const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['admins', '管理员账号'], ['media', '媒体库'], ['raw', '全部参数']]
+const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['ai', 'AI 客服'], ['admins', '管理员账号'], ['media', '媒体库'], ['raw', '全部参数']]
 /* tab 进 URL（刷新/分享保持当前面板） */
 const st = reactive({ tab: 'shipping' })
 useQuerySync(st, { defaults: { tab: 'shipping' } })
@@ -69,6 +69,111 @@ async function retryTemplates() {
   tplErr.value = false
   try { templates.value = (await req('GET', '/api/admin/ops/email-templates')).items || [] }
   catch (_) { tplErr.value = true }
+}
+
+/* ===== AI 客服大模型配置（settings key=llm_config，覆盖 GM_LLM_* 环境变量） ===== */
+const aiCfg = reactive({ api_key_set: false, api_key_masked: '', base_url: '', model: '', timeout: 20, max_tokens: 500, temperature: 0.4, persona: '', prompt_extra: '', embedding_model: '', rag: { ready: false, embedded: 0, total: 0 }, source: '', updated_at: null })
+const aiForm = reactive({ api_key: '', base_url: '', model: '', timeout: 20, max_tokens: 500, temperature: 0.4, persona: '', prompt_extra: '', embedding_model: '' })
+const aiLoaded = ref(false)
+const aiErr = ref(false)
+const aiSaving = ref(false)
+const aiTesting = ref(false)
+const aiTest = reactive({ done: false, ok: false, msg: '' })
+const aiPrev = ref(null)          /* 提示词预览 {prompt, default_persona, safety_rules} */
+const aiPrevOpen = ref(false)
+const aiPrevBusy = ref(false)
+const aiReidx = ref(false)
+/* 用户是否输入了新 Key（空=沿用已保存的，不回传覆盖） */
+const aiDirtyKey = computed(() => aiForm.api_key.trim().length > 0)
+
+async function loadAi() {
+  aiErr.value = false
+  try {
+    const d = await req('GET', '/api/admin/ai/config')
+    Object.assign(aiCfg, d)
+    aiForm.base_url = d.base_url || ''
+    aiForm.model = d.model || ''
+    aiForm.timeout = d.timeout || 20
+    aiForm.max_tokens = d.max_tokens || 500
+    aiForm.temperature = d.temperature ?? 0.4
+    aiForm.persona = d.persona || ''
+    aiForm.prompt_extra = d.prompt_extra || ''
+    aiForm.embedding_model = d.embedding_model || ''
+    aiForm.api_key = ''
+    aiLoaded.value = true
+  } catch (e) {
+    aiErr.value = true
+    toast('AI 配置加载失败：' + (e.message || ''), 'error')
+  }
+}
+
+async function saveAi() {
+  const body = {
+    base_url: aiForm.base_url.trim(), model: aiForm.model.trim(),
+    timeout: aiForm.timeout | 0, max_tokens: aiForm.max_tokens | 0,
+    temperature: aiForm.temperature, persona: aiForm.persona.trim(), prompt_extra: aiForm.prompt_extra.trim(),
+    embedding_model: aiForm.embedding_model.trim(),
+  }
+  if (aiDirtyKey.value) body.api_key = aiForm.api_key.trim()
+  if (!body.model) { toast('模型名必填', 'error'); return }
+  aiSaving.value = true
+  try {
+    await req('PUT', '/api/admin/ai/config', body)
+    toast('AI 配置已保存，即时生效 ✓', 'success')
+    aiForm.api_key = ''
+    aiPrev.value = null /* 配置变了，旧预览失效 */
+    await loadAi()
+  } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+  finally { aiSaving.value = false }
+}
+
+async function loadPreview() {
+  aiPrevBusy.value = true
+  try {
+    /* 预览前先保存未保存修改，保证看到的就是将生效的 */
+    if (aiDirtyKey.value || aiForm.model.trim() !== aiCfg.model || aiForm.base_url.trim() !== (aiCfg.base_url || '')
+      || aiForm.persona.trim() !== (aiCfg.persona || '') || aiForm.prompt_extra.trim() !== (aiCfg.prompt_extra || '')) await saveAi()
+    aiPrev.value = await req('GET', '/api/admin/ai/prompt-preview')
+    aiPrevOpen.value = true
+  } catch (e) { toast('预览失败：' + (e.data?.detail || e.message), 'error') }
+  finally { aiPrevBusy.value = false }
+}
+
+async function reindexRag(full) {
+  if (!aiCfg.api_key_set) { toast('先配置 API Key 并保存，再建索引', 'error'); return }
+  aiReidx.value = true
+  try {
+    const d = await req('POST', '/api/admin/ai/rag/reindex', { full: !!full })
+    if (d.ok) toast(`索引完成 ✓ 新建 ${d.indexed} 条` + (d.failed ? ` · 失败 ${d.failed} 条` : ''), 'success')
+    else toast('索引失败：' + (d.reason || `失败 ${d.failed} 条`), 'error')
+    await loadAi()
+  } catch (e) { toast('索引失败：' + (e.data?.detail || e.message), 'error') }
+  finally { aiReidx.value = false }
+}
+
+async function clearAiKey() {
+  if (!confirm('确认清除已保存的 API Key？清除后 AI 客服回退内置规则引擎（环境变量配置不受影响）。')) return
+  aiSaving.value = true
+  try {
+    await req('PUT', '/api/admin/ai/config', { api_key: '' })
+    toast('API Key 已清除 ✓', 'success')
+    await loadAi()
+  } catch (e) { toast('清除失败：' + (e.data?.detail || e.message), 'error') }
+  finally { aiSaving.value = false }
+}
+
+async function testAi() {
+  aiTesting.value = true
+  aiTest.done = false
+  try {
+    /* 先保存未保存的修改再测试（保证测的是生效配置） */
+    if (aiDirtyKey.value || aiForm.model.trim() !== aiCfg.model || aiForm.base_url.trim() !== (aiCfg.base_url || '')) await saveAi()
+    const d = await req('POST', '/api/admin/ai/test')
+    aiTest.done = true
+    aiTest.ok = !!d.ok
+    aiTest.msg = d.ok ? `连通 ✓ ${d.model} · ${d.latency_ms}ms ·「${d.reply}」` : (d.reason || '测试失败')
+  } catch (e) { aiTest.done = true; aiTest.ok = false; aiTest.msg = e.data?.detail || e.message || '请求失败' }
+  finally { aiTesting.value = false }
 }
 
 const saving = ref('')
@@ -308,10 +413,12 @@ async function onPickFile(e) {
 watch(() => st.tab, (k) => {
   if (k === 'admins' && !adminsLoaded.value) loadAdmins()
   if (k === 'media' && !mLoaded.value) loadMedia(mPage.value)
+  if (k === 'ai' && !aiLoaded.value) loadAi()
 })
 onMounted(() => {
   if (st.tab === 'admins') loadAdmins()
   if (st.tab === 'media') loadMedia(mPage.value)
+  if (st.tab === 'ai' && !aiLoaded.value) loadAi()
 })
 </script>
 
@@ -379,6 +486,104 @@ onMounted(() => {
       <button class="btn btn-secondary btn-sm" @click="showTpl(t)">👁 预览</button>
     </div>
     <EmptyState v-if="loaded && !tplErr && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
+  </div>
+
+  <!-- AI 客服大模型配置 -->
+  <div v-else-if="st.tab === 'ai'" class="card" style="padding:0">
+    <div v-if="aiErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
+      <span>⚠️ AI 配置加载失败</span>
+      <button class="btn btn-secondary btn-sm" @click="loadAi">重试</button>
+    </div>
+    <div v-if="!aiLoaded && !aiErr" class="skeleton" style="min-height:200px" />
+    <template v-else>
+      <div class="setrow" style="padding:14px 18px;border-bottom:1px solid var(--gray-light);align-items:center">
+        <div>
+          <b>AI 客服（GlowBot）状态</b>
+          <div style="font-size:12px;color:var(--gray);margin-top:3px">
+            <template v-if="aiCfg.api_key_set">
+              🟢 大模型已启用 · Key <code>{{ aiCfg.api_key_masked }}</code> · 来源 {{ aiCfg.source === 'db' ? '后台配置' : '环境变量' }}<template v-if="aiCfg.updated_at && aiCfg.source === 'db'"> · {{ dt(aiCfg.updated_at) }}</template>
+            </template>
+            <template v-else>⚪ 未配置大模型 —— AI 客服走<b>内置规则引擎</b>（订单查询/FAQ 检索不受影响），配置后自动升级为大模型回复</template>
+          </div>
+        </div>
+        <span class="tag" :class="aiCfg.api_key_set ? 'tag-done' : 'tag-pending'">{{ aiCfg.api_key_set ? '已启用' : '规则引擎' }}</span>
+      </div>
+
+      <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+        <div class="field">
+          <label>API Key {{ aiCfg.api_key_set ? '（留空 = 沿用已保存的 Key）' : '' }}</label>
+          <div style="display:flex;gap:8px">
+            <input v-model="aiForm.api_key" class="input" type="password" style="flex:1" :placeholder="aiCfg.api_key_set ? aiCfg.api_key_masked : 'sk-…（OpenAI 兼容网关的密钥）'" autocomplete="new-password">
+            <button v-if="aiCfg.source === 'db' && aiCfg.api_key_set" class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="aiSaving" @click="clearAiKey">清除</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>接口地址 Base URL（OpenAI 兼容；默认官方 https://api.openai.com/v1，国内网关填对应地址）</label>
+          <input v-model="aiForm.base_url" class="input" placeholder="https://api.openai.com/v1">
+        </div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px">
+          <div class="field">
+            <label>模型名</label>
+            <input v-model="aiForm.model" class="input" placeholder="gpt-4o-mini">
+          </div>
+          <div class="field">
+            <label>超时（3-60 秒）</label>
+            <input v-model.number="aiForm.timeout" class="input" type="number" min="3" max="60">
+          </div>
+          <div class="field">
+            <label>回复上限（50-2000 tokens）</label>
+            <input v-model.number="aiForm.max_tokens" class="input" type="number" min="50" max="2000">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 130px;gap:10px">
+          <div class="field">
+            <label>人设 Persona（留空 = 默认 GlowBot；≤500 字符）</label>
+            <textarea v-model="aiForm.persona" class="input" rows="2" placeholder="You are GlowBot, the friendly AI assistant of GLOWMAG…（身份/语气/称呼）"></textarea>
+          </div>
+          <div class="field">
+            <label>创造性 Temperature</label>
+            <input v-model.number="aiForm.temperature" class="input" type="number" min="0" max="2" step="0.1">
+            <div style="font-size:10.5px;color:var(--gray);margin-top:4px">0 严谨 · 0.4 均衡 · 1+ 活泼</div>
+          </div>
+        </div>
+        <div class="field">
+          <label>补充指令（追加在安全规则之后；活动话术/临时规则，≤2000 字符）</label>
+          <textarea v-model="aiForm.prompt_extra" class="input" rows="3" placeholder="例如：本月大促期间主动提及「满 $35 免邮」；周末回复结尾加一句周末快乐 💅"></textarea>
+        </div>
+        <!-- RAG：FAQ 向量检索 -->
+        <div style="border:1px solid var(--gray-light);border-radius:12px;padding:12px 14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <span class="tag" :class="aiCfg.rag?.ready ? 'tag-done' : 'tag-pending'">{{ aiCfg.rag?.ready ? 'RAG 已就绪' : 'RAG 未启用' }}</span>
+          <div style="flex:1;min-width:200px;font-size:12px;color:var(--gray)">
+            FAQ 向量检索（问答仅注入与客户问题最相关的 top-5 片段）· 已索引 <b>{{ aiCfg.rag?.embedded || 0 }}/{{ aiCfg.rag?.total || 0 }}</b> 条
+            <template v-if="!aiCfg.rag?.ready"> · {{ aiCfg.api_key_set ? '覆盖率不足或未建索引，当前为全量注入模式' : '未配置 API Key，当前为全量注入模式' }}</template>
+          </div>
+          <div class="field" style="margin:0;width:220px">
+            <input v-model="aiForm.embedding_model" class="input" placeholder="向量模型（默认 text-embedding-3-small）">
+          </div>
+          <button class="btn btn-secondary btn-sm" :class="{ loading: aiReidx }" :disabled="aiReidx || aiSaving" title="为未索引的 FAQ 生成向量（保存配置后使用）" @click="reindexRag(false)">📥 补建索引</button>
+          <button class="btn btn-ghost btn-sm" :class="{ loading: aiReidx }" :disabled="aiReidx || aiSaving" title="全部重建（更换向量模型后使用）" @click="confirm('全量重建将覆盖所有 FAQ 向量，继续？') && reindexRag(true)">♻️ 全量重建</button>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-primary" :class="{ loading: aiSaving }" :disabled="aiSaving || aiTesting" @click="saveAi">保存配置</button>
+          <button class="btn btn-secondary" :class="{ loading: aiPrevBusy }" :disabled="aiSaving || aiPrevBusy" title="查看实际下发的大模型系统提示词（含 FAQ 知识库注入结果）" @click="loadPreview">📄 提示词预览</button>
+          <button class="btn btn-secondary" :class="{ loading: aiTesting }" :disabled="aiSaving || aiTesting" title="用当前配置发一条测试消息，验证 Key/网关/模型是否可用" @click="testAi">⚡ 测试连接</button>
+          <span v-if="aiTest.done" class="tag" :class="aiTest.ok ? 'tag-done' : 'tag-error'" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="aiTest.msg">{{ aiTest.msg }}</span>
+        </div>
+        <div v-if="aiPrevOpen && aiPrev" class="ai-prev">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <b style="font-size:12.5px">最终系统提示词（实际下发 · {{ aiPrev.prompt.length }} 字符）</b>
+            <button class="btn btn-ghost btn-sm" @click="aiPrevOpen = false">收起</button>
+          </div>
+          <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:11.5px;line-height:1.7;color:var(--ink)">{{ aiPrev.prompt }}</pre>
+        </div>
+        <p style="font-size:11.5px;color:var(--gray);line-height:1.7">
+          · 后台配置<b>优先于</b>服务器环境变量（GM_LLM_*），保存即时生效，无需重启<br>
+          · 提示词 = 人设（可配）+ 安全红线（固定不可配）+ 补充指令（可配）+ 运营政策/FAQ 知识库（自动注入）<br>
+          · AI 问答以「内容管理 → FAQ」为知识库；订单/物流等数据类问题始终走规则引擎查库（大模型不接触订单数据）<br>
+          · 配置异常时自动回退规则引擎，前台客服不中断
+        </p>
+      </div>
+    </template>
   </div>
 
   <!-- 管理员账号（列表全员可读；新建/编辑/停用仅超管） -->
@@ -538,4 +743,6 @@ onMounted(() => {
 /* 参数表单两列栅格（窄屏单列），替代单列 max-width 布局 */
 .set-grid{display:grid;grid-template-columns:1fr 1fr;column-gap:28px;align-items:start}
 @media(max-width:768px){.set-grid{grid-template-columns:1fr}}
+/* AI 提示词预览框 */
+.ai-prev{background:var(--bg-page);border:1px solid var(--gray-light);border-radius:10px;padding:10px 12px;max-height:260px;overflow-y:auto}
 </style>

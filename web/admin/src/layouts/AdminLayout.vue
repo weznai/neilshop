@@ -172,7 +172,7 @@ onBeforeUnmount(() => {
     <RouteProgress />
     <aside class="aside" id="admSide">
       <router-link class="logo" to="/">GLOW<span>MAG</span></router-link>
-      <div class="side-sub" style="font-size:10px;letter-spacing:2px;color:var(--gray);padding:0 12px 14px">管理控制台</div>
+      <div class="side-sub" style="font-size:10px;letter-spacing:2px;color:var(--gray);padding:0 12px 8px">管理控制台</div>
       <nav class="anav">
         <template v-for="(it, i) in navItems" :key="i">
           <div v-if="typeof it === 'string'" class="group">{{ it }}</div>

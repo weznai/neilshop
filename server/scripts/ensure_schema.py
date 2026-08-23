@@ -24,6 +24,10 @@ _STRING_COLUMNS = [
     # (table, column, DDL) —— 幂等加列（chat 域美甲师公开简介）
     ("users", "artist_intro", "ALTER TABLE users ADD COLUMN artist_intro VARCHAR(300) NOT NULL DEFAULT ''"),
 ]
+_JSON_COLUMNS = [
+    # (table, column, DDL) —— 幂等加列（FAQ RAG 向量，chat/retrieval.py）
+    ("faqs", "embedding", "ALTER TABLE faqs ADD COLUMN embedding JSON"),
+]
 _VARCHAR_COLUMNS = [
     # (table, column, 期望宽度, MODIFY DDL) —— MySQL 专用（sqlite 动态类型无需扩宽）
     ("payments", "stripe_checkout_session", 255,
@@ -41,6 +45,11 @@ def ensure_schema() -> None:
                 conn.execute(text(ddl))
                 log.warning("ensure_schema: added %s.%s via DDL guard", table, column)
         for table, column, ddl in _STRING_COLUMNS:
+            names = [c["name"] for c in insp.get_columns(table)]
+            if names and column not in names:
+                conn.execute(text(ddl))
+                log.warning("ensure_schema: added %s.%s via DDL guard", table, column)
+        for table, column, ddl in _JSON_COLUMNS:
             names = [c["name"] for c in insp.get_columns(table)]
             if names and column not in names:
                 conn.execute(text(ddl))

@@ -662,15 +662,15 @@ const gmEta = () => {
 .pdp-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 44px; }
 .vbtn { display: inline-flex; align-items: center; gap: 8px; border: 1.5px solid var(--gray-light); background: #fff; border-radius: 12px; padding: 10px 16px; font-size: 13.5px; font-weight: 600; color: var(--ink); transition: all .15s; }
 .vbtn:hover:not(:disabled) { border-color: var(--rose); background: var(--rose-pale); }
-.vbtn.sel { border-color: var(--plum); background: var(--plum); color: #fff; box-shadow: 0 4px 14px rgba(109,46,70,.28); }
-.vbtn.sel b { color: #fff; }
+.vbtn.sel { border-color: var(--rose); background: var(--rose-pale); color: var(--ink); box-shadow: 0 3px 10px rgba(232,180,184,.45); }
+.vbtn.sel b { color: var(--plum); }
 .vbtn i { font-style: normal; font-size: 11px; color: var(--gray); }
 /* 售罄变体可选（点击展示到货通知）：保留置灰+删除线视觉，光标改 pointer */
 .vbtn.out { color: var(--gray); background: var(--gray-light); border-color: var(--gray-light); cursor: pointer; text-decoration: line-through; }
 .vbtn.out i { color: var(--error); text-decoration: none; font-weight: 700; }
-.vbtn.sel i { color: rgba(255,255,255,.85); }
+.vbtn.sel i { color: var(--gray); }
 /* 选中态优先于置灰：售罄变体被选中时仍显示 plum 选中框（通知表单归属可见） */
-.vbtn.sel.out { border-color: var(--plum); background: var(--plum); color: #fff; box-shadow: 0 4px 14px rgba(109,46,70,.28); }
+.vbtn.sel.out { border-color: var(--rose); background: var(--rose-pale); color: var(--gray); box-shadow: none; }
 .qbtn { width: 34px; height: 38px; font-size: 17px; font-weight: 600; color: var(--plum); }
 .qbtn:disabled { color: var(--gray-light); cursor: not-allowed; }
 .pdp-qty-input { width: 44px; border: none; background: transparent; text-align: center; font-family: inherit; font-size: 15px; font-weight: 600; color: var(--ink); outline: none; }
@@ -681,7 +681,7 @@ const gmEta = () => {
 .stock-track { height: 5px; background: var(--gray-light); border-radius: 3px; margin-top: 8px; max-width: 260px; overflow: hidden; }
 .stock-fill { height: 100%; background: linear-gradient(90deg, var(--warn), var(--coral)); border-radius: 3px; transition: width .4s ease-out; }
 .pdp-thumb { position: relative; flex: none; width: 64px; height: 64px; border-radius: 10px; overflow: hidden; border: 1.5px solid var(--gray-light); padding: 0; transition: border-color .15s; }
-.pdp-thumb.on { border-color: var(--plum); box-shadow: 0 0 0 2px rgba(109,46,70,.15); }
+.pdp-thumb.on { border-color: var(--plum); box-shadow: 0 0 0 2px rgba(138,74,99,.15); }
 .pdp-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .pdp-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(31,27,30,.42); color: #fff; font-size: 16px; }
 .pdp-zoom { position: absolute; bottom: 12px; right: 12px; width: 34px; height: 34px; border-radius: 50%; background: rgba(255,255,255,.92); color: var(--plum); font-size: 15px; font-weight: 700; box-shadow: var(--shadow-card); transition: transform .15s; }

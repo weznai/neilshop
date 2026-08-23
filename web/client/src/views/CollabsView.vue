@@ -147,7 +147,7 @@ const REQS = [
   border-radius: 12px;
   padding: 10px 22px;
   min-width: 108px;
-  box-shadow: 0 2px 8px rgba(109,46,70,.05);
+  box-shadow: 0 2px 8px rgba(138,74,99,.05);
 }
 .cs-item b { display: block; font-family: var(--font-title); font-size: 22px; color: var(--plum); line-height: 1.2; }
 .cs-item span { font-size: 11.5px; color: var(--gray); }
@@ -174,7 +174,7 @@ const REQS = [
 .collab-flag {
   position: absolute;
   top: 12px; right: 12px;
-  background: rgba(109,46,70,.88);
+  background: rgba(138,74,99,.88);
   color: #fff;
   font-size: 10.5px;
   font-weight: 700;

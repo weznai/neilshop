@@ -254,25 +254,12 @@ def close_conversation(db: Session, conv_no: str, token: str, user: User | None)
     return _conv_detail(db, conv)
 
 
-def _system_prompt(db: Session) -> str:
-    """LLM 人设 + FAQ 知识库 + 店铺政策速览（settings 驱动部分复用 ai 域摘要）"""
-    from app.domains.ai.service import _return_summary, _shipping_summary
+def _system_prompt(db: Session, query: str | None = None) -> str:
+    """LLM 系统提示词（组装见 chat/prompt.py：人设可配 + 安全红线 + FAQ/政策注入；
+    query 非空且 RAG 就绪时仅注入相关 FAQ 片段，否则全量）"""
+    from app.domains.chat.prompt import build_system_prompt
 
-    kb_lines = [f"Q: {f.question}\nA: {f.answer_md}" for f in repo.active_faqs(db)]
-    kb = "\n\n".join(kb_lines) if kb_lines else "(knowledge base is empty)"
-    facts = "\n".join(filter(None, [_shipping_summary(db, False), _return_summary(db, False)]))
-    return (
-        "You are GlowBot, the friendly AI assistant of GLOWMAG, a press-on nail & lash e-commerce shop.\n"
-        "Rules:\n"
-        "- Reply in the same language as the customer (English or Chinese).\n"
-        "- Be concise (under ~120 words), warm and helpful; at most 2 emojis.\n"
-        "- Answer shop-policy questions ONLY from the knowledge base below; "
-        "if the answer is not there, say you will connect a human agent.\n"
-        "- Never invent order status, tracking numbers, prices or discount codes; "
-        "for order tracking point customers to the /track page.\n"
-        f"- Shop policy digest: {facts}\n\n"
-        f"Knowledge base:\n{kb}"
-    )
+    return build_system_prompt(db, query)
 
 
 def _llm_history(history: list[ChatMessage]) -> list[dict]:
@@ -323,8 +310,9 @@ def send_message(db: Session, conv_no: str, body: MessageIn, user: User | None) 
             new_msgs.append(bot)
             source = "rules"
         else:
-            reply = llm.chat_completion(_system_prompt(db), _llm_history(
-                repo.messages_asc(db, conv.id)))
+            p = llm.resolve_params(db)
+            reply = llm.chat_completion(_system_prompt(db, body.content), _llm_history(
+                repo.messages_asc(db, conv.id)), params=p)
             if reply:
                 bot = _add_msg(db, conv, int(ChatSender.BOT), reply)
                 new_msgs.append(bot)

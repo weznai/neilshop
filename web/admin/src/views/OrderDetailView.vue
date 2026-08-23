@@ -678,7 +678,7 @@ async function addrConfirm() {
 .step:not(:last-child)::after{content:"";flex:1;height:2px;background:var(--gray-light);margin:0 10px;border-radius:1px;transition:background .3s}
 .step.done .dot{background:var(--success);border-color:var(--success);color:#fff}
 .step.done:not(:last-child)::after{background:var(--success)}
-.step.now .dot{background:var(--plum);border-color:var(--plum);color:#fff;box-shadow:0 0 0 4px rgba(109,46,70,.14)}
+.step.now .dot{background:var(--plum);border-color:var(--plum);color:#fff;box-shadow:0 0 0 4px rgba(138,74,99,.14)}
 .step.now span{color:var(--plum)}
 /* 终态（取消/退款）横幅 */
 .closed-banner{margin-top:16px;padding:10px 14px;border-radius:10px;background:rgba(229,72,77,.08);

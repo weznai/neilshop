@@ -493,6 +493,25 @@ def list_faqs_admin(db: Session, category: str | None, page: int, size: int) -> 
     }
 
 
+def _embed_faq(db: Session, f) -> None:
+    """best-effort 向量化（RAG 索引）：网关未配/失败静默跳过，后续可「重建索引」补齐；
+    成功后失效检索缓存。异常绝不上抛——FAQ 保存不能因 embedding 故障失败。"""
+    try:
+        from app.services.embedding import embed_texts, faq_text
+        from app.services.llm import resolve_params
+
+        p = resolve_params(db)
+        if not p.get("api_key"):
+            return
+        vec = embed_texts([faq_text(f.question, f.answer_md)], p)
+        if vec:
+            f.embedding = vec[0]
+            from app.domains.chat.retrieval import invalidate
+            invalidate()
+    except Exception:
+        pass
+
+
 def create_faq(db: Session, admin: User, body: FaqCreateIn) -> dict:
     f = Faq(
         category=body.category,
@@ -503,6 +522,7 @@ def create_faq(db: Session, admin: User, body: FaqCreateIn) -> dict:
     )
     db.add(f)
     db.flush()
+    _embed_faq(db, f)
     log_admin(db, admin, "create", "faq", f.id, {"category": f.category, "question": f.question})
     db.commit()
     db.refresh(f)
@@ -516,6 +536,9 @@ def update_faq(db: Session, admin: User, faq_id: int, body: FaqUpdateIn) -> dict
     data = body.model_dump(exclude_unset=True)
     for k, v in data.items():
         setattr(f, k, v)
+    if "question" in data or "answer_md" in data:
+        f.embedding = None  # 内容变了旧向量失效，重嵌（失败留空走全量回退）
+        _embed_faq(db, f)
     log_admin(db, admin, "update", "faq", f.id, data)
     db.commit()
     db.refresh(f)

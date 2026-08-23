@@ -285,7 +285,7 @@ const reconcile = computed(() => d.value?.reconcile)
 .stat .delta.up{background:var(--pale-success);color:var(--success)}
 .stat .delta.down{background:var(--pale-error);color:var(--error)}
 /* 待处理卡：品牌深色渐变，反白强调 */
-.stat-dark{background:linear-gradient(135deg,var(--plum) 0%,var(--plum-dark) 100%);border:none;box-shadow:0 8px 20px rgba(109,46,70,.28)}
+.stat-dark{background:linear-gradient(135deg,var(--plum) 0%,var(--plum-dark) 100%);border:none;box-shadow:0 8px 20px rgba(138,74,99,.28)}
 .stat-dark::before{background:radial-gradient(closest-side,rgba(232,180,184,.28),transparent)}
 .stat-dark .lb{color:rgba(255,255,255,.78)}
 .stat-dark .vl{color:#fff}
@@ -311,9 +311,9 @@ const reconcile = computed(() => d.value?.reconcile)
 .chart-bar{width:100%;border-radius:6px 6px 0 0;cursor:pointer;transform-origin:bottom;animation:barGrow .5s ease-out backwards;
   background:linear-gradient(180deg,var(--rose) 0%,var(--rose-light) 100%);
   transition:opacity .15s,filter .15s,box-shadow .15s}
-.chart-bar.last{background:linear-gradient(180deg,var(--plum) 0%,var(--plum-dark) 100%);box-shadow:0 4px 14px rgba(109,46,70,.3)}
+.chart-bar.last{background:linear-gradient(180deg,var(--plum) 0%,var(--plum-dark) 100%);box-shadow:0 4px 14px rgba(138,74,99,.3)}
 .chart-bar.dim{opacity:.4}
-.chart-bar.hot{opacity:1;filter:saturate(1.2) brightness(1.03);box-shadow:0 6px 16px rgba(109,46,70,.22)}
+.chart-bar.hot{opacity:1;filter:saturate(1.2) brightness(1.03);box-shadow:0 6px 16px rgba(138,74,99,.22)}
 .chart-x{height:16px;margin-top:8px;font-size:10px;color:var(--gray);text-align:center;line-height:16px;white-space:nowrap}
 /* hover 浮层提示（替代原生 title） */
 .chart-tip{position:absolute;left:50%;transform:translateX(-50%);z-index:6;pointer-events:none;white-space:nowrap;

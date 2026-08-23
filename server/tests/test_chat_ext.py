@@ -101,7 +101,7 @@ from app.services import llm as llm_mod  # noqa: E402
 
 _orig_cc = llm_mod.chat_completion
 try:
-    llm_mod.chat_completion = lambda system, messages, temperature=0.4: (
+    llm_mod.chat_completion = lambda system, messages, temperature=0.4, params=None: (
         "LLM-KB-ANSWER: try Short Almond for short nail beds!"
     )
     r = client.post(f"/api/chat/conversations/{AI_NO}/messages",
@@ -112,7 +112,7 @@ try:
           and j["new_messages"][-1]["content"].startswith("LLM-KB-ANSWER"), r.text[:200])
 
     # LLM 故障 → 回退规则引擎
-    llm_mod.chat_completion = lambda system, messages, temperature=0.4: None
+    llm_mod.chat_completion = lambda system, messages, temperature=0.4, params=None: None
     r = client.post(f"/api/chat/conversations/{AI_NO}/messages",
                     json={"token": TOK, "content": "what is your return policy?"})
     j = r.json()
@@ -123,7 +123,7 @@ finally:
 
 # ---- 订单类意图固定规则引擎（LLM 开着也不走）----
 try:
-    llm_mod.chat_completion = lambda system, messages, temperature=0.4: "HACKED-LLM"
+    llm_mod.chat_completion = lambda system, messages, temperature=0.4, params=None: "HACKED-LLM"
     r = client.post(f"/api/chat/conversations/{AI_NO}/messages",
                     json={"token": TOK, "content": "track my order NS999999ZZZZ01"})
     j = r.json()
@@ -366,6 +366,211 @@ try:
           j["zh"][0]["text"] == "旧格式问题" and j["zh"][0]["action"] == "ask")
 finally:
     db2.close()
+
+# ---- AI 大模型配置（settings key=llm_config，覆盖 GM_LLM_* 环境变量） ----
+import json  # noqa: E402
+
+r = client.get("/api/admin/ai/config", headers=H_OPS)
+j = r.json()
+check("AI 配置读取（未配置态：key 未设置 + source 空）",
+      r.status_code == 200 and j["api_key_set"] is False
+      and j["api_key_masked"] == "" and j["source"] == "", r.text[:150])
+check("默认模型/端点来自 env 兜底",
+      j["model"] == "gpt-4o-mini" and j["base_url"].startswith("http"), r.text[:150])
+
+r = client.post("/api/admin/ai/test", headers=H_OPS)
+j = r.json()
+check("未配置 Key 时测试返回明确原因（ok=False）",
+      j["ok"] is False and "API Key" in j["reason"], r.text[:150])
+
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={
+    "api_key": "sk-test-1234567890abcdefwxyz",
+    "base_url": "https://llm.example.com/v1",
+    "model": "glm-4-flash",
+    "timeout": 15, "max_tokens": 300,
+})
+j = r.json()
+check("保存 AI 配置 200", r.status_code == 200 and j.get("ok") is True, r.text[:150])
+
+r = client.get("/api/admin/ai/config", headers=H_OPS)
+j = r.json()
+check("读回生效配置（Key 脱敏 + source=db + 字段覆盖）",
+      j["api_key_set"] is True and j["api_key_masked"].startswith("sk-")
+      and "***" in j["api_key_masked"] and j["api_key_masked"].endswith("wxyz")
+      and j["source"] == "db" and j["model"] == "glm-4-flash"
+      and j["timeout"] == 15 and j["max_tokens"] == 300, r.text[:200])
+check("明文 Key 不回传（脱敏后不含完整密钥）",
+      "1234567890" not in json.dumps(j))
+
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"base_url": "ftp://bad"})
+check("非法 base_url 422", r.status_code == 422)
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"timeout": 999})
+check("timeout 超界 422", r.status_code == 422)
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"model": " "})
+check("空 model 422", r.status_code == 422)
+
+# resolve_params 合并优先级：DB > env
+from app.services import llm as llm_svc  # noqa: E402
+db3 = SessionLocal()
+try:
+    p = llm_svc.resolve_params(db3)
+    check("resolve_params DB 覆盖 env（api_key/model/base_url）",
+          p["api_key"] == "sk-test-1234567890abcdefwxyz"
+          and p["model"] == "glm-4-flash"
+          and p["base_url"] == "https://llm.example.com/v1")
+    check("llm_available 以生效配置判定", llm_svc.llm_available(p) is True)
+finally:
+    db3.close()
+
+# 测试端点走真实 httpx → 指向不可达网关应优雅失败（ok=False + latency）
+r = client.post("/api/admin/ai/test", headers=H_OPS)
+j = r.json()
+check("连通测试失败优雅返回（不 5xx）",
+      r.status_code == 200 and j["ok"] is False and "latency_ms" in j, r.text[:150])
+
+# 清除 Key：api_key 空串 → 回到未配置态
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"api_key": ""})
+check("清除 Key 200", r.status_code == 200)
+r = client.get("/api/admin/ai/config", headers=H_OPS)
+check("清除后回到未配置态（source 空）", r.json()["api_key_set"] is False and r.json()["source"] == "")
+
+# ---- 提示词配置（persona/prompt_extra/temperature + 最终提示词预览） ----
+r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS)
+j = r.json()
+check("默认提示词预览（默认人设 + 安全红线 + FAQ 注入）",
+      r.status_code == 200 and "GlowBot" in j["prompt"] and "Rules:" in j["prompt"]
+      and "Knowledge base:" in j["prompt"] and "Q:" in j["prompt"], r.text[:200])
+
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={
+    "persona": "你是小美，GLOWMAG 的资深美甲顾问，语气俏皮。",
+    "prompt_extra": "大促期间主动提醒满 $35 免邮。",
+    "temperature": 0.7,
+})
+check("保存提示词配置 200", r.status_code == 200)
+
+r = client.get("/api/admin/ai/config", headers=H_OPS)
+j = r.json()
+check("读回提示词配置（persona/extra/temperature）",
+      "小美" in (j["persona"] or "") and "免邮" in (j["prompt_extra"] or "") and j["temperature"] == 0.7, r.text[:200])
+
+r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS)
+j = r.json()
+check("预览含自定义人设与补充指令（且安全红线仍在）",
+      "小美" in j["prompt"] and "免邮" in j["prompt"]
+      and "Never invent order status" in j["prompt"], r.text[:200])
+
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"temperature": 5})
+check("temperature 超界 422", r.status_code == 422)
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"persona": "x" * 501})
+check("persona 超长 422", r.status_code == 422)
+
+# resolve_params 生效温度；置空 persona 回默认人设
+db4 = SessionLocal()
+try:
+    p = llm_svc.resolve_params(db4)
+    check("temperature 配置生效（0.7）", p["temperature"] == 0.7)
+finally:
+    db4.close()
+r = client.put("/api/admin/ai/config", headers=H_OPS, json={"persona": "", "prompt_extra": "", "temperature": 0.4})
+check("重置提示词配置 200", r.status_code == 200)
+r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS)
+check("置空后回到默认人设", "GlowBot" in r.json()["prompt"] and "小美" not in r.json()["prompt"])
+
+# ---- RAG：FAQ 向量检索 top-k 注入（patch embedding 服务） ----
+from app.domains.chat import retrieval as rag_mod  # noqa: E402
+from app.services import embedding as emb_mod  # noqa: E402
+
+_orig_embed = rag_mod.embed_texts
+_orig_embed_svc = emb_mod.embed_texts
+try:
+    # 确定性向量：SHIPPINGTEST 文本 → [1,0]，SIZINGTEST → [0,1]，query 同规则
+    def _fake_embed(texts, params=None):
+        return [[1.0, 0.0] if ("SHIPPINGTEST" in t or "how long shipping" in t) else [0.0, 1.0] for t in texts]
+
+    # 未配 Key：reindex 拒绝 + rag 未就绪（全量注入）
+    r = client.post("/api/admin/ai/rag/reindex", headers=H_OPS, json={})
+    j = r.json()
+    check("未配 Key 时 reindex 明确拒绝", j["ok"] is False and "API Key" in j["reason"], r.text[:150])
+
+    # 配 Key + 先 patch（保存钩子实时向量化）+ 建两条带标记的 FAQ
+    r = client.put("/api/admin/ai/config", headers=H_OPS, json={
+        "api_key": "sk-rag-test-000111222", "embedding_model": "text-embedding-3-small"})
+    check("配 Key（RAG 前置）200", r.status_code == 200)
+    rag_mod.embed_texts = _fake_embed
+    emb_mod.embed_texts = _fake_embed  # 保存钩子函数内 import embedding 模块，双 patch 覆盖
+    r = client.post("/api/admin/ops/faqs", headers=H_OPS,
+                    json={"category": 3, "question": "SHIPPINGTEST how fast?", "answer_md": "3-5 days.", "sort_order": 1})
+    sid1 = r.json()["id"]
+    r = client.post("/api/admin/ops/faqs", headers=H_OPS,
+                    json={"category": 1, "question": "SIZINGTEST which size?", "answer_md": "Measure your nail bed.", "sort_order": 2})
+    sid2 = r.json()["id"]
+
+    # 增量补建：seed 旧 FAQ 未索引（coverage 2/5 不足）→ 补建后 100%
+    r = client.post("/api/admin/ai/rag/reindex", headers=H_OPS, json={})
+    j = r.json()
+    check("增量补建索引（只补缺失的 seed 行）",
+          j["ok"] is True and j["indexed"] >= 1 and j["failed"] == 0, r.text[:200])
+
+    db5 = SessionLocal()
+    try:
+        st = rag_mod.rag_status(db5)
+        check("RAG 状态就绪（coverage 100%）",
+              st["ready"] is True and st["total"] >= 2 and st["embedded"] == st["total"], str(st))
+    finally:
+        db5.close()
+
+    # 检索注入：问 shipping → 只含 SHIPPINGTEST 片段，不含 SIZINGTEST
+    r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS,
+                   params={"q": "how long shipping takes?"})
+    j = r.json()
+    check("RAG 命中：prompt 含相关片段 + 头标记",
+          j["rag"] is True and "SHIPPINGTEST" in j["prompt"]
+          and "most relevant excerpts" in j["prompt"], j["prompt"][:200])
+    check("RAG 注入排除不相关 FAQ", "SIZINGTEST" not in j["prompt"])
+
+    # 无命中（query 向量都不相关）→ 回退全量
+    r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS, params={"q": "SIZINGTEST which size?"})
+    j = r.json()
+    check("RAG 命中尺码片段（同样只注入相关的）",
+          "SIZINGTEST" in j["prompt"] and "SHIPPINGTEST" not in j["prompt"], j["prompt"][:200])
+
+    # 查询向量化失败 → 回退全量（两条都在）
+    rag_mod.embed_texts = lambda texts, params=None: None
+    r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS, params={"q": "how long shipping takes?"})
+    j = r.json()
+    check("查询向量化失败回退全量注入（两条 FAQ 均在）",
+          "SHIPPINGTEST" in j["prompt"] and "SIZINGTEST" in j["prompt"])
+
+    # reindex 全量重建（换模型场景）：patch 恢复，清空向量后重建
+    rag_mod.embed_texts = _fake_embed
+    db6 = SessionLocal()
+    try:
+        from app.models import Faq as FaqModel
+        db6.query(FaqModel).filter(FaqModel.id.in_([sid1, sid2])).update({FaqModel.embedding: None}, synchronize_session=False)
+        db6.commit()
+    finally:
+        db6.close()
+    r = client.post("/api/admin/ai/rag/reindex", headers=H_OPS, json={"full": True})
+    j = r.json()
+    check("全量重建索引 200（indexed=全部 active）",
+          j["ok"] is True and j["indexed"] >= 2 and j["failed"] == 0, r.text[:200])
+    r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS, params={"q": "how long shipping takes?"})
+    check("重建后检索恢复", "SHIPPINGTEST" in r.json()["prompt"] and "SIZINGTEST" not in r.json()["prompt"])
+
+    # embedding_model 超长 422
+    r = client.put("/api/admin/ai/config", headers=H_OPS, json={"embedding_model": "m" * 101})
+    check("embedding_model 超长 422", r.status_code == 422)
+finally:
+    rag_mod.embed_texts = _orig_embed
+    emb_mod.embed_texts = _orig_embed_svc
+    # 清理：删标记 FAQ、清 Key、失效缓存
+    try:
+        client.delete(f"/api/admin/ops/faqs/{sid1}", headers=H_OPS)
+        client.delete(f"/api/admin/ops/faqs/{sid2}", headers=H_OPS)
+    except Exception:
+        pass
+    client.put("/api/admin/ai/config", headers=H_OPS, json={"api_key": "", "embedding_model": ""})
+    rag_mod.invalidate()
 
 print(f"\nALL PASS: {PASSED}/{PASSED + len(FAILED)}")
 if FAILED:

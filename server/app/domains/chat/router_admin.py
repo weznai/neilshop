@@ -128,3 +128,137 @@ def reset_quicks(admin: User = Depends(require_admin), db: Session = Depends(get
         log_admin(db, admin, "setting", "chat_quick_replies", 0, {"action": "reset"})
         db.commit()
     return quick_defaults()
+
+
+# ===== AI 客服大模型配置（settings key=llm_config，覆盖 GM_LLM_* 环境变量） =====
+@router.get("/api/admin/ai/config")
+def get_ai_config(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """当前生效配置（API Key 脱敏）+ 来源标记（db=后台配置 / env=环境变量 / 空=未配置）"""
+    from app.services.llm import LLM_SETTING_KEY, mask_key, resolve_params
+    from app.domains.chat.retrieval import rag_status
+
+    p = resolve_params(db)
+    row = db.get(Setting, LLM_SETTING_KEY)
+    db_key = bool(row and isinstance(row.value, dict) and row.value.get("api_key"))
+    from app.core.config import settings as _cfg
+    source = "db" if db_key else ("env" if _cfg.llm_api_key else "")
+    return {
+        "api_key_set": bool(p.get("api_key")),
+        "api_key_masked": mask_key(p.get("api_key") or ""),
+        "base_url": p.get("base_url"),
+        "model": p.get("model"),
+        "timeout": p.get("timeout"),
+        "max_tokens": p.get("max_tokens"),
+        "temperature": p.get("temperature", 0.4),
+        "persona": p.get("persona") or "",
+        "prompt_extra": p.get("prompt_extra") or "",
+        "embedding_model": p.get("embedding_model") or "",
+        "rag": rag_status(db),
+        "source": source,
+        "updated_at": row.updated_at if row else None,
+    }
+
+
+@router.put("/api/admin/ai/config")
+def save_ai_config(body: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """保存 LLM 配置：字段存在才更新（api_key 传空串=清除）；立即生效（每次调用实时 resolve）"""
+    from app.services.llm import LLM_SETTING_KEY
+
+    clean: dict = {}
+    row = db.get(Setting, LLM_SETTING_KEY)
+    cur = dict(row.value) if (row and isinstance(row.value, dict)) else {}
+
+    if "api_key" in body:
+        k = str(body.get("api_key") or "").strip()
+        if k and len(k) > 200:
+            raise HTTPException(status_code=422, detail="api_key 过长")
+        cur["api_key"] = k
+    if "base_url" in body:
+        u = str(body.get("base_url") or "").strip().rstrip("/")
+        if u and not (u.startswith("http://") or u.startswith("https://")):
+            raise HTTPException(status_code=422, detail="base_url 需以 http(s):// 开头")
+        cur["base_url"] = u
+    if "model" in body:
+        m = str(body.get("model") or "").strip()
+        if not m or len(m) > 100:
+            raise HTTPException(status_code=422, detail="model 必填且 ≤100 字符")
+        cur["model"] = m
+    for k, lo, hi in (("timeout", 3, 60), ("max_tokens", 50, 2000)):
+        if k in body:
+            v = body.get(k)
+            if not isinstance(v, int) or not (lo <= v <= hi):
+                raise HTTPException(status_code=422, detail=f"{k} 需为 {lo}-{hi} 的整数")
+            cur[k] = v
+    if "temperature" in body:
+        v = body.get("temperature")
+        if not isinstance(v, (int, float)) or not (0 <= v <= 2):
+            raise HTTPException(status_code=422, detail="temperature 需为 0-2 的数值")
+        cur["temperature"] = round(float(v), 2)
+    for k, hi in (("persona", 500), ("prompt_extra", 2000), ("embedding_model", 100)):
+        if k in body:
+            v = str(body.get(k) or "").strip()
+            if len(v) > hi:
+                raise HTTPException(status_code=422, detail=f"{k} 超长（≤{hi} 字符）")
+            cur[k] = v
+
+    clean = {k2: v2 for k2, v2 in cur.items() if v2 not in ("", None)}
+    if row:
+        row.value = clean
+        row.updated_by = admin.id
+    else:
+        db.add(Setting(key=LLM_SETTING_KEY, value=clean,
+                       description="AI 客服大模型配置（OpenAI 兼容）", updated_by=admin.id))
+    from app.domains.support.service import log_admin
+    log_admin(db, admin, "setting", "llm_config", 0, {})
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/api/admin/ai/prompt-preview")
+def ai_prompt_preview(q: str | None = Query(None, description="模拟客户问题：RAG 就绪时预览 top-k 片段注入效果"),
+                      admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """最终系统提示词预览：人设 + 安全红线 + 补充指令 + 政策摘要 + FAQ 知识库（实际下发内容）"""
+    from app.domains.chat.prompt import DEFAULT_PERSONA, SAFETY_RULES, build_system_prompt
+
+    return {
+        "prompt": build_system_prompt(db, q),
+        "default_persona": DEFAULT_PERSONA,
+        "safety_rules": SAFETY_RULES,
+        "rag": q is not None,
+    }
+
+
+@router.post("/api/admin/ai/rag/reindex")
+def rag_reindex(body: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """（重建）FAQ 向量索引：默认只补缺失行，body.full=true 全量重建（换 embedding 模型后用）"""
+    from app.domains.chat.retrieval import reindex, rag_status
+
+    full = bool((body or {}).get("full")) if body else False
+    out = reindex(db, only_missing=not full)
+    if out.get("ok"):
+        from app.domains.support.service import log_admin
+        log_admin(db, admin, "setting", "llm_rag_reindex", 0, {"full": full, **{k: out[k] for k in ("indexed", "failed")}})
+        db.commit()
+    out["rag"] = rag_status(db)
+    return out
+
+
+@router.post("/api/admin/ai/test")
+def test_ai_config(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """连通性测试：用当前生效配置发一条极小补全，返回延迟与回复（未配置/失败给原因）"""
+    import time
+
+    from app.services.llm import chat_completion, resolve_params
+
+    p = resolve_params(db)
+    if not p.get("api_key"):
+        return {"ok": False, "reason": "未配置 API Key（当前 AI 客服走内置规则引擎）"}
+    t0 = time.monotonic()
+    reply = chat_completion(
+        "You are a connectivity test. Reply with exactly: OK",
+        [{"role": "user", "content": "ping"}], temperature=0, params=p)
+    ms = int((time.monotonic() - t0) * 1000)
+    if reply:
+        return {"ok": True, "latency_ms": ms, "model": p.get("model"), "reply": reply[:80]}
+    return {"ok": False, "latency_ms": ms, "model": p.get("model"),
+            "reason": f"调用失败（{ms}ms）——检查 Key/网关地址/模型名，详见服务端日志"}

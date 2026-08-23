@@ -352,7 +352,7 @@ const HOT_LINKS = [
   background: var(--rose);
   box-shadow: 0 0 0 3px rgba(232,180,184,.22);
 }
-.sf-row:nth-of-type(2) .sf-label::before { background: var(--plum); box-shadow: 0 0 0 3px rgba(109,46,70,.12); }
+.sf-row:nth-of-type(2) .sf-label::before { background: var(--plum); box-shadow: 0 0 0 3px rgba(138,74,99,.12); }
 .sf-row:nth-of-type(3) .sf-label::before { background: var(--gold); box-shadow: 0 0 0 3px rgba(201,162,39,.16); }
 .sf-row:nth-of-type(4) .sf-label::before { background: var(--success); box-shadow: 0 0 0 3px rgba(62,189,147,.16); }
 .sf-chips { display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; flex: 1; }
@@ -375,7 +375,7 @@ const HOT_LINKS = [
   background: var(--plum);
   border-color: var(--plum);
   color: #fff;
-  box-shadow: 0 3px 10px rgba(109,46,70,.3);
+  box-shadow: 0 3px 10px rgba(138,74,99,.3);
 }
 .trend-chip.on { background: var(--plum); border-color: var(--plum); color: #fff; }
 
@@ -404,7 +404,7 @@ const HOT_LINKS = [
 .se-icon { font-size: 44px; line-height: 1; color: var(--plum); opacity: .5; }
 .se-filters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; margin: 16px 0 4px; }
 .se-pill { display: inline-flex; align-items: center; gap: 6px; background: var(--rose-pale); color: var(--plum); font-size: 12.5px; font-weight: 600; padding: 4px 6px 4px 12px; border-radius: 999px; }
-.se-x { border: none; background: rgba(109,46,70,.12); color: var(--plum); width: 20px; height: 20px; border-radius: 50%; font-size: 12px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.se-x { border: none; background: rgba(138,74,99,.12); color: var(--plum); width: 20px; height: 20px; border-radius: 50%; font-size: 12px; line-height: 1; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .se-x:hover { background: var(--plum); color: #fff; }
 .se-clear { margin-top: 2px; }
 .se-trend { display: flex; flex-wrap: wrap; gap: 4px 8px; justify-content: center; align-items: center; margin-top: 20px; }

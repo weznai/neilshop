@@ -246,7 +246,7 @@ function heroFallback(e) {
 .ugc-band::-webkit-scrollbar{display:none}
 .ugc-band img{width:140px;height:140px;flex:none;border-radius:12px;object-fit:cover;transition:transform .2s ease-out,box-shadow .2s ease-out}
 .ugc-band img:hover{transform:scale(1.04);box-shadow:var(--shadow-pop)}
-.ugc-cta{width:140px;height:140px;flex:none;border-radius:14px;background:linear-gradient(135deg,var(--rose),var(--plum));color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:12px;font-weight:500;text-align:center;padding:10px;transition:filter .15s;box-shadow:0 12px 26px rgba(109,46,70,.30);border:2px solid rgba(255,255,255,.55)}
+.ugc-cta{width:140px;height:140px;flex:none;border-radius:14px;background:linear-gradient(135deg,var(--rose),var(--plum));color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:12px;font-weight:500;text-align:center;padding:10px;transition:filter .15s;box-shadow:0 12px 26px rgba(138,74,99,.30);border:2px solid rgba(255,255,255,.55)}
 .ugc-cta:hover{filter:brightness(1.08)}
 .ugc-cta b{font-size:21px;font-family:var(--font-title)}
 .shape-card{display:block;padding:0;overflow:hidden;color:inherit}

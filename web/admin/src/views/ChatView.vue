@@ -26,12 +26,11 @@ useQuerySync(st, { nums: ['page'], defaults: { channel: 'all', status: '0', q: '
 if (isArtist.value) st.mine = '1' /* 美甲师只看自己的会话（不可解除） */
 
 const CHANNEL = { 0: 'AI', 1: '人工', 2: '美甲师' }
-const CHANNEL_TAG = { 0: 'tag-cat', 1: 'tag-ship', 2: 'tag-done' }
 const TABS = [
-  ['all', '全部', null],
-  ['1', '人工', 1],
-  ['2', '美甲师', 2],
-  ['0', 'AI', 0],
+  ['all', '全部', null, '💬'],
+  ['1', '人工', 1, '👩‍💼'],
+  ['2', '美甲师', 2, '💅'],
+  ['0', 'AI', 0, '🤖'],
 ]
 
 const active = ref(null) /* 会话详情（含 messages） */
@@ -349,6 +348,43 @@ async function closeConv() {
 /* 客户名展示：name 优先，否则邮箱前缀 */
 const who = (c) => c.name || (c.email || '').split('@')[0] || '游客'
 
+/* ===== 视觉辅助：头像渐变（按名字 hash 取色）/ 首字母 / 日期分组 / 本页待回复数 ===== */
+const AVA_G = [
+  'linear-gradient(135deg,#c084fc,#7c3aed)',
+  'linear-gradient(135deg,#fb7185,#e11d48)',
+  'linear-gradient(135deg,#fbbf24,#f97316)',
+  'linear-gradient(135deg,#34d399,#059669)',
+  'linear-gradient(135deg,#60a5fa,#2563eb)',
+  'linear-gradient(135deg,#f472b6,#db2777)',
+]
+function avaG(s) {
+  let h = 0
+  for (const ch of String(s || '?')) h = (h * 31 + ch.codePointAt(0)) % 997
+  return AVA_G[h % AVA_G.length]
+}
+const initial = (s) => String(s || '?').trim().charAt(0).toUpperCase()
+const SENDER_ICON = { 2: '👩‍💼', 4: '🤖', 5: '💅' }
+
+/* 消息按日期分组（今天/昨天/MM月DD日），组间渲染时间分隔条 */
+function dayLabel(d) {
+  const t = new Date()
+  const iso = (x) => x.toISOString().slice(0, 10)
+  if (d === iso(t)) return '今天'
+  if (d === iso(new Date(t.getTime() - 864e5))) return '昨天'
+  return d.slice(5).replace('-', '月') + '日'
+}
+const threadGroups = computed(() => {
+  const out = []
+  let cur = null
+  for (const m of active.value?.messages || []) {
+    const day = String(m.created_at || '').slice(0, 10)
+    if (!cur || cur.day !== day) { cur = { day, label: dayLabel(day), msgs: [] }; out.push(cur) }
+    cur.msgs.push(m)
+  }
+  return out
+})
+const pendingN = computed(() => items.value.filter((c) => c.pending_reply).length)
+
 /* ===== 4s 轮询：列表红点 + 当前会话新消息（页面可见时） ===== */
 let timer = null
 onMounted(() => {
@@ -366,7 +402,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
   <div class="topbar">
     <div>
       <h1 class="page-title">在线客服</h1>
-      <span class="page-sub">当前筛选共 {{ total }} 个会话 · 4 秒自动刷新</span>
+      <span class="page-sub">共 {{ total }} 个会话<template v-if="pendingN"> · <b class="cw-pend">{{ pendingN }} 待回复</b></template> · 4 秒自动刷新</span>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="btn btn-secondary" @click="openQuickDlg">⚡ 客户快捷问题</button>
@@ -375,7 +411,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
   </div>
 
   <div class="filter-bar" style="margin-bottom:14px">
-    <button v-for="[k, label] in TABS" :key="k" class="ttab" :class="{ on: st.channel === k }" @click="setTab(k)">{{ label }}</button>
+    <button v-for="[k, label, , ico] in TABS" :key="k" class="ttab" :class="{ on: st.channel === k }" @click="setTab(k)"><span class="cw-tab-ico">{{ ico }}</span>{{ label }}</button>
     <span style="flex:1"></span>
     <button class="ttab" :class="{ on: st.status === '0' }" @click="setStatus('0')">进行中</button>
     <button class="ttab" :class="{ on: st.status === '1' }" @click="setStatus('1')">已关闭</button>
@@ -395,78 +431,95 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
 
   <div v-else class="chatws">
     <!-- 左：会话列表 -->
-    <div class="card chatws-list">
-      <div v-for="c in items" :key="c.conv_no" class="chatws-row" :class="{ on: active && active.conv_no === c.conv_no }" @click="openConv(c)">
-        <div class="chatws-row-top">
-          <span class="tag" :class="CHANNEL_TAG[c.channel]">{{ CHANNEL[c.channel] }}</span>
-          <b class="chatws-who">{{ who(c) }}</b>
-          <span v-if="c.pending_reply" class="chatws-dot" title="客户待回复">●</span>
-          <span class="chatws-time">{{ dt(c.last_message_at) }}</span>
+    <div class="card cw-listcard">
+      <div class="cw-scroll">
+        <div v-for="c in items" :key="c.conv_no" class="cw-row" :class="{ on: active && active.conv_no === c.conv_no }" @click="openConv(c)">
+          <div class="cw-ava" :style="{ background: avaG(who(c)) }">{{ initial(who(c)) }}</div>
+          <div class="cw-row-main">
+            <div class="cw-row-top">
+              <b class="cw-name">{{ who(c) }}</b>
+              <span class="cw-ch" :class="'c' + c.channel">{{ CHANNEL[c.channel] }}</span>
+              <span v-if="c.status === 1" class="cw-ch off">关闭</span>
+              <span v-if="c.pending_reply" class="cw-dot" title="客户待回复"></span>
+              <span class="cw-time">{{ dt(c.last_message_at) }}</span>
+            </div>
+            <div class="cw-preview">
+              <template v-if="c.last_message">{{ c.last_message.sender === 1 ? '' : '↩ ' }}{{ c.last_message.preview }}</template>
+              <template v-else>（暂无消息）</template>
+            </div>
+            <div class="cw-meta">
+              <span class="cw-no">{{ c.conv_no }}</span>
+              <span style="flex:1"></span>
+              <span v-if="c.status !== 1 && c.channel === 1 && !c.agent_admin_id" class="cw-mini warn">待接入</span>
+              <span v-else-if="c.channel === 1 && c.agent_name" class="cw-mini ok">👩‍💼 {{ c.agent_name }}</span>
+              <span v-else-if="c.channel === 2 && c.artist_name" class="cw-mini ok">💅 {{ c.artist_name }}</span>
+            </div>
+          </div>
         </div>
-        <div class="chatws-preview">
-          <template v-if="c.last_message">{{ c.last_message.sender === 1 ? '' : '↩ ' }}{{ c.last_message.preview }}</template>
-          <template v-else">（暂无消息）</template>
-        </div>
-        <div class="chatws-meta">
-          <span class="chatws-no">{{ c.conv_no }}</span>
-          <span v-if="c.status === 1" class="tag tag-pending">已关闭</span>
-          <span v-else-if="c.channel === 1 && !c.agent_admin_id" class="tag tag-pending">待接入</span>
-          <span v-else-if="c.channel === 1 && c.agent_name" class="tag tag-done">{{ c.agent_name }}</span>
-          <span v-else-if="c.channel === 2 && c.artist_name" class="tag tag-done">💅 {{ c.artist_name }}</span>
-        </div>
-      </div>
       <EmptyState v-if="!items.length" :icon="filtered ? '🔍' : '💬'" :title="filtered ? '未找到匹配的会话' : '暂无会话'" :sub="filtered ? '试试调整或清除筛选' : '客户发起聊天后将显示在这里'" />
+      </div>
       <Pagination embed :page="st.page" :pages="pages" :total="total" unit="个" @go="load" />
     </div>
 
-    <!-- 右：对话窗 -->
-    <div class="card chatws-pane">
-      <EmptyState v-if="!active" icon="👈" title="选择一个会话开始服务" sub="点击左侧会话查看完整对话" />
+    <!-- 右：对话窗（客户档案头 + 日期分组气泡流 + 回复区） -->
+    <div class="card cw-pane">
+      <div v-if="!active" class="cw-empty">
+        <EmptyState icon="💬" title="选择一个会话开始服务" sub="点击左侧会话查看完整对话与客户信息" />
+      </div>
       <template v-else>
-        <div class="chatws-head">
-          <div>
-            <div class="dtitle">{{ active.conv_no }}
-              <span class="tag" :class="CHANNEL_TAG[active.channel]" style="margin-left:6px">{{ CHANNEL[active.channel] }}</span>
-              <span v-if="active.status === 1" class="tag tag-pending" style="margin-left:4px">已关闭</span>
+        <div class="cw-head">
+          <div class="cw-ava lg" :style="{ background: avaG(who(active)) }">{{ initial(who(active)) }}</div>
+          <div class="cw-head-info">
+            <div class="cw-head-name">
+              {{ who(active) }}
+              <span class="cw-ch" :class="'c' + active.channel">{{ CHANNEL[active.channel] }}</span>
+              <span v-if="active.status === 1" class="cw-ch off">已关闭</span>
             </div>
-            <div class="page-sub" style="margin-top:4px">
-              {{ active.name || '游客' }}<template v-if="active.email"> · {{ active.email }}</template>
+            <div class="cw-head-sub">
+              {{ active.conv_no }}<template v-if="active.email"> · {{ active.email }}</template>
               <template v-if="active.channel === 2 && active.artist_name"> · 美甲师 {{ active.artist_name }}</template>
               <template v-if="active.channel === 1 && active.agent_name"> · 客服 {{ active.agent_name }}</template>
               · {{ dt(active.created_at) }}
             </div>
           </div>
-          <div v-if="isOpen" style="display:flex;gap:8px">
-            <button v-if="active.channel === 1 && active.agent_admin_id !== session.user?.id" class="btn btn-secondary btn-sm" :disabled="busy" @click="take">接单</button>
-            <button v-if="active.channel === 1" class="btn btn-secondary btn-sm" :disabled="busy" title="人工 → AI（同一会话交还 GlowBot 自动应答）" @click="resumeAi">转回 AI</button>
+          <div v-if="isOpen" class="cw-head-acts">
+            <button v-if="active.channel === 1 && active.agent_admin_id !== session.user?.id" class="btn btn-secondary btn-sm" :disabled="busy" @click="take">🙋 接单</button>
+            <button v-if="active.channel === 1" class="btn btn-secondary btn-sm" :disabled="busy" title="人工 → AI（同一会话交还 GlowBot 自动应答）" @click="resumeAi">🤖 转回 AI</button>
             <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="busy" @click="closeConv">关闭会话</button>
           </div>
         </div>
 
-        <div class="chatws-thread" ref="threadBox">
-          <template v-for="m in active.messages || []" :key="m.id">
-            <div v-if="m.sender === 3" class="chatws-sys">{{ m.content }}<span class="chatws-sys-t">{{ dt(m.created_at) }}</span></div>
-            <div v-else class="chatws-msg" :class="{ me: m.sender !== 1 }">
-              <div class="chatws-bubble">
-                <div v-if="m.sender !== 1 && m.sender_name" class="chatws-who-line">{{ m.sender === 5 ? '💅 ' + m.sender_name : m.sender === 4 ? '🤖 ' + m.sender_name : '👩‍💼 ' + m.sender_name }}</div>
-                <div class="chatws-text">{{ m.content }}</div>
-                <div class="chatws-t">{{ dt(m.created_at) }}</div>
+        <div class="cw-thread" ref="threadBox">
+          <template v-for="g in threadGroups" :key="g.day">
+            <div class="cw-day">{{ g.label }}</div>
+            <template v-for="m in g.msgs" :key="m.id">
+              <div v-if="m.sender === 3" class="cw-sys">{{ m.content }}<span class="cw-sys-t">{{ dt(m.created_at) }}</span></div>
+              <div v-else class="cw-msg" :class="{ me: m.sender !== 1 }">
+                <div v-if="m.sender === 1" class="cw-mava" :style="{ background: avaG(who(active)) }">{{ initial(who(active)) }}</div>
+                <div v-else class="cw-mava bot">{{ SENDER_ICON[m.sender] || '👩‍💼' }}</div>
+                <div class="cw-bwrap">
+                  <div v-if="m.sender !== 1 && m.sender_name" class="cw-who-line">{{ m.sender_name }}</div>
+                  <div class="cw-bubble">{{ m.content }}</div>
+                  <div class="cw-t">{{ dt(m.created_at) }}</div>
+                </div>
               </div>
-            </div>
+            </template>
           </template>
-          <div v-if="!(active.messages || []).length" class="empty-line" style="text-align:center">（无消息记录）</div>
+          <div v-if="!(active.messages || []).length" class="cw-none">（无消息记录）</div>
         </div>
 
-        <div v-if="isOpen" class="chatws-reply">
-          <div class="chatws-reply-bar">
-            <select class="input" style="height:34px;font-size:12.5px;flex:1" @focus="loadTemplates" @change="applyTemplate">
-              <option value="">{{ templatesLoaded ? (templates.length ? '快捷模板…' : '暂无模板') : '加载快捷模板…' }}</option>
+        <div v-if="isOpen" class="cw-reply">
+          <div class="cw-reply-bar">
+            <select class="input cw-tplsel" @focus="loadTemplates" @change="applyTemplate">
+              <option value="">{{ templatesLoaded ? (templates.length ? '🗂 快捷模板…' : '暂无模板') : '加载快捷模板…' }}</option>
               <option v-for="t in templates" :key="t.id" :value="t.id">{{ t.title }}</option>
             </select>
-            <span class="chatws-count">{{ (active.messages || []).length }} 条</span>
+            <span class="cw-count">{{ (active.messages || []).length }} 条消息</span>
+            <span class="cw-kbd-hint"><code>/</code> 模板 · <code>Ctrl+Enter</code> 发送</span>
           </div>
-          <div class="chatws-input-wrap">
-            <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…（/ 调出快捷模板 · Ctrl+Enter 发送）" @input="onReplyInput" @blur="onReplyBlur" @keydown="onReplyKeydown" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send" />
+          <div class="cw-input-wrap">
+            <textarea v-model="reply" class="input" rows="3" placeholder="输入回复…" @input="onReplyInput" @blur="onReplyBlur" @keydown="onReplyKeydown" @keydown.ctrl.enter.prevent="send" @keydown.meta.enter.prevent="send" />
+            <button class="btn btn-primary cw-send" :class="{ loading: busy }" :disabled="busy || !reply.trim()" @click="send">➤ 发送</button>
             <!-- Slash 快捷指令菜单：浮于输入框上方 -->
             <div v-if="slashOpen" class="slash-menu">
               <button v-for="(t, i) in slashItems" :key="t.id" type="button" class="slash-item" :class="{ on: i === slashIdx }" @mousedown.prevent="applySlash(t)" @mousemove="slashIdx = i">
@@ -479,9 +532,8 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
               <div class="slash-hint">↑↓ 选择 · Enter 插入 · Esc 关闭</div>
             </div>
           </div>
-          <button class="btn btn-primary" style="margin-top:10px;width:100%" :class="{ loading: busy }" :disabled="busy || !reply.trim()" @click="send">发送回复</button>
         </div>
-        <div v-else class="chatws-closed">🔒 会话已关闭，不再接受回复</div>
+        <div v-else class="cw-closed">🔒 会话已关闭，不再接受回复</div>
       </template>
     </div>
   </div>
@@ -595,36 +647,75 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
 </template>
 
 <style scoped>
-/* 工作台双栏：左列表 380px + 右对话自适应；高度铺满视口（减去顶栏/筛选） */
-.chatws{display:grid;grid-template-columns:380px 1fr;gap:16px;align-items:start}
-.chatws-list{padding:6px 0}
-.chatws-row{padding:11px 14px;border-bottom:1px solid var(--gray-light);cursor:pointer;transition:background .12s}
-.chatws-row:hover{background:var(--row-hover)}
-.chatws-row.on{background:var(--rose-pale);box-shadow:inset 3px 0 0 var(--plum)}
-.chatws-row-top{display:flex;align-items:center;gap:8px}
-.chatws-who{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chatws-dot{color:var(--error);font-size:10px}
-.chatws-time{margin-left:auto;font-size:10.5px;color:var(--gray);white-space:nowrap}
-.chatws-preview{font-size:12px;color:var(--gray);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chatws-meta{display:flex;align-items:center;gap:6px;margin-top:5px}
-.chatws-no{font-size:10.5px;color:var(--gray)}
-/* 右侧对话面板 */
-.chatws-pane{padding:18px;display:flex;flex-direction:column;min-height:640px}
-.chatws-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}
-.chatws-thread{flex:1;overflow-y:auto;max-height:calc(100vh - 430px);min-height:300px;display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--bg-page);border-radius:12px}
-.chatws-sys{justify-self:center;max-width:90%;text-align:center;background:#fff;color:var(--gray);font-size:11.5px;line-height:1.5;padding:4px 12px;border-radius:999px;border:1px dashed var(--gray-light)}
-.chatws-sys-t{margin-left:6px;font-size:10.5px;opacity:.8}
-.chatws-msg{display:flex;max-width:78%}
-.chatws-msg.me{align-self:flex-end;justify-content:flex-end}
-.chatws-bubble{background:#fff;border-radius:12px 12px 12px 4px;padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;box-shadow:var(--shadow-card)}
-.chatws-msg.me .chatws-bubble{background:var(--rose-pale);border-radius:12px 12px 4px 12px}
-.chatws-who-line{font-size:11px;font-weight:700;color:var(--plum);margin-bottom:3px}
-.chatws-text{color:var(--ink)}
-.chatws-t{font-size:10.5px;color:var(--gray);margin-top:5px;text-align:right}
-.chatws-reply{margin-top:12px}
-.chatws-input-wrap{position:relative}
+/* ===== 工作台：满高双栏（左 370px 列表 + 右对话），栏内滚动，整页不再跟随长列表 ===== */
+.chatws{display:grid;grid-template-columns:370px 1fr;gap:16px;height:calc(100vh - 216px);min-height:560px}
+.cw-pend{color:var(--error)}
+.cw-tab-ico{margin-right:5px;font-size:12px}
+/* ---- 左：会话列表 ---- */
+.cw-listcard{display:flex;flex-direction:column;overflow:hidden;padding:0}
+.cw-scroll{flex:1;overflow-y:auto;min-height:0}
+.cw-row{display:flex;gap:10px;padding:12px 14px;border-bottom:1px solid var(--gray-light);cursor:pointer;transition:background .12s}
+.cw-row:hover{background:var(--row-hover)}
+.cw-row.on{background:var(--rose-pale);box-shadow:inset 3px 0 0 var(--plum)}
+.cw-row-main{flex:1;min-width:0}
+.cw-row-top{display:flex;align-items:center;gap:6px}
+.cw-name{font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-time{margin-left:auto;font-size:10.5px;color:var(--gray);white-space:nowrap}
+.cw-preview{font-size:12px;color:var(--gray);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-meta{display:flex;align-items:center;gap:6px;margin-top:5px}
+.cw-no{font-size:10.5px;color:var(--gray);letter-spacing:.3px}
+/* 头像：按名字 hash 取渐变色 + 首字母 */
+.cw-ava{width:38px;height:38px;border-radius:12px;color:#fff;font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:center;flex:none;user-select:none}
+.cw-ava.lg{width:44px;height:44px;border-radius:14px;font-size:17px}
+/* 渠道小徽章 */
+.cw-ch{font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.4px;flex:none}
+.cw-ch.c0{background:#f1ecfa;color:#7c3aed}
+.cw-ch.c1{background:var(--rose-pale);color:var(--plum)}
+.cw-ch.c2{background:#e7f6ee;color:#1f9d55}
+.cw-ch.off{background:var(--gray-light);color:var(--gray)}
+/* 状态迷你胶囊 */
+.cw-mini{font-size:10.5px;padding:1px 8px;border-radius:999px;white-space:nowrap}
+.cw-mini.warn{background:#fdf0dd;color:#c2660a}
+.cw-mini.ok{background:#e7f6ee;color:#1f9d55}
+/* 待回复脉冲点 */
+.cw-dot{width:8px;height:8px;border-radius:50%;background:var(--error);flex:none;animation:cwpulse 1.6s ease-in-out infinite}
+@keyframes cwpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.75)}}
+/* ---- 右：对话窗 ---- */
+.cw-pane{display:flex;flex-direction:column;overflow:hidden;padding:0}
+.cw-empty{flex:1;display:flex;align-items:center;justify-content:center}
+.cw-head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--gray-light);background:linear-gradient(180deg,#fff, #fdfaff)}
+.cw-head-info{flex:1;min-width:0}
+.cw-head-name{font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cw-head-sub{font-size:11.5px;color:var(--gray);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 消息流：细点纹理底 + 日期分隔 + 气泡（客户左/我方右） */
+.cw-thread{flex:1;overflow-y:auto;min-height:0;display:flex;flex-direction:column;gap:6px;padding:16px 18px;background-color:#faf9fb;background-image:radial-gradient(var(--gray-light) 1px,transparent 1px);background-size:22px 22px}
+.cw-day{align-self:center;font-size:10.5px;color:var(--gray);background:#fff;border:1px solid var(--gray-light);border-radius:999px;padding:2px 12px;margin:6px 0;position:sticky;top:0;z-index:2;box-shadow:var(--shadow-card)}
+.cw-sys{align-self:center;max-width:88%;text-align:center;background:#fff;color:var(--gray);font-size:11.5px;line-height:1.5;padding:4px 12px;border-radius:999px;border:1px dashed var(--gray-light);white-space:pre-wrap;word-break:break-all}
+.cw-sys-t{margin-left:6px;font-size:10.5px;opacity:.8}
+.cw-msg{display:flex;gap:8px;max-width:78%;align-items:flex-end}
+.cw-msg.me{align-self:flex-end;flex-direction:row-reverse}
+.cw-mava{width:28px;height:28px;border-radius:50%;color:#fff;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;flex:none;user-select:none}
+.cw-mava.bot{background:#fff;border:1px solid var(--gray-light);font-size:14px}
+.cw-bwrap{display:flex;flex-direction:column;min-width:0}
+.cw-msg.me .cw-bwrap{align-items:flex-end}
+.cw-who-line{font-size:11px;font-weight:600;color:var(--gray);margin-bottom:3px}
+.cw-bubble{background:#fff;border-radius:14px 14px 14px 4px;padding:10px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word;box-shadow:var(--shadow-card);color:var(--ink)}
+.cw-msg.me .cw-bubble{background:var(--rose-pale);color:var(--ink);border:1px solid var(--rose-light);box-shadow:none;border-radius:14px 14px 4px 14px}
+.cw-t{font-size:10.5px;color:var(--gray);margin-top:4px;padding:0 2px}
+.cw-none{align-self:center;font-size:12px;color:var(--gray);padding:24px 0}
+/* 回复区：模板选择 + 内联发送按钮 */
+.cw-reply{border-top:1px solid var(--gray-light);padding:12px 16px;background:#fff}
+.cw-reply-bar{display:flex;gap:10px;align-items:center;margin-bottom:8px}
+.cw-tplsel{height:32px;font-size:12.5px;flex:1;min-width:0}
+.cw-count{font-size:11.5px;color:var(--gray);white-space:nowrap}
+.cw-kbd-hint{font-size:11px;color:var(--gray);white-space:nowrap}
+.cw-kbd-hint code{background:var(--gray-light);border-radius:4px;padding:1px 5px;font-size:10.5px}
+.cw-input-wrap{position:relative;display:flex;gap:10px;align-items:stretch}
+.cw-input-wrap .input{flex:1;resize:none}
+.cw-send{width:96px;flex:none;font-weight:700}
+.cw-closed{margin:12px 16px 16px;padding:12px;background:var(--gray-light);border-radius:10px;font-size:12.5px;color:var(--gray);text-align:center}
 /* Slash 快捷指令菜单：输入框上方浮层（mousedown 抢先于 blur 生效） */
-.slash-menu{position:absolute;left:0;right:0;bottom:calc(100% + 6px);background:#fff;border:1px solid var(--gray-light);border-radius:12px;box-shadow:var(--shadow-pop);overflow:hidden;z-index:20}
+.slash-menu{position:absolute;left:0;right:106px;bottom:calc(100% + 6px);background:#fff;border:1px solid var(--gray-light);border-radius:12px;box-shadow:var(--shadow-pop);overflow:hidden;z-index:20}
 .slash-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 12px;background:none;border:none;cursor:pointer;font-size:12.5px}
 .slash-item + .slash-item{border-top:1px solid var(--gray-light)}
 .slash-item:hover,.slash-item.on{background:var(--rose-pale)}
@@ -632,9 +723,6 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
 .slash-body b{font-size:12.5px;color:var(--ink)}
 .slash-body i{font-style:normal;font-size:11px;color:var(--gray);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .slash-hint{padding:6px 12px;font-size:10.5px;color:var(--gray);background:var(--bg-page);text-align:center}
-.chatws-reply-bar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
-.chatws-count{font-size:11.5px;color:var(--gray);white-space:nowrap}
-.chatws-closed{margin-top:12px;padding:12px;background:var(--gray-light);border-radius:10px;font-size:12.5px;color:var(--gray);text-align:center}
 /* 模板管理弹窗：左列表 + 右表单 */
 .tpl-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .tpl-list{max-height:340px;overflow-y:auto;border:1px solid var(--gray-light);border-radius:10px;padding:4px 0}
@@ -663,5 +751,11 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
 .qk-chip.human{background:var(--plum);color:#fff}
 .qk-legend{font-size:11px;color:var(--gray);display:flex;flex-direction:column;gap:6px}
 .qk-legend .qk-chip{cursor:default}
-@media (max-width:1080px){.chatws{grid-template-columns:1fr}.qk-grid{grid-template-columns:1fr}}
+@media (max-width:1080px){
+  .chatws{grid-template-columns:1fr;height:auto}
+  .cw-scroll{max-height:420px}
+  .cw-thread{max-height:520px}
+  .cw-pane{min-height:560px}
+  .qk-grid{grid-template-columns:1fr}
+}
 </style>
