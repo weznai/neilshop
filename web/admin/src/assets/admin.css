@@ -79,15 +79,19 @@ body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 .admin.side-min .aside .side-sub,
 .admin.side-min .anav .side-row span{display:none}
 .admin.side-min .anav a,.admin.side-min .anav .side-row{justify-content:center;padding:7px 8px}
-.side-toggle{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);width:36px;height:36px;border-radius:10px;background:var(--rose-pale);color:var(--plum);display:flex;align-items:center;justify-content:center;transition:background .2s}
+/* 折叠钮走文档流（flex 末项）：absolute 悬浮会在矮屏下盖住最后几个菜单项导致点击无效 */
+.side-toggle{flex:none;margin:10px auto 2px;width:36px;height:36px;border-radius:10px;background:var(--rose-pale);color:var(--plum);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .2s}
 .side-toggle:hover{background:var(--rose);color:#fff}
 .admin.side-min .side-toggle svg{transform:scaleX(-1)}
 .aside{display:flex;flex-direction:column}
-.aside .anav{flex:1}
+/* min-height:0 允许 anav 在矮屏收缩并自身滚动（否则整个侧栏溢出、底项被折叠钮遮挡） */
+.aside .anav{flex:1;min-height:0;overflow-y:auto;scrollbar-width:thin;padding-bottom:4px}
 /* 数值列对齐 + 宽表滚动 */
 .num{text-align:right;font-variant-numeric:tabular-nums}
-/* 宽表滚动容器：限高 + 双向滚动，长表 sticky 表头在容器内生效 */
-.tbl-wrap{max-height:calc(100vh - 280px);overflow:auto}
+/* 宽表滚动容器：限高 + 双向滚动。padding 必须清零（flush）：sticky 表头只贴到滚动容器内容区顶，
+ * 卡片若留 padding-top，顶带无遮挡、滚动行会从表头上方穿过（残影）；卡内头/空态自带头寸（同 card-flush 口径） */
+.tbl-wrap{max-height:calc(100vh - 280px);overflow:auto;padding:0}
+.tbl-wrap>.dhead{padding:14px 16px 0}
 .tbl-wrap table{min-width:720px}
 
 /* 登录页独立外壳（勿复用 .admin——那是侧栏+主区两栏 grid） */

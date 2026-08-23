@@ -223,7 +223,7 @@ SECURITY_HEADERS: list[tuple[str, str]] = [
     (
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' https: data:; "
-        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https:; "
+        "style-src 'self' 'unsafe-inline' https:; script-src 'self' 'unsafe-inline' https:; "
         "connect-src 'self' https:; font-src 'self' https: data:",
     ),
 ]
