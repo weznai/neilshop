@@ -108,6 +108,13 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_superadmin(user: User = Depends(require_admin)) -> User:
+    """超管专属守卫：role == 9（管理员账号管理等高危面），对齐 require_admin 写法"""
+    if user.role != 9:
+        raise HTTPException(status_code=403, detail="superadmin required")
+    return user
+
+
 def _create_cart(db: Session, *, user_id: Optional[int]) -> tuple[Cart, str]:
     """建车：session token 一律服务端 secrets 生成，不信任请求头值
     （防伪造 X-Cart-Token 撞 carts.session_id 唯一索引导致 500）；

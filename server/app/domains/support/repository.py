@@ -34,6 +34,23 @@ def messages_asc(db: Session, ticket_id: int) -> list[TicketMessage]:
     )
 
 
+def last_messages_map(db: Session, ticket_ids: list[int]) -> dict[int, TicketMessage]:
+    """每工单最后一条消息（单条 IN 批查，列表页避免逐单 N+1）；
+    按 (created_at, id) 升序遍历覆盖，留下每单最新一条；无消息的工单不在结果中。"""
+    if not ticket_ids:
+        return {}
+    rows = (
+        db.query(TicketMessage)
+        .filter(TicketMessage.ticket_id.in_(ticket_ids))
+        .order_by(TicketMessage.created_at.asc(), TicketMessage.id.asc())
+        .all()
+    )
+    out: dict[int, TicketMessage] = {}
+    for m in rows:
+        out[m.ticket_id] = m
+    return out
+
+
 def admin_tickets_query(
     db: Session, statuses: list[int] | None, category: int | None, q: str | None,
     assignee: int | None = None, priority: int | None = None,

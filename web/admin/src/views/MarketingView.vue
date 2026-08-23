@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { req } from '../api/client'
+import { API_BASE, fmtDetail, req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt, money, dDate } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
@@ -699,6 +699,62 @@ async function doDelCollection() {
   } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
   delColBusy.value = false
 }
+
+/* ===== 集合 Banner 上传（POST /api/admin/media/upload：multipart，核心逻辑照搬 ProductEditView）
+ * 单隐藏 input + 目标槽：'colNew'（新建弹窗）/ 'colEdit'（编辑弹窗），成功回填 URL 到输入框（保留手填能力） ===== */
+const bannerFile = ref(null)
+const bannerTarget = ref('colNew')
+const bannerUploading = ref(false)
+function pickBanner(t) { if (bannerUploading.value) return; bannerTarget.value = t; bannerFile.value?.click() }
+async function uploadBanner(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 30000)
+  let r
+  try { r = await fetch(API_BASE + '/api/admin/media/upload', { method: 'POST', credentials: 'include', body: fd, signal: ctrl.signal }) }
+  catch (err) { throw new Error(err && err.name === 'AbortError' ? '上传超时，请稍后重试' : '网络错误，请检查连接') }
+  finally { clearTimeout(timer) }
+  const data = await r.json().catch(() => null)
+  if (!r.ok) {
+    const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
+    e.status = r.status
+    throw e
+  }
+  if (!data || !data.url) throw new Error('响应缺少 url')
+  return data.url
+}
+async function onBannerFile(e) {
+  const f = e.target.files && e.target.files[0]
+  e.target.value = '' /* 复位 value，否则重选同一文件不触发 change */
+  if (!f) return
+  bannerUploading.value = true
+  try {
+    const url = await uploadBanner(f)
+    if (bannerTarget.value === 'colEdit') colEdit.banner = url
+    else colForm.banner = url
+    toast('Banner 已上传并回填 ✓', 'success')
+  } catch (err) {
+    const s = err.status
+    toast(s === 413 ? '图片不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
+  }
+  finally { bannerUploading.value = false }
+}
+
+/* ===== 三列表前端分页（数据一次全量返回，本地切片每页 10 条；独立页码 ref，越界回 1） ===== */
+const CHUNK = 10
+const ratePage = ref(1)
+const popPage = ref(1)
+const colPage = ref(1)
+const chunkPages = (n) => Math.max(1, Math.ceil(n / CHUNK))
+const sliceOf = (arr, p) => arr.slice((p - 1) * CHUNK, p * CHUNK)
+const ratesSlice = computed(() => sliceOf(rates.value, ratePage.value))
+const popupsSlice = computed(() => sliceOf(popups.value, popPage.value))
+const colsSlice = computed(() => sliceOf(collections.value, colPage.value))
+/* 数据收缩（删除等）后页码越界 → 回 1（页码本身不入 URL） */
+watch([rates, ratePage], () => { if (ratePage.value > chunkPages(rates.value.length)) ratePage.value = 1 })
+watch([popups, popPage], () => { if (popPage.value > chunkPages(popups.value.length)) popPage.value = 1 })
+watch([collections, colPage], () => { if (colPage.value > chunkPages(collections.value.length)) colPage.value = 1 })
 </script>
 
 <template>
@@ -990,7 +1046,7 @@ async function doDelCollection() {
           <th style="padding:10px 10px 10px 16px">目的地</th><th>承运</th><th>方式</th><th>运费</th><th>免邮门槛</th><th>时效（天）</th><th>限重(g)</th><th>状态</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody>
-          <tr v-for="r in rates" :key="r.id" style="border-top:1px solid var(--gray-light)">
+          <tr v-for="r in ratesSlice" :key="r.id" style="border-top:1px solid var(--gray-light)">
             <td style="padding:11px 10px 11px 16px"><b>{{ r.dest_country || '*' }}</b></td>
             <td>{{ r.carrier }}</td>
             <td>{{ r.method === 'express' ? '快递' : '标准' }}</td>
@@ -1008,6 +1064,7 @@ async function doDelCollection() {
         </tbody>
       </table>
       <EmptyState v-if="!rates.length" icon="🚚" title="暂无运费模板" sub="结算将使用 settings 默认运费" />
+      <Pagination embed :page="ratePage" :pages="chunkPages(rates.length)" :total="rates.length" unit="条" @go="ratePage = $event" />
     </div>
 
     <div v-if="rateDlg" class="modal open" @click.self="rateDlg = false">
@@ -1104,7 +1161,7 @@ async function doDelCollection() {
           <th style="padding:10px 10px 10px 16px">场景</th><th>标题 / 券码</th><th>触发规则</th><th>有效期</th><th>曝光/转化</th><th>状态</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody>
-          <tr v-for="p in popups" :key="p.id" style="border-top:1px solid var(--gray-light)">
+          <tr v-for="p in popupsSlice" :key="p.id" style="border-top:1px solid var(--gray-light)">
             <td style="padding:11px 10px 11px 16px;white-space:nowrap"><b>{{ sceneLabel(p.scene) }}</b><span style="color:var(--gray);font-size:11px;margin-left:4px">{{ p.scene }}</span></td>
             <td style="min-width:180px">
               <b>{{ p.title }}</b>
@@ -1127,6 +1184,7 @@ async function doDelCollection() {
         </tbody>
       </table>
       <EmptyState v-if="!popups.length" icon="🪟" title="暂无弹窗配置" sub="点击右上角「新建弹窗」创建" />
+      <Pagination embed :page="popPage" :pages="chunkPages(popups.length)" :total="popups.length" unit="个" @go="popPage = $event" />
     </div>
 
     <!-- 弹窗编辑（scene/title/content_md/coupon_code/trigger_rules/有效期/active） -->
@@ -1191,8 +1249,8 @@ async function doDelCollection() {
           <thead><tr style="text-align:left;color:var(--gray)">
             <th style="padding:10px 10px 10px 16px">集合</th><th>slug</th><th>规则</th><th>商品数</th><th>状态</th><th style="text-align:right">操作</th>
           </tr></thead>
-          <tbody>
-            <tr v-for="c in collections" :key="c.id" style="border-top:1px solid var(--gray-light)">
+        <tbody>
+          <tr v-for="c in colsSlice" :key="c.id" style="border-top:1px solid var(--gray-light)">
               <td style="padding:11px 10px 11px 16px">
                 <b>{{ c.title }}</b>
                 <div v-if="c.banner_image" style="font-size:11.5px;color:var(--gray);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px" :title="c.banner_image">🖼 {{ c.banner_image }}</div>
@@ -1211,6 +1269,7 @@ async function doDelCollection() {
           </tbody>
         </table>
         <EmptyState v-if="colLoaded && !collections.length" icon="🗂️" title="暂无集合" sub="点击右上角「新建集合」创建第一个商品集合页" />
+        <Pagination embed :page="colPage" :pages="chunkPages(collections.length)" :total="collections.length" unit="个" @go="colPage = $event" />
       </div>
     </template>
 
@@ -1225,8 +1284,11 @@ async function doDelCollection() {
             <input v-model="colForm.slug" class="input" placeholder="summer-picks" style="text-transform:lowercase"></div>
           <div class="field"><label>标题 *</label><input v-model="colForm.title" class="input" placeholder="夏日精选"></div>
           <div class="field"><label>Banner 图 URL（可选）</label>
-            <input v-model="colForm.banner" class="input" placeholder="https://cdn.example.com/banners/summer.jpg">
-            <p style="font-size:11px;color:var(--gray);margin-top:4px">需 http(s):// 完整地址；创建后可在编辑中补充。</p>
+            <div style="display:flex;gap:8px">
+              <input v-model="colForm.banner" class="input" style="flex:1;min-width:0" placeholder="https://cdn.example.com/banners/summer.jpg">
+              <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="bannerUploading" @click="pickBanner('colNew')">{{ bannerUploading ? '上传中…' : '📎 上传' }}</button>
+            </div>
+            <p style="font-size:11px;color:var(--gray);margin-top:4px">需 http(s):// 完整地址；可手填或点「上传」自动回填（png/jpg/webp/gif ≤5MB）。</p>
           </div>
           <div class="field"><label>高级规则 rule_json（JSON 对象，可选）</label>
             <textarea v-model="colForm.ruleStr" class="input" rows="3" placeholder='{} 或 {"category":"new"}'></textarea>
@@ -1247,7 +1309,12 @@ async function doDelCollection() {
         <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">slug 与商品组成请在「配商品」/删除重建中维护。</p>
         <div style="display:grid;gap:12px">
           <div class="field"><label>标题 *</label><input v-model="colEdit.title" class="input"></div>
-          <div class="field"><label>Banner 图 URL（清空 = 移除）</label><input v-model="colEdit.banner" class="input" placeholder="https://cdn.example.com/banners/summer.jpg"></div>
+          <div class="field"><label>Banner 图 URL（清空 = 移除）</label>
+            <div style="display:flex;gap:8px">
+              <input v-model="colEdit.banner" class="input" style="flex:1;min-width:0" placeholder="https://cdn.example.com/banners/summer.jpg">
+              <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="bannerUploading" @click="pickBanner('colEdit')">{{ bannerUploading ? '上传中…' : '📎 上传' }}</button>
+            </div>
+          </div>
           <div class="field"><label>排序权重（小者靠前）</label><input v-model.number="colEdit.sort_order" class="input" type="number"></div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
@@ -1301,6 +1368,9 @@ async function doDelCollection() {
     <!-- 删除集合确认（危险操作） -->
     <ConfirmDialog :open="delColDlg" title="删除集合" :body="delColBody" danger confirm-text="删除" :busy="delColBusy" @confirm="doDelCollection" @close="delColDlg = false" />
   </div>
+
+  <!-- Banner 上传共用隐藏 input（新建/编辑集合两入口，见 pickBanner） -->
+  <input ref="bannerFile" type="file" accept=".png,.jpg,.jpeg,.webp,.gif" style="display:none" @change="onBannerFile">
 </template>
 
 <style scoped>

@@ -18,8 +18,7 @@ from app.core.enums import OrderStatus, PointsReason, StockMovementType
 from app.models import (
     Cart, DataRequest, EmailPreference, Order, OrderItem, OrderTimeline,
     OutboxEvent, Payment, PointsLedger, Product, ReconciliationDaily, Rma,
-    Setting, StockMovement, StockNotification, User, UserAddress, Variant,
-    WishlistItem,
+    Setting, StockMovement, StockNotification, User, Variant,
 )
 from app.services import emails
 from app.services import points as points_svc
@@ -378,6 +377,10 @@ def unfreeze_points(db: Session) -> None:
 
 
 def process_data_requests(db: Session) -> None:
+    """GDPR 删除请求到期执行：匿化核心已抽到 member 域 anonymize_user
+    （与后台 data-requests execute 端点共用同一实现），本函数只负责到期筛选与逐单提交"""
+    from app.domains.member.service_account import anonymize_user
+
     grace_days = _setting_int(db, "gdpr_delete_delay_days", 7)
     cutoff = utcnow() - timedelta(days=grace_days)
     requests = (
@@ -388,27 +391,7 @@ def process_data_requests(db: Session) -> None:
     )
     anonymized = 0
     for req in requests:
-        user = db.get(User, req.user_id)
-        if user is not None:
-            anon_email = f"deleted+{user.id}@anonymized.local"
-            user.email = anon_email
-            user.password_hash = None
-            user.name = ""
-            user.points = 0
-            user.status = -1
-            user.birthday = None
-            db.query(UserAddress).filter(UserAddress.user_id == user.id).delete(
-                synchronize_session=False)
-            db.query(Cart).filter(Cart.user_id == user.id).delete(
-                synchronize_session=False)
-            db.query(WishlistItem).filter(WishlistItem.user_id == user.id).delete(
-                synchronize_session=False)
-            for order in db.query(Order).filter(Order.user_id == user.id).all():
-                order.email = anon_email
-                addr = dict(order.shipping_address or {})
-                addr["full_name"] = "Deleted User"
-                addr["phone"] = ""
-                order.shipping_address = addr
+        if anonymize_user(db, req.user_id):
             anonymized += 1
         req.status = 1
         req.fulfilled_at = utcnow()

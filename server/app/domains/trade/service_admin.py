@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.domains.trade.schemas import (
-    NoteIn, RefundRequest, RmaRejectRequest, ShipRequest, ShippingRateIn,
-    ShippingRateUpdateIn, StockAdjustRequest,
+    NoteIn, OrderAddressUpdateIn, RefundRequest, RmaRejectRequest, RmaRefundRequest,
+    ShipRequest, ShippingRateIn, ShippingRateUpdateIn, StockAdjustRequest,
 )
 from app.models import Order, Rma, Shipment, ShippingRate, User
 from app.services import points as points_svc
@@ -296,6 +296,72 @@ def mark_delivered(db: Session, admin: User, order_no: str) -> dict:
     return {"order_no": order.order_no, "order_status": order.status}
 
 
+def prepare_order(db: Session, admin: User, order_no: str) -> dict:
+    """后台开始备货：CAS 1→2（与已付取消/发货/重复备货并发互斥，rowcount=0 → 409）"""
+    order = _get_order(db, order_no)
+    if order.status != 1:
+        raise HTTPException(status_code=409, detail=f"not_prepable:{order.status}")
+    if repo.claim_order_preparing(db, order.id) == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail=f"not_prepable:{order.status}")
+    order.status = 2
+    _timeline(db, order.id, "status_changed", actor="admin", detail={"from": 1, "to": 2})
+    _admin_log(db, admin, "prepare", "order", order.id, {"from": 1, "to": 2})
+    db.commit()
+    return {"order_no": order.order_no, "order_status": order.status}
+
+
+def mark_completed(db: Session, admin: User, order_no: str) -> dict:
+    """后台代确认完成：与用户侧 confirm_received 共用 claim_order_completed CAS 原语
+    （4→5 并发互斥）；completed_at 落库，积分解冻仍由 worker 按 paid_at+return_days 独立驱动。"""
+    order = _get_order(db, order_no)
+    if order.status != 4:
+        raise HTTPException(status_code=409, detail=f"not_completable:{order.status}")
+    now = utcnow()
+    if repo.claim_order_completed(db, order.id, now) == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail=f"not_completable:{order.status}")
+    # 原生 CAS UPDATE 不经过身份映射：expire 后重读，保证响应携带新状态
+    db.expire(order)
+    order.completed_at = now
+    _timeline(db, order.id, "status_changed", actor="admin", detail={
+        "from": 4, "to": 5, "reason": "admin_confirm",
+    })
+    _admin_log(db, admin, "mark_completed", "order", order.id, {"from": 4, "to": 5})
+    db.commit()
+    return {"order_no": order.order_no, "order_status": order.status}
+
+
+def update_order_address(
+    db: Session, admin: User, order_no: str, body: OrderAddressUpdateIn | None,
+) -> dict:
+    """后台订单改地址：仅未发货（status≤2）可改，全字段可选部分更新；
+    timeline address_updated 存旧值摘要 + 审计日志。"""
+    order = _get_order(db, order_no)
+    if order.status > 2:
+        raise HTTPException(status_code=409, detail="order already shipped")
+    data = body.model_dump(exclude_unset=True) if body else {}
+    addr = dict(order.shipping_address or {})
+    diff: dict = {}
+    for field, new in data.items():
+        old = addr.get(field)
+        if old != new:
+            diff[field] = {"old": old, "new": new}
+            addr[field] = new
+    if not diff:
+        return {"order_no": order.order_no, "shipping_address": addr}
+    order.shipping_address = addr
+    _timeline(db, order.id, "address_updated", actor="admin", detail={
+        "old": {k: v["old"] for k, v in diff.items()},
+        "new": {k: v["new"] for k, v in diff.items()},
+    })
+    _admin_log(db, admin, "update_address", "order", order.id, diff)
+    db.commit()
+    return {"order_no": order.order_no, "shipping_address": addr}
+
+
 def refund_order(
     db: Session, admin: User, order_no: str, body: RefundRequest | None,
 ) -> dict:
@@ -423,7 +489,12 @@ def receive_rma(db: Session, admin: User, rma_no: str) -> dict:
     return {"rma_no": rma.rma_no, "status": rma.status, "restock_qty": rma.restock_qty}
 
 
-def refund_rma(db: Session, admin: User, rma_no: str) -> dict:
+def refund_rma(
+    db: Session, admin: User, rma_no: str, body: RmaRefundRequest | None = None,
+) -> dict:
+    """RMA 退款：缺省按订单实付比例折算（单件全退恰为 grand_total，订单可达 REFUNDED）；
+    可选 amount_cents 人工调整（>0 且 ≤ 折算可退额）：低于折算额 → RMA 部分退款(7)，
+    等于 → 已退款(5)；订单侧沿用 apply_refund 语义（Payment 累计，全额才驱动订单状态）。"""
     rma = _get_rma(db, rma_no)
     if rma.status != 4:
         raise HTTPException(status_code=409, detail=f"rma_not_refundable:{rma.status}")
@@ -445,29 +516,40 @@ def refund_rma(db: Session, admin: User, rma_no: str) -> dict:
                 int(order.shipping_fee * rma.qty / total_qty + 0.5),
                 order.shipping_fee,
             ))
-    amount = min(amount + refund_shipping, order.grand_total)
+    full_amount = min(amount + refund_shipping, order.grand_total)
+    # 多笔 RMA 按比例折算各摊运费可能累计超过剩余可退（apply_refund 会 409 拒绝，
+    # RMA 将永远卡在 4 态无法结案）；缺省路径钳到剩余可退，恰好收尾为全额退
     payment = repo.refundable_payment_of_order(db, order.id)
-    if payment is not None and amount > payment.amount - payment.refunded_amount:
-        # 多笔 RMA 按比例折算各摊运费可能累计超过剩余可退（apply_refund 会 409 拒绝，
-        # RMA 将永远卡在 4 态无法结案）；钳到剩余可退，恰好收尾为全额退
-        amount = payment.amount - payment.refunded_amount
+    remaining = (
+        payment.amount - payment.refunded_amount if payment is not None else None
+    )
+    cap = full_amount if remaining is None else min(full_amount, remaining)
+    if body is not None and body.amount_cents is not None:
+        if body.amount_cents > cap:
+            raise HTTPException(status_code=409, detail="invalid refund amount")
+        amount = body.amount_cents
+    else:
+        amount = cap
+    partial = amount < full_amount
 
     item.refunded_qty += rma.qty
     result = apply_refund(
         db, order, amount, reason=f"rma:{rma.rma_no}", actor="admin", admin=admin,
     )
-    rma.status = 5
+    # 低于折算额 → 部分退款(7)；等于（含钳到剩余可退收尾的全额）→ 已退款(5)
+    rma.status = 7 if partial else 5
     rma.refund_amount = amount
     rma.refund_shipping = refund_shipping
     rma.refunded_at = utcnow()
     rma.handled_by = admin.id
     _admin_log(db, admin, "rma_refund", "return", rma.id, {
         "rma_no": rma.rma_no, "amount": amount, "refund_shipping": refund_shipping,
+        "partial": partial,
     })
     db.commit()
     return {
         "rma_no": rma.rma_no, "status": rma.status, "refund_amount": amount,
-        "refund_shipping": refund_shipping, **result,
+        "refund_shipping": refund_shipping, "partial": partial, **result,
     }
 
 

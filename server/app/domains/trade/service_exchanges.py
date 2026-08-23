@@ -1,6 +1,6 @@
 """换货 Exchange 服务 —— 用户侧申请/列表/详情（登录本人或 email 双因子）+ 后台队列与状态机
 （0→approve 分流 2 待差价/1 直批 · 2→mark-paid→1 · 1→ship→3 新变体原子扣库存+shipment ·
-3→complete→4 旧变体回补+exchanged_qty · 0→reject→5）；用户侧撤销（0→CAS 删除）与
+3→complete→4 旧变体回补+exchanged_qty+负差价退款 · 0→reject→5）；用户侧撤销（0→CAS 删除）与
 差价支付（diff_payment_id 挂 Payment 行，mock-pay/webhook 双通道核销）；金额美分，naive UTC。"""
 
 import uuid
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
+from app.domains.trade import service_admin
 from app.domains.trade.schemas import ExchangeCreateRequest, ShipRequest
 from app.models import Exchange, Order, OrderItem, Payment, Shipment, User
 from app.services.payment_provider import get_provider
@@ -390,6 +391,53 @@ def ship_exchange(db: Session, admin: User, exchange_no: str, body: ShipRequest)
     }
 
 
+def _force_payment_refund(db: Session, order: Order, amount: int, ex: Exchange) -> Optional[dict]:
+    """负差价退款兜底（apply_refund 可退余校验误拒时）：对齐 apply_refund 部分退账务写法 ——
+    Payment.refunded_amount 累计 + status=4、timeline refund_issued，不驱动订单状态变化；
+    无可退 Payment 行（纯积分/礼品卡抵扣单）时返回 None（无款可退，不阻断 complete）。"""
+    payment = repo.refundable_payment_of_order(db, order.id)
+    if payment is None or amount <= 0:
+        return None
+    payment.refunded_amount += amount
+    if payment.status != 3:
+        payment.status = 4
+    repo.add_timeline(db, order.id, "refund_issued", actor="admin", detail={
+        "amount": amount, "reason": f"exchange_diff:{ex.exchange_no}", "full": False,
+    })
+    return {"amount": amount, "full": False, "payment_status": payment.status}
+
+
+def _refund_negative_diff(db: Session, ex: Exchange, admin: User) -> Optional[dict]:
+    """换货负差价退款（complete 时调用）：|price_diff| 经退款公共路径 apply_refund 退给买家；
+    timeline exchange_diff_refunded 标记防重复（重调 complete 本就 409，标记兜底防状态回退重放）。"""
+    if ex.price_diff >= 0:
+        return None
+    if repo.exchange_diff_refunded(db, ex.order_id, ex.exchange_no):
+        return None
+    amount = -ex.price_diff
+    order = repo.get_order(db, ex.order_id)
+    try:
+        result = service_admin.apply_refund(
+            db, order, amount, reason=f"exchange_diff:{ex.exchange_no}",
+            actor="admin", admin=admin,
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        bypass = (
+            detail in ("no_refundable_payment", "already_fully_refunded")
+            or detail.startswith("invalid_refund_amount")
+        )
+        if not bypass:
+            raise
+        # 可退余校验误拒（多笔退款累计/积分礼品卡抵扣单）：绕过校验单独走 Payment 退差价
+        result = _force_payment_refund(db, order, amount, ex)
+    repo.add_timeline(db, ex.order_id, "exchange_diff_refunded", actor="admin", detail={
+        "exchange_no": ex.exchange_no, "amount": result["amount"] if result else 0,
+        "price_diff": ex.price_diff,
+    })
+    return result
+
+
 def complete_exchange(db: Session, admin: User, exchange_no: str) -> dict:
     ex = _get_exchange(db, exchange_no)
     if ex.status != 3:
@@ -402,17 +450,22 @@ def complete_exchange(db: Session, admin: User, exchange_no: str) -> dict:
         stock_after=repo.stock_of(db, ex.old_variant_id),
         type=5, ref_type="exchange", ref_id=ex.id,
     )
+    # 负差价退给买家：|price_diff| 退款 + 防重复标记（时间线）
+    diff_refund = _refund_negative_diff(db, ex, admin)
     ex.status = 4
     repo.add_timeline(db, ex.order_id, "exchange_completed", actor="admin", detail={
         "exchange_no": ex.exchange_no, "restock_variant_id": ex.old_variant_id,
         "exchanged_qty": item.exchanged_qty,
+        "diff_refund": diff_refund["amount"] if diff_refund else 0,
     })
     _admin_log(db, admin, "exchange_complete", ex, {
         "to": 4, "restock_variant_id": ex.old_variant_id,
         "exchanged_qty": item.exchanged_qty,
+        "diff_refund": diff_refund["amount"] if diff_refund else 0,
     })
     db.commit()
     return {
         "exchange_no": ex.exchange_no, "status": ex.status,
         "exchanged_qty": item.exchanged_qty,
+        "diff_refund": diff_refund["amount"] if diff_refund else 0,
     }

@@ -1,11 +1,16 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
+import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 
 const d = ref(null)
 const err = ref('')
-const range = ref('last7')
+/* 时间范围入 URL（today/last7/last30）：刷新/分享保持所选范围；非法值回落 last7 */
+const RANGES = ['today', 'last7', 'last30']
+const st = reactive({ range: 'last7' })
+useQuerySync(st, { defaults: { range: 'last7' } })
+if (!RANGES.includes(st.range)) st.range = 'last7'
 const refreshing = ref(false)
 const loadedAt = ref(null)      /* 数据加载完成时间（卡头展示 HH:mm:ss） */
 
@@ -20,7 +25,7 @@ onMounted(refresh)
 
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const fmtHMS = (dt) => (dt ? dt.toTimeString().slice(0, 8) : '')
-const cur = computed(() => (d.value ? d.value[range.value] : null))
+const cur = computed(() => (d.value ? d.value[st.range] : null))
 const aov = computed(() => (cur.value && cur.value.orders ? Math.round(cur.value.gmv_cents / cur.value.orders) : 0))
 
 /* 14 天日序列（daily[].date 后端已是 "MM-DD"） */
@@ -107,7 +112,7 @@ const reconcile = computed(() => d.value?.reconcile)
     <div class="dash-actions">
       <span v-if="loadedAt && !err" class="dash-sub" title="数据加载完成时间">更新于 {{ fmtHMS(loadedAt) }}</span>
       <button class="btn btn-secondary" :class="{ loading: refreshing }" :disabled="refreshing" @click="refresh">{{ refreshing ? '刷新中…' : '⟳ 刷新' }}</button>
-      <select v-model="range" class="input" style="width:auto;height:38px;font-size:13px">
+      <select v-model="st.range" class="input" style="width:auto;height:38px;font-size:13px">
         <option value="today">今日</option>
         <option value="last7">近 7 天</option>
         <option value="last30">近 30 天</option>
@@ -123,7 +128,7 @@ const reconcile = computed(() => d.value?.reconcile)
     <div class="stat-grid">
       <div v-for="(s, i) in STATS" :key="s.lb" class="stat" :class="{ 'stat-dark': s.hot }" :style="{ animationDelay: i * 70 + 'ms' }">
         <div class="stat-top">
-          <span class="lb">{{ s.lb }}{{ range !== 'today' ? `（${range === 'last7' ? '7天' : '30天'}）` : '' }}</span>
+          <span class="lb">{{ s.lb }}{{ st.range !== 'today' ? `（${st.range === 'last7' ? '7天' : '30天'}）` : '' }}</span>
           <span v-if="s.pct != null" class="delta" :class="s.pct >= 0 ? 'up' : 'down'" title="近 7 天环比（近 7 天 vs 前 7 天），与所选时间窗无关">
             {{ s.pct >= 0 ? '▲' : '▼' }} {{ Math.abs(s.pct) }}%<i style="font-style:normal;font-weight:500;margin-left:3px">近7天</i>
           </span>
@@ -207,7 +212,7 @@ const reconcile = computed(() => d.value?.reconcile)
           <router-link class="quick-chip" to="/returns?tab=rma&rs=s0">待审退货 →</router-link>
         </div>
         <div v-if="lowStockTop.length" class="lstock">
-          <div class="lstock-title">最缺货 Top {{ lowStockTop.length }}（库存 ≤ 8）</div>
+          <div class="lstock-title" title="库存 ≤ max(安全库存, 8) 的在售变体">最缺货 Top {{ lowStockTop.length }}（低库存）</div>
           <div v-for="v in lowStockTop" :key="v.sku" class="lstock-row">
             <span class="lstock-name" :title="v.sku + ' · ' + v.title">{{ v.sku }} · {{ v.title }}</span>
             <b class="lstock-badge" :class="(v.stock || 0) <= 3 ? 'b-err' : 'b-warn'">余 {{ v.stock ?? 0 }}</b>

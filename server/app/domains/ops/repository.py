@@ -1,13 +1,14 @@
 """运营域仓储 —— 纯查询/聚合（dashboard 聚合实现保持原样，SQL 条数是 test_perf 断言对象）"""
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.models import (
-    AdminLog, Cart, CookieConsent, NewsletterSubscriber, Order, PointsLedger,
-    Product, ReconciliationDaily, Review, Ticket, UgcSubmission, User, Variant,
+    AdminLog, Cart, CookieConsent, DataRequest, NewsletterSubscriber, Order,
+    PointsLedger, Product, ReconciliationDaily, Review, Subscription, Ticket,
+    UgcSubmission, User, Variant,
 )
 
 
@@ -49,17 +50,21 @@ def cookie_consent_count(db: Session) -> int:
     return db.query(func.count(CookieConsent.id)).scalar() or 0
 
 
-def _has_items():
-    return func.coalesce(func.json_length(Cart.items), 0) > 0
+def _has_items(db: Session):
+    # JSON 数组长度 > 0：SQLite 用 json_array_length（部分构建无标量 json_length），
+    # MySQL/MariaDB 用 json_length —— 对数组语义一致（[]→0，N 元素→N），双库兼容
+    fn = (func.json_array_length if db.get_bind().dialect.name == "sqlite"
+          else func.json_length)
+    return func.coalesce(fn(Cart.items), 0) > 0
 
 
 def carts_with_items_count(db: Session) -> int:
-    return db.query(func.count(Cart.id)).filter(_has_items()).scalar() or 0
+    return db.query(func.count(Cart.id)).filter(_has_items(db)).scalar() or 0
 
 
 def abandoned_carts_count(db: Session, cutoff: datetime) -> int:
     return db.query(func.count(Cart.id)).filter(
-        _has_items(), Cart.updated_at <= cutoff).scalar() or 0
+        _has_items(db), Cart.updated_at <= cutoff).scalar() or 0
 
 
 def pending_orders_count(db: Session) -> int:
@@ -71,8 +76,19 @@ def unpaid_orders_count(db: Session) -> int:
     return db.query(func.count(Order.id)).filter(Order.status == 0).scalar() or 0
 
 
+# 低库存统一口径：stock <= max(safety_stock, 8)（CASE WHEN 写法，SQLite/MySQL 双兼容，
+# 与 catalog 侧同公式）；仅统计在售变体（is_active=1）
+_LOW_STOCK_THRESHOLD = case(
+    (Variant.safety_stock > 8, Variant.safety_stock), else_=8,
+)
+
+
 def low_stock_count(db: Session) -> int:
-    return db.query(func.count(Variant.id)).filter(Variant.stock <= 8).scalar() or 0
+    return (
+        db.query(func.count(Variant.id))
+        .filter(Variant.is_active == 1, Variant.stock <= _LOW_STOCK_THRESHOLD)
+        .scalar() or 0
+    )
 
 
 def pending_reviews_count(db: Session) -> int:
@@ -117,7 +133,7 @@ def low_stock_top_rows(db: Session, limit: int = 5) -> list:
     return (
         db.query(Variant.sku, Product.title, Variant.stock)
         .join(Product, Product.id == Variant.product_id)
-        .filter(Variant.stock <= 8)
+        .filter(Variant.is_active == 1, Variant.stock <= _LOW_STOCK_THRESHOLD)
         .order_by(Variant.stock.asc(), Variant.id.asc())
         .limit(limit)
         .all()
@@ -226,3 +242,72 @@ def admin_logs_query(
 def users_by_ids(db: Session, ids: set[int]) -> list[User]:
     """日志 admin_name 回填用批量查询（避免逐行 join/查用户）"""
     return db.query(User).filter(User.id.in_(ids)).all() if ids else []
+
+
+# ===== 运营队列：弃购 / 对账 / GDPR 数据请求 / Newsletter =====
+
+# 弃购判定对齐 worker 口径（scripts/worker.py ABANDON_STAGES[0]）：有商品且最后活跃
+# 超过第 1 封召回窗口（1 小时）未下单的 cart（下单成功后 cart.items 会被清空）
+ABANDON_CUTOFF = timedelta(hours=1)
+
+
+def abandoned_carts_query(db: Session, cutoff: datetime) -> Query:
+    """cutoff = now - ABANDON_CUTOFF，由 service 层计算传入（naive UTC 口径）"""
+    return (
+        db.query(Cart)
+        .filter(_has_items(db), Cart.updated_at <= cutoff)
+        .order_by(Cart.updated_at.desc(), Cart.id.desc())
+    )
+
+
+def variants_by_ids(db: Session, ids: set[int]) -> list[Variant]:
+    """弃购金额估算用批量取价（仅按页内出现的 variantId 批查，避免 N+1）"""
+    return db.query(Variant).filter(Variant.id.in_(ids)).all() if ids else []
+
+
+def reconciliations_query(
+    db: Session, date_from: date | None = None, date_to: date | None = None,
+) -> Query:
+    q = db.query(ReconciliationDaily).order_by(
+        ReconciliationDaily.reconcile_date.desc(), ReconciliationDaily.id.desc()
+    )
+    if date_from is not None:
+        q = q.filter(ReconciliationDaily.reconcile_date >= date_from)
+    if date_to is not None:
+        q = q.filter(ReconciliationDaily.reconcile_date <= date_to)
+    return q
+
+
+def data_requests_query(
+    db: Session, type_: int | None = None, status: int | None = None,
+) -> Query:
+    q = db.query(DataRequest).order_by(DataRequest.id.desc())
+    if type_ is not None:
+        q = q.filter(DataRequest.type == type_)
+    if status is not None:
+        q = q.filter(DataRequest.status == status)
+    return q
+
+
+def data_request_by_id(db: Session, req_id: int) -> DataRequest | None:
+    return db.get(DataRequest, req_id)
+
+
+def newsletters_query(db: Session, q: str | None) -> Query:
+    query = db.query(NewsletterSubscriber).order_by(
+        NewsletterSubscriber.created_at.desc(), NewsletterSubscriber.email.asc()
+    )
+    if q:
+        query = query.filter(NewsletterSubscriber.email.ilike(f"%{q}%"))
+    return query
+
+
+def admin_email_taken(db: Session, email: str, exclude_id: int | None = None) -> bool:
+    query = db.query(User.id).filter(User.email == email)
+    if exclude_id is not None:
+        query = query.filter(User.id != exclude_id)
+    return query.first() is not None
+
+
+def admin_by_id(db: Session, admin_id: int) -> User | None:
+    return db.get(User, admin_id)

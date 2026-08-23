@@ -21,6 +21,8 @@ const router = createRouter({
         { path: 'marketing', name: 'marketing', component: () => import('./views/MarketingView.vue'), meta: { title: '营销工具' } },
         { path: 'content', name: 'content', component: () => import('./views/ContentView.vue'), meta: { title: '内容管理' } },
         { path: 'members', name: 'members', component: () => import('./views/MembersView.vue'), meta: { title: '会员' } },
+        { path: 'subscriptions', name: 'subscriptions', component: () => import('./views/SubscriptionsView.vue'), meta: { title: '订阅管理' } },
+        { path: 'queues', name: 'queues', component: () => import('./views/OpsQueuesView.vue'), meta: { title: '运营队列' } },
         { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { title: '操作日志' } },
         { path: 'settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '系统设置' } },
       ],

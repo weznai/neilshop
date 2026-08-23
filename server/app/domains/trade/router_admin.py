@@ -10,8 +10,8 @@ from app.core.db import get_db
 from app.core.deps import require_admin
 from app.domains.trade import service_admin, service_exchanges
 from app.domains.trade.schemas import (
-    ExchangeRejectRequest, NoteIn, RefundRequest, RmaRejectRequest, ShipRequest,
-    ShippingRateIn, ShippingRateUpdateIn, StockAdjustRequest,
+    ExchangeRejectRequest, NoteIn, OrderAddressUpdateIn, RefundRequest, RmaRejectRequest,
+    RmaRefundRequest, ShipRequest, ShippingRateIn, ShippingRateUpdateIn, StockAdjustRequest,
 )
 from app.models import User
 
@@ -61,6 +61,26 @@ def order_detail(order_no: str, admin: User = Depends(require_admin), db: Sessio
 @router.post("/orders/{order_no}/ship")
 def ship_order(order_no: str, body: ShipRequest, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     return service_admin.ship_order(db, admin, order_no, body)
+
+
+@router.post("/orders/{order_no}/prepare")
+def prepare_order(order_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service_admin.prepare_order(db, admin, order_no)
+
+
+@router.post("/orders/{order_no}/mark-completed")
+def mark_completed(order_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return service_admin.mark_completed(db, admin, order_no)
+
+
+@router.put("/orders/{order_no}/address")
+def update_order_address(
+    order_no: str,
+    body: OrderAddressUpdateIn | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service_admin.update_order_address(db, admin, order_no, body)
 
 
 @router.post("/orders/{order_no}/mark-delivered")
@@ -121,8 +141,13 @@ def receive_rma(rma_no: str, admin: User = Depends(require_admin), db: Session =
 
 
 @router.post("/rmas/{rma_no}/refund")
-def refund_rma(rma_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return service_admin.refund_rma(db, admin, rma_no)
+def refund_rma(
+    rma_no: str,
+    body: RmaRefundRequest | None = None,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service_admin.refund_rma(db, admin, rma_no, body)
 
 
 @router.post("/stock/adjust")

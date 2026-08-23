@@ -49,8 +49,8 @@ const isResolved = computed(() => !!active.value && active.value.status === 3)
 /* 响应含 total/page/size（无 pages），页数由 total 折算 */
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
-function buildUrl(status, p) {
-  const params = new URLSearchParams({ page: p, size: SIZE })
+function buildUrl(status, p, size = SIZE) {
+  const params = new URLSearchParams({ page: p, size })
   if (status !== null && status !== undefined) params.set('status', status)
   if (st.cat !== '') params.set('category', st.cat)
   if (st.priority !== '') params.set('priority', st.priority)
@@ -186,6 +186,52 @@ async function doClose(reason) {
 const assigneeText = (t) => t.assignee_admin_id
   ? (t.assignee_name || `#${t.assignee_admin_id}`)
   : '未指派'
+/* 最后消息方文案（last_sender：1=客户 2=客服 3=系统，无消息 null） */
+const SENDER_LABEL = { 1: '客户', 2: '客服', 3: '系统' }
+
+/* CSV 导出：当前筛选（tab 状态/分类/仅紧急/我的/关键词）全量拉取，size=100 上限 2000 行 */
+const exporting = ref(false)
+const EXPORT_SIZE = 100
+const EXPORT_MAX_ROWS = 2000
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    /* 固化筛选快照：导出期间用户切换筛选不影响本次结果 */
+    const stt = TABS.find((t) => t[0] === st.tab)?.[2]
+    const first = await req('GET', buildUrl(stt, 1, EXPORT_SIZE))
+    const all = [...(first.items || [])]
+    const totalMatch = first.total ?? all.length
+    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_SIZE) || 1, Math.ceil(EXPORT_MAX_ROWS / EXPORT_SIZE))
+    for (let p = 2; p <= maxPage; p++) {
+      const d = await req('GET', buildUrl(stt, p, EXPORT_SIZE))
+      all.push(...(d.items || []))
+    }
+    if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
+    if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
+      toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    }
+    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号 */
+    const cell = (v) => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const rows = [['工单号', '主题', '邮箱', '分类', '状态', '优先级', '指派', '创建时间', '最后消息时间', '最后消息方'],
+      ...all.map((t) => [t.ticket_no, t.subject, t.email, CATEGORY[t.category] || '其他', TSTATUS[t.status]?.label,
+        t.priority === 0 ? '紧急' : '普通', assigneeText(t), dt(t.created_at),
+        t.last_message_at ? dt(t.last_message_at) : '', t.last_sender != null ? (SENDER_LABEL[t.last_sender] || '—') : ''])]
+    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'tickets_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('已导出 ' + all.length + ' 张 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
+
 /* 指派候选人：GET /ops/admins（role≥2 且启用的管理账号），首次打开工单时拉取一次缓存，失败下次重试 */
 const admins = ref([])
 const adminsLoaded = ref(false)
@@ -245,6 +291,9 @@ async function reopen() {
       <h1 class="page-title">客服工单</h1>
       <span class="page-sub">当前筛选共 {{ total }} 张工单</span>
     </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
+    </div>
   </div>
 
   <div class="filter-bar" style="margin-bottom:14px">
@@ -302,7 +351,12 @@ async function reopen() {
               <span v-if="t.assignee_admin_id" class="tag tag-ship" :title="'#' + t.assignee_admin_id">{{ assigneeText(t) }}</span>
               <span v-else class="tag tag-pending">未指派</span>
             </td>
-            <td><span class="tag" :class="TSTATUS[t.status]?.cls">{{ TSTATUS[t.status]?.label }}</span></td>
+            <td>
+              <span class="tag" :class="TSTATUS[t.status]?.cls">{{ TSTATUS[t.status]?.label }}</span>
+              <!-- 最后消息：客户最后回复且处理中 → 蓝色提醒 tag；否则灰色小字时间（并入状态列省一列宽） -->
+              <span v-if="t.last_sender === 1 && t.status === 1" class="tag tag-ship lm-tag" :title="'客户最后回复：' + (dt(t.last_message_at) || '—')">客户新回复</span>
+              <div v-else-if="t.last_message_at" class="lm-time" :title="'最后消息：' + dt(t.last_message_at) + (t.last_sender != null ? '（' + (SENDER_LABEL[t.last_sender] || '—') + '）' : '')">{{ dt(t.last_message_at) }}</div>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -406,4 +460,7 @@ async function reopen() {
 /* 系统消息（sender=3）：居中灰色小条 */
 .sysmsg{justify-self:center;max-width:90%;text-align:center;background:var(--gray-light);color:var(--gray);font-size:11.5px;line-height:1.5;padding:4px 12px;border-radius:999px;white-space:pre-wrap;word-break:break-all}
 .sysmsg-time{margin-left:6px;font-size:10.5px;opacity:.85}
+/* 最后消息（并入状态列）：客户新回复蓝色小 tag / 其余灰色时间小字 */
+.lm-tag{margin-left:4px;font-size:10px;cursor:help}
+.lm-time{font-size:10.5px;color:var(--gray);margin-top:2px;white-space:nowrap}
 </style>

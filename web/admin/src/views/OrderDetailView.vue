@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
@@ -29,6 +29,7 @@ const EVENT_LABEL = {
   exchange_created: '换货申请', exchange_approved: '换货已批准', exchange_rejected: '换货已拒绝',
   exchange_diff_paid: '换货差价已付', exchange_shipped: '换货已重发', exchange_completed: '换货完成',
   giftcard_created: '礼品卡购卡', points_granted: '积分发放',
+  address_updated: '收件地址修改',
 }
 /* 时间线圆点语义色（支付绿 / 退款退货红 / 物流蓝 / 状态紫 / 其余 rose） */
 const TL_DOT = {
@@ -36,6 +37,7 @@ const TL_DOT = {
   rma_created: 'err', exchange_rejected: 'err',
   shipment_created: 'info', tracking_updated: 'info', exchange_shipped: 'info',
   status_changed: 'plum', checkout_created: 'rose',
+  address_updated: 'plum',
 }
 const dotCls = (ev) => TL_DOT[ev] || ''
 
@@ -128,6 +130,10 @@ function eventText(t) {
     case 'points_granted':
       return d.referrer_points ? `推荐奖励：邀请人 +${d.referrer_points} 分${d.invitee_points ? ' · 受邀人 +' + d.invitee_points + ' 分' : ''}` : ''
     case 'note_added': return d.text || ''
+    case 'address_updated': {
+      const ks = Object.keys(d.new || {})
+      return ks.length ? `已更新字段：${ks.join('、')}` : ''
+    }
     case 'checkout_created': {
       const parts = []
       if (d.code_discount) parts.push('折扣码 −' + money(d.code_discount))
@@ -254,6 +260,71 @@ async function noteConfirm() {
   } catch (e) { toast('添加失败：' + (e.data?.detail || e.message), 'error') }
   submitting.value = false
 }
+
+/* ===== 开始备货（status=1→2）：CAS 防并发重复备货，409 not_prepable:{status} ===== */
+const prepareDlg = ref(false)
+async function prepareConfirm() {
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    await req('POST', `/api/admin/trade/orders/${o.value.order_no}/prepare`)
+    toast('已开始备货，订单进入「备货中」✓', 'success')
+    prepareDlg.value = false
+    await reload()
+  } catch (e) {
+    toast('操作失败：' + (mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message), 'error')
+  }
+  submitting.value = false
+}
+
+/* ===== 代确认完成（status=4→5）：替代客户 confirm_received，完成时解冻积分 ===== */
+const doneDlg = ref(false)
+async function doneConfirm() {
+  if (submitting.value) return
+  submitting.value = true
+  try {
+    await req('POST', `/api/admin/trade/orders/${o.value.order_no}/mark-completed`)
+    toast('订单已完成，冻结积分已解冻发放 ✓', 'success')
+    doneDlg.value = false
+    await reload()
+  } catch (e) {
+    toast('操作失败：' + (mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message), 'error')
+  }
+  submitting.value = false
+}
+
+/* ===== 修改收件地址（status≤2 可改，全字段可选覆盖）：手写 modal 回填现值 ===== */
+const addrDlg = ref(false)
+const ADDR_FIELDS = ['full_name', 'line1', 'line2', 'city', 'state', 'zip', 'country', 'phone']
+const addrForm = reactive({})
+function openAddr() {
+  const a = o.value?.shipping_address || {}
+  for (const k of ADDR_FIELDS) addrForm[k] = a[k] != null ? String(a[k]) : ''
+  addrDlg.value = true
+}
+async function addrConfirm() {
+  if (submitting.value) return
+  if (addrForm.country && addrForm.country.trim().length !== 2) {
+    toast('国家代码需为 2 位字母（如 US / CN）', 'error'); return
+  }
+  submitting.value = true
+  try {
+    /* 仅提交非空字段（后端按字段增量覆盖；line2 可传空串清空） */
+    const body = {}
+    for (const k of ADDR_FIELDS) {
+      const v = addrForm[k].trim()
+      if (v || (k === 'line2' && o.value.shipping_address?.line2)) body[k] = v
+    }
+    const r = await req('PUT', `/api/admin/trade/orders/${o.value.order_no}/address`, body)
+    o.value.shipping_address = r.shipping_address
+    toast('收件地址已更新 ✓', 'success')
+    addrDlg.value = false
+    await reload()
+  } catch (e) {
+    toast('保存失败：' + (mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message), 'error')
+  }
+  submitting.value = false
+}
 </script>
 
 <template>
@@ -306,7 +377,10 @@ async function noteConfirm() {
 
       <div class="hero-ops">
         <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" @click="act('ship')">📦 发货</button>
+        <button v-if="o.status === 1" class="btn btn-secondary btn-sm" @click="prepareDlg = true">🧰 开始备货</button>
         <button v-if="o.status === 3" class="btn btn-secondary btn-sm" @click="act('deliver')">✅ 标记妥投</button>
+        <button v-if="o.status === 4" class="btn btn-secondary btn-sm" @click="doneDlg = true">✅ 代确认完成</button>
+        <button v-if="o.status <= 2" class="btn btn-secondary btn-sm" @click="openAddr">✏️ 修改地址</button>
         <button v-if="[1, 2, 3, 4, 5].includes(o.status)" class="btn btn-ghost btn-sm hero-danger" @click="act('refund')">💸 退款（余额 {{ money(refundable) }}）</button>
         <button v-if="o.status === 0" class="btn btn-ghost btn-sm hero-danger" @click="cancelDlg = true">✕ 取消订单</button>
       </div>
@@ -517,6 +591,51 @@ async function noteConfirm() {
       <div style="display:flex;justify-content:space-between;gap:10px;margin-top:12px">
         <button class="btn btn-secondary" :disabled="submitting" @click="noteDlg = false">取消</button>
         <button class="btn btn-primary" :disabled="submitting" @click="noteConfirm">{{ submitting ? '提交中…' : '确认添加' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 开始备货确认（1→2，CAS 防并发） -->
+  <ConfirmDialog
+    :open="prepareDlg"
+    title="开始备货"
+    :body="`确认将 ${o?.order_no} 转入备货？订单状态将变为「备货中」，期间仍可正常发货。`"
+    confirm-text="确认备货"
+    :busy="submitting"
+    @confirm="prepareConfirm"
+    @close="prepareDlg = false"
+  />
+
+  <!-- 代确认完成（4→5，解冻积分） -->
+  <ConfirmDialog
+    :open="doneDlg"
+    title="代确认完成"
+    :body="`确认代替客户完成 ${o?.order_no}？本单冻结积分将解冻发放，订单进入终态「已完成」，此后不可再发货/退款。`"
+    confirm-text="确认完成"
+    :busy="submitting"
+    @confirm="doneConfirm"
+    @close="doneDlg = false"
+  />
+
+  <!-- 修改收件地址弹窗：回填现值，全字段可编辑（status≤2 可改；发货后 409） -->
+  <div v-if="addrDlg" class="modal open" @click.self="!submitting && (addrDlg = false)">
+    <div class="modal-box" style="max-width:520px">
+      <button class="modal-x" @click="!submitting && (addrDlg = false)">×</button>
+      <h3 style="font-family:var(--font-title);margin-bottom:6px">✏️ 修改收件地址 · {{ o.order_no }}</h3>
+      <p style="font-size:13px;color:var(--gray);margin-bottom:14px">仅未发货订单可修改；留空的字段保持原值不变。</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 12px">
+        <div class="field" style="grid-column:1 / -1"><label>收件人</label><input v-model="addrForm.full_name" class="input" placeholder="Full name"></div>
+        <div class="field" style="grid-column:1 / -1"><label>地址行 1</label><input v-model="addrForm.line1" class="input" placeholder="Street address"></div>
+        <div class="field" style="grid-column:1 / -1"><label>地址行 2（选填）</label><input v-model="addrForm.line2" class="input" placeholder="Apt / Suite"></div>
+        <div class="field"><label>城市</label><input v-model="addrForm.city" class="input" placeholder="City"></div>
+        <div class="field"><label>州 / 省</label><input v-model="addrForm.state" class="input" placeholder="State"></div>
+        <div class="field"><label>邮编</label><input v-model="addrForm.zip" class="input" placeholder="ZIP"></div>
+        <div class="field"><label>国家（2 位码）</label><input v-model="addrForm.country" class="input" placeholder="US" maxlength="2" style="text-transform:uppercase"></div>
+        <div class="field" style="grid-column:1 / -1"><label>电话（选填）</label><input v-model="addrForm.phone" class="input" placeholder="Phone"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:10px;margin-top:12px">
+        <button class="btn btn-secondary" :disabled="submitting" @click="addrDlg = false">取消</button>
+        <button class="btn btn-primary" :class="{ loading: submitting }" :disabled="submitting" @click="addrConfirm">{{ submitting ? '保存中…' : '保存地址' }}</button>
       </div>
     </div>
   </div>

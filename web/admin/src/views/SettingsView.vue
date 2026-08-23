@@ -1,12 +1,15 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { req } from '../api/client'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { req, API_BASE, fmtDetail } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
 import { useQuerySync } from '../composables/useQuerySync'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
+import Pagination from '../components/Pagination.vue'
 
-const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['raw', '全部参数']]
+const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['admins', '管理员账号'], ['media', '媒体库'], ['raw', '全部参数']]
 /* tab 进 URL（刷新/分享保持当前面板） */
 const st = reactive({ tab: 'shipping' })
 useQuerySync(st, { defaults: { tab: 'shipping' } })
@@ -126,13 +129,197 @@ const rawRows = computed(() => {
   if (!k) return entries
   return entries.filter(([key, v]) => key.toLowerCase().includes(k) || String(v.description || '').toLowerCase().includes(k))
 })
+
+/* ===== 管理员账号 tab（写操作仅超管；列表接口 role>=2 可读，仅含启用中账号） ===== */
+const session = useSessionStore()
+const isSuper = computed(() => session.user?.role === 9)
+/* 角色文案对齐 AdminLayout ROLE_BADGE：2运营 3仓库 9超管 */
+const ROLE_LABEL = { 2: '运营', 3: '仓库', 9: '超管' }
+const roleCls = (r) => (r === 9 ? 'tag-error' : r === 3 ? 'tag-ship' : 'tag-pending')
+const admins = ref([])
+const adminsLoaded = ref(false)
+const adminsErr = ref('')
+async function loadAdmins() {
+  adminsErr.value = ''
+  try { admins.value = (await req('GET', '/api/admin/ops/admins')).items || [] }
+  catch (e) {
+    adminsErr.value = e.message || ''
+    toast('管理员列表加载失败：' + adminsErr.value, 'error')
+  }
+  adminsLoaded.value = true
+}
+/* 后端 detail → 中文（403/409/400/404 全收口） */
+const ADMIN_ERR = {
+  'superadmin required': '仅超管可执行该操作',
+  'email exists': '邮箱已被占用',
+  'cannot modify self': '不能修改自己的角色或停用自己',
+  'admin not found': '账号不存在',
+}
+const aerr = (e) => ADMIN_ERR[e.data?.detail] || e.data?.detail || e.message
+
+/* 新建表单：email/name/密码≥8/角色 2|3|9 */
+const adminForm = reactive({ email: '', name: '', password: '', role: '2' })
+const creating = ref(false)
+async function createAdmin() {
+  if (creating.value) return
+  const email = adminForm.email.trim().toLowerCase()
+  const name = adminForm.name.trim()
+  if (!email.includes('@')) { toast('请输入有效的邮箱地址', 'error'); return }
+  if (!name) { toast('请填写姓名', 'error'); return }
+  if (adminForm.password.length < 8) { toast('密码至少 8 位', 'error'); return }
+  if (!['2', '3', '9'].includes(adminForm.role)) { toast('请选择角色', 'error'); return }
+  creating.value = true
+  try {
+    const r = await req('POST', '/api/admin/ops/admins', { email, name, password: adminForm.password, role: Number(adminForm.role) })
+    toast(`管理员 ${r.name}（${ROLE_LABEL[r.role] || r.role}）已创建 ✓`, 'success')
+    Object.assign(adminForm, { email: '', name: '', password: '', role: '2' })
+    loadAdmins()
+  } catch (e) { toast('创建失败：' + aerr(e), 'error') }
+  finally { creating.value = false }
+}
+
+/* 行内编辑：name/role（自己行禁改角色，后端 400 兜底）；保存 PUT 增量字段 */
+const editId = ref(0)
+const editDraft = reactive({ name: '', role: '2' })
+function openEditAdmin(a) { editId.value = a.id; editDraft.name = a.name || ''; editDraft.role = String(a.role) }
+function cancelEditAdmin() { editId.value = 0 }
+const savingAdmin = ref(0)   /* 正在保存/停用的行 id */
+async function saveAdmin(a) {
+  if (savingAdmin.value) return
+  const name = editDraft.name.trim()
+  if (!name) { toast('姓名不能为空', 'error'); return }
+  const body = { name }
+  if (String(a.role) !== editDraft.role) body.role = Number(editDraft.role)
+  savingAdmin.value = a.id
+  try {
+    const r = await req('PUT', '/api/admin/ops/admins/' + a.id, body)
+    admins.value = admins.value.map((x) => (x.id === a.id ? { ...x, ...r } : x))
+    toast('已保存 ✓', 'success')
+    editId.value = 0
+  } catch (e) { toast('保存失败：' + aerr(e), 'error') }
+  finally { savingAdmin.value = 0 }
+}
+
+/* 停用：danger 确认 → PUT status=0（列表仅含启用账号，停用后即从列表消失） */
+const offDlg = ref(false)
+const offTarget = ref(null)
+function openOffAdmin(a) { offTarget.value = a; offDlg.value = true }
+async function offAdminConfirm() {
+  if (savingAdmin.value || !offTarget.value) return
+  savingAdmin.value = offTarget.value.id
+  try {
+    await req('PUT', '/api/admin/ops/admins/' + offTarget.value.id, { status: 0 })
+    toast(`已停用 ${offTarget.value.name}（该账号将无法登录后台）`, 'success')
+    offDlg.value = false
+    loadAdmins()
+  } catch (e) { toast('停用失败：' + aerr(e), 'error') }
+  finally { savingAdmin.value = 0 }
+}
+
+/* ===== 媒体库 tab：q 搜索 + 分页 + 缩略图表格 + 上传/删除 ===== */
+const media = ref([])
+const mTotal = ref(0)
+const mPages = ref(1)
+const mPage = ref(1)
+const MSIZE = 24
+const mLoaded = ref(false)
+const mErr = ref('')
+const mQ = ref('')
+async function loadMedia(p = 1) {
+  mErr.value = ''
+  try {
+    const params = new URLSearchParams({ page: p, size: MSIZE })
+    const s = mQ.value.trim()
+    if (s) params.set('q', s)
+    const r = await req('GET', '/api/admin/media?' + params)
+    media.value = r.items || []
+    mTotal.value = r.total ?? 0
+    mPages.value = Math.max(1, r.pages ?? 1)
+    mPage.value = r.page || p
+  } catch (e) {
+    mErr.value = e.message || ''
+    toast('媒体库加载失败：' + mErr.value, 'error')
+  }
+  mLoaded.value = true
+}
+function searchMedia() { loadMedia(1) }
+/* 字节格式化：B/KB/MB */
+function fmtBytes(n) {
+  if (n == null) return '—'
+  if (n < 1024) return n + ' B'
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1048576).toFixed(2) + ' MB'
+}
+/* 缩略图地址：url 为 /static/uploads/... 相对路径，拆 API 域时补前缀 */
+const mediaSrc = (m) => (API_BASE || '') + m.url
+
+/* 删除：danger 确认（被引用 409 不可删）；name 可能含 /，需 encodeURIComponent */
+const delMDlg = ref(false)
+const delMTarget = ref(null)
+const delMBusy = ref(false)
+function openDelMedia(m) { delMTarget.value = m; delMDlg.value = true }
+async function delMediaConfirm() {
+  if (delMBusy.value || !delMTarget.value) return
+  delMBusy.value = true
+  try {
+    await req('DELETE', '/api/admin/media/' + encodeURIComponent(delMTarget.value.name))
+    toast(`已删除 ${delMTarget.value.name}`, 'success')
+    delMDlg.value = false
+    /* 当前页删空后回退一页，避免停留在空页 */
+    const last = media.value.length === 1 && mPage.value > 1
+    loadMedia(last ? mPage.value - 1 : mPage.value)
+  } catch (e) {
+    const detail = e.data?.detail
+    toast('删除失败：' + (detail === 'media in use' ? '文件正被商品引用，不可删除' : detail === 'invalid filename' ? '非法文件名' : detail === 'file not found' ? '文件不存在' : (detail || e.message)), 'error')
+  }
+  finally { delMBusy.value = false }
+}
+
+/* 上传：POST /api/admin/media/upload（multipart 字段 file，png/jpg/webp/gif ≤5MB，写法对齐 ProductEditView） */
+const fileInput = ref(null)
+const uploading = ref(false)
+function pickFile() { if (!uploading.value) fileInput.value?.click() }
+async function onPickFile(e) {
+  const f = e.target.files && e.target.files[0]
+  e.target.value = ''   /* 复位 value，否则重选同一文件不触发 change */
+  if (!f) return
+  uploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', f)
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 30000)
+    let r
+    try { r = await fetch(API_BASE + '/api/admin/media/upload', { method: 'POST', credentials: 'include', body: fd, signal: ctrl.signal }) }
+    catch (err) { throw new Error(err && err.name === 'AbortError' ? '上传超时，请稍后重试' : '网络错误，请检查连接') }
+    finally { clearTimeout(timer) }
+    const data = await r.json().catch(() => null)
+    if (!r.ok) throw Object.assign(new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status), { status: r.status })
+    toast('上传成功 ✓（新文件排在最前）', 'success')
+    loadMedia(1)
+  } catch (err) {
+    const s = err.status
+    toast(s === 413 ? '文件不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
+  }
+  finally { uploading.value = false }
+}
+
+/* 新 tab 懒加载：首次切入才拉取（直链进入由 onMounted 覆盖） */
+watch(() => st.tab, (k) => {
+  if (k === 'admins' && !adminsLoaded.value) loadAdmins()
+  if (k === 'media' && !mLoaded.value) loadMedia(mPage.value)
+})
+onMounted(() => {
+  if (st.tab === 'admins') loadAdmins()
+  if (st.tab === 'media') loadMedia(mPage.value)
+})
 </script>
 
 <template>
   <div class="topbar">
     <div>
       <h1 class="page-title">系统设置</h1>
-      <span class="page-sub">运费 / 税率 / 运营参数 / 邮件模板</span>
+      <span class="page-sub">运费 / 税率 / 邮件模板 / 管理员 / 媒体库</span>
     </div>
   </div>
 
@@ -194,6 +381,114 @@ const rawRows = computed(() => {
     <EmptyState v-if="loaded && !tplErr && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
   </div>
 
+  <!-- 管理员账号（列表全员可读；新建/编辑/停用仅超管） -->
+  <div v-else-if="st.tab === 'admins'" class="card" style="padding:0">
+    <!-- 非超管只读提示 -->
+    <div v-if="!isSuper" style="display:flex;align-items:center;gap:8px;margin:12px;padding:10px 14px;background:var(--pale-warn);border-radius:10px;font-size:12.5px">
+      🔒 仅超管可管理（当前账号为{{ ROLE_LABEL[session.role] || '管理员' }}，以下为只读视图）
+    </div>
+    <div v-if="adminsErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border-radius:10px;font-size:12.5px;color:var(--error)">
+      <span>⚠️ 管理员列表加载失败</span>
+      <button class="btn btn-secondary btn-sm" @click="loadAdmins">重试</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:var(--gray)">
+        <th style="padding:12px 18px">账号</th><th>角色</th><th style="text-align:right">操作</th>
+      </tr></thead>
+      <tbody>
+        <tr v-for="a in admins" :key="a.id" style="border-top:1px solid var(--gray-light)">
+          <td style="padding:12px 18px">
+            <template v-if="editId === a.id && isSuper">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <input v-model="editDraft.name" class="input" style="width:160px" placeholder="姓名">
+                <select v-model="editDraft.role" class="input" style="width:auto" :disabled="a.id === session.user?.id" :title="a.id === session.user?.id ? '不能修改自己的角色' : ''">
+                  <option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
+                </select>
+              </div>
+              <div style="font-size:11.5px;color:var(--gray);margin-top:4px">{{ a.email }}<span v-if="a.id === session.user?.id"> · 当前登录账号</span></div>
+            </template>
+            <template v-else>
+              <b>{{ a.name || '—' }}</b><span v-if="a.id === session.user?.id" class="tag tag-pending" style="margin-left:6px;font-size:10px">我</span>
+              <div style="font-size:11.5px;color:var(--gray)">{{ a.email }}</div>
+            </template>
+          </td>
+          <td><span class="tag" :class="roleCls(a.role)">{{ ROLE_LABEL[a.role] || a.role }}</span></td>
+          <td style="text-align:right;white-space:nowrap">
+            <template v-if="isSuper">
+              <template v-if="editId === a.id">
+                <button class="btn btn-primary btn-sm" :class="{ loading: savingAdmin === a.id }" :disabled="savingAdmin" @click="saveAdmin(a)">保存</button>
+                <button class="btn btn-secondary btn-sm" :disabled="savingAdmin" @click="cancelEditAdmin">取消</button>
+              </template>
+              <template v-else>
+                <button class="btn btn-secondary btn-sm" :class="{ loading: savingAdmin === a.id }" :disabled="savingAdmin" @click="openEditAdmin(a)">编辑</button>
+                <button
+                  class="btn btn-ghost btn-sm" style="color:var(--error)"
+                  :disabled="savingAdmin || a.id === session.user?.id"
+                  :title="a.id === session.user?.id ? '不能停用自己' : '停用后该账号无法登录后台'"
+                  @click="openOffAdmin(a)"
+                >停用</button>
+              </template>
+            </template>
+            <span v-else style="color:var(--gray);font-size:12px">—</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <EmptyState v-if="adminsLoaded && !adminsErr && !admins.length" icon="👤" title="暂无管理账号" sub="role≥2 的启用账号将显示在这里" />
+
+    <!-- 新建表单（仅超管） -->
+    <div v-if="isSuper" style="padding:16px 18px;border-top:1px solid var(--gray-light)">
+      <div class="dhead" style="margin-bottom:10px"><div class="dtitle">新建管理员</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input v-model="adminForm.email" class="input" style="flex:1;min-width:180px" placeholder="邮箱" @keydown.enter="createAdmin">
+        <input v-model="adminForm.name" class="input" style="width:120px" placeholder="姓名" @keydown.enter="createAdmin">
+        <input v-model="adminForm.password" class="input" type="password" style="width:150px" placeholder="密码（≥8 位）" @keydown.enter="createAdmin">
+        <select v-model="adminForm.role" class="input" style="width:auto">
+          <option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
+        </select>
+        <button class="btn btn-primary" :class="{ loading: creating }" :disabled="creating" @click="createAdmin">创建</button>
+      </div>
+      <p style="font-size:11.5px;color:var(--gray);margin-top:6px">角色权限：运营=全后台业务操作；仓库=订单/库存；超管=含管理员账号与系统设置。</p>
+    </div>
+  </div>
+
+  <!-- 媒体库（q 搜索 + 分页 + 缩略图 + 上传/删除） -->
+  <div v-else-if="st.tab === 'media'" class="card" style="padding:0">
+    <div class="filter-bar" style="padding:12px 14px;border-bottom:1px solid var(--gray-light)">
+      <input v-model="mQ" class="input" style="width:240px" placeholder="按文件名搜索（支持 202601/ 目录段）" @keydown.enter="searchMedia()">
+      <button class="btn btn-secondary btn-sm" style="height:38px" @click="searchMedia()">搜索</button>
+      <span style="flex:1"></span>
+      <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" @change="onPickFile">
+      <button class="btn btn-primary btn-sm" style="height:38px" :class="{ loading: uploading }" :disabled="uploading" @click="pickFile">{{ uploading ? '上传中…' : '⬆ 上传新文件' }}</button>
+    </div>
+    <div v-if="mErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border-radius:10px;font-size:12.5px;color:var(--error)">
+      <span>⚠️ 媒体库加载失败</span>
+      <button class="btn btn-secondary btn-sm" @click="loadMedia(mPage)">重试</button>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="text-align:left;color:var(--gray)">
+        <th style="padding:12px 14px">预览</th><th>文件名</th><th>大小</th><th>修改时间</th><th style="text-align:right">操作</th>
+      </tr></thead>
+      <tbody>
+        <tr v-for="m in media" :key="m.name" style="border-top:1px solid var(--gray-light)">
+          <td style="padding:8px 14px">
+            <a :href="mediaSrc(m)" target="_blank" rel="noopener" title="在新窗口查看原图">
+              <img :src="mediaSrc(m)" :alt="m.name" loading="lazy" style="width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--gray-light);display:block" @error="$event.target.style.visibility='hidden'">
+            </a>
+          </td>
+          <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="m.name"><code>{{ m.name }}</code></td>
+          <td style="white-space:nowrap">{{ fmtBytes(m.bytes) }}</td>
+          <td style="color:var(--gray);white-space:nowrap">{{ dt(m.modified_at) || '—' }}</td>
+          <td style="text-align:right">
+            <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="openDelMedia(m)">删除</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <EmptyState v-if="mLoaded && !mErr && !media.length" :icon="mQ.trim() ? '🔍' : '🖼'" :title="mQ.trim() ? '未找到匹配的文件' : '媒体库为空'" :sub="mQ.trim() ? '试试调整或清除搜索' : '上传的商品图片将显示在这里'" />
+    <Pagination embed :page="mPage" :pages="mPages" :total="mTotal" unit="个" @go="loadMedia" />
+  </div>
+
   <!-- 全部参数（raw k-v，支持关键字过滤） -->
   <div v-else class="card tbl-wrap">
     <div class="filter-bar" style="padding:12px 14px;border-bottom:1px solid var(--gray-light)">
@@ -223,6 +518,20 @@ const rawRows = computed(() => {
       <iframe :srcdoc="previewTpl.html" sandbox style="width:100%;height:60vh;border:1px solid var(--gray-light);border-radius:10px;background:#fff"></iframe>
     </div>
   </div>
+
+  <!-- 停用管理员确认（danger）：自己行的按钮已禁用，后端 cannot modify self 兜底 -->
+  <ConfirmDialog
+    :open="offDlg" title="停用管理员" danger confirm-text="确认停用" :busy="savingAdmin !== 0"
+    :body="`确认停用 ${offTarget?.name}（${offTarget?.email}）？停用后该账号无法登录后台，且不再出现在列表中。`"
+    @confirm="offAdminConfirm" @close="offDlg = false"
+  />
+
+  <!-- 删除媒体确认（danger）：被商品引用的文件后端 409 拒删 -->
+  <ConfirmDialog
+    :open="delMDlg" title="删除媒体文件" danger confirm-text="确认删除" :busy="delMBusy"
+    :body="`确认删除 ${delMTarget?.name}？正在被商品引用的文件不可删除（后端将拒绝）；删除后引用该文件的页面将无法显示图片。`"
+    @confirm="delMediaConfirm" @close="delMDlg = false"
+  />
 </template>
 
 <style scoped>

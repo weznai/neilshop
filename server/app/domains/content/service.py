@@ -314,6 +314,7 @@ def admin_ugc(db: Session, status: int | None, page: int = 1, size: int = 20) ->
         "total": total,
         "page": page,
         "size": size,
+        "pages": (total + size - 1) // size,
     }
 
 
@@ -391,7 +392,10 @@ def list_articles_admin(db: Session, status: str | None, page: int, size: int) -
         if status_val is None:
             raise HTTPException(status_code=400, detail="invalid status, expect published/draft")
     rows, total = repo.page(repo.admin_articles_desc(db, status_val), page, size)
-    return {"items": [_article_dict(a) for a in rows], "total": total, "page": page, "size": size}
+    return {
+        "items": [_article_dict(a) for a in rows], "total": total,
+        "page": page, "size": size, "pages": (total + size - 1) // size,
+    }
 
 
 def create_article(db: Session, admin: User, body: ArticleCreateIn) -> dict:
@@ -483,7 +487,10 @@ def list_faqs_admin(db: Session, category: str | None, page: int, size: int) -> 
     rows, total = repo.page(
         repo.admin_faqs_ordered(db, _faq_category_filter(category)), page, size
     )
-    return {"items": [_faq_dict(f) for f in rows], "total": total, "page": page, "size": size}
+    return {
+        "items": [_faq_dict(f) for f in rows], "total": total,
+        "page": page, "size": size, "pages": (total + size - 1) // size,
+    }
 
 
 def create_faq(db: Session, admin: User, body: FaqCreateIn) -> dict:

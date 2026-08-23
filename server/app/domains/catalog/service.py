@@ -433,6 +433,8 @@ def admin_list_products(
         "total": total,
         "page": page,
         "size": size,
+        # 与 trade 域列表同名字段：ceil(total/size)
+        "pages": (total + size - 1) // size,
     }
 
 
@@ -444,7 +446,7 @@ def admin_list_variants(
         db, product_id=product_id, q=q,
         offset=(page - 1) * size, limit=size, sort=sort,
     )
-    # 变体图片批量直出（一次 in_ 查全页 variant_id 再映射，避免 N+1；每变体按序 ≤6）
+    # 变体图片批量直出（一次 in_ 查询全页 variant_id 再映射，避免 N+1；每变体按序 ≤6）
     vimgs = repo.variant_images_map(db, [v.id for v, _ in rows])
     return {
         "items": [
@@ -466,6 +468,56 @@ def admin_list_variants(
         "total": total,
         "page": page,
         "size": size,
+        # 与 trade 域列表同名字段：ceil(total/size)
+        "pages": (total + size - 1) // size,
+    }
+
+
+def admin_delete_variant(db: Session, admin: User, variant_id: int) -> dict:
+    """变体物理删除：被 order_items / exchanges / returns(RMA) / 购物车任一引用 → 409；
+    干净变体删除并级联清变体图与到货订阅；商品 price_min/max 不回算（可接受）。"""
+    v = repo.get_variant(db, variant_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="variant not found")
+    if repo.variant_referenced(db, variant_id):
+        raise HTTPException(status_code=409, detail="variant in use")
+    _log(db, admin, "delete", "variant", v.id, {
+        "sku": v.sku, "product_id": v.product_id,
+        "price": v.price, "stock": v.stock,
+    })
+    repo.delete_variant_images(db, v.id)
+    repo.delete_stock_notifications_of_variant(db, v.id)
+    db.delete(v)
+    db.commit()
+    _invalidate_cache()
+    return {"ok": True}
+
+
+def admin_stock_notifies(
+    db: Session, *, product_id: int | None, variant_id: int | None,
+    page: int, size: int,
+) -> dict:
+    """后台到货通知名单（分页 + product_id/variant_id 过滤，created_at 倒序）"""
+    rows, total = repo.stock_notify_page(
+        db, product_id=product_id, variant_id=variant_id,
+        offset=(page - 1) * size, limit=size,
+    )
+    return {
+        "items": [
+            {
+                "id": sn.id,
+                "email": sn.email,
+                "variant": {"id": v.id, "sku": v.sku},
+                "product": {"id": p.id, "title": p.title, "slug": p.slug},
+                "notified_at": sn.notified_at,
+                "created_at": sn.created_at,
+            }
+            for sn, v, p in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
     }
 
 

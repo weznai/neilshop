@@ -122,7 +122,10 @@ def list_templates(db: Session, category: int | None) -> list[dict]:
 # ===== 后台：工单工作台 =====
 
 
-def _ticket_admin_dict(t: Ticket, admin_names: dict[int, str] | None = None) -> dict:
+def _ticket_admin_dict(
+    t: Ticket, admin_names: dict[int, str] | None = None,
+    last_message: TicketMessage | None = None,
+) -> dict:
     return {
         "id": t.id,
         "ticket_no": t.ticket_no,
@@ -137,6 +140,9 @@ def _ticket_admin_dict(t: Ticket, admin_names: dict[int, str] | None = None) -> 
         "first_reply_at": t.first_reply_at,
         "closed_at": t.closed_at,
         "created_at": t.created_at,
+        # 最后一条消息信息（列表页排序/预览用；sender 1=客户 2=客服 3=系统，无消息为 None）
+        "last_message_at": last_message.created_at if last_message else None,
+        "last_sender": last_message.sender if last_message else None,
     }
 
 
@@ -144,6 +150,11 @@ def _assignee_names(db: Session, tickets: list[Ticket]) -> dict[int, str]:
     """列表/详情共用：按页内 assignee 批量取姓名（未指派/查不到 → 空 dict，dict 取值 None）"""
     ids = {t.assignee_admin_id for t in tickets if t.assignee_admin_id}
     return repo.admin_names_by_ids(db, ids)
+
+
+def _last_message(db: Session, t: Ticket) -> TicketMessage | None:
+    """单工单最后一条消息（回复/关单等单票响应回填用）"""
+    return repo.last_messages_map(db, [t.id]).get(t.id)
 
 
 def _get_ticket(db: Session, ticket_no: str) -> Ticket:
@@ -160,7 +171,12 @@ def admin_tickets(
     query = repo.admin_tickets_query(db, statuses, category, q, assignee, priority)
     rows, total = repo.page(query, page, size)
     names = _assignee_names(db, rows)
-    return {"items": [_ticket_admin_dict(t, names) for t in rows], "total": total, "page": page, "size": size}
+    # 每单最后一条消息：单条 IN 批查（避免逐单查消息的 N+1）
+    lmap = repo.last_messages_map(db, [t.id for t in rows])
+    return {
+        "items": [_ticket_admin_dict(t, names, lmap.get(t.id)) for t in rows],
+        "total": total, "page": page, "size": size,
+    }
 
 
 def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict:
@@ -176,7 +192,7 @@ def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict
     log_admin(db, admin, "reply", "ticket", t.id, {"status": t.status})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t, _assignee_names(db, [t]))
+    return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))
 
 
 def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict:
@@ -191,7 +207,7 @@ def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict
     log_admin(db, admin, "close", "ticket", t.id, {"status": 4, "close_reason": body.close_reason})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t, _assignee_names(db, [t]))
+    return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))
 
 
 def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> dict:
@@ -200,7 +216,7 @@ def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> di
     log_admin(db, admin, "assign", "ticket", t.id, {"admin_id": body.admin_id})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t, _assignee_names(db, [t]))
+    return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))
 
 
 def _norm_close_reason(value) -> int | None:
@@ -234,4 +250,4 @@ def admin_set_status(db: Session, admin: User, ticket_no: str, body: TicketStatu
     log_admin(db, admin, "status", "ticket", t.id, {"status": body.status, "close_reason": t.close_reason})
     db.commit()
     db.refresh(t)
-    return _ticket_admin_dict(t, _assignee_names(db, [t]))
+    return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))

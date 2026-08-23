@@ -50,6 +50,10 @@ _CLAIM_COMPLETED_SQL = text(
     "UPDATE orders SET status = 5, completed_at = :now "
     "WHERE id = :oid AND status = 4"
 )
+# 开始备货 CAS：仅已支付(1)可推进备货(2)，与取消/发货/支付回调并发互斥
+_CLAIM_PREPARING_SQL = text(
+    "UPDATE orders SET status = 2 WHERE id = :oid AND status = 1"
+)
 # 发货 CAS：仅已支付/待差价(1/2)可发货（置 3/发货中/发货时间/物流单号），
 # 与已付取消（shipping_status 守卫）/重复发货并发互斥，rowcount=0 即不可发货
 _CLAIM_SHIPPED_SQL = text(
@@ -109,6 +113,10 @@ def claim_order_paid_canceled(db: Session, order_id: int, now, reason: str) -> i
 
 def claim_order_completed(db: Session, order_id: int, now) -> int:
     return db.execute(_CLAIM_COMPLETED_SQL, {"oid": order_id, "now": now}).rowcount
+
+
+def claim_order_preparing(db: Session, order_id: int) -> int:
+    return db.execute(_CLAIM_PREPARING_SQL, {"oid": order_id}).rowcount
 
 
 def claim_order_shipped(db: Session, order_id: int, now, tracking_no: str) -> int:
@@ -585,3 +593,15 @@ def paginate_exchanges(
         .offset((page - 1) * per_page).limit(per_page).all()
     )
     return rows, total
+
+
+def exchange_diff_refunded(db: Session, order_id: int, exchange_no: str) -> bool:
+    """换货负差价是否已退（timeline exchange_diff_refunded 标记按单号判定，
+    防状态回退/重放场景下的二次退款；detail 为 JSON，跨库不查询键值、内存比对）"""
+    rows = (
+        db.query(OrderTimeline)
+        .filter(OrderTimeline.order_id == order_id,
+                OrderTimeline.event == "exchange_diff_refunded")
+        .all()
+    )
+    return any((t.detail or {}).get("exchange_no") == exchange_no for t in rows)

@@ -17,6 +17,20 @@ from app.domains.catalog.schemas import (
 router = APIRouter(prefix="/api/admin/catalog", tags=["admin-catalog"])
 
 
+@router.get("/stock-notifies")
+def admin_stock_notifies(
+    product_id: int | None = Query(None),
+    variant_id: int | None = Query(None),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """到货通知名单（StockNotification 模型在本 catalog 域，端点落位 catalog）"""
+    return service.admin_stock_notifies(
+        db, product_id=product_id, variant_id=variant_id, page=page, size=size,
+    )
+
 @router.get("/products")
 def admin_list_products(
     status: int | None = None,
@@ -121,6 +135,15 @@ def admin_update_variant(
     db: Session = Depends(get_db),
 ):
     return service.admin_update_variant(db, admin, variant_id, body)
+
+
+@router.delete("/variants/{variant_id}")
+def admin_delete_variant(
+    variant_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.admin_delete_variant(db, admin, variant_id)
 
 
 @router.get("/categories")

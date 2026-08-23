@@ -19,9 +19,9 @@ from app.core.config import settings
 from app.core.db import utcnow
 from app.core.security import create_token, hash_password, verify_password
 from app.models import (
-    CookieConsent, DataRequest, EmailPreference, Order, OrderItem, OutboxEvent,
-    PointsLedger, Referral, Review, Setting, Subscription, Ticket, TicketMessage,
-    User, UserAddress,
+    Cart, CookieConsent, DataRequest, EmailPreference, Order, OrderItem,
+    OutboxEvent, PointsLedger, Referral, Review, Setting, Subscription, Ticket,
+    TicketMessage, User, UserAddress, WishlistItem,
 )
 from app.services.emails import deliver, render
 
@@ -540,6 +540,39 @@ def cancel_delete(db: Session, user: User) -> dict:
     ).delete(synchronize_session=False)
     db.commit()
     return {"ok": True}
+
+
+def anonymize_user(db: Session, user_id: int) -> bool:
+    """GDPR 删除执行核心（单一实现，两方共用）：
+    worker 到期批处理（scripts/worker.py process_data_requests）与
+    后台立即执行（ops 域 data-requests execute）都调本函数。
+
+    匿化用户主体 + 删除地址/购物车/心愿单 + 历史订单脱敏保留（金额/状态不动）；
+    事务边界归调用方（不 commit）；返回用户是否存在（不存在时无操作，幂等）。
+    """
+    user = db.get(User, user_id)
+    if user is None:
+        return False
+    anon_email = f"deleted+{user.id}@anonymized.local"
+    user.email = anon_email
+    user.password_hash = None
+    user.name = ""
+    user.points = 0
+    user.status = -1
+    user.birthday = None
+    db.query(UserAddress).filter(UserAddress.user_id == user.id).delete(
+        synchronize_session=False)
+    db.query(Cart).filter(Cart.user_id == user.id).delete(
+        synchronize_session=False)
+    db.query(WishlistItem).filter(WishlistItem.user_id == user.id).delete(
+        synchronize_session=False)
+    for order in db.query(Order).filter(Order.user_id == user.id).all():
+        order.email = anon_email
+        addr = dict(order.shipping_address or {})
+        addr["full_name"] = "Deleted User"
+        addr["phone"] = ""
+        order.shipping_address = addr
+    return True
 
 
 # ---------- 邮件偏好中心（细粒度退订 / 复订） ----------

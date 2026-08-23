@@ -165,6 +165,36 @@ function jump(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smo
 
 const pad2 = (n) => String(n).padStart(2, '0')
 const fmtLocal = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+
+/* ===== 描述 Markdown 预览：md2html 实现复制自 ContentView.vue（本地工具函数，先整体转义再插标签防 XSS） ===== */
+function md2html(src) {
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+  const inline = (t) => t
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/\*([^*]+)\*/g, '<i>$1</i>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, href) => (/^https?:\/\//i.test(href)
+      ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>`
+      : /^\/(?!\/)/.test(href) ? `<a href="${href}">${text}</a>` : text))
+  const out = []
+  let ul = false
+  const closeUl = () => { if (ul) { out.push('</ul>'); ul = false } }
+  for (const raw of esc(src).split(/\r?\n/)) {
+    const l = raw.trim()
+    let m
+    if (!l) { closeUl(); continue }
+    if ((m = l.match(/^###\s+(.*)$/))) { closeUl(); out.push(`<h3>${inline(m[1])}</h3>`) }
+    else if ((m = l.match(/^##\s+(.*)$/))) { closeUl(); out.push(`<h2>${inline(m[1])}</h2>`) }
+    else if ((m = l.match(/^#\s+(.*)$/))) { closeUl(); out.push(`<h1>${inline(m[1])}</h1>`) }
+    else if ((m = l.match(/^[-*]\s+(.*)$/))) { if (!ul) { out.push('<ul>'); ul = true } out.push(`<li>${inline(m[1])}</li>`) }
+    else if ((m = l.match(/^&gt;\s?(.*)$/))) { closeUl(); out.push(`<blockquote>${inline(m[1])}</blockquote>`) }
+    else { closeUl(); out.push(`<p>${inline(l)}</p>`) }
+  }
+  closeUl()
+  return out.join('')
+}
+/* 描述编辑/预览切换（切预览只是隐藏 textarea，v-model 内容不丢） */
+const descPrev = ref(false)
 /* 后端 published_at 为 naive UTC（schemas._parse_published_at 统一落 UTC），展示/提交两端换算 */
 const asUTC = (s) => (/[zZ]$|[+-]\d\d:\d\d$/.test(s) ? s : s + 'Z')
 function schedQuick(days) { schedAt.value = fmtLocal(new Date(Date.now() + days * 864e5)) }
@@ -302,6 +332,9 @@ async function loadCopy(id) {
 /* URL 前缀校验：主图/图集/变体图须 http(s):// 开头（空值放行） */
 const badUrl = (u) => !!u && !/^https?:\/\//i.test(u)
 
+/* 保存成功后失效 ContentView 的商品标题缓存（键名同 ContentView PT_CACHE_KEY；新建/改名后需重拉） */
+function clearTitleCache() { try { sessionStorage.removeItem('admin.productTitles.v1') } catch (_) { /* 存储不可用忽略 */ } }
+
 async function save() {
   if (loading.value) return
   if (!form.slug || !form.title) { toast('slug 与标题必填', 'error'); return }
@@ -343,6 +376,7 @@ async function save() {
       }
       /* PUT 响应体回填表单（服务端规范化回显）后再 markClean */
       if (d && d.id) applyProduct(d)
+      clearTitleCache()
       toast('保存成功 ✓', 'success')
       markClean()
     } else {
@@ -368,6 +402,7 @@ async function save() {
         copyVars.value = []
         copyTrs.value = []
       }
+      clearTitleCache()
       toast('创建成功 ✓ 转编辑态', 'success')
       markClean()
       router.replace({ path: '/product-edit', query: { id: p.id } })
@@ -412,6 +447,36 @@ async function toggleVar(v) {
     markVarsClean()
     toast(v.is_active ? '已启用' : '已停用', 'success')
   } catch (e) { toast('操作失败', 'error') }
+}
+/* 删除变体：物理删除（级联清变体图/到货订阅）；被订单/购物车/退换引用 → 409 拒绝 */
+const delVarDlg = ref(false)
+const delVarBusy = ref(false)
+const delVarTarget = ref(null)
+const delVarBody = computed(() => delVarTarget.value
+  ? `删除变体「${specText(delVarTarget.value)}」${delVarTarget.value.sku ? '（' + delVarTarget.value.sku + '）' : ''}？删除后不可恢复；被订单/购物车/退换引用的变体不可删除。`
+  : '')
+function askDelVar(v) { delVarTarget.value = v; delVarDlg.value = true }
+async function doDelVar() {
+  const v = delVarTarget.value
+  if (!v || delVarBusy.value) return
+  delVarBusy.value = true
+  try {
+    await req('DELETE', '/api/admin/catalog/variants/' + v.id)
+    toast('变体已删除 ✓', 'success')
+    delVarDlg.value = false
+    variants.value = await loadVariants(pid.value)
+    markVarsClean()
+  } catch (e) {
+    if (e.status === 409) toast('该变体已被订单/退换引用，无法删除', 'error')
+    else if (e.status === 404) {
+      toast('变体不存在', 'error')
+      delVarDlg.value = false
+      variants.value = await loadVariants(pid.value)
+      markVarsClean()
+    }
+    else toast('删除失败：' + (e.data?.detail || e.message), 'error')
+  }
+  delVarBusy.value = false
 }
 function startEdit(v) { editing.value = { id: v.id, price: v.price, safety: v.safety_stock ?? 0, imgs: (v.images || []).join('\n'), hadImgs: (v.images || []).length > 0 } }
 async function saveEdit() {
@@ -567,7 +632,14 @@ async function doDelTr() {
           </select>
           <p v-if="!cats.length" style="font-size:11.5px;color:var(--error);margin-top:4px">分类{{ catsFailed ? '加载失败' : '为空' }}，保存会报「category not found」，请刷新重试</p>
         </div>
-        <div class="field"><label>描述（Markdown）</label><textarea v-model="form.description_md" class="input" rows="6"></textarea></div>
+        <div class="field"><label>描述（Markdown）</label>
+          <div class="md-tabs">
+            <button type="button" :class="{ on: !descPrev }" @click="descPrev = false">编辑</button>
+            <button type="button" :class="{ on: descPrev }" @click="descPrev = true">预览</button>
+          </div>
+          <textarea v-show="!descPrev" v-model="form.description_md" class="input" rows="6"></textarea>
+          <div v-show="descPrev" class="prose md-prev" v-html="md2html(form.description_md)"></div>
+        </div>
       </div>
 
       <div id="sec-pricing" class="card" style="padding:20px">
@@ -623,6 +695,7 @@ async function doDelTr() {
                 <template v-if="v.id">
                   <button class="btn btn-ghost btn-sm" @click="startEdit(v)">编辑</button>
                   <button class="btn btn-ghost btn-sm" @click="toggleVar(v)">{{ v.is_active ? '停用' : '启用' }}</button>
+                  <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="askDelVar(v)">删除</button>
                 </template>
               </div>
             </template>
@@ -771,6 +844,8 @@ async function doDelTr() {
   <ConfirmDialog :open="leaveDlg" title="未保存的修改" body="有未保存的修改，确认离开？" danger confirm-text="离开" @confirm="confirmLeave" @close="cancelLeave" />
   <!-- 删除翻译确认 -->
   <ConfirmDialog :open="delDlgOpen" title="删除翻译" :body="delDlgBody" danger confirm-text="删除" @confirm="doDelTr" @close="delDlgOpen = false" />
+  <!-- 删除变体确认（409 variant in use 不可删） -->
+  <ConfirmDialog :open="delVarDlg" title="删除变体" :body="delVarBody" danger confirm-text="删除" :busy="delVarBusy" @confirm="doDelVar" @close="delVarDlg = false" />
 </template>
 
 <style scoped>
@@ -778,6 +853,16 @@ async function doDelTr() {
 .achips button{padding:5px 12px;font-size:12.5px;border:1px solid var(--gray-light);background:#fff;border-radius:999px;color:var(--gray);cursor:pointer}
 .achips button:hover{color:var(--plum);border-color:var(--plum)}
 .phint{font-size:11.5px;color:var(--gray);margin-top:3px}
+/* 描述 Markdown 编辑/预览切换（样式同 ContentView） */
+.md-tabs{display:flex;gap:6px;margin-bottom:8px}
+.md-tabs button{border:1px solid var(--gray-light);background:#fff;color:var(--gray);font-size:12px;font-weight:600;border-radius:999px;padding:3px 12px;cursor:pointer}
+.md-tabs button.on{background:var(--plum);border-color:var(--plum);color:#fff}
+.md-prev{max-height:300px;overflow-y:auto;border:1px solid var(--gray-light);border-radius:10px;padding:12px 14px;background:#fff;font-size:14px}
+.md-prev h1{font-family:var(--font-title);font-size:20px;margin:14px 0 8px}
+.md-prev h3{font-family:var(--font-title);font-size:16px;margin:12px 0 6px}
+.md-prev blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid var(--plum);background:var(--rose-pale);border-radius:0 8px 8px 0;color:#3A3438}
+.md-prev code{background:var(--gray-light);border-radius:5px;padding:1px 6px;font-size:12.5px}
+.md-prev a{color:var(--plum);font-weight:600}
 /* 表单外壳：fieldset 包裹 + 加载覆盖层（loading 期间整体禁用） */
 .form-shell{border:none;padding:0;margin:0;position:relative;min-width:0}
 .load-mask{position:absolute;inset:0;z-index:6;background:rgba(255,255,255,.72);display:flex;align-items:flex-start;justify-content:center;gap:10px;padding-top:110px;font-size:13.5px;color:var(--gray);border-radius:12px}

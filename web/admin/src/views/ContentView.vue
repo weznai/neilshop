@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
-import { dDate } from '../composables/format'
+import { dDate, dt } from '../composables/format'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -424,6 +424,87 @@ function delArticle(a) {
 /* 文章前台链接：client 路由为 /blog/post?slug=（BlogPostView 按 query.slug 拉取），仅已发布可见 */
 const artUrl = (a) => '/blog/post?slug=' + encodeURIComponent(a.slug)
 
+/* ===== CSV 导出：仅当前 tab + 当前筛选，size=100 循环翻页上限 2000 行 ===== */
+const exporting = ref(false)
+const EXPORT_SIZE = 100
+const EXPORT_MAX_ROWS = 2000
+const REV_STATUS = ['待审', '已发布', '已驳回']
+/* 各 tab 当前筛选参数（与列表拉取同口径） */
+function exportParams() {
+  if (tab.value === 'reviews') {
+    const qs = { status: 0 }
+    if (revRating.value) qs.rating = revRating.value
+    if (revProduct.value) qs.product_id = revProduct.value
+    return { url: '/api/admin/ops/reviews', qs }
+  }
+  if (tab.value === 'ugc') {
+    const qs = {}
+    if (ugcStatus.value !== null) qs.status = ugcStatus.value
+    return { url: '/api/admin/ops/ugc', qs }
+  }
+  if (tab.value === 'faqs') {
+    const qs = {}
+    if (faqCat.value) qs.category = faqCat.value
+    return { url: '/api/admin/ops/faqs', qs }
+  }
+  const qs = {}
+  if (artStatus.value) qs.status = artStatus.value
+  return { url: '/api/admin/ops/articles', qs }
+}
+/* 行内容按 tab 生成（列集与列表展示字段一致） */
+function exportRow(it) {
+  if (tab.value === 'reviews') {
+    return [it.id, productName(it.product_id), it.rating || 0, it.content || '', REV_STATUS[it.status] || '待审', it.reject_reason || '', dt(it.created_at)]
+  }
+  if (tab.value === 'ugc') {
+    return [it.id, it.instagram_handle || '游客', it.caption || '', it.related_product_id ? productName(it.related_product_id) : '', UGC_STATUS[it.status]?.[0] || '待审', it.points_rewarded || 0, dt(it.created_at)]
+  }
+  if (tab.value === 'faqs') {
+    return [it.id, FAQ_CATS[it.category] || it.category || '', it.question, it.answer_md || '', it.sort_order ?? 0, it.active ? '显示中' : '隐藏']
+  }
+  return [it.id, it.slug, it.title, it.author || '', it.status === 1 ? '已发布' : '草稿', it.published_at ? dDate(it.published_at) : '', (it.tags || []).join('|')]
+}
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const { url, qs } = exportParams()
+    const fetchPage = (p) => req('GET', url + '?' + new URLSearchParams({ page: p, size: EXPORT_SIZE, ...qs }))
+    const first = await fetchPage(1)
+    const all = [...(first.items || [])]
+    const totalMatch = first.total ?? all.length
+    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_SIZE) || 1, Math.ceil(EXPORT_MAX_ROWS / EXPORT_SIZE))
+    for (let p = 2; p <= maxPage; p++) {
+      const d = await fetchPage(p)
+      all.push(...(d.items || []))
+    }
+    if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
+    if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
+      toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    }
+    const cell = (v) => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const head = {
+      reviews: ['ID', '商品', '星级', '内容', '状态', '驳回原因', '时间'],
+      ugc: ['ID', 'Instagram', '文案', '关联商品', '状态', '积分奖励', '时间'],
+      faqs: ['ID', '分类', '问题', '答案', '排序', '显示'],
+      articles: ['ID', 'Slug', '标题', '作者', '状态', '发布时间', '标签'],
+    }[tab.value]
+    const rows = [head, ...all.map(exportRow)]
+    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
+    const blobUrl = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = tab.value + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
+    a.click()
+    URL.revokeObjectURL(blobUrl)
+    toast('已导出 ' + all.length + ' 条 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
+
 /* 文章新建/编辑（ArticleCreateIn：slug/title/author/content_md/tags/status；slug 后端强制小写且唯一） */
 const artDlg = ref(false)
 const artForm = reactive({ id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0 })
@@ -476,6 +557,7 @@ async function saveArticle() {
       <span class="page-sub">评价 / UGC / FAQ / 博客</span>
     </div>
     <div style="display:flex;gap:12px;align-items:center">
+      <button class="btn btn-secondary btn-sm" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
       <button v-if="tab === 'faqs'" class="btn btn-primary btn-sm" @click="newFaq">＋ 新增 FAQ</button>
       <button v-if="tab === 'articles'" class="btn btn-primary btn-sm" @click="newArticle">＋ 新文章</button>
     </div>

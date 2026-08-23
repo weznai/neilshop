@@ -13,7 +13,8 @@ const rmas = ref([])
 const exch = ref([])
 const loaded = ref(false)
 /* 状态映射统一走 constants/trade.js：RMA_STATUS 退货 / ESTATUS 换货 / RMA_REASON 原因
- * 后台流转：approve 0→2（生成退货标签）· reject 0→6 · receive 1/2/3→4（收货回补库存）· refund 4→5 */
+ * 后台流转：approve 0→2（生成退货标签）· reject 0→6 · receive 1/2/3→4（收货回补库存）
+ * · refund 4→5（按折算额全退）/ 4→7（自定义金额部分退款） */
 const reasonLabel = (r) => RMA_REASON[r.reason] || '—'
 
 /* URL 同步：tab 主档位 + rs/es 两列表状态筛选（存 tab key 字符串）+ rp/ep 两分页 + 共用搜索词 q */
@@ -33,7 +34,7 @@ const rmaPages = ref(1)
 const rmaTotal = ref(0)
 const RTABS = [
   ['all', '全部', null], ['s0', '待审核', [0]], ['s23', '待收货', [2, 3]],
-  ['s4', '已收货', [4]], ['s5', '已退款', [5]], ['s6', '已拒绝', [6]],
+  ['s4', '已收货', [4]], ['s7', '部分退款', [7]], ['s5', '已退款', [5]], ['s6', '已拒绝', [6]],
 ]
 /* 高亮按 key 字符串比较（修数组引用比较 R9），筛选值由 key 派生避免双份状态 */
 const rmaFilter = computed(() => RTABS.find(([k]) => k === state.rs)?.[2] ?? null)
@@ -191,22 +192,15 @@ async function exportCsv() {
   exporting.value = false
 }
 
-/* 统一确认弹窗（替代原生 confirm）：pending 记录待发请求；refund/reject 危险态，reject 需填拒绝原因 */
-const cfm = reactive({ open: false, title: '', body: '', danger: false, reasonLabel: '', reasonPlaceholder: '', reasonRequired: false, confirmText: '确认', pending: null })
+/* 统一确认弹窗（替代原生 confirm）：pending 记录待发请求；reject 危险态且必填原因（reasonTextarea=多行） */
+const cfm = reactive({ open: false, title: '', body: '', danger: false, reasonLabel: '', reasonPlaceholder: '', reasonTextarea: false, reasonRequired: false, confirmText: '确认', pending: null })
 const submitting = ref(false)
 function askRma(r, action) {
   let title = '', body = `退货单 ${r.rma_no}`, confirmText = '确认', danger = false
   let reasonLabel = '', reasonPlaceholder = ''
   if (action === 'approve') { title = '批准退货'; body += ' · 将为该申请生成退货标签'; confirmText = '批准' }
   else if (action === 'receive') { title = '确认收货'; body += ` · 将回补库存 ×${r.qty}` }
-  else if (action === 'refund') {
-    title = '执行退款'; danger = true; confirmText = '确认退款'
-    /* refund_amount 按订单实付比例折算，审核前可能为 null（未折算） */
-    body += ' · 退款按订单实付比例折算（含税/运费/折扣分摊）'
-    if (r.refund_amount != null) body += ` · 本次退款 ${money(r.refund_amount)}`
-    if (r.unit_price != null) body += ` · 参考值 ${money(r.unit_price * r.qty)}`
-    body += ' · 将回补库存，操作不可撤销'
-  } else if (action === 'reject') {
+  else if (action === 'reject') {
     title = '拒绝退货'; danger = true; confirmText = '确认拒绝'
     body += ' · 拒绝后该申请终止，不可恢复'
     reasonLabel = '拒绝原因'; reasonPlaceholder = '必填，如：超出售后期限 / 不符合退货政策'
@@ -219,7 +213,7 @@ function askRma(r, action) {
   cfm.open = true
 }
 function askExch(x, action) {
-  let title = '', confirmText = '确认', body = `换货单 ${x.exchange_no}`
+  let title = '', confirmText = '确认', danger = false, body = `换货单 ${x.exchange_no}`
   if (action === 'approve') {
     title = '批准换货'; confirmText = '批准'
     /* 按差价提示流向：>0 买家补差 / <0 退买家差价 / =0 无差价 */
@@ -230,19 +224,20 @@ function askExch(x, action) {
     if (x.price_diff > 0) body += ` · 应付差价 ${money(x.price_diff)}`
   }
   else if (action === 'complete') { title = '完成换货'; confirmText = '完成' }
-  else if (action === 'reject') { title = '拒绝换货'; confirmText = '确认拒绝' }
-  cfm.title = title; cfm.body = body; cfm.danger = false
-  /* reject 走原因输入模式：confirm 回调把 reason 放进请求 body（ExchangeRejectRequest） */
+  else if (action === 'reject') { title = '拒绝换货'; danger = true; confirmText = '确认拒绝'; body += ' · 拒绝后该换货终止，不可恢复' }
+  cfm.title = title; cfm.body = body; cfm.danger = danger
+  /* reject 走原因输入模式（必填，textarea 多行）：confirm 回调把 reason 放进请求 body（ExchangeRejectRequest） */
   cfm.reasonLabel = action === 'reject' ? '拒绝原因' : ''
-  cfm.reasonPlaceholder = action === 'reject' ? '如：库存不足 / 不符合换货政策' : ''
-  cfm.reasonRequired = false
+  cfm.reasonPlaceholder = action === 'reject' ? '必填，如：库存不足 / 不符合换货政策' : ''
+  cfm.reasonTextarea = action === 'reject'
+  cfm.reasonRequired = action === 'reject'
   cfm.confirmText = confirmText
   cfm.pending = { kind: 'exch', no: x.exchange_no, action, label: title }
   cfm.open = true
 }
 async function doConfirm(reason) {
   if (submitting.value || !cfm.pending) return
-  /* RMA 拒绝原因必填 */
+  /* 拒绝原因必填（RMA/换货同口径） */
   if (cfm.reasonRequired && !reason) { toast('请填写' + cfm.reasonLabel, 'error'); return }
   submitting.value = true
   const { kind, no, action, label } = cfm.pending
@@ -254,6 +249,39 @@ async function doConfirm(reason) {
     load()
   } catch (e) { toast(`${label}失败：` + (mapErr(e.data?.detail, kind === 'rma' ? RMA_ERR : EXCH_ERR) || e.data?.detail || e.message), 'error') }
   submitting.value = false
+}
+
+/* RMA 退款弹窗（独立于统一确认弹窗：需可选金额输入）：refund_amount 为后端折算额；
+ * 金额留空=按折算额全退（status→5，不携带 amount_cents）；填值换算为分提交 → 部分退款（status→7） */
+const refundDlg = ref(null)
+const refundAmt = ref('')
+const refunding = ref(false)
+function askRefund(r) { refundDlg.value = r; refundAmt.value = '' }
+async function doRefund() {
+  const r = refundDlg.value
+  if (!r || refunding.value) return
+  let body
+  const s = String(refundAmt.value).trim()
+  if (s !== '') {
+    const v = Number(s)
+    if (!(v > 0)) { toast('退款金额需大于 0', 'error'); return }
+    /* 折算额未知（理论上退款态必已折算）时禁用手填，防盲提交 */
+    if (r.refund_amount == null || Math.round(v * 100) > r.refund_amount) { toast('超出可退额度', 'error'); return }
+    body = { amount_cents: Math.round(v * 100) }
+  }
+  refunding.value = true
+  try {
+    const d = await req('POST', `/api/admin/trade/rmas/${r.rma_no}/refund`, body)
+    toast(d?.partial ? `部分退款 ${money(d.refund_amount)} ✓（折算额 ${money(r.refund_amount)}）` : '退款完成 ✓', 'success')
+    refundDlg.value = null
+    load()
+  } catch (e) {
+    /* 409 invalid refund amount 优先 mapErr(RMA_ERR)；键未就绪时精确串兜底翻译 */
+    toast('退款失败：' + (mapErr(e.data?.detail, RMA_ERR)
+      || (e.data?.detail === 'invalid refund amount' ? '退款金额超出可退额度' : '')
+      || e.data?.detail || e.message), 'error')
+  }
+  refunding.value = false
 }
 
 /* 换货重发弹窗：ShipRequest 需 carrier + tracking_no */
@@ -348,7 +376,7 @@ async function exShipConfirm() {
               <button v-if="r.status === 0" class="btn btn-primary btn-sm" @click="askRma(r, 'approve')">批准</button>
               <button v-if="r.status === 0" class="btn btn-danger btn-sm" style="margin-left:4px" @click="askRma(r, 'reject')">拒绝</button>
               <button v-if="[1, 2, 3].includes(r.status)" class="btn btn-secondary btn-sm" @click="askRma(r, 'receive')">收货</button>
-              <button v-if="r.status === 4" class="btn btn-primary btn-sm" @click="askRma(r, 'refund')">退款</button>
+              <button v-if="r.status === 4" class="btn btn-danger btn-sm" @click="askRefund(r)">退款</button>
             </td>
           </tr>
         </tbody>
@@ -425,6 +453,26 @@ async function exShipConfirm() {
     </div>
   </div>
 
+  <!-- RMA 退款弹窗（金额可调：留空=按折算额全退，填值=部分退款） -->
+  <div v-if="refundDlg" class="modal open" @click.self="refundDlg = null">
+    <div class="modal-box" style="max-width:420px">
+      <button class="modal-x" @click="refundDlg = null">×</button>
+      <div class="dhead"><h3 class="dtitle">💸 执行退款 {{ refundDlg.rma_no }}</h3></div>
+      <p style="font-size:13px;color:var(--gray);margin-bottom:14px">
+        退款按订单实付比例折算（含税/运费/折扣分摊）· 本次退款
+        <b v-if="refundDlg.refund_amount != null" style="color:var(--plum)">{{ money(refundDlg.refund_amount) }}</b>
+        <template v-if="refundDlg.unit_price != null"> · 参考值 {{ money(refundDlg.unit_price * refundDlg.qty) }}</template>
+        · 将回补库存，操作不可撤销
+      </p>
+      <div class="field">
+        <label>退款金额（美元，可选）</label>
+        <input v-model="refundAmt" class="input" type="number" min="0" step="0.01" :placeholder="refundDlg.refund_amount != null ? '留空 = 按折算额 ' + money(refundDlg.refund_amount) + ' 全额退款' : '留空 = 按折算额全额退款'">
+        <p style="font-size:11.5px;color:var(--gray);margin-top:6px">填写小于折算额的金额将执行部分退款；超出折算额将被拒绝。</p>
+      </div>
+      <button class="btn btn-danger btn-block" style="margin-top:12px" :disabled="refunding" @click="doRefund">{{ refunding ? '退款中…' : '确认退款' }}</button>
+    </div>
+  </div>
+
   <!-- 写操作统一确认弹窗 -->
   <ConfirmDialog
     :open="cfm.open"
@@ -434,6 +482,7 @@ async function exShipConfirm() {
     :confirm-text="cfm.confirmText"
     :reason-label="cfm.reasonLabel"
     :reason-placeholder="cfm.reasonPlaceholder"
+    :reason-textarea="cfm.reasonTextarea"
     :busy="submitting"
     @confirm="doConfirm"
     @close="cfm.open = false"

@@ -74,8 +74,8 @@ const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id) || null
 
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
-function buildUrl(p) {
-  const params = new URLSearchParams({ page: p, size: SIZE })
+function buildUrl(p, size = SIZE) {
+  const params = new URLSearchParams({ page: p, size })
   if (f.entity) params.set('entity', f.entity)
   if (f.action.trim()) params.set('action', f.action.trim())
   /* admin_id 空串/非法输入（NaN）不带参数（即清除筛选），防后端 422 */
@@ -163,6 +163,45 @@ function diffFull(v) {
 }
 /* 管理员：优先 admin_name（契约增强后），否则 #admin_id */
 const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
+
+/* CSV 导出：当前筛选（实体/动作/管理员/日期）全量拉取，size=100 上限 2000 行 */
+const exporting = ref(false)
+const EXPORT_SIZE = 100
+const EXPORT_MAX_ROWS = 2000
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const first = await req('GET', buildUrl(1, EXPORT_SIZE))
+    const all = [...(first.items || [])]
+    const totalMatch = first.total ?? all.length
+    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_SIZE) || 1, Math.ceil(EXPORT_MAX_ROWS / EXPORT_SIZE))
+    for (let p = 2; p <= maxPage; p++) {
+      const d = await req('GET', buildUrl(p, EXPORT_SIZE))
+      all.push(...(d.items || []))
+    }
+    if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
+    if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
+      toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    }
+    const cell = (v) => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const rows = [['时间', '管理员', '实体', '动作', '对象ID', '变更内容'],
+      ...all.map((l) => [dt(l.created_at), adminName(l), entLabel(l.entity) + '（' + l.entity + '）', l.action,
+        l.entity_id ?? '', diffFull(l.diff_json) || ''])]
+    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'logs_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('已导出 ' + all.length + ' 条 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
 </script>
 
 <template>
@@ -170,6 +209,9 @@ const adminName = (l) => l.admin_name || (l.admin_id ? '#' + l.admin_id : '—')
     <div>
       <h1 class="page-title">审计日志</h1>
       <span class="page-sub">管理员操作记录 · 共 {{ total }} 条</span>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
     </div>
   </div>
 

@@ -33,18 +33,23 @@ const tierCls = (t) => ''
 const tierStyle = (t) => (t === 2 ? 'background:#C9A227;color:#fff' : t === 1 ? 'background:#E8ECF2;color:#4A5568' : 'background:var(--rose-pale);color:var(--plum)')
 const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 
+/* 请求 URL 组装（列表与 CSV 导出共用）：q/tier/risk/sort 当前筛选 */
+function buildUrl(p, size = SIZE) {
+  const params = new URLSearchParams({ page: p, size })
+  const s = st.q.trim()
+  if (s) params.set('q', s)
+  if (st.tier !== '') params.set('tier', st.tier)
+  if (st.risk !== '') params.set('risk', st.risk)
+  if (st.sort) params.set('sort', st.sort)   /* 服务端白名单排序 */
+  return '/api/admin/ops/members?' + params
+}
+
 async function load(p = 1) {
   /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
   errMsg.value = ''
   try {
-    const params = new URLSearchParams({ page: p, size: SIZE })
-    const s = st.q.trim()
-    if (s) params.set('q', s)
-    if (st.tier !== '') params.set('tier', st.tier)
-    if (st.risk !== '') params.set('risk', st.risk)
-    if (st.sort) params.set('sort', st.sort)   /* 服务端白名单排序 */
-    const d = await req('GET', '/api/admin/ops/members?' + params)
+    const d = await req('GET', buildUrl(p))
     members.value = d.items || []
     total.value = d.total ?? 0
     st.page = d.page || p
@@ -56,6 +61,45 @@ async function load(p = 1) {
   loaded.value = true
 }
 onMounted(() => load(st.page))
+
+/* CSV 导出：当前筛选（搜索/等级/风控/排序）全量拉取，size=100 上限 2000 行 */
+const exporting = ref(false)
+const EXPORT_SIZE = 100
+const EXPORT_MAX_ROWS = 2000
+async function exportCsv() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const first = await req('GET', buildUrl(1, EXPORT_SIZE))
+    const all = [...(first.items || [])]
+    const totalMatch = first.total ?? all.length
+    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_SIZE) || 1, Math.ceil(EXPORT_MAX_ROWS / EXPORT_SIZE))
+    for (let p = 2; p <= maxPage; p++) {
+      const d = await req('GET', buildUrl(p, EXPORT_SIZE))
+      all.push(...(d.items || []))
+    }
+    if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
+    if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
+      toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    }
+    const cell = (v) => {
+      const s = String(v ?? '')
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+    }
+    const rows = [['邮箱', '姓名', '等级', '积分', '累计消费', '最近下单', '风控标记'],
+      ...all.map((m) => [m.email, m.name || '', TIER[m.tier || 0] || '', (m.points || 0).toLocaleString(),
+        money(m.total_spent), dDate(m.last_order_at) || '', ['正常', '关注', '黑名单'][m.risk_flag || 0]])]
+    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
+    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'members_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+    toast('已导出 ' + all.length + ' 位 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  exporting.value = false
+}
 
 function search() { load(1) }
 function setTier(v) { st.tier = v; load(1) }
@@ -155,6 +199,7 @@ async function applyRisk(flag = 2) {
       </select>
       <input v-model="st.q" class="input" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
+      <button class="btn btn-secondary btn-sm" style="height:38px" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
     </div>
   </div>
 

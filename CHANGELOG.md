@@ -3,6 +3,40 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.6] · 管理后台二阶段：状态机收口 + 运营队列可视化管理
+
+### Added（交易域状态机收口）
+- **订单备货/代完成**：`POST /orders/{no}/prepare`（1→2 开始备货，CAS 原语）、`POST /orders/{no}/mark-completed`（4→5 代确认完成，复用用户 confirm-received 的完成 CAS，并发互斥）；订单详情页状态化按钮接入。
+- **订单改地址**：`PUT /orders/{no}/address`（仅未发货 status≤2；timeline 落 address_updated 含旧值摘要）；详情页 8 字段地址弹窗。
+- **RMA 退款金额可调 + 部分退款状态**：refund 接受可选 `amount_cents`（≤折算可退额，超限 409）；部分退款落 status=7（原死状态复活），退款弹窗支持留空全退/填值部分退。
+- **换货负差价退款**：complete（3→4）时对 price_diff<0 自动退 |diff| 给买家（Payment 账务对齐 apply_refund 写法，不驱动订单状态），timeline 落 `exchange_diff_refunded` 防重复。
+- **工单最后消息信息**：列表/详情 items 增 `last_message_at`/`last_sender`（IN 批查单条聚合，无 N+1）；工单列表"客户新回复"蓝标 + 最后消息时间。
+
+### Added（运营域新管理页面，后端 15 端点 + 前端 2 视图 + 设置页 2 tab）
+- **订阅管理**（新视图 /subscriptions）：状态 tab/搜索/分页 + 代暂停（可选恢复日期）/恢复/取消（原因枚举），复用用户侧状态机（service 抽 _pause/_resume/_cancel_core 共享）。
+- **运营队列**（新视图 /queues 四 tab）：弃购 cart 列表（口径对齐 worker >1h）、对账历史（日期范围 + 三差异红标）、GDPR 数据请求队列（待处理→立即执行/驳回；worker 匿化逻辑抽为 `anonymize_user` 共享函数，后台立即执行与到期执行行为一致）、营销名单（Newsletter + 到货通知双名单）。
+- **设置页扩容**：管理员账号 tab（超管专属：建号/改角色/停用，require_superadmin 新依赖；不能操作自己）+ 媒体库 tab（列表分页搜索/上传/删除，7 表引用检查 409 media in use，路径穿越防护）。
+- **变体删除**：`DELETE /catalog/variants/{id}`（订单/购物车/RMA/换货四路引用检查，命中 409）；商品编辑页删除按钮 + 危险确认。
+- **到货通知名单**：`GET /catalog/stock-notifies`（分页 + product/variant 过滤）。
+- **Newsletter 订阅者列表**：`GET /ops/newsletters`（分页 + 搜索）。
+
+### Fixed（口径统一 / 契约补齐）
+- **低库存三处口径统一**：看板 low_stock/low_stock_top、商品列表 low_stock_count 全部改为 `stock ≤ max(safety_stock, 8)` 且仅 is_active 变体（CASE WHEN 双库兼容）；看板低库存卡片加口径提示。
+- **分页契约统一补 pages**：ops（members/logs/tickets/reviews/ugc）+ promo（discounts/giftcards/usages/ledger）+ content（articles/faqs）+ catalog（products/variants）全部列表补 `pages` 字段，与 trade 域同名对齐（消双形态）。
+- **错误码键对齐**：RMA_ERR 修正为后端实际 detail `invalid refund amount`（空格串，前缀匹配命中）。
+
+### Added（体验打磨）
+- **CSV 导出补齐**：工单/审计日志/会员/内容四页（当前筛选全量拉取上限 2000 行，tickets/logs/members/reviews/ugc/faqs/articles_YYYYMMDD.csv）。
+- **商品编辑**：描述 Markdown 预览（转义防 XSS）；变体删除；保存成功失效商品标题 sessionStorage 缓存。
+- **营销页**：集合 banner 接入媒体上传（保留手填）；rates/popups/collections 三 tab 前端分页（每页 10 条）。
+- **ConfirmDialog** 支持 `reasonTextarea`（多行原因，Enter 换行/Ctrl+Enter 确认）；换货拒绝原因改必填（对齐 RMA 口径）并使用多行输入。
+- **Dashboard** range 入 URL（刷新/分享保持时间范围）。
+
+### 测试与基础设施
+- 新增 `test_admin_flow_ext`（50 断言）与 `test_admin_queues_ext`（71 断言），run_all 纳入 → 27 py 套件；run_all venv 缺失时回落 PATH python。
+- **全量回归 32 套件全绿**（含 e2e 62/62、concurrency 6/6、cache 20/20、perf 29/29）；双 SPA（client+admin）构建通过。
+- API.md 再生成 204→**224** 端点（admin 97→114）。
+
 ## [0.3.5] · 管理后台全面体检：契约对齐 + 流程闭环 + UI 修复
 
 ### Fixed（前后端契约对齐）

@@ -76,9 +76,13 @@ export const TSTATUS = {
 /* ===== 后端错误码 → 中文文案 =====
  * detail 形如 "not_shippable:1"（冒号后带参数），需按前缀匹配，见 mapErr() */
 
-/* 订单写操作 */
+/* 订单写操作（not_prepable/not_completable 带状态码后缀，前缀匹配可命中） */
 export const ORDER_ERR = {
   not_shippable: '当前状态不可发货',
+  not_prepable: '当前状态不能开始备货',
+  not_completable: '当前状态不能代确认完成',
+  'order already shipped': '订单已发货，不能修改地址',
+  order_not_found: '订单不存在',
   only_pending_can_cancel: '仅待支付订单可取消',
   no_refundable_payment: '无的可退支付',
   already_fully_refunded: '该支付已全额退款',
@@ -92,6 +96,7 @@ export const RMA_ERR = {
   rma_not_approvable: '该申请不在待审核状态',
   rma_not_receivable: '当前状态不可收货',
   rma_not_refundable: '当前状态不可退款',
+  'invalid refund amount': '退款金额超出可退额度',
 }
 
 /* 换货写操作（detail 精确串采集自 service_exchanges.py，冒号后带当前状态码按前缀匹配） */

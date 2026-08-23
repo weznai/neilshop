@@ -80,6 +80,23 @@ class RmaRejectRequest(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=200)
 
 
+class RmaRefundRequest(BaseModel):
+    """RMA 退款金额可调：缺省按订单实付比例折算；传值须 >0 且 ≤ 折算可退额"""
+    amount_cents: Optional[int] = Field(default=None, ge=1)
+
+
+class OrderAddressUpdateIn(BaseModel):
+    """后台订单改地址：全字段可选部分更新（仅未发货 status≤2 可改，其余 409）"""
+    full_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    line1: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    line2: Optional[str] = Field(default=None, max_length=200)
+    city: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    state: Optional[str] = Field(default=None, max_length=100)
+    zip: Optional[str] = Field(default=None, min_length=1, max_length=20)
+    country: Optional[str] = Field(default=None, min_length=2, max_length=2)
+    phone: Optional[str] = Field(default=None, max_length=30)
+
+
 class NoteIn(BaseModel):
     text: str = Field(min_length=1, max_length=500)
 

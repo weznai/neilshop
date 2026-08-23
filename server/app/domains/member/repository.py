@@ -232,6 +232,11 @@ def add_order_timeline(db: Session, entry: OrderTimeline) -> None:
 
 # ---------- 订阅 ----------
 
+def users_by_ids(db: Session, ids: set[int]) -> list[User]:
+    """后台订阅列表 email 回填用批量查询（避免逐行查用户）"""
+    return db.query(User).filter(User.id.in_(ids)).all() if ids else []
+
+
 def list_subscriptions(db: Session, user_id: int) -> list[Subscription]:
     return (
         db.query(Subscription)
@@ -266,5 +271,5 @@ __all__ = [
     "user_id_by_email", "all_user_ids", "add_referral",
     "pending_referrals_for_email",
     "add_order_timeline", "list_subscriptions", "get_subscription",
-    "add_subscription",
+    "add_subscription", "users_by_ids",
 ]

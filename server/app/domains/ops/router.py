@@ -1,14 +1,19 @@
 """运营域后台路由 —— /api/admin/ops 下 dashboard/members/logs + 评价/UGC 审核扩展
++ 运营队列（弃购/对账/GDPR 数据请求/Newsletter）+ 管理员账号管理（仅超管）
 （绝对路径，由 admin_ops shim 组装；本 router 先于 content/support 注册，故同名
 reviews 列表路由在此扩展 rating/product_id 过滤并以本域实现命中）"""
+
+from datetime import date
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import require_admin
+from app.core.deps import require_admin, require_superadmin
 from app.domains.ops import service
-from app.domains.ops.schemas import PointsAdjustIn, ReviewBulkIn, RiskIn, UgcBulkIn
+from app.domains.ops.schemas import (
+    AdminCreateIn, AdminUpdateIn, PointsAdjustIn, ReviewBulkIn, RiskIn, UgcBulkIn,
+)
 from app.models import User
 
 router = APIRouter(tags=["admin-ops"])
@@ -119,3 +124,95 @@ def unapprove_ugc(
     admin: User = Depends(require_admin), db: Session = Depends(get_db),
 ):
     return service.unapprove_ugc(db, admin, ugc_id)
+
+
+# ---------- 运营队列：弃购 / 对账历史 / GDPR 数据请求 / Newsletter ----------
+
+@router.get("/api/admin/ops/abandoned-carts")
+def abandoned_carts(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """弃购队列：口径对齐 worker（有商品 + 最后活跃超 1 小时未下单），按最后活跃倒序"""
+    return service.abandoned_carts(db, page, size)
+
+
+@router.get("/api/admin/ops/reconciliations")
+def reconciliations(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.reconciliations(db, page, size, date_from, date_to)
+
+
+@router.get("/api/admin/ops/data-requests")
+def data_requests(
+    type: int | None = Query(None, ge=1, le=2, description="1导出 2删除"),
+    status: int | None = Query(None, ge=0, le=2),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.data_requests(db, page, size, type, status)
+
+
+@router.post("/api/admin/ops/data-requests/{req_id}/reject")
+def reject_data_request(
+    req_id: int,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    return service.reject_data_request(db, admin, req_id)
+
+
+@router.post("/api/admin/ops/data-requests/{req_id}/execute")
+def execute_data_request(
+    req_id: int,
+    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+):
+    """立即执行（删除类与 worker 共用 anonymize_user）；仅受理中(0)可执行"""
+    return service.execute_data_request(db, admin, req_id)
+
+
+@router.get("/api/admin/ops/newsletters")
+def newsletters(
+    q: str | None = Query(None, description="email 模糊搜索"),
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return service.newsletters(db, page, size, q)
+
+
+# ---------- 管理员账号管理（仅超管） ----------
+
+@router.post("/api/admin/ops/admins")
+def create_admin(
+    body: AdminCreateIn,
+    admin: User = Depends(require_superadmin), db: Session = Depends(get_db),
+):
+    return service.create_admin(db, admin, body)
+
+
+@router.put("/api/admin/ops/admins/{admin_id}")
+def update_admin(
+    admin_id: int,
+    body: AdminUpdateIn,
+    admin: User = Depends(require_superadmin), db: Session = Depends(get_db),
+):
+    return service.update_admin(db, admin, admin_id, body)
+
+
+@router.get("/api/admin/ops/admins/{admin_id}")
+def admin_detail(
+    admin_id: int,
+    admin: User = Depends(require_superadmin), db: Session = Depends(get_db),
+):
+    return service.admin_detail(db, admin_id)

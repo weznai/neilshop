@@ -18,8 +18,9 @@ from app.core.db import init_db
 
 # 域路由直连（routers/ 单行重导出层已裁撤，domains 即装配面）
 from app.domains.member import (
-    router_account as account, router_points as points,
-    router_referrals as referrals, router_subscriptions as subscriptions,
+    router_account as account, router_admin as admin_member,
+    router_points as points, router_referrals as referrals,
+    router_subscriptions as subscriptions,
 )
 from app.domains.catalog import router as catalog, router_admin as admin_catalog
 from app.domains.trade import (
@@ -76,7 +77,7 @@ if _origins:
 _ROUTERS = (
     account, catalog, cart, checkout, orders, payments, returns,
     promo, points, content, support, admin_catalog, admin_trade, admin_ops_all, ai,
-    referrals, subscriptions, exchanges, admin_media,
+    referrals, subscriptions, exchanges, admin_media, admin_member,
 )
 for module in _ROUTERS:
     app.include_router(module.router)

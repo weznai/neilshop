@@ -1,4 +1,4 @@
-"""运营域服务 —— 看板聚合编排 / 会员管理与风控 / 审计日志"""
+"""运营域服务 —— 看板聚合编排 / 会员管理与风控 / 审计日志 / 运营队列（弃购/对账/GDPR/Newsletter/管理员账号）"""
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -7,12 +7,15 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
+from app.core.security import hash_password
 from app.models import AdminLog, Review, UgcSubmission, User
 from app.domains.content import service as content_service
 from app.domains.content.schemas import ReasonIn
+from app.domains.member.service_account import _gdpr_delay_days, anonymize_user
 from app.domains.ops import repository as repo
 from app.domains.ops.schemas import (
-    REASON_TEXT, PointsAdjustIn, ReviewBulkIn, RiskIn, UgcBulkIn,
+    REASON_TEXT, AdminCreateIn, AdminUpdateIn, PointsAdjustIn,
+    ReviewBulkIn, RiskIn, UgcBulkIn,
 )
 from app.services import points as points_svc
 
@@ -142,6 +145,7 @@ def list_members(
         "total": total,
         "page": page,
         "size": size,
+        "pages": (total + size - 1) // size,
     }
 
 
@@ -241,6 +245,7 @@ def admin_reviews(
         "total": total,
         "page": page,
         "size": size,
+        "pages": (total + size - 1) // size,
     }
 
 
@@ -344,4 +349,227 @@ def admin_logs(
         "total": total,
         "page": page,
         "size": size,
+        "pages": (total + size - 1) // size,
     }
+
+
+# ===== 运营队列：弃购 / 对账历史 / GDPR 数据请求 / Newsletter =====
+
+
+def abandoned_carts(db: Session, page: int, size: int) -> dict:
+    """弃购队列：口径对齐 worker（有商品 + 最后活跃超 1 小时未下单），
+    按最后活跃倒序；金额按页内 variantId 批量取价估算"""
+    cutoff = _naive_utcnow() - repo.ABANDON_CUTOFF
+    rows, total = repo.page(repo.abandoned_carts_query(db, cutoff), page, size)
+    prices = {
+        v.id: v.price for v in repo.variants_by_ids(
+            db, {it.get("variantId") for c in rows for it in (c.items or [])}
+        )
+    }
+    now = _naive_utcnow()
+    items = []
+    for c in rows:
+        entries = c.items or []
+        items.append({
+            "id": c.id,
+            "email": c.email,
+            "items_count": len(entries),
+            "total_qty": sum(int(it.get("qty") or 0) for it in entries),
+            "amount_cents": sum(
+                int(it.get("qty") or 0) * prices.get(it.get("variantId"), 0)
+                for it in entries
+            ),
+            "updated_at": c.updated_at,
+            "days_ago": round((now - c.updated_at).total_seconds() / 86400, 1)
+            if c.updated_at else None,
+        })
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
+
+
+def reconciliations(
+    db: Session, page: int, size: int,
+    date_from: datetime | None = None, date_to: datetime | None = None,
+) -> dict:
+    """对账历史：按日期倒序，可按日期区间过滤"""
+    rows, total = repo.page(
+        repo.reconciliations_query(db, date_from, date_to), page, size
+    )
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "reconcile_date": r.reconcile_date,
+                "payments_gross": r.payments_gross,
+                "orders_paid_total": r.orders_paid_total,
+                "diff_payment": r.diff_payment,
+                "diff_refund": r.diff_refund,
+                "points_ledger_sum": r.points_ledger_sum,
+                "users_points_sum": r.users_points_sum,
+                "diff_points": r.diff_points,
+                "status": r.status,
+                "checked_at": r.checked_at,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
+
+
+# DataRequest 状态：0受理 1完成（worker/用户侧既有语义）+ 2驳回（后台审核扩展）
+_TYPE_TEXT = {1: "导出", 2: "删除"}
+_STATUS_TEXT = {0: "受理中", 1: "已完成", 2: "已驳回"}
+
+
+def data_requests(
+    db: Session, page: int, size: int,
+    type_: int | None = None, status: int | None = None,
+) -> dict:
+    rows, total = repo.page(repo.data_requests_query(db, type_, status), page, size)
+    users = {u.id: u for u in repo.users_by_ids(db, {r.user_id for r in rows})}
+    delay_days = _gdpr_delay_days(db)
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "email": users[r.user_id].email if r.user_id in users else None,
+                "type": r.type,
+                "type_text": _TYPE_TEXT.get(r.type, str(r.type)),
+                "status": r.status,
+                "status_text": _STATUS_TEXT.get(r.status, str(r.status)),
+                "created_at": r.created_at,
+                # 计划执行时间：删除类 = 申请时间 + 冷静期（对齐 worker 到期口径）
+                "scheduled_at": (
+                    r.created_at + timedelta(days=delay_days) if r.type == 2 else None
+                ),
+                "fulfilled_at": r.fulfilled_at,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
+
+
+def reject_data_request(db: Session, admin: User, req_id: int) -> dict:
+    """驳回：仅受理中(0)可驳回（已执行/已驳回 → 409）"""
+    req = repo.data_request_by_id(db, req_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="data request not found")
+    if req.status != 0:
+        raise HTTPException(status_code=409, detail="request not pending")
+    req.status = 2
+    log_admin(db, admin, "reject", "data_request", req.id, {"status": 2})
+    db.commit()
+    return {"id": req.id, "status": req.status}
+
+
+def execute_data_request(db: Session, admin: User, req_id: int) -> dict:
+    """立即执行：删除类走 anonymize_user（与 worker 同一实现），
+    导出类申请时即已完成（正常不会出现 pending 导出单，防御性直接置完成）；
+    已执行/已驳回 → 409"""
+    req = repo.data_request_by_id(db, req_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="data request not found")
+    if req.status != 0:
+        raise HTTPException(status_code=409, detail="request not pending")
+    anonymized = anonymize_user(db, req.user_id) if req.type == 2 else False
+    req.status = 1
+    req.fulfilled_at = utcnow()
+    log_admin(db, admin, "execute", "data_request", req.id,
+              {"type": req.type, "status": 1, "anonymized": anonymized})
+    db.commit()
+    return {"id": req.id, "status": req.status, "anonymized": anonymized}
+
+
+def newsletters(db: Session, page: int, size: int, q: str | None = None) -> dict:
+    """Newsletter 订阅者：按订阅时间倒序，q 模糊搜索 email"""
+    rows, total = repo.page(repo.newsletters_query(db, q), page, size)
+    return {
+        "items": [
+            {
+                "email": n.email,
+                "source": n.source,
+                "klaviyo_synced": n.klaviyo_synced,
+                "created_at": n.created_at,
+            }
+            for n in rows
+        ],
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": (total + size - 1) // size,
+    }
+
+
+# ===== 管理员账号管理（仅超管） =====
+
+
+def _admin_out(u: User) -> dict:
+    return {
+        "id": u.id,
+        "email": u.email,
+        "name": u.name,
+        "role": u.role,
+        "status": u.status,
+        "last_login_at": u.last_login_at,
+        "created_at": u.created_at,
+    }
+
+
+def create_admin(db: Session, admin: User, body: AdminCreateIn) -> dict:
+    email = body.email.strip().lower()
+    if repo.admin_email_taken(db, email):
+        raise HTTPException(status_code=409, detail="email exists")
+    account = User(
+        email=email,
+        password_hash=hash_password(body.password),
+        name=body.name.strip(),
+        role=body.role,
+        status=1,
+    )
+    db.add(account)
+    db.flush()
+    log_admin(db, admin, "create", "admin", account.id,
+              {"email": email, "name": account.name, "role": body.role})
+    db.commit()
+    db.refresh(account)
+    return _admin_out(account)
+
+
+def update_admin(db: Session, admin: User, admin_id: int, body: AdminUpdateIn) -> dict:
+    account = repo.admin_by_id(db, admin_id)
+    if not account or account.role < 2:
+        raise HTTPException(status_code=404, detail="admin not found")
+    data = body.model_dump(exclude_unset=True)
+    if admin_id == admin.id and ("role" in data or "status" in data):
+        # 不能改自己角色 / 停用自己（避免超管自锁后台）
+        raise HTTPException(status_code=400, detail="cannot modify self")
+    if "email" in data:
+        data.pop("email")
+    if not data:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    for k, v in data.items():
+        setattr(account, k, v)
+    log_admin(db, admin, "update", "admin", account.id, dict(data))
+    db.commit()
+    db.refresh(account)
+    return _admin_out(account)
+
+
+def admin_detail(db: Session, admin_id: int) -> dict:
+    account = repo.admin_by_id(db, admin_id)
+    if not account or account.role < 2:
+        raise HTTPException(status_code=404, detail="admin not found")
+    return _admin_out(account)

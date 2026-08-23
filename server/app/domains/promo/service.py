@@ -178,7 +178,10 @@ def _discount_dict(d: DiscountCode) -> dict:
 
 def list_discounts(db: Session, page: int, size: int, q: str | None = None) -> dict:
     rows, total = repo.page(repo.discounts_newest_first(db, q), page, size)
-    return {"items": [_discount_dict(d) for d in rows], "total": total, "page": page, "size": size}
+    return {
+        "items": [_discount_dict(d) for d in rows], "total": total,
+        "page": page, "size": size, "pages": (total + size - 1) // size,
+    }
 
 
 def _validate_discount(type_: int, value: int) -> None:
@@ -287,6 +290,7 @@ def discount_usages(db: Session, discount_id: int, page: int, size: int) -> dict
         "total": total,
         "page": page,
         "size": size,
+        "pages": (total + size - 1) // size,
         "total_discount_cents": total_discount,
         "total_order_cents": total_order,
     }
@@ -324,7 +328,10 @@ def _giftcard_dict(c: GiftCard) -> dict:
 
 def list_giftcards(db: Session, page: int, size: int, q: str | None, status: int | None) -> dict:
     rows, total = repo.page(repo.giftcards_filtered(db, q, status), page, size)
-    return {"items": [_giftcard_dict(c) for c in rows], "total": total, "page": page, "size": size}
+    return {
+        "items": [_giftcard_dict(c) for c in rows], "total": total,
+        "page": page, "size": size, "pages": (total + size - 1) // size,
+    }
 
 
 def create_giftcard(db: Session, admin: User, body: GiftcardAdminCreateIn) -> dict:
@@ -401,6 +408,7 @@ def giftcard_ledger(db: Session, gift_card_id: int, page: int, size: int) -> dic
         "total": total,
         "page": page,
         "size": size,
+        "pages": (total + size - 1) // size,
     }
 
 

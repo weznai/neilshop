@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.models import (
-    AdminLog, Category, Collection, CollectionProduct, Product, ProductTranslation,
-    Review, User, StockNotification, Variant, VariantImage,
+    AdminLog, Cart, Category, Collection, CollectionProduct, Exchange, OrderItem,
+    Product, ProductTranslation, Review, Rma, User, StockNotification, Variant,
+    VariantImage,
 )
 
 _SORT_ORDERS = {
@@ -434,16 +435,19 @@ def admin_variants(
 
 def variant_counts(db: Session, pids: list[int]) -> dict[int, dict]:
     """后台商品列表聚合（variant_count/total_stock/low_stock_count）：
-    单条 GROUP BY 条件聚合批量求值（与 stock_map 同纪律，不整行载入 Variant）。"""
+    单条 GROUP BY 条件聚合批量求值（与 stock_map 同纪律，不整行载入 Variant）。
+    低库存口径与 ops 看板统一：stock <= max(safety_stock, 8) 且仅 is_active 变体
+    （max 用 CASE WHEN 表达，SQLite/MySQL 双兼容，不用 GREATEST）。"""
     agg: dict[int, dict] = {}
     if not pids:
         return agg
+    low_threshold = case((Variant.safety_stock > 8, Variant.safety_stock), else_=8)
     rows = (
         db.query(
             Variant.product_id,
             func.count(),
             func.coalesce(func.sum(Variant.stock), 0),
-            func.coalesce(func.sum(case((Variant.stock <= Variant.safety_stock, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((Variant.stock <= low_threshold, 1), else_=0)), 0),
         )
         .filter(Variant.product_id.in_(pids), Variant.is_active == 1)
         .group_by(Variant.product_id)
@@ -494,6 +498,74 @@ def variant_images(db: Session, variant_id: int) -> list[str]:
 def add_variant_images(db: Session, variant_id: int, urls: list[str]) -> None:
     for sort_order, url in enumerate(urls):
         db.add(VariantImage(variant_id=variant_id, image_url=url, sort_order=sort_order))
+
+
+def delete_variant_images(db: Session, variant_id: int) -> None:
+    """删除变体时级联清变体图（variant_images 无 ORM 级联配置）"""
+    db.query(VariantImage).filter(
+        VariantImage.variant_id == variant_id
+    ).delete(synchronize_session=False)
+
+
+def delete_stock_notifications_of_variant(db: Session, variant_id: int) -> None:
+    """删除变体时级联清到货通知订阅（变体已不存在，订阅无意义）"""
+    db.query(StockNotification).filter(
+        StockNotification.variant_id == variant_id
+    ).delete(synchronize_session=False)
+
+
+def variant_referenced(db: Session, variant_id: int) -> bool:
+    """变体删除保护：order_items（订单历史快照引用）/ exchanges（旧或新变体）/
+    returns（RMA 经 order_item 关联）/ carts（items JSON 内 variantId）任一引用即阻断。"""
+    if (
+        db.query(OrderItem.id)
+        .filter(OrderItem.variant_id == variant_id)
+        .first() is not None
+    ):
+        return True
+    if (
+        db.query(Exchange.id)
+        .filter(or_(Exchange.old_variant_id == variant_id,
+                    Exchange.new_variant_id == variant_id))
+        .first() is not None
+    ):
+        return True
+    if (
+        db.query(Rma.id)
+        .join(OrderItem, Rma.order_item_id == OrderItem.id)
+        .filter(OrderItem.variant_id == variant_id)
+        .first() is not None
+    ):
+        return True
+    # 购物车 items 为 JSON 列（SQLite/MySQL 键序不同无法 LIKE 兼容），单次载入内存判定
+    for (items,) in db.query(Cart.items).filter(Cart.items.isnot(None)).all():
+        if any(isinstance(i, dict) and i.get("variantId") == variant_id
+               for i in (items or [])):
+            return True
+    return False
+
+
+def stock_notify_page(
+    db: Session, *, product_id: int | None = None, variant_id: int | None = None,
+    offset: int = 0, limit: int = 20,
+) -> tuple[list[tuple[StockNotification, Variant, Product]], int]:
+    """后台到货通知名单（JOIN 变体/商品一次取齐，避免逐行 N+1），
+    created_at 倒序 + id 稳定尾键，可选 product_id/variant_id 过滤"""
+    query = (
+        db.query(StockNotification, Variant, Product)
+        .join(Variant, Variant.id == StockNotification.variant_id)
+        .join(Product, Product.id == Variant.product_id)
+    )
+    if variant_id is not None:
+        query = query.filter(StockNotification.variant_id == variant_id)
+    if product_id is not None:
+        query = query.filter(Variant.product_id == product_id)
+    total = query.count()
+    rows = (
+        query.order_by(StockNotification.created_at.desc(), StockNotification.id.desc())
+        .offset(offset).limit(limit).all()
+    )
+    return rows, total
 
 
 def replace_variant_images(db: Session, variant_id: int, urls: list[str]) -> None:
