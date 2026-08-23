@@ -20,6 +20,10 @@ _INT_COLUMNS = [
     # (table, column, DDL)
     ("exchanges", "qty", "ALTER TABLE exchanges ADD COLUMN qty INT NOT NULL DEFAULT 1"),
 ]
+_STRING_COLUMNS = [
+    # (table, column, DDL) —— 幂等加列（chat 域美甲师公开简介）
+    ("users", "artist_intro", "ALTER TABLE users ADD COLUMN artist_intro VARCHAR(300) NOT NULL DEFAULT ''"),
+]
 _VARCHAR_COLUMNS = [
     # (table, column, 期望宽度, MODIFY DDL) —— MySQL 专用（sqlite 动态类型无需扩宽）
     ("payments", "stripe_checkout_session", 255,
@@ -32,6 +36,11 @@ def ensure_schema() -> None:
     with engine.begin() as conn:
         insp = inspect(conn)
         for table, column, ddl in _INT_COLUMNS:
+            names = [c["name"] for c in insp.get_columns(table)]
+            if names and column not in names:
+                conn.execute(text(ddl))
+                log.warning("ensure_schema: added %s.%s via DDL guard", table, column)
+        for table, column, ddl in _STRING_COLUMNS:
             names = [c["name"] for c in insp.get_columns(table)]
             if names and column not in names:
                 conn.execute(text(ddl))

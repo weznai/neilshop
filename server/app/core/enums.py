@@ -8,7 +8,22 @@ class UserRole(IntEnum):
     CS = 1         # 客服
     OPS = 2        # 运营
     WAREHOUSE = 3  # 仓库
+    ARTIST = 4     # 美甲师（可登录后台受限视图，处理美甲师会话）
     SUPER = 9      # 超管
+
+
+class ChatChannel(IntEnum):
+    AI = 0      # AI 机器人
+    HUMAN = 1   # 人工客服
+    ARTIST = 2  # 美甲师
+
+
+class ChatSender(IntEnum):
+    CUSTOMER = 1  # 客户
+    AGENT = 2     # 人工客服（后台）
+    SYSTEM = 3    # 系统提示（转接/接入/关闭）
+    BOT = 4       # AI 机器人
+    ARTIST = 5    # 美甲师（后台，sender=5 仅 channel=2）
 
 
 class UserStatus(IntEnum):

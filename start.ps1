@@ -63,26 +63,27 @@ if ((Test-Path -LiteralPath $spaFront) -and (Test-Path -LiteralPath $spaAdmin)) 
 }
 
 $mysql = Get-Service -Name 'MySQL80' -ErrorAction SilentlyContinue
+if (-not $mysql) { $mysql = Get-Service -Name 'MySQL' -ErrorAction SilentlyContinue }
 if (-not $mysql) {
-    Write-Output '[FATAL] service MySQL80 not found (local demo needs MySQL 8, glowmag/glowmag123@127.0.0.1)'
+    Write-Output '[FATAL] service MySQL80/MySQL not found (local demo needs MySQL 8, glowmag/glowmag123@127.0.0.1)'
     exit 1
 }
 if ($mysql.Status -ne 'Running') {
-    Write-Output '[env] MySQL80 not running, try Start-Service ...'
+    Write-Output "[env] $($mysql.Name) not running, try Start-Service ..."
     try {
-        Start-Service -Name 'MySQL80' -ErrorAction Stop
+        Start-Service -Name $mysql.Name -ErrorAction Stop
         Start-Sleep -Seconds 2
     } catch {
-        Write-Output "[FATAL] Start-Service MySQL80 failed: $($_.Exception.Message)"
-        Write-Output '       run as admin or: net start MySQL80'
+        Write-Output "[FATAL] Start-Service $($mysql.Name) failed: $($_.Exception.Message)"
+        Write-Output "       run as admin or: net start $($mysql.Name)"
         exit 1
     }
 }
-if ((Get-Service -Name 'MySQL80').Status -ne 'Running') {
-    Write-Output '[FATAL] MySQL80 still not running, abort'
+if ($mysql.Status -ne 'Running') {
+    Write-Output '[FATAL] MySQL still not running, abort'
     exit 1
 }
-Write-Output '[env] MySQL80     : Running'
+Write-Output "[env] $($mysql.Name): Running"
 
 $oldUv = Get-PidFromFile $UvPidFile
 $oldWk = Get-PidFromFile $WkPidFile

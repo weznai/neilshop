@@ -13,7 +13,9 @@ class User(Base):
     password_hash = Column(String(255))  # NULL=纯OAuth
     google_id = Column(String(64), unique=True)
     name = Column(String(100), nullable=False, default="")
-    role = Column(SmallInteger, nullable=False, default=0)  # 0顾客 1客服 2运营 3仓库 9超管
+    role = Column(SmallInteger, nullable=False, default=0)  # 0顾客 1客服 2运营 3仓库 4美甲师 9超管
+    # 美甲师（role=4）公开简介：前台聊天窗美甲师列表展示（ensure_schema 幂等补列）
+    artist_intro = Column(String(300), nullable=False, default="")
     points = Column(Integer, nullable=False, default=0)     # 冗余余额，真相在 points_ledger
     birthday = Column(Date)
     tier = Column(SmallInteger, nullable=False, default=0)  # 0普通 1银 2金

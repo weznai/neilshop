@@ -1,57 +1,70 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { i18n } from '../i18n'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
+import { useAuthStore } from '../stores/auth'
+import { zulu } from '../composables/datetime'
 
-const router = useRouter()
 const ui = useUiStore()
+const auth = useAuthStore()
 const open = ref(false)
-const greeted = ref(false)
 const busy = ref(false)
-const msgs = ref([]) /* {id, who:'user'|'bot', html, typing} */
+const tab = ref('chat') /* chat（AI+人工合并） | artist */
 const field = ref('')
 const inputEl = ref(null)
-const lastAsk = ref(null) /* {q, key} 失败重试 */
-const QUICKS = ['track', 'size', 'return', 'human']
-const HIST_KEY = 'gm_chat_hist'
-const HIST_MAX = 30 /* 最近 N 条持久化（含问答双方） */
-let msgSeq = 0 /* 稳定 key：避免 v-for 用 idx（历史裁剪/typing 增删导致错位复用） */
+const typing = ref(false)
+const suggestions = ref([])
+const loadErr = ref(false)
+const inited = ref(false)
+const QUICKS = ['track', 'size', 'return']
+/* AI 与人工合并为单一客服 tab：同一会话内部切换（channel 0 AI ↔ 1 人工） */
+const TABS = [
+  ['chat', 'chat.tab.chat'],
+  ['artist', 'chat.tab.artist'],
+]
+let msgSeq = 0 /* 本地乐观消息 key */
 
-/* 纳入全局 ESC（capture 阶段先于 App 的 document 委托）：其它浮层（drawer/search/mnav/modal）
-   开着时跳过自己，让全局先关浮层；仅面板独立在场时才自关并阻断后续监听 */
+/* chat 槽位 = 进行中人工会话优先，否则 AI 会话（后端保证二者不同时开启） */
+const convs = reactive({ chat: null, artist: null })
+const artists = ref([])
+const artistsLoaded = ref(false)
+const pickArtist = ref(null) /* 美甲师 tab 选中待发起 */
+/* 转人工中转：游客缺邮箱时先出内嵌表单 */
+const wantHuman = ref(false)
+/* 游客联系信息（人工/美甲师渠道回联用），localStorage 持久化复用 */
+const contact = reactive({ name: '', email: '' })
+const contactErr = ref('')
+const CONTACT_KEY = 'gm_chat_contact'
+const TOKEN_KEY = 'gm_chat_token'
+
+function ensureToken() {
+  let t = ''
+  try { t = localStorage.getItem(TOKEN_KEY) || '' } catch (_) { /* 隐私模式 */ }
+  if (!/^[0-9a-zA-Z_-]{8,64}$/.test(t)) {
+    t = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())).replace(/[^0-9a-zA-Z]/g, '').slice(0, 32).padEnd(12, '0')
+    try { localStorage.setItem(TOKEN_KEY, t) } catch (_) { /* 隐私模式 */ }
+  }
+  return t
+}
+function loadContact() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CONTACT_KEY) || 'null')
+    if (c && typeof c.email === 'string') { contact.name = c.name || ''; contact.email = c.email }
+  } catch (_) { /* 忽略坏数据 */ }
+}
+const needContact = () => !auth.isLoggedIn && !contact.email
+const lang = () => (i18n.lang === 'zh' ? 'zh' : 'en')
+
+/* 纳入全局 ESC（capture 阶段先于 App 的 document 委托）：其它浮层开着时让全局先关；
+   仅面板独立在场时才自关并阻断后续监听 */
 function onEsc(e) {
   if (e.key !== 'Escape' || !open.value) return
   if (ui.cartDrawer || ui.mnavOpen || ui.searchOpen || ui.openModalId) return
   e.stopPropagation()
   open.value = false
 }
-
-/* 面板开合上报 ui store：body 滚动锁由 StoreLayout 统一 watch anyOverlay 处理 */
 watch(open, (v) => { ui.chatOpen = v })
-
-const shipQ = () => (i18n.lang === 'zh' ? '🚚 运费与配送时效？' : '🚚 Shipping cost & delivery time?')
-
-onMounted(() => {
-  window.addEventListener('keydown', onEsc, true)
-  try {
-    const saved = JSON.parse(localStorage.getItem(HIST_KEY) || '[]')
-    if (Array.isArray(saved) && saved.length) {
-      msgs.value = saved
-        .filter((m) => m && m.who && typeof m.html === 'string')
-        .slice(-HIST_MAX)
-        .map((m) => ({ ...m, id: ++msgSeq }))
-      greeted.value = true
-    }
-  } catch (_) { msgs.value = [] }
-})
-onUnmounted(() => { window.removeEventListener('keydown', onEsc, true); ui.chatOpen = false })
-
-watch(msgs, () => {
-  const keep = msgs.value.filter((m) => !m.typing).slice(-HIST_MAX)
-  try { localStorage.setItem(HIST_KEY, JSON.stringify(keep)) } catch (_) { /* 隐私模式等写入失败即弃 */ }
-}, { deep: true })
 
 function scrollBottom() {
   nextTick(() => {
@@ -59,29 +72,11 @@ function scrollBottom() {
     if (b) b.scrollTop = b.scrollHeight
   })
 }
-
-async function toggle() {
-  open.value = !open.value
-  if (open.value && !greeted.value) {
-    greeted.value = true
-    botSay(i18n.t('chat.hello'), 0)
-  }
-  if (open.value) {
-    scrollBottom()
-    setTimeout(() => inputEl.value?.focus(), 250)
-  }
-}
-
-function match(text) {
-  const t = text.toLowerCase()
-  if (/(shipping|运费|配送|邮寄|清关)/i.test(t)) return 'shipping'
-  if (/(track|order|where|package|deliver|shipped|订单|物流|快递|包裹|到哪|发货)/i.test(t)) return 'track'
-  if (/(size|fit|measure|尺码|尺寸|选码|大小|合适)/i.test(t)) return 'size'
-  if (/(return|refund|exchange|退|换|退款)/i.test(t)) return 'return'
-  if (/(human|agent|staff|person|人工|客服|真人|投诉)/i.test(t)) return 'human'
-  if (/(cart|basket|购物车)/i.test(t)) return 'cart'
-  if (/(code|coupon|discount|promo|折扣|优惠|码|券)/i.test(t)) return 'code'
-  return 'fallback'
+function fmtTime(iso) {
+  if (!iso) return ''
+  const d = new Date(zulu(iso))
+  if (isNaN(d)) return ''
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
 }
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -94,75 +89,209 @@ function md(s) {
     .replace(/\n{2,}/g, '<br><br>')
     .replace(/\n/g, '<br>')
 }
-function push(who, html) {
-  msgs.value.push({ id: ++msgSeq, who, html })
+const SENDER_AVA = { 2: '👩‍💼', 4: '🤖', 5: '💅' }
+
+/* ===== 会话生命周期 ===== */
+
+async function createConv(channel, extra = {}) {
+  const body = { channel, token: ensureToken(), lang: lang(), ...extra }
+  if (contact.email) { body.email = contact.email; body.name = contact.name }
+  return req('POST', '/api/chat/conversations', body)
+}
+
+async function init() {
+  loadContact()
+  await refreshConvs()
+  if (!convs.chat) {
+    /* 后端合并守卫：人工会话进行中会直接复用，不会开平行 AI 会话 */
+    try { convs.chat = await createConv(0) } catch (e) { loadErr.value = true }
+  }
+  inited.value = true
   scrollBottom()
 }
-function botSay(html, delay = 700) {
-  if (delay > 0) {
-    msgs.value.push({ id: ++msgSeq, who: 'bot', typing: true })
-    setTimeout(() => {
-      msgs.value = msgs.value.filter((m) => !m.typing)
-      push('bot', html)
-    }, delay)
-  } else push('bot', html)
+
+async function refreshConvs() {
+  try {
+    const d = await req('GET', '/api/chat/conversations?token=' + encodeURIComponent(ensureToken()))
+    const items = (d && d.items) || []
+    const openOf = (ch) => items.find((c) => c.channel === ch && c.status === 0) || null
+    /* 合并槽位：人工进行中优先（转人工/客服接管态），否则 AI */
+    convs.chat = openOf(1) || openOf(0)
+    convs.artist = openOf(2)
+    loadErr.value = false
+  } catch (_) {
+    loadErr.value = true
+  }
 }
-function localReply(key) {
-  const t = i18n.t('chat.r.' + key)
-  return t === 'chat.r.' + key ? i18n.t('chat.r.fallback') : t
+
+async function toggle() {
+  open.value = !open.value
+  if (open.value) {
+    scrollBottom()
+    setTimeout(() => inputEl.value?.focus(), 250)
+    if (!inited.value) await init()
+  }
 }
-async function botApi(message, localKey) {
+
+function switchTab(t) {
+  tab.value = t
+  suggestions.value = []
+  wantHuman.value = false
+  if (t === 'artist' && !artistsLoaded.value) loadArtists()
+  scrollBottom()
+  setTimeout(() => inputEl.value?.focus(), 150)
+}
+
+async function loadArtists() {
+  try {
+    const d = await req('GET', '/api/chat/artists')
+    artists.value = (d && d.items) || []
+    artistsLoaded.value = true
+  } catch (_) { /* 卡片上留重试 */ }
+}
+
+/* ===== 转人工（唤起人工：同一会话原地升级，记录保留） ===== */
+
+function goHuman() {
+  contactErr.value = ''
+  if (needContact()) { wantHuman.value = true; scrollBottom(); return }
+  doEscalate()
+}
+
+async function doEscalate() {
+  if (busy.value) return
+  contactErr.value = ''
+  if (needContact()) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact.email)) { contactErr.value = i18n.t('chat.contact.err'); return }
+    try { localStorage.setItem(CONTACT_KEY, JSON.stringify({ name: contact.name, email: contact.email })) } catch (_) { /* 隐私模式 */ }
+  }
   busy.value = true
   try {
-    const d = await req('POST', '/api/ai/chat', { message })
-    let html = md(d.reply)
-    if (Array.isArray(d.suggestions) && d.suggestions.length) {
-      html += `<div class="chat-sugs" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">` +
-        d.suggestions.slice(0, 3).map((s) => `<button class="chat-quick" data-q="${esc(s)}">${esc(s)}</button>`).join('') +
-        `</div>`
+    let conv = convs.chat
+    if (!conv) { conv = await createConv(0); convs.chat = conv }
+    const d = await req('POST', `/api/chat/conversations/${conv.conv_no}/escalate`, {
+      token: ensureToken(), email: contact.email || undefined, name: contact.name || undefined,
+    })
+    convs.chat = d
+    wantHuman.value = false
+    scrollBottom()
+  } catch (e) {
+    contactErr.value = (e && e.message) || 'error'
+  } finally { busy.value = false }
+}
+function cancelEscalate() { wantHuman.value = false; contactErr.value = '' }
+
+async function startArtist() {
+  if (busy.value || !pickArtist.value) return
+  contactErr.value = ''
+  if (needContact()) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact.email)) { contactErr.value = i18n.t('chat.contact.err'); return }
+    try { localStorage.setItem(CONTACT_KEY, JSON.stringify({ name: contact.name, email: contact.email })) } catch (_) { /* 隐私模式 */ }
+  }
+  busy.value = true
+  try {
+    convs.artist = await createConv(2, { artist_id: pickArtist.value.id })
+    pickArtist.value = null
+    scrollBottom()
+  } catch (e) {
+    contactErr.value = (e && e.message) || 'error'
+  } finally { busy.value = false }
+}
+
+async function endChat() {
+  const conv = convs[tab.value]
+  if (!conv || busy.value) return
+  busy.value = true
+  try {
+    await req('POST', `/api/chat/conversations/${conv.conv_no}/close`, { token: ensureToken() })
+    convs[tab.value] = null
+    /* 客服 tab：结束后即开新 AI 会话（可继续问） */
+    if (tab.value === 'chat') convs.chat = await createConv(0)
+  } catch (_) { /* 服务端不可达时也可本地结束 */ 
+    convs[tab.value] = null
+  } finally { busy.value = false }
+}
+
+/* ===== 消息收发 ===== */
+
+const curConv = () => convs[tab.value]
+const curMsgs = () => (curConv() && curConv().messages) || []
+
+function applyDetail(d) {
+  const key = d.channel === 2 ? 'artist' : 'chat'
+  convs[key] = d
+}
+
+async function pollActive() {
+  const conv = curConv()
+  if (!conv || conv.channel === 0) return /* AI 即时应答无需轮询 */
+  try {
+    const d = await req('GET', `/api/chat/conversations/${conv.conv_no}/messages?token=` + encodeURIComponent(ensureToken()))
+    const oldMsgs = conv.messages || []
+    if ((d.messages || []).length !== oldMsgs.length || d.status !== conv.status
+        || d.agent_admin_id !== conv.agent_admin_id) {
+      applyDetail(d)
+      scrollBottom()
     }
-    botSay(html)
-  } catch (_) {
-    const lbl = i18n.lang === 'zh' ? '↻ 重试' : '↻ Retry'
-    botSay(localReply(localKey) +
-      `<div style="margin-top:8px"><button class="chat-quick" data-retry="1">${lbl}</button></div>`)
-  } finally {
-    busy.value = false
-  }
+  } catch (_) { /* 轮询失败静默，下轮重试 */ }
 }
-function askText(text, key) {
-  if (busy.value) return
-  push('user', esc(text))
-  lastAsk.value = { q: text, key }
-  botApi(text, key)
-}
-function ask(key) {
-  askText(i18n.t('chat.q.' + key), key)
-}
-function retryLast() {
-  if (busy.value || !lastAsk.value) return
-  botApi(lastAsk.value.q, lastAsk.value.key)
-}
-function sugClick(e) {
-  const t = e.target
-  if (!t || !t.dataset) return
-  if (t.dataset.retry) { retryLast(); return }
-  if (t.dataset.q && !busy.value) {
-    field.value = t.dataset.q
-    send()
-  }
-}
-function goContact() {
-  open.value = false
-  router.push('/contact')
-}
-function send() {
+let pollTimer = null
+onMounted(() => {
+  window.addEventListener('keydown', onEsc, true)
+  pollTimer = setInterval(() => {
+    if (open.value && document.visibilityState === 'visible') pollActive()
+  }, 4000)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onEsc, true)
+  if (pollTimer) clearInterval(pollTimer)
+  ui.chatOpen = false
+})
+
+async function send() {
   const v = field.value.trim()
   if (!v || busy.value) return
+  let conv = curConv()
+  if (!conv) {
+    if (tab.value === 'chat') { conv = await createConv(0); convs.chat = conv }
+    else if (tab.value === 'artist') { await startArtist(); conv = convs.artist }
+    if (!conv) return
+  }
+  if (conv.status === 1) return
   field.value = ''
-  push('user', esc(v))
-  lastAsk.value = { q: v, key: match(v) }
-  botApi(v, lastAsk.value.key)
+  busy.value = true
+  /* 乐观上屏：用户消息即刻可见，AI 渠道追加 typing 气泡 */
+  conv.messages.push({ id: --msgSeq, sender: 1, content: v, created_at: new Date().toISOString() })
+  scrollBottom()
+  if (conv.channel === 0) typing.value = true
+  try {
+    const d = await req('POST', `/api/chat/conversations/${conv.conv_no}/messages`, { token: ensureToken(), content: v })
+    applyDetail(d)
+    suggestions.value = d.suggestions || []
+    /* AI 内部升级转人工（human 意图 + 邮箱齐备）：同会话保留，仅状态提示变化 */
+  } catch (e) {
+    conv.messages.push({
+      id: --msgSeq, sender: 3, content: i18n.t('chat.sendFail') + '—— ' + ((e && e.message) || ''), created_at: new Date().toISOString(),
+    })
+  } finally {
+    typing.value = false
+    busy.value = false
+    scrollBottom()
+  }
+}
+
+function askText(text) {
+  if (busy.value) return
+  if (tab.value !== 'chat') switchTab('chat')
+  field.value = text
+  send()
+}
+function ask(key) { askText(i18n.t('chat.q.' + key)) }
+const shipQ = () => (i18n.lang === 'zh' ? '🚚 运费与配送时效？' : '🚚 Shipping cost & delivery time?')
+
+function sugClick(e) {
+  const t = e.target
+  if (t && t.dataset && t.dataset.q && !busy.value) askText(t.dataset.q)
 }
 </script>
 
@@ -174,25 +303,101 @@ function send() {
   </button>
   <div class="chat-panel" :class="{ open }" role="dialog" :aria-label="i18n.t('chat.title')">
     <div class="chat-head">
-      <div>
-        <b>{{ i18n.t('chat.title') }}</b>
-        <div class="chat-status"><i></i>{{ i18n.t('chat.status') }}</div>
+      <div class="chat-head-top">
+        <div>
+          <b>{{ i18n.t('chat.title') }}</b>
+          <div class="chat-status"><i></i>{{ i18n.t('chat.status') }}</div>
+        </div>
+        <button :aria-label="i18n.t('aria.chatClose')" style="color:#fff;font-size:20px;opacity:.8" @click="toggle()">×</button>
       </div>
-      <button :aria-label="i18n.t('aria.chatClose')" style="color:#fff;font-size:20px;opacity:.8" @click="toggle()">×</button>
+      <div class="chat-tabs" role="tablist">
+        <button v-for="[k, key] in TABS" :key="k" role="tab" :aria-selected="tab === k" :class="{ on: tab === k }" @click="switchTab(k)">{{ i18n.t(key) }}</button>
+      </div>
     </div>
+
     <div class="chat-body" id="chatMsgs" role="log" aria-live="polite">
-      <div v-for="m in msgs" :key="m.id" class="chat-msg" :class="m.who">
-        <span v-if="m.typing" class="tdots"><i></i><i></i><i></i></span>
-        <template v-else><!-- eslint-disable-next-line vue/no-v-html -->
-          <span v-html="m.html" @click="sugClick" /></template>
+      <!-- 合并客服 tab：AI 应答 ↔ 人工接管 状态条 -->
+      <template v-if="tab === 'chat' && curConv()">
+        <div v-if="curConv().channel === 1 && !curConv().agent_admin_id && curConv().status === 0" class="chat-notice">⏳ {{ i18n.t('chat.human.waiting') }}</div>
+        <div v-else-if="curConv().channel === 1 && curConv().agent_name" class="chat-notice ok">👩‍💼 {{ curConv().agent_name }} · {{ i18n.t('chat.human.serving') }}</div>
+      </template>
+
+      <!-- 会话消息（两 tab 共用） -->
+      <template v-if="curConv()">
+        <div v-if="tab === 'artist' && curConv().artist_name" class="chat-notice ok">💅 {{ curConv().artist_name }}</div>
+        <template v-for="m in curMsgs()" :key="m.id">
+          <div v-if="m.sender === 3" class="chat-sys">{{ m.content }}</div>
+          <div v-else class="chat-row" :class="{ me: m.sender === 1 }">
+            <span v-if="m.sender !== 1" class="chat-ava">{{ SENDER_AVA[m.sender] || '💬' }}</span>
+            <div class="chat-msg" :class="m.sender === 1 ? 'user' : 'bot'">
+              <div v-if="m.sender !== 1 && m.sender_name" class="chat-who">{{ m.sender_name }}</div>
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <span v-html="md(m.content)" @click="sugClick" />
+              <span class="chat-time">{{ fmtTime(m.created_at) }}</span>
+            </div>
+          </div>
+        </template>
+        <div v-if="typing" class="chat-row"><span class="chat-ava">🤖</span><div class="chat-msg bot typing"><span class="tdots"><i></i><i></i><i></i></span></div></div>
+        <div v-if="tab === 'chat' && curConv().channel === 0 && suggestions.length" class="chat-sugs">
+          <button v-for="s in suggestions.slice(0, 3)" :key="s" class="chat-quick" :data-q="s" @click="askText(s)">{{ s }}</button>
+        </div>
+      </template>
+
+      <!-- 转人工中转：游客补邮箱（内嵌表单，确认后原地升级） -->
+      <div v-if="tab === 'chat' && wantHuman" class="chat-form">
+        <div class="chat-intro" style="padding:6px 0 2px">
+          <b>{{ i18n.t('chat.human.escT') }}</b>
+          <p>{{ i18n.t('chat.human.escNote') }}</p>
+        </div>
+        <input v-model="contact.name" class="chat-field" :placeholder="i18n.t('chat.contact.name')">
+        <input v-model="contact.email" class="chat-field" type="email" :placeholder="i18n.t('chat.contact.email')">
+        <div v-if="contactErr" class="chat-err">{{ contactErr }}</div>
+        <div style="display:flex;gap:8px">
+          <button class="chat-go" style="flex:1" :disabled="busy" @click="doEscalate">{{ i18n.t('chat.esc') }}</button>
+          <button type="button" class="chat-quick end" style="height:40px;flex:none;padding:0 16px" @click="cancelEscalate">{{ i18n.t('chat.cancel') }}</button>
+        </div>
       </div>
+
+      <!-- 美甲师引导（选择卡片） -->
+      <template v-if="tab === 'artist' && !convs.artist">
+        <div class="chat-intro">
+          <div class="chat-intro-ico">💅</div>
+          <b>{{ i18n.t('chat.artist.introT') }}</b>
+          <p>{{ i18n.t('chat.artist.intro') }}</p>
+        </div>
+        <div v-if="!artistsLoaded" class="chat-tip">…</div>
+        <button v-else-if="!artists.length" class="chat-go" @click="loadArtists">{{ i18n.t('chat.retry') }}</button>
+        <template v-else>
+          <div class="chat-artist-grid">
+            <button v-for="a in artists" :key="a.id" class="chat-artist-card" :class="{ on: pickArtist && pickArtist.id === a.id }" @click="pickArtist = a">
+              <span class="chat-artist-ava">💅</span>
+              <b>{{ a.name }}</b>
+              <p>{{ a.intro }}</p>
+            </button>
+          </div>
+          <div v-if="needContact() && pickArtist" class="chat-form">
+            <input v-model="contact.name" class="chat-field" :placeholder="i18n.t('chat.contact.name')">
+            <input v-model="contact.email" class="chat-field" type="email" :placeholder="i18n.t('chat.contact.email')">
+            <div v-if="contactErr" class="chat-err">{{ contactErr }}</div>
+            <button class="chat-go" :disabled="busy" @click="startArtist">{{ i18n.t('chat.artist.chat') }}</button>
+          </div>
+          <button v-else-if="pickArtist" class="chat-go" :disabled="busy" @click="startArtist">{{ i18n.t('chat.artist.chat') }}</button>
+        </template>
+      </template>
+
+      <div v-if="loadErr" class="chat-err">{{ i18n.t('chat.loadErr') }}</div>
     </div>
-    <div class="chat-quicks">
-      <button v-for="k in QUICKS" :key="k" class="chat-quick" @click="ask(k)">{{ i18n.t('chat.q.' + k) }}</button>
-      <button class="chat-quick" @click="askText(shipQ(), 'shipping')">{{ i18n.lang === 'zh' ? '🚚 运费/时效' : '🚚 Shipping' }}</button>
-      <button class="chat-quick" @click="goContact">🎫 {{ i18n.lang === 'zh' ? '提交工单' : 'Open a ticket' }}</button>
+
+    <div v-if="curConv()" class="chat-quicks">
+      <!-- 合并客服：AI 态给快捷问题+转人工；人工态给结束 -->
+      <template v-if="tab === 'chat' && curConv().channel === 0">
+        <button v-for="k in QUICKS" :key="k" class="chat-quick" @click="ask(k)">{{ i18n.t('chat.q.' + k) }}</button>
+        <button class="chat-quick" @click="askText(shipQ())">{{ i18n.lang === 'zh' ? '🚚 运费/时效' : '🚚 Shipping' }}</button>
+        <button class="chat-quick esc" @click="goHuman">👩‍💼 {{ i18n.t('chat.esc') }}</button>
+      </template>
+      <button v-if="curConv().status === 0" class="chat-quick end" :disabled="busy" @click="endChat">✕ {{ i18n.t('chat.close') }}</button>
     </div>
-    <form class="chat-input" @submit.prevent="send">
+    <form v-if="curConv()" class="chat-input" @submit.prevent="send">
       <input v-model="field" ref="inputEl" :placeholder="i18n.t('chat.placeholder')" :aria-label="i18n.t('chat.placeholder')" autocomplete="off">
       <button type="submit" :aria-label="i18n.t('chat.send')" :disabled="busy">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>

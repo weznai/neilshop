@@ -12,7 +12,9 @@ from app.models.promo import (
     Referral, Subscription, PopupConfig,
 )
 from app.models.content import Review, Article, Faq, UgcSubmission
-from app.models.support import Ticket, TicketMessage, ReplyTemplate
+from app.models.support import (
+    Ticket, TicketMessage, ReplyTemplate, ChatConversation, ChatMessage,
+)
 from app.models.inventory import (
     StockMovement, Supplier, PurchaseOrder, PurchaseOrderItem, StockCount,
 )

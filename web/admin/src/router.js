@@ -15,6 +15,7 @@ const router = createRouter({
         { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情', crumbs: ['订单管理', '订单详情'] } },
         { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue'), meta: { title: '退换货' } },
         { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue'), meta: { title: '工单' } },
+        { path: 'chat', name: 'chat', component: () => import('./views/ChatView.vue'), meta: { title: '在线客服' } },
         { path: 'products', name: 'products', component: () => import('./views/ProductsView.vue'), meta: { title: '商品管理' } },
         { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue'), meta: { title: '商品编辑', crumbs: ['商品管理', '商品编辑'] } },
         { path: 'inventory', name: 'inventory', component: () => import('./views/InventoryView.vue'), meta: { title: '库存中心' } },

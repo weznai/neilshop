@@ -14,8 +14,8 @@ const guard = ref(true)
 const guardErr = ref('')
 const collapsed = ref(localStorage.getItem('gm_side_min') === '1')
 
-/* 当前登录人角色 badge（UserRole：9=超管 3=仓库 2=运营；1=客服被守卫拒绝，不进后台） */
-const ROLE_BADGE = { 9: '超管', 3: '仓库', 2: '运营' }
+/* 当前登录人角色 badge（UserRole：9=超管 3=仓库 2=运营 4=美甲师；1=客服被守卫拒绝，不进后台） */
+const ROLE_BADGE = { 9: '超管', 3: '仓库', 2: '运营', 4: '美甲师' }
 const roleBadge = computed(() => ROLE_BADGE[session.role] || '管理')
 
 /* 导航高亮：详情页别名 + 前缀匹配（/order-detail → 订单管理，/product-edit → 商品管理） */
@@ -34,6 +34,7 @@ const P = {
   orders: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
   returns: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
   tickets: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  chat: '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/>',
   products: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/>',
   inventory: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
   promo: '<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
@@ -48,13 +49,15 @@ const P = {
   panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
 }
 /* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营/系统），数组 = [图标, 名称, 路径]；
- * 营销工具/内容管理/会员归「运营」组；审计日志/系统设置归「系统」组 */
+ * 营销工具/内容管理/会员归「运营」组；审计日志/系统设置归「系统」组；
+ * 美甲师（role=4）受限视图：仅数据看板 + 在线客服（处理本人名下美甲师会话） */
 const ITEMS = [
   ['dash', '数据看板', '/'],
   '交易',
   ['orders', '订单管理', '/orders'],
   ['returns', '退货审核', '/returns'],
   ['tickets', '客服工单', '/tickets'],
+  ['chat', '在线客服', '/chat'],
   '商品',
   ['products', '商品管理', '/products'],
   ['inventory', '库存中心', '/inventory'],
@@ -68,6 +71,10 @@ const ITEMS = [
   ['logs', '审计日志', '/logs'],
   ['settings', '系统设置', '/settings'],
 ]
+/* 美甲师菜单白名单：看板 + 在线客服 */
+const navItems = computed(() => (
+  session.role === 4 ? ITEMS.filter((it) => Array.isArray(it) && (it[2] === '/' || it[2] === '/chat')) : ITEMS
+))
 
 function toggleSide() {
   collapsed.value = !collapsed.value
@@ -167,7 +174,7 @@ onBeforeUnmount(() => {
       <router-link class="logo" to="/">GLOW<span>MAG</span></router-link>
       <div class="side-sub" style="font-size:10px;letter-spacing:2px;color:var(--gray);padding:0 12px 14px">管理控制台</div>
       <nav class="anav">
-        <template v-for="(it, i) in ITEMS" :key="i">
+        <template v-for="(it, i) in navItems" :key="i">
           <div v-if="typeof it === 'string'" class="group">{{ it }}</div>
           <router-link v-else :to="it[2]" :class="{ on: navOn(it[2]) }" :title="it[1]">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none" v-html="P[it[0]]" />

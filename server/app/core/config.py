@@ -41,6 +41,14 @@ class Settings:
     cache_enable: bool = _cache_flag not in ("", "0", "false", "off", "no")
     cache_ttl_seconds: int = int(os.getenv("GM_CACHE_TTL", "30" if cache_enable else "0"))
 
+    # ===== AI 客服大模型（OpenAI 兼容 chat/completions；key 为空 = 未启用，走规则引擎兜底） =====
+    llm_api_key: str = os.getenv("GM_LLM_API_KEY", "").strip()
+    # 兼容端点基址：OpenAI / DeepSeek / 通义 / Moonshot 等任意 OpenAI 风格网关
+    llm_base_url: str = os.getenv("GM_LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+    llm_model: str = os.getenv("GM_LLM_MODEL", "gpt-4o-mini").strip()
+    llm_timeout: int = int(os.getenv("GM_LLM_TIMEOUT", "20"))          # 单次调用超时（秒）
+    llm_max_tokens: int = int(os.getenv("GM_LLM_MAX_TOKENS", "500"))   # 回复长度上限
+
 
 settings = Settings()
 

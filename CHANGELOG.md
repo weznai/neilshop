@@ -3,6 +3,21 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.7] · 在线客服聊天：AI 大模型 + 知识库 + 人工/美甲师三渠道
+
+### Added（聊天域 chat，2 新表 + 16 端点）
+- **三渠道会话**：`chat_conversations`/`chat_messages` 两表落地（0 AI / 1 人工 / 2 美甲师）；游客凭 localStorage `gm_chat_token` 标识，登录自动绑 `user_id`；归属核验（token 或 user_id 匹配，跨会话 403）。
+- **AI+人工合并客服（内部切换）**：AI 与人工是同一会话的内部状态（channel 0↔1），不建平行会话——前台仅「在线客服 + 美甲师」两 tab；客户「转人工」原地升级（记录完整保留，游客缺邮箱出内嵌表单收集）；AI 对话中 human 意图自动升级；**客服在 AI 会话直接回复即自动转人工**（客户侧见接入提示）；后台「转回 AI」（`resume-ai` 端点）把会话交还 GlowBot 自动应答；合并守卫：人工会话进行中 `start(channel=0)` 直接复用、`start(channel=1)` 原地升级既有 AI 会话。
+- **AI 客服接入大模型**：`services/llm.py` OpenAI 兼容 chat/completions 客户端（`GM_LLM_API_KEY/BASE_URL/MODEL/TIMEOUT/MAX_TOKENS` 五项配置，任意兼容网关可用）；**知识库复用 FAQ 表**全量注入 system prompt + 运费/退换政策摘要（settings 驱动）；未配置/调用失败自动回退既有规则引擎（`source` 字段回传 llm/rules 供前端标注）；**订单类意图固定走规则引擎**（查库 + 邮箱双因子脱敏，LLM 不碰数据查询）。
+- **转人工无缝升级**：AI 会话中 human 意图（有邮箱）自动升级渠道保留全部记录（`escalated` 标记驱动前端切 tab）；游客无邮箱先引导补邮箱；显式 `POST /conversations/{no}/escalate` 亦可。
+- **美甲师聊天**：`UserRole.ARTIST=4` 新角色（`users.artist_intro` 公开简介，ensure_schema 幂等补列）；前台聊天窗美甲师卡片选择发起会话；美甲师登录后台受限视图（侧栏仅看板 + 在线客服），回复自动记 `sender=5`（运营代答仍记 2）；「我的会话」按渠道分流（人工=接手 / 美甲师=本人）。
+- **前台 ChatWidget 重构**：面板加大加宽（350×460 → 430×660）；「在线客服（AI+人工合并）+ 美甲师」两 tab，客服 tab 顶部状态条（AI 应答 / 已转人工等待 / 客服 X 服务中）；消息带头像/昵称/时间戳，系统消息居中胶囊；AI 建议问题 chips + typing 动画；转人工内嵌邮箱表单（一次收集 localStorage 复用）；人工态 4s 轮询；「结束会话」一键关闭后自动开新 AI 会话。
+- **后台在线客服工作台**（新视图 /chat）：渠道/状态筛选 + 我的会话 + 搜索；列表客户待回复红点；大对话窗（气泡式）+ **快捷模板回复**（复用 `reply_templates`，seed 扩至 9 条中英文模板）+ 接单（客户侧系统消息"客服 X 已接入"）+ 关闭；4s 轮询列表与当前会话。
+- **安全**：`/api/chat/` 前缀全局限流 60/min（前台 4s 轮询 ≈15/min 留发送余量）；美甲师公开列表只暴露 id/姓名/简介。
+
+### 测试与基础设施
+- 新增 `test_chat_ext`（33 断言：AI 规则/LLM 分流/LLM 故障回退/订单类锁定规则引擎/转人工邮箱流/合并客服 0↔1 内部切换（复用/升级/转回/客服回复自动转）/美甲师身份/归属核验/后台流转/关闭态机）；seed 增 3 美甲师 + 4 演示会话（含 AI 升级人工样例）；`.env.example` 增 LLM 配置段；相关回归 test_ai_ext 20/20、test_obs 17/17、test_sec_ext 38/38；双 SPA 构建通过。
+
 ## [0.3.6] · 管理后台二阶段：状态机收口 + 运营队列可视化管理
 
 ### Added（交易域状态机收口）

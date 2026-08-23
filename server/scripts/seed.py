@@ -17,9 +17,9 @@ from app.core.enums import (
 from app.core.security import hash_password
 from app.services.referrals import derive_code
 from app.models import (
-    Article, Category, DiscountCode, DiscountRedemption, EmailPreference, Faq,
-    GiftCard, NewsletterSubscriber, Order, OrderItem, OrderTimeline, Payment,
-    PointsLedger, PopupConfig, Product, Referral, ReplyTemplate, Review, Rma,
+    Article, Category, ChatConversation, ChatMessage, DiscountCode, DiscountRedemption,
+    EmailPreference, Faq, GiftCard, NewsletterSubscriber, Order, OrderItem, OrderTimeline,
+    Payment, PointsLedger, PopupConfig, Product, Referral, ReplyTemplate, Review, Rma,
     Setting, Shipment, ShippingRate, StockMovement, Ticket, TicketMessage,
     UgcSubmission, User, Variant, VariantImage,
 )
@@ -281,6 +281,17 @@ def seed() -> None:
     s.add_all([admin, ops, cs, emma])
     s.flush()
 
+    # 美甲师（role=4）：前台聊天窗美甲师列表 + 后台受限工作台（仅在线客服菜单）
+    for a_email, a_name, a_intro in [
+        ("mia@glowmag.com", "Mia Chen", "法式与裸色系专精 · 8 年穿戴甲定制经验，擅长婚礼/日常通勤款"),
+        ("yuki@glowmag.com", "Yuki Tanaka", "猫眼/铬色光泽控 · 擅长猫眼、极光与短甲定制"),
+        ("luna@glowmag.com", "Luna Park", "手绘艺术甲担当 · 花卉、节日主题与渐变晕染都可以聊"),
+    ]:
+        s.add(User(email=a_email, password_hash=hash_password("glowmag123"),
+                   name=a_name, role=int(UserRole.ARTIST), artist_intro=a_intro,
+                   email_verified_at=now))
+    s.flush()
+
     # ===== settings =====
     for k, v, desc in [
         ("free_shipping_threshold", 3500, "满额免邮（美分）"),
@@ -399,6 +410,12 @@ def seed() -> None:
         (3, "Return label", "Hi! Here's your prepaid return label. Refund lands 3-5 days after we receive it."),
         (1, "Where is my order", "Your order shipped via USPS, tracking {tracking_no}. Expected in 2-4 days."),
         (2, "Quality issue", "So sorry! We'll replace it right away — no return needed."),
+        (1, "运费/时效说明", "美国境内标准运费 $4.99（3–6 天送达），快递 $14.99（1–3 天）；满 $35 包邮～"),
+        (3, "退换流程引导", "签收后 30 天内未拆封可退换：账户 → 订单 → 发起退换即可，质量问题运费全免。"),
+        (4, "账户/密码帮助", "可以用注册邮箱点「忘记密码」重置；如收不到邮件，把邮箱发我帮你查～"),
+        (5, "选码建议", "先到尺码指南 60 秒量甲；两手常混 2–3 个码，介于两码之间选大一号再修边。"),
+        (5, "新品/推荐话术", "跟你说下最近卖得最好的：Bare Gems 和 French Kiss 都是回购率 TOP～要帮你推荐组合吗？"),
+        (6, "结束语", "还有其他问题随时找我，祝你今天愉快 💜"),
     ]):
         s.add(ReplyTemplate(category=cat, title=t, content=c))
 
@@ -777,6 +794,52 @@ def seed() -> None:
         for j, content in enumerate(msgs):
             s.add(TicketMessage(ticket_id=tk.id, sender=1 if j % 2 == 0 else 2,
                                 content=content, created_at=created + timedelta(hours=3 * j + 1)))
+
+    # ===== 在线聊天演示会话（人工待接入 / 美甲师进行中 / AI 已问一轮）=====
+    artists_map = {a.email.split("@")[0]: a for a in
+                   s.query(User).filter(User.role == int(UserRole.ARTIST)).all()}
+    for i, (uk, channel, artist_key, agent, st, msgs) in enumerate([
+        ("u2", 1, None, ops, 0, [  # 人工：客户问折扣码，客服已接入
+            (1, "Hi! Do you have any promo codes active right now?"),
+            (3, "Agent Ops Team joined the chat."),
+            (2, "Hey Mason! Yes — WELCOME20 for 20% off your first order, and free shipping over $35 💜")]),
+        ("u5", 1, None, None, 0, [  # 合并客服：AI 对话中客户要求转人工 → 原地升级（记录保留，待接入）
+            (4, "Hi, glam! 💅 I'm GlowBot — how can I help today?"),
+            (1, "My package arrived with one nail broken 😢"),
+            (4, "So sorry to hear that! Quality issues are fully covered — want me to connect a human agent for a replacement?"),
+            (1, "Yes please, talk to a human"),
+            (3, "Switched to a human agent — your chat history stays with you."),
+            (3, "Connecting you to a human agent 💜 Average first reply is under 4 hours; you can keep typing.")]),
+        ("u3", 2, "mia", None, 0, [  # 美甲师：定制咨询进行中
+            (3, "Nail artist Mia Chen joined the chat."),
+            (1, "Hi Mia! I'm getting married in June — thinking soft french with tiny pearls?"),
+            (5, "Congrats Sophia!! Bare Gems with pearl accents would be PERFECT for that. "
+                "Let's map your sizes first — do you have our sizer kit?")]),
+        ("u9", 0, None, None, 1, [  # AI：已关闭的历史会话
+            (4, "Hi, glam! 💅 I'm GlowBot — how can I help today?"),
+            (1, "how long does shipping take?"),
+            (4, "Shipping: US standard $4.99 (3–6 days), express $14.99 (1–3 days); free over $35.00."),
+            (3, "Conversation closed. Tap any channel to start a new one.")]),
+    ]):
+        u = hist[uk][0]
+        created = now - timedelta(days=i, hours=i + 1)
+        artist = artists_map.get(artist_key)
+        conv = ChatConversation(
+            conv_no=f"CV{created.strftime('%y%m%d')}{i + 1:04d}", channel=channel,
+            user_id=u.id, guest_token=f"seed-{uk}-{i + 1:04d}", email=u.email, name=u.name,
+            lang="en", artist_id=artist.id if artist else None,
+            agent_admin_id=agent.id if agent else None, status=st,
+            created_at=created,
+            closed_at=now - timedelta(days=i) if st == 1 else None,
+        )
+        s.add(conv)
+        s.flush()
+        last_at = created
+        for j, (sender, content) in enumerate(msgs):
+            last_at = created + timedelta(minutes=7 * j + 2)
+            s.add(ChatMessage(conversation_id=conv.id, sender=sender, content=content,
+                              created_at=last_at))
+        conv.last_message_at = last_at
 
     # ===== UGC 4 条（2 待审 + 2 上墙）=====
     for i, (uk, handle, sl, st, caption) in enumerate([

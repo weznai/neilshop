@@ -32,12 +32,13 @@ from app.domains.promo import router as promo, router_admin as admin_promo
 from app.domains.media import router_admin as admin_media
 from app.domains.content import router as content, router_admin as admin_content
 from app.domains.support import router as support, router_admin as admin_support
+from app.domains.chat import router as chat, router_admin as admin_chat
 from app.domains.ops import router as admin_ops
 from app.domains.ai import router as ai
 
-# 后台聚合：ops + promo/content/support 三域 admin 端点（原 routers/admin_ops.py 的组装逻辑内联至此）
+# 后台聚合：ops + promo/content/support/chat 四域 admin 端点（原 routers/admin_ops.py 的组装逻辑内联至此）
 _admin_combined = APIRouter()
-for _r in (admin_ops.router, admin_promo.router, admin_content.router, admin_support.router):
+for _r in (admin_ops.router, admin_promo.router, admin_content.router, admin_support.router, admin_chat.router):
     _admin_combined.include_router(_r)
 admin_ops_all = SimpleNamespace(router=_admin_combined)
 
@@ -76,7 +77,7 @@ if _origins:
 
 _ROUTERS = (
     account, catalog, cart, checkout, orders, payments, returns,
-    promo, points, content, support, admin_catalog, admin_trade, admin_ops_all, ai,
+    promo, points, content, support, chat, admin_catalog, admin_trade, admin_ops_all, ai,
     referrals, subscriptions, exchanges, admin_media, admin_member,
 )
 for module in _ROUTERS:

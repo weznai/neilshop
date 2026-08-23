@@ -1,4 +1,4 @@
-"""客服域（3 表）"""
+"""客服域（5 表）"""
 
 from sqlalchemy import JSON, BigInteger, Column, DateTime, Index, Integer, SmallInteger, String, Text
 
@@ -49,3 +49,43 @@ class ReplyTemplate(Base):
     title = Column(String(100), nullable=False)
     content = Column(Text, nullable=False)
     active = Column(SmallInteger, nullable=False, default=1)
+
+
+class ChatConversation(Base):
+    """在线客服会话 —— 一个客户 × 一个渠道（0 AI / 1 人工 / 2 美甲师）一条进行中会话；
+    游客凭 guest_token（localStorage）标识，登录后绑 user_id（token 仍保留可续聊）"""
+
+    __tablename__ = "chat_conversations"
+    __table_args__ = (
+        Index("idx_chatconv_token", "guest_token"),
+        Index("idx_chatconv_channel_status", "channel", "status", "last_message_at"),
+        Index("idx_chatconv_user", "user_id"),
+        Index("idx_chatconv_artist", "artist_id"),
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    conv_no = Column(String(16), nullable=False, unique=True)  # CV260814xxxx
+    channel = Column(SmallInteger, nullable=False, default=0)  # 0 AI 1 人工 2 美甲师
+    user_id = Column(BigInteger)
+    guest_token = Column(String(64), nullable=False, default="")
+    email = Column(String(191))
+    name = Column(String(100))
+    lang = Column(String(2), nullable=False, default="en")  # 欢迎语/AI 回复语言
+    artist_id = Column(BigInteger)                          # channel=2 时的美甲师 user_id
+    agent_admin_id = Column(BigInteger)                     # channel=1 接手客服 user_id
+    status = Column(SmallInteger, nullable=False, default=0)  # 0 进行中 1 已关闭
+    last_message_at = Column(DateTime)
+    closed_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("idx_chatmsg_conv", "conversation_id", "id"),)
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id = Column(BigInteger, nullable=False, index=True)
+    # 1 客户 2 客服 3 系统 4 AI 机器人 5 美甲师
+    sender = Column(SmallInteger, nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
