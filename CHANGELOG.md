@@ -3,6 +3,35 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.10] · 客户端（C 端）全面审计修复：支付安全 + 交易并发 + 前端 19 项体验完善
+
+### Fixed（后端 · 支付与资金安全 P0/P1）
+- **PayPal Webhook 真实验签**：`verify_webhook` 从结构桩升级为真实调用 `/v1/notifications/verify-webhook-signature`（五头透传 + OAuth token），非 VERIFIED 一律拒绝；dev/未配置保持降级兼容。
+- **`charge.refunded` 增量记账**：normalize 优先取 `refunds.data[0].amount` 并透传 `cumulative_refunded`，webhook 侧 `delta = 累计 - 已记账` 求增量——部分退款不再重复入账/提前全额退款。
+- **折扣码并发超用**：`used_count` 改原子 CAS（`usage_limit` 进 WHERE，抢占失败仅告警不丢单）；`first_order_only` 判定改 `or_(email, user_id)` 独立条件 + email 归一。
+- **游客越权收紧**：email 双因子仅可取消未支付订单，已付单取消须登录属主（403 `login_required_for_paid_cancel`）；游客查单地址脱敏（隐街道/邮编/电话，保留城市/省州/国家）。
+- **total_spent / sold_count 原子累计**：等级晋升与"最畅销"排序数据并发不再丢失更新。
+- **支付并发**：create-intent 双击堆积多条 PENDING → insert 后 supersede 同 provider 旧 PENDING（status=2）；mock-pay 校验 PI 前缀（`provider_mismatch`）；Stripe/PayPal 幂等键改时变（失败重试不再命中旧 PI）。
+- **换货差价按实付折算**：`paid_unit = unit_price × grand_total / subtotal`（对齐 RMA 比例口径），折扣单换货不再多收/多退；`_force_payment_refund` 加剩余额度钳制，账面不可超退。
+- **重置 token 用途隔离**：登录 token 签发补 `purpose=session`，`_user_from_token` 拒收 purpose≠session 的 token——密码重置 JWT 不能再冒充会话。
+- **评价提交 CAS / 工单冒用**：`UPDATE order_items SET reviewed=1 WHERE reviewed=0` 防并发双评；工单携带 order_no 时校验 email 与订单归属（403 `order_email_mismatch`）。
+- **购物车加固**：`/api/cart` 前缀限流 60/min（未鉴权无限建车写库封堵）；add/批量累计超 99 → 409 `qty_limit`；游客车合并逐行钳制库存与 99。
+- **注册并发唯一键**：IntegrityError → 409 `email already registered`（不再 500）。
+- **下单/换货 email 格式校验**（兼容保留域的正则 EmailIn，避免 dev 邮箱整站 422）。
+- **track 免邮箱**：登录属主仅凭订单号查物流，游客仍需 email 双因子。
+- **promo validate 与 checkout 四舍五入对齐**：百分比折扣展示与实算不再差 1 分。
+
+### Fixed（web/client · 流程与体验）
+- **P1**：购物车抽屉图片误全局置灰（仅失效商品半透明）；PDP 加购失败双重报错；支付回跳查单失败误显绿色成功环（改琥珀 ⟳ 中性态）；exit 弹窗缺 Cookie 同意门控；结算页失效/缺货校验移到 `cart.refresh()` 之后；抽屉结算按钮补 qty>stock 拦截。
+- **P2**：注册补确认密码；心愿单/订单商品图 @error 兜底；博客封面防裂图死循环；搜索弹窗分类 chip 保留搜索词；`productDetail` 带 locale（缓存键隔离）；礼品卡支付沿用所选 provider；登录用户订单跟踪免邮箱；商店/搜索筛选不再整屏骨架屏闪烁（保留旧列表 + 半透明过渡）；首页 UGC 计数 0/失败不再显示虚构数字；PDP 仅商品标识变化才整页重载（utm 等无关参数免疫）；路由守卫接 pinia 会话态；auth store 位或笔误。
+- **契约**：consent 补 `personalization` 字段接收（落库待迁移）。
+
+### Added
+- **评价过审发 10 积分**（`PointsReason.REVIEW_REWARD`，ledger 幂等 + 原子加余额）。
+
+### 测试
+- 新增/更新：test_payments（PayPal 验签、累计退款增量、supersede、provider_mismatch）、test_cancel_paid（游客已付单 403/待付可取消/地址脱敏/track 四象限）、test_review_cs_ext（评价 CAS + 奖励流水）、test_p0/test_hardening/test_obs（token purpose、限流、工单归属）。回归全绿（逐套件运行）：test_a 24、test_b 76、test_c 83、test_payments 84、test_exchanges 57、test_cancel_paid 30、test_admin_flow_ext 50、test_e2e 62、test_concurrency 6 等；`npm run build`（client+admin）零错误。
+
 ## [0.3.9] · 管理平台全面审计修复：RMA/换货并发 CAS + 工单状态机 + 后台 30+ 体验补全
 
 ### Fixed（后端 · 资金与状态机安全）
