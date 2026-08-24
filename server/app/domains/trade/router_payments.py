@@ -36,8 +36,8 @@ _PROVIDER_LABELS = {
 def _resolve_provider(provider: str) -> payment_provider.PaymentProvider:
     default = payment_provider.get_provider()
     if default.name == "mock" or provider == default.name:
-        # 回落分支：默认链是 mock（无真实凭据/缺包降级）——非 dev 直接拒绝而非静默降级
-        if default.name == "mock" and settings.env != "dev":
+        # 回落分支：默认链是 mock（无真实凭据/缺包降级）——开关未放行直接拒绝而非静默降级
+        if default.name == "mock" and not settings.mock_pay_enabled:
             raise HTTPException(status_code=409, detail="mock_provider_disabled")
         return default
     if provider == "stripe":
@@ -63,7 +63,7 @@ def _create_intent_via(
 ) -> dict:
     from app.domains.trade import repository as repo
 
-    if provider.name == "mock" and settings.env != "dev":
+    if provider.name == "mock" and not settings.mock_pay_enabled:
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     order = service_payments._get_order(db, order_no)
     service_payments.ensure_order_owner(order, user, email)

@@ -194,14 +194,14 @@ def settle_diff_paid(db: Session, ex: Exchange, payment: Payment, *, actor: str)
 def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
     """换货差价支付 intent：status=2 专属；Payment 行挂在原订单（amount=price_diff），
     diff_payment_id 双向关联 —— webhook 据此路由到换货核销而非订单 mark_paid。
-    mock provider 非 dev 409（与订单 create-intent 同门禁）。"""
+    mock provider 开关未放行时 409（与订单 create-intent 同门禁）。"""
     ex = _owned_exchange(db, user, exchange_no)
     if ex.price_diff <= 0:
         raise HTTPException(status_code=409, detail="no_diff_to_pay")
     if ex.status != 2:
         raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
     provider = get_provider()
-    if provider.name == "mock" and settings.env != "dev":
+    if provider.name == "mock" and not settings.mock_pay_enabled:
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     # 幂等：已挂 PENDING payment 直接复用（不堆积新行）；已核销 409
     if ex.diff_payment_id:
@@ -244,8 +244,8 @@ def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
 
 
 def mock_pay_diff(db: Session, user: User, exchange_no: str, succeed: bool) -> dict:
-    """换货差价 mock 支付（仅 dev）：镜像订单 mock-pay 门禁与失败语义。"""
-    if settings.env != "dev":
+    """换货差价 mock 支付（仅开关放行时开放）：镜像订单 mock-pay 门禁与失败语义。"""
+    if not settings.mock_pay_enabled:
         raise HTTPException(status_code=404, detail="not_found")
     provider = get_provider()
     if provider.name != "mock":

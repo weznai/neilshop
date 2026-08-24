@@ -231,6 +231,28 @@ try:
                         json={"order_no": "NS260815PAY02", "provider": "stripe"})
         check("GM_ENV=prod 显式 provider 回落 mock 分支 → 409 mock_provider_disabled",
               r.status_code == 409 and r.json()["detail"] == "mock_provider_disabled", r.text)
+
+        # ===== GM_MOCK_PAY=1：prod 显式放行 mock（可配置开关；默认空=仅 dev） =====
+        app_settings._mock_pay = "1"
+        r = client.get("/api/payments/methods")
+        d = r.json()
+        check("GM_MOCK_PAY=1 + prod → methods 恢复 mock provider",
+              r.status_code == 200 and d == {"providers": [
+                  {"id": "mock", "name": "Mock Pay (dev)", "klarna": False}],
+                  "default": "mock"}, d)
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY02"})
+        check("GM_MOCK_PAY=1 + prod → create-intent 放行（复用既有 PENDING）",
+              r.status_code == 200 and r.json()["payment_intent"] == pi_reuse_a, r.text)
+        r = client.post("/api/payments/mock-pay",
+                        json={"order_no": "NS_NOPE", "succeed": True})
+        check("GM_MOCK_PAY=1 + prod → mock-pay 门禁放行（order_not_found 而非 not_found）",
+              r.json().get("detail") == "order_not_found", r.text)
+        app_settings._mock_pay = ""
+        r = client.get("/api/payments/methods")
+        check("GM_MOCK_PAY 还原空 → prod 再次 default=none",
+              r.json() == {"providers": [], "default": "none"}, r.text)
+
         app_settings.env = "dev"
         check("GM_ENV 还原 dev 后门禁放行（404 order_not_found 而非 not_found）",
               client.post("/api/payments/mock-pay",

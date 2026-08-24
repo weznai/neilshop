@@ -280,5 +280,5 @@ def available_providers() -> list[str]:
             names.append("paypal")
         except ImportError:
             pass
-    # mock 仅 dev 环境可见：非 dev 无真实 provider 凭据时返回空（前端隐藏支付入口）
-    return names or (["mock"] if settings.env == "dev" else [])
+    # mock 仅在开关放行时可见（默认 dev；GM_MOCK_PAY=1 强制放行）：无真实 provider 且开关关闭时空列表
+    return names or (["mock"] if settings.mock_pay_enabled else [])

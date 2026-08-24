@@ -201,8 +201,8 @@ def create_intent(
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
     provider = get_provider()
-    # 环境门禁：非 dev 禁止 mock intent（无真实凭据时宁可 409 也不静默降级 mock）
-    if provider.name == "mock" and settings.env != "dev":
+    # 环境门禁：mock 开关未放行时禁止 mock intent（无真实凭据时宁可 409 也不静默降级 mock）
+    if provider.name == "mock" and not settings.mock_pay_enabled:
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
     pending = repo.pending_payment_of_order(db, order.id, provider=provider.name)
@@ -219,7 +219,7 @@ def create_intent(
     try:
         intent = provider.create_intent(order, order.grand_total)
     except ProviderUnavailable:
-        if settings.env != "dev":
+        if not settings.mock_pay_enabled:
             raise HTTPException(status_code=409, detail="mock_provider_disabled")
         intent = MockProvider().create_intent(order, order.grand_total)
     payment = Payment(
@@ -243,8 +243,8 @@ def mock_pay(
     db: Session, order_no: str, succeed: bool, *,
     user: User | None = None, email: str | None = None,
 ) -> dict:
-    # 环境门禁：mock 支付仅 dev 开放（默认 dev，测试套件不受影响）
-    if settings.env != "dev":
+    # 环境门禁：mock 支付仅在开关放行时开放（默认 dev；GM_MOCK_PAY=1 放行，测试套件不受影响）
+    if not settings.mock_pay_enabled:
         raise HTTPException(status_code=404, detail="not_found")
     provider = get_provider()
     order = _get_order(db, order_no)

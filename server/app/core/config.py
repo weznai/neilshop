@@ -13,6 +13,14 @@ class Settings:
     jwt_secret: str = os.getenv("GM_JWT_SECRET", JWT_SECRET_DEFAULT)
     # 运行环境：dev（默认，开放 mock 支付/未验签 webhook）/ test / staging / prod
     env: str = os.getenv("GM_ENV", "dev").strip().lower() or "dev"
+    # mock 支付开关：默认随 env（仅 dev 开放）；GM_MOCK_PAY=1 任何环境放行，=0 强制关闭
+    _mock_pay: str = os.getenv("GM_MOCK_PAY", "").strip().lower()
+
+    @property
+    def mock_pay_enabled(self) -> bool:
+        if self._mock_pay:
+            return self._mock_pay not in ("0", "false", "off", "no")
+        return self.env == "dev"
     token_days: int = int(os.getenv("GM_TOKEN_DAYS", "7"))
     # 后台会话更短（小时）· 前后台拆域后各自 Cookie 互不串台
     admin_token_hours: int = int(os.getenv("GM_ADMIN_TOKEN_HOURS", "12"))
