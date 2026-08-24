@@ -110,10 +110,11 @@ async function track() {
   err.value = ''
   result.value = null
   if (!no.value.trim()) { err.value = tt('Enter your order number (NS…)', '请输入订单号（NS…）'); return }
-  if (!EMAIL_RE.test(email.value.trim())) { err.value = tt('Enter a valid email address', '请输入有效的邮箱地址'); return }
+  /* 登录属主仅凭订单号查单；游客需订单号 + 下单邮箱双因子 */
+  if (!auth.isLoggedIn && !EMAIL_RE.test(email.value.trim())) { err.value = tt('Enter a valid email address', '请输入有效的邮箱地址'); return }
   busy.value = true
   try {
-    result.value = await req('GET', '/api/orders/track?no=' + encodeURIComponent(no.value.trim()) + '&email=' + encodeURIComponent(email.value.trim()))
+    result.value = await req('GET', '/api/orders/track?no=' + encodeURIComponent(no.value.trim()) + (auth.isLoggedIn ? '' : '&email=' + encodeURIComponent(email.value.trim())))
   } catch (e) {
     if (e && e.status === 404) err.value = tt('Order not found — check the number & email (must match checkout email)', '未找到订单——请核对订单号与下单邮箱（须与结算邮箱一致）')
     else if (e && (e.status === 0 || e.name === 'TypeError')) err.value = tt('Network unreachable — check your connection and retry', '网络连接失败，请检查网络后重试')
@@ -122,7 +123,7 @@ async function track() {
 }
 
 onMounted(() => {
-  if (no.value && email.value) track()
+  if (no.value && (email.value || auth.isLoggedIn)) track()
 })
 </script>
 
@@ -131,10 +132,14 @@ onMounted(() => {
     <div class="container" style="max-width:560px">
       <div class="section-head"><h2 class="section-title">{{ tt('Track Order 🚚', '订单查询 🚚') }}</h2></div>
       <div class="card" style="padding:24px">
-        <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">{{ tt('No login needed — order number + email used at checkout.', '免登录——订单号 + 下单邮箱即可查询。') }}</p>
+        <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">
+          {{ auth.isLoggedIn
+            ? tt("You're signed in — your order number is all we need.", '已登录——只需订单号即可查询。')
+            : tt('No login needed — order number + email used at checkout.', '免登录——订单号 + 下单邮箱即可查询。') }}
+        </p>
         <form @submit.prevent="track">
           <div class="field"><label>{{ tt('Order number', '订单号') }}</label><input v-model="no" class="input" placeholder="NS260728D4E5F6" autocomplete="off"></div>
-          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com"></div>
+          <div v-if="!auth.isLoggedIn" class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com"></div>
           <div v-if="err" class="field-msg" style="display:block;color:var(--error)">{{ err }}</div>
           <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy">{{ tt('Track', '查询') }}</button>
         </form>

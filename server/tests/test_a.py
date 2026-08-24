@@ -470,6 +470,11 @@ def newsletter_and_consent(client, fx):
         "session_id": "sess-abc-123", "necessary": True, "analytics": True,
         "marketing": False, "region": "US-CA"})
     assert c.status_code == 201
+    # 前端 CookieConsent.vue 会额外提交 personalization：schema 须接收（模型暂无该列不落库）
+    c2 = client.post("/api/account/consent", json={
+        "session_id": "sess-abc-456", "necessary": True, "analytics": False,
+        "marketing": False, "personalization": True, "region": "US-CA"})
+    assert c2.status_code == 201, c2.text
     db = fresh_db()
     try:
         row = db.query(CookieConsent).filter_by(session_id="sess-abc-123").first()

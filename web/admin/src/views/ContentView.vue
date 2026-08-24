@@ -4,7 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dDate, dt } from '../composables/format'
-import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
+import { md2html } from '../composables/md'
 import { PRODUCT_TITLES_KEY } from '../constants/cacheKeys'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -77,11 +78,18 @@ function toggleUgcSel(id) {
 /* UGC 空态文案：已上架/已拒绝 tab→未匹配（待审保持“处理完”、全部=暂无） */
 const ugcFiltered = computed(() => ugcStatus.value === 1 || ugcStatus.value === 2)
 
+/* 请求序号 token：四列表各自防竞态（快速切筛选/翻页时丢弃过期响应，做法同 OrdersView） */
+let ugcSeq = 0
+let revSeq = 0
+let artSeq = 0
+let faqSeq = 0
 async function loadUgc() {
   ugcSel.value = []
+  const token = ++ugcSeq
   const qs = new URLSearchParams({ page: ugcPage.value, size: UGC_SIZE })
   if (ugcStatus.value !== null) qs.set('status', ugcStatus.value)
   const d = await req('GET', '/api/admin/ops/ugc?' + qs)
+  if (token !== ugcSeq) return
   ugc.value = d.items || []
   ugcTotal.value = d.total ?? ugc.value.length
   if (ugcStatus.value === 0) ugcPending.value = ugcTotal.value
@@ -148,26 +156,32 @@ function imgFail(row) { row.img_broken = true }
 
 async function loadReviews() {
   revSel.value = []
+  const token = ++revSeq
   const qs = new URLSearchParams({ page: revPage.value, size: REV_SIZE })
   if (pendingOnly.value) qs.set('status', 0)
   if (revRating.value) qs.set('rating', revRating.value)
   if (revProduct.value) qs.set('product_id', revProduct.value)
   const d = await req('GET', '/api/admin/ops/reviews?' + qs)
+  if (token !== revSeq) return
   reviews.value = d.items || []
   revTotal.value = d.total ?? reviews.value.length
   if (pendingOnly.value && !revRating.value && !revProduct.value) revPending.value = revTotal.value
 }
 async function loadArticles() {
+  const token = ++artSeq
   const qs = new URLSearchParams({ page: artPage.value, size: ART_SIZE })
   if (artStatus.value) qs.set('status', artStatus.value)
   const d = await req('GET', '/api/admin/ops/articles?' + qs)
+  if (token !== artSeq) return
   articles.value = Array.isArray(d) ? d : (d.items || [])
   artTotal.value = d.total ?? articles.value.length
 }
 async function loadFaqs() {
+  const token = ++faqSeq
   const qs = new URLSearchParams({ page: faqPage.value, size: FAQ_SIZE })
   if (faqCat.value) qs.set('category', faqCat.value)
   const d = await req('GET', '/api/admin/ops/faqs?' + qs)
+  if (token !== faqSeq) return
   faqs.value = Array.isArray(d) ? d : (d.items || [])
   faqTotal.value = d.total ?? faqs.value.length
 }
@@ -199,10 +213,15 @@ onMounted(() => {
   refreshRevPending()
 })
 
-/* 审核后刷新：评价只重拉评价列表（不动其他 tab、骨架与商品映射） */
+/* 审核后刷新：评价只重拉评价列表（不动其他 tab、骨架与商品映射）；
+ * 批量审核把最后一页处理完 → 空页且不在第 1 页时回拉到最后一页重载（对齐 MembersView 越界回拉模式） */
 async function reloadReviews() {
   try { await loadReviews() } catch (_) { errs.reviews = true; toast('评价列表加载失败', 'error') }
   if (!pendingOnly.value) refreshRevPending()   /* 非待审视图时补一发待审计数探测 */
+  if (!reviews.value.length && revTotal.value > 0 && revPage.value > 1) {
+    revPage.value = Math.max(1, revPages.value)
+    loadReviews().catch(() => toast('评价列表加载失败', 'error'))
+  }
 }
 function revGo(n) {
   if (n >= 1 && n <= revPages.value) { revPage.value = n; loadReviews().catch(() => toast('评价列表加载失败', 'error')) }
@@ -346,36 +365,7 @@ function bulkUgc(action) {
     { danger: !approve, confirmText: approve ? '上架' : '拒绝' })
 }
 
-/* 极简 Markdown 渲染（文章/FAQ 弹窗预览共用）：先整体转义再插入标签，防 XSS；
- * 支持 h1-h3（先长后短匹配）/ 无序列表 / 引用 / 粗体 / 斜体 / 链接 / 行内代码，对齐 client BlogPostView 先例 */
-function md2html(src) {
-  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-  const inline = (t) => t
-    /* 行内代码先于加粗/链接，避免代码片段被二次加工 */
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-    .replace(/\*([^*]+)\*/g, '<i>$1</i>')
-    /* 链接协议白名单：http(s) 外链新窗打开，/ 开头站内路径放行；其余（javascript: 等）剥语法留纯文本 */
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, href) => (/^https?:\/\//i.test(href)
-      ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>`
-      : /^\/(?!\/)/.test(href) ? `<a href="${href}">${text}</a>` : text))
-  const out = []
-  let ul = false
-  const closeUl = () => { if (ul) { out.push('</ul>'); ul = false } }
-  for (const raw of esc(src).split(/\r?\n/)) {
-    const l = raw.trim()
-    let m
-    if (!l) { closeUl(); continue }
-    if ((m = l.match(/^###\s+(.*)$/))) { closeUl(); out.push(`<h3>${inline(m[1])}</h3>`) }
-    else if ((m = l.match(/^##\s+(.*)$/))) { closeUl(); out.push(`<h2>${inline(m[1])}</h2>`) }
-    else if ((m = l.match(/^#\s+(.*)$/))) { closeUl(); out.push(`<h1>${inline(m[1])}</h1>`) }
-    else if ((m = l.match(/^[-*]\s+(.*)$/))) { if (!ul) { out.push('<ul>'); ul = true } out.push(`<li>${inline(m[1])}</li>`) }
-    else if ((m = l.match(/^&gt;\s?(.*)$/))) { closeUl(); out.push(`<blockquote>${inline(m[1])}</blockquote>`) }
-    else { closeUl(); out.push(`<p>${inline(l)}</p>`) }
-  }
-  closeUl()
-  return out.join('')
-}
+/* md2html 抽至 composables/md.js（与 ProductEditView 商品描述预览共用，实现完全一致） */
 /* 文章 / FAQ 弹窗各自独立的预览开关（切预览只是隐藏 textarea，v-model 内容不丢） */
 const artPrev = ref(false)
 const faqPrev = ref(false)

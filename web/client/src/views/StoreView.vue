@@ -73,8 +73,10 @@ const shapeLabel = (v) => {
 
 let ldSeq = 0
 const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+/* loaded 仅首载为 false（骨架屏）；后续筛选/排序/翻页保留旧列表 + busy 半透明加载态 */
+const busy = ref(false)
 async function load() {
-  loaded.value = false
+  busy.value = true
   loadError.value = false
   const seq = ++ldSeq
   const params = {
@@ -107,6 +109,7 @@ async function load() {
     state.items = []; state.total = 0; loadError.value = true
   }
   loaded.value = true
+  busy.value = false
   if (pendingScroll.value) {
     pendingScroll.value = false
     nextTick(() => gridEl.value && gridEl.value.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }))
@@ -271,7 +274,7 @@ const HOT_LINKS = [
         {{ i18n.t(state.total === 1 ? 'store.count.one' : 'store.count.many', state.total) }}
       </p>
 
-      <div ref="gridEl" class="grid grid-4">
+      <div ref="gridEl" class="grid grid-4" :style="loaded && busy ? 'opacity:.55;pointer-events:none' : ''">
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="sk-card">
             <div class="sk-img sk-shimmer"></div>

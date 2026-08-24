@@ -22,6 +22,15 @@ const notifyBusy = ref(0)
 /* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
 const arm = useArmConfirm()
 
+/* 卡片图兜底：回落 placehold + dataset 守卫防循环（对齐 ProductCard imgFallback） */
+const IMG_FALLBACK = 'https://placehold.co/400x400/E8B4B8/552338?text=%E2%9C%A8'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
+
 onMounted(async () => {
   try {
     items.value = await req('GET', '/api/account/wishlist')
@@ -85,7 +94,7 @@ function priceRange(w) {
       <div v-for="w in items" :key="w.id" class="pcard">
         <div class="pcard-img">
           <router-link :to="`/product?id=${w.id}`">
-            <img class="img-main" :src="w.hero_image" :alt="w.title">
+            <img class="img-main" :src="w.hero_image" :alt="w.title" @error="imgFallback">
           </router-link>
           <span v-if="w.stock_summary?.out" class="badge badge-out">SOLD OUT</span>
           <span v-if="!w.stock_summary?.out" class="pcard-quick" role="button" tabindex="0"

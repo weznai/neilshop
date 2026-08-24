@@ -1,5 +1,5 @@
 /* 统一图片上传（POST /api/admin/media/upload：multipart 字段 file，png/jpg/jpeg/webp/gif ≤5MB）
- * 401 → 广播 gm-admin-401（App.vue 接管跳登录）；403 → 提示 + 回登录带 next（与 api/client.js 同构） */
+ * 401 → 广播 gm-admin-401（App.vue 接管跳登录）；403 → 仅 toast 提示（对齐 api/client.js：不清会话不跳转） */
 import { API_BASE, fmtDetail } from '../api/client'
 import { toast } from '../composables/toast'
 
@@ -18,12 +18,8 @@ export async function uploadMedia(file) {
     return data.url
   }
   if (r.status === 401) window.dispatchEvent(new CustomEvent('gm-admin-401'))
-  if (r.status === 403) {
-    toast('权限不足或已变更，请重新登录', 'error')
-    if (!location.pathname.includes('/login')) {
-      import('../router').then((m) => m.default.push({ path: '/login', query: { next: m.default.currentRoute.value.fullPath } }))
-    }
-  }
+  /* 权限不足：会话仍有效（401 才代表过期），仅就地提示，不跳转、不清会话（与 api/client.js 403 口径一致） */
+  if (r.status === 403) toast('无权限执行该操作', 'error')
   const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
   e.status = r.status
   throw e

@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/admin/trade", tags=["admin-trade"])
 
 
 def _parse_order_status(raw: Optional[str]) -> tuple[Optional[int], Optional[list[int]]]:
-    """订单状态过滤解析：含逗号拆分转 int 列表（任一段非法 422 invalid status），
+    """状态过滤解析（订单/RMA 列表共用）：含逗号拆分转 int 列表（任一段非法 422 invalid status），
     单值保持 int 语义（与旧 status: int 行为一致）；空/未传 → 不过滤"""
     if raw is None or raw.strip() == "":
         return None, None
@@ -112,14 +112,16 @@ def add_order_note(order_no: str, body: NoteIn, admin: User = Depends(require_pe
 
 @router.get("/rmas")
 def list_rmas(
-    status: Optional[int] = None,
+    status: Optional[str] = None,
     q: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     per_page: int = Query(default=20, ge=1, le=100),
     admin: User = Depends(require_perm("rma:read")),
     db: Session = Depends(get_db),
 ):
-    return service_admin.list_rmas(db, status, page, per_page, q)
+    # 状态过滤支持 CSV（"2,4" → 多状态队列），与订单列表 _parse_order_status 同口径
+    status_eq, status_in = _parse_order_status(status)
+    return service_admin.list_rmas(db, status_eq, page, per_page, q, status_in=status_in)
 
 
 @router.post("/rmas/{rma_no}/approve")
@@ -164,10 +166,13 @@ def stock_movements(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     page: int = Query(default=1, ge=1),
+    per_page: Optional[int] = Query(default=None, ge=1),
     admin: User = Depends(require_perm("stock:read")),
     db: Session = Depends(get_db),
 ):
-    return service_admin.stock_movements(db, variant_id, page, type, date_from, date_to)
+    return service_admin.stock_movements(
+        db, variant_id, page, type, date_from, date_to, per_page,
+    )
 
 
 @router.get("/stock/low")

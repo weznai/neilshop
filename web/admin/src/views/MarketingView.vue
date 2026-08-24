@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt, money, dDate } from '../composables/format'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { uploadMedia, uploadErrText } from '../composables/upload'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -24,10 +25,14 @@ const dscPage = ref(1)
 const dscTotal = ref(0)
 const dscPages = computed(() => Math.max(1, Math.ceil(dscTotal.value / DSC_SIZE)))
 const dscQ = ref('')
+/* 请求序号 token：两列表各自防竞态（快速切筛选/翻页时丢弃过期响应，做法同 OrdersView） */
+let dscSeq = 0
 async function loadDiscounts() {
+  const token = ++dscSeq
   const qs = new URLSearchParams({ page: dscPage.value, size: DSC_SIZE })
   if (dscQ.value.trim()) qs.set('q', dscQ.value.trim())
   const d = await req('GET', '/api/admin/ops/discounts?' + qs)
+  if (token !== dscSeq) return
   discounts.value = d.items || []
   dscTotal.value = d.total ?? discounts.value.length
 }
@@ -303,17 +308,24 @@ const gcStatus = ref('')          /* '' 全部 / '0'-'4' 对应 GC_STATUS 五态
 const gcPage = ref(1)
 const gcTotal = ref(0)
 const gcPages = computed(() => Math.max(1, Math.ceil(gcTotal.value / GC_SIZE)))
+let gcSeq = 0
 async function loadGiftcards() {
   gcErr.value = false
+  const token = ++gcSeq
   try {
     const qs = new URLSearchParams({ page: gcPage.value, size: GC_SIZE })
     if (gcQ.value.trim()) qs.set('q', gcQ.value.trim())
     if (gcStatus.value) qs.set('status', gcStatus.value)
     const d = await req('GET', '/api/admin/promo/giftcards?' + qs)
+    if (token !== gcSeq) return
     gc.value = d.items || []
     gcTotal.value = d.total ?? gc.value.length
     gcLoaded.value = true
-  } catch (e) { gcErr.value = true; toast('礼品卡加载失败：' + (e.message || ''), 'error') }   /* 保留旧数据：卡内横幅提示（见模板） */
+  } catch (e) {
+    if (token !== gcSeq) return
+    gcErr.value = true
+    toast('礼品卡加载失败：' + (e.message || ''), 'error')
+  }   /* 保留旧数据：卡内横幅提示（见模板） */
 }
 function gcGo(n) {
   if (n >= 1 && n <= gcPages.value) { gcPage.value = n; loadGiftcards() }
@@ -322,6 +334,49 @@ function gcGo(n) {
 function gcSearch() { gcPage.value = 1; loadGiftcards() }
 /* 有筛选（搜索词/状态）时空态文案区分 */
 const gcFiltered = computed(() => !!(gcQ.value.trim() || gcStatus.value))
+
+/* ===== CSV 导出：折扣码 / 礼品卡（当前筛选全量翻页，size=100 上限 2000 行，复用 fetchAllPages） ===== */
+/* 折扣码类型文案与状态（状态口径与列表「有效期」列一致：已过期/未生效/启用/停用） */
+const DSC_TYPE = { 1: '百分比', 2: '固定减免', 3: '免邮' }
+const dscStatusText = (c) => (c.is_active && isExpired(c)) ? '已过期' : (c.is_active && isNotStarted(c)) ? '未生效' : (c.is_active ? '启用' : '停用')
+const dscExporting = ref(false)
+async function exportDiscounts() {
+  if (dscExporting.value) return
+  dscExporting.value = true
+  try {
+    const kw = dscQ.value.trim()
+    const { all, truncated } = await fetchAllPages((p) => req('GET', '/api/admin/ops/discounts?' + new URLSearchParams({ page: p, size: 100, ...(kw ? { q: kw } : {}) })), { pageSize: 100, maxPages: 20 })
+    if (truncated) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    downloadCsv({
+      filename: 'discounts_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+      headers: ['ID', '码', '类型', '面值/折扣率', '时间窗', '状态', '已用次数'],
+      rows: all.map((c) => [c.id, c.code, DSC_TYPE[c.type] || c.type,
+        c.type === 1 ? (c.value ?? 0) + '%' : c.type === 2 ? money(c.value) : '',
+        (dDate(c.starts_at) || '—') + ' ~ ' + (c.ends_at ? dDate(c.ends_at) : '∞'),
+        dscStatusText(c), c.used_count ?? 0]),
+    })
+    toast('已导出 ' + all.length + ' 个 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  dscExporting.value = false
+}
+const gcExporting = ref(false)
+async function exportGiftcards() {
+  if (gcExporting.value) return
+  gcExporting.value = true
+  try {
+    const kw = gcQ.value.trim()
+    const stt = gcStatus.value
+    const { all, truncated } = await fetchAllPages((p) => req('GET', '/api/admin/promo/giftcards?' + new URLSearchParams({ page: p, size: 100, ...(kw ? { q: kw } : {}), ...(stt ? { status: stt } : {}) })), { pageSize: 100, maxPages: 20 })
+    if (truncated) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    downloadCsv({
+      filename: 'giftcards_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+      headers: ['ID', '卡号', '面值', '余额', '状态', '过期时间'],
+      rows: all.map((g) => [g.id, g.code, money(g.initial_cents), money(g.balance_cents), GC_STATUS[g.status]?.[0] || g.status, g.expires_at ? dt(g.expires_at) : '永久']),
+    })
+    toast('已导出 ' + all.length + ' 张 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  gcExporting.value = false
+}
 
 /* 余额进度条：复用库存条渐变（≤25% low / ≤60% mid / 其余 ok） */
 const gcPct = (g) => (g.initial_cents ? Math.min(100, Math.round(((g.balance_cents || 0) * 100) / g.initial_cents)) : 0)
@@ -459,6 +514,8 @@ async function codeExists(code) {
 }
 async function savePopup() {
   if (!popupForm.title.trim()) { toast('标题必填', 'error'); return }
+  /* 有效期校验：起止都填了时结束必须晚于开始（datetime-local → Date 毫秒比较，同 saveEdit 口径） */
+  if (popupForm.start_at && popupForm.end_at && new Date(popupForm.end_at).getTime() <= new Date(popupForm.start_at).getTime()) { toast('结束时间需晚于开始时间', 'error'); return }
   /* 绑定券码严格校验：仅「新建」或「券码已改动」时要求精确查询命中，防绑定错误码；
    * 编辑未改码跳过校验（原券码可能不在折扣码列表） */
   const code = popupForm.coupon_code ? popupForm.coupon_code.trim().toUpperCase() : ''
@@ -548,6 +605,9 @@ function editRate(r) {
 const mwOut = () => { const n = Math.round(Number(rateForm.max_weight_g)); return Number.isFinite(n) && n >= 1 ? n : 500 }
 async function saveRate() {
   if (rateForm.eta_max_days < rateForm.eta_min_days) { toast('最大时效不能小于最小时效', 'error'); return }
+  /* 运费必须 ≥0；免邮门槛选填，填了也须 ≥0（空/未填提交 null） */
+  if (!(Number(rateForm.price) >= 0)) { toast('运费需大于等于 0', 'error'); return }
+  if (rateForm.free_over !== null && rateForm.free_over !== '' && !(Number(rateForm.free_over) >= 0)) { toast('免邮门槛需大于等于 0', 'error'); return }
   try {
     if (rateForm.id) {
       /* PUT 已放开全字段：目的地/承运/方式/限重编辑态可改，组合唯一冲突 409 */
@@ -848,6 +908,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
           <span style="display:block;font-size:12.5px;color:var(--gray)">共 {{ dscTotal }} 个</span>
           <span style="display:block;font-size:12.5px;color:var(--gray)">当前页：启用 {{ discounts.filter((c) => c.is_active).length }}<span v-if="discounts.some((c) => isExpired(c))"> · 已过期 {{ discounts.filter((c) => isExpired(c)).length }}</span></span>
+          <button class="btn btn-secondary btn-sm" :disabled="dscExporting" @click="exportDiscounts">{{ dscExporting ? '导出中…' : '⬇ CSV' }}</button>
           <button class="btn btn-primary btn-sm" @click="openNew">＋ 新建折扣码</button>
         </div>
       </div>
@@ -992,6 +1053,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
           <h3 class="dtitle">礼品卡</h3>
           <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
             <span style="font-size:12.5px;color:var(--gray)">共 {{ gcTotal }} 张 · 当前页有效 {{ gc.filter((g) => g.status === 1).length }} / 冻结 {{ gc.filter((g) => g.status === 2).length }}</span>
+            <button class="btn btn-secondary btn-sm" :disabled="gcExporting" @click="exportGiftcards">{{ gcExporting ? '导出中…' : '⬇ CSV' }}</button>
             <button class="btn btn-primary btn-sm" @click="openGcNew">＋ 手工发卡</button>
           </div>
         </div>
@@ -1441,8 +1503,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
 </template>
 
 <style scoped>
-/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部（对齐其他列表页 old-data 模式） */
-.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+/* .err-banner 已上移 admin.css（v16 公共类，样式完全一致） */
 /* 捆绑折扣双卡：宽屏左右并排，≤900px 单列堆叠 */
 .bundle-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
 @media(max-width:900px){.bundle-grid{grid-template-columns:1fr}}

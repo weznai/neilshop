@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 import jwt as pyjwt
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -93,27 +94,32 @@ _WELCOME_FALLBACK_DISCOUNT = 20
 def register(db: Session, body: RegisterIn) -> dict:
     if repo.user_email_taken(db, body.email):
         raise HTTPException(status_code=409, detail="email already registered")
-    user = repo.add_user(
-        db, email=body.email, password_hash=hash_password(body.password), name=body.name
-    )
-    db.flush()
-    # 推荐绑定闭环：/register?ref= 落地页承诺的双方 1000 积分依赖此绑定记录
-    # （首单支付发放逻辑在 trade 域 on_order_paid，此处只负责把邀请关系写对）
-    service_referrals.bind_referral_on_register(db, body.ref_code, user)
-    # 欢迎邮件走 outbox（worker 消费，营销偏好 sub_promo=0 时合规跳过并标记 published）
-    # payload 供 welcome_coupon 模板渲染：discount/code 取折扣码表 WELCOME20 换算，
-    # 查不到回落常量（20% / WELCOME20）
-    code, discount = repo.welcome_coupon(db) or (
-        _WELCOME_FALLBACK_CODE, _WELCOME_FALLBACK_DISCOUNT
-    )
-    db.add(OutboxEvent(
-        aggregate_type="user", aggregate_id=user.id, event_type="user.welcome",
-        payload={
-            "user_id": user.id, "email": user.email,
-            "code": code, "discount": discount,
-        },
-    ))
-    db.commit()
+    try:
+        user = repo.add_user(
+            db, email=body.email, password_hash=hash_password(body.password), name=body.name
+        )
+        db.flush()
+        # 推荐绑定闭环：/register?ref= 落地页承诺的双方 1000 积分依赖此绑定记录
+        # （首单支付发放逻辑在 trade 域 on_order_paid，此处只负责把邀请关系写对）
+        service_referrals.bind_referral_on_register(db, body.ref_code, user)
+        # 欢迎邮件走 outbox（worker 消费，营销偏好 sub_promo=0 时合规跳过并标记 published）
+        # payload 供 welcome_coupon 模板渲染：discount/code 取折扣码表 WELCOME20 换算，
+        # 查不到回落常量（20% / WELCOME20）
+        code, discount = repo.welcome_coupon(db) or (
+            _WELCOME_FALLBACK_CODE, _WELCOME_FALLBACK_DISCOUNT
+        )
+        db.add(OutboxEvent(
+            aggregate_type="user", aggregate_id=user.id, event_type="user.welcome",
+            payload={
+                "user_id": user.id, "email": user.email,
+                "code": code, "discount": discount,
+            },
+        ))
+        db.commit()
+    except IntegrityError:
+        # 并发同 email 注册：先查后插的竞态窗口撞 users.email 唯一索引 → 统一 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="email already registered")
     db.refresh(user)
     return {"token": create_token(user.id, user.role), "user": _user_out(user)}
 

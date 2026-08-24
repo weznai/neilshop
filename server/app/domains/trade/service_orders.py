@@ -92,10 +92,15 @@ def list_orders(
     }
 
 
-def track(db: Session, no: str, email: str) -> dict:
+def track(
+    db: Session, no: str, email: Optional[str], user: Optional[User] = None,
+) -> dict:
     order = _get_order(db, no.strip().upper())
-    if order.email.lower() != email.strip().lower():
-        raise HTTPException(status_code=404, detail="order_not_found")
+    # 登录属主免 email 查询（cookie 会话下 order_no 即可）；游客/非属主必须 email 双因子
+    is_owner = user is not None and order.user_id == user.id
+    if not is_owner:
+        if not email or order.email.lower() != email.strip().lower():
+            raise HTTPException(status_code=404, detail="order_not_found")
     shipments = repo.order_shipments(db, order.id)
     timeline = repo.order_timeline_desc(db, order.id)
     return {
@@ -116,6 +121,18 @@ def track(db: Session, no: str, email: str) -> dict:
     }
 
 
+def _mask_address(addr) -> dict:
+    """游客 email 双因子查看时的收货地址脱敏：仅保留姓名首字 + 城市/省州/国家，
+    隐去街道/门牌/邮编/电话（防仅凭订单号+邮箱套取完整地址）。"""
+    if not isinstance(addr, dict):
+        return {}
+    masked = {k: addr.get(k) for k in ("city", "state", "country")
+              if addr.get(k) is not None}
+    name = str(addr.get("full_name") or "")
+    masked["full_name"] = (name[0] + "***") if name else ""
+    return masked
+
+
 def order_detail(
     db: Session, order_no: str, email: Optional[str], user: Optional[User],
 ) -> dict:
@@ -124,7 +141,11 @@ def order_detail(
     is_email = email is not None and email.strip().lower() == order.email.lower()
     if not (is_owner or is_email):
         raise HTTPException(status_code=404, detail="order_not_found")
-    return _detail(db, order)
+    detail = _detail(db, order)
+    # 登录属主完整显示；游客 email 双因子查看时地址脱敏
+    if not is_owner:
+        detail["shipping_address"] = _mask_address(order.shipping_address)
+    return detail
 
 
 def _cancel_pending(db: Session, order: Order, user: User) -> dict:
@@ -159,7 +180,8 @@ def _cancel_pending(db: Session, order: Order, user: User) -> dict:
 def _cancel_paid_unshipped(db: Session, order: Order, user: User) -> dict:
     """已支付未发货取消：CAS（status=1 且 shipping_status=0，与发货互斥）→ 全额退款
     公共路径（库存回补/积分双向/礼品卡回补/outbox，订单终态 9）；
-    无可退 payment 时降级为仅 CAS + timeline，不阻断取消。"""
+    无可退 payment 时降级补齐副作用（库存/积分/礼品卡照常回补，仅跳过 Payment 记账），
+    订单保持 CANCELED(8)，不阻断取消。"""
     now = utcnow()
     if repo.claim_order_paid_canceled(db, order.id, now, "user") == 0:
         db.rollback()
@@ -176,8 +198,16 @@ def _cancel_paid_unshipped(db: Session, order: Order, user: User) -> dict:
     except HTTPException as exc:
         if exc.detail != "no_refundable_payment":
             raise
+        # 降级补齐：纯礼品卡/积分单无可退 Payment，对齐 apply_refund 全额路径副作用
+        # （库存回补 qty-refunded_qty / 积分作废+返还 / 礼品卡回补），订单保持 CANCELED 终态
         log.warning("paid-cancel order %s degraded: no refundable payment, "
-                    "order kept CANCELED without refund", order.order_no)
+                    "order kept CANCELED with restock/points/giftcard refund only",
+                    order.order_no)
+        service_admin._restock_items(db, order, ref_type="order")
+        points_svc.refund_void(db, order)
+        points_svc.refund_return(db, order, order.user_id, order.points_used)
+        if order.giftcard_discount > 0:
+            service_admin._refund_giftcard_debit(db, order)
     repo.add_timeline(db, order.id, "status_changed", actor="user", detail={
         "from": 1, "to": order.status, "reason": "user_cancel_paid",
     })
@@ -198,6 +228,10 @@ def cancel_order(
     if order.status == 0:
         return _cancel_pending(db, order, user)
     if order.status == 1 and order.shipping_status == 0:
+        # 已付未发货取消涉及全额资金退款：仅登录属主可操作 —— email 双因子只放行
+        # 未支付单，防游客凭订单号+邮箱盗取消他人已付订单套取退款
+        if not is_owner:
+            raise HTTPException(status_code=403, detail="login_required_for_paid_cancel")
         return _cancel_paid_unshipped(db, order, user)
     raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
 

@@ -187,6 +187,9 @@ html{scrollbar-width:thin;scrollbar-color:var(--scroll) transparent}
 /* 搜索框清除小按钮（同 Orders/Products/Inventory scoped 副本） */
 .q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
 .q-clear:hover{background:var(--gray)}
+/* 单号深链（订单号/邮箱等，Returns/Tickets 原 scoped 副本）：ink 色 hover plum 下划线 */
+.ono{color:var(--ink);text-decoration:none}
+.ono:hover{color:var(--plum);text-decoration:underline}
 /* 列表卡：去掉 .panel/.card 内边距，内部头/体自行 padding */
 .card-flush{padding:0!important}
 /* 复选框统一：品牌色 + 15px（行内 width/height 覆盖仍生效） */

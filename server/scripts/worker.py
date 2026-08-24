@@ -324,8 +324,10 @@ def reconcile_daily(db: Session) -> None:
     orders_paid_total = int(db.query(func.coalesce(func.sum(Order.grand_total), 0)).filter(
         Order.status >= 1, Order.paid_at.isnot(None), Order.paid_at >= day_start).scalar())
     diff_payment = payments_gross - orders_paid_total
-    points_ledger_sum = int(db.query(func.coalesce(func.sum(User.points), 0)).scalar())
-    users_points_sum = int(db.execute(_LAST_LEDGER_SQL).scalar())
+    # 积分对账两列：台账侧 = 每用户最后一条流水余额合计（_LAST_LEDGER_SQL）；
+    # 用户表侧 = SUM(users.points)；diff = 台账 - 用户表（0 为平）
+    points_ledger_sum = int(db.execute(_LAST_LEDGER_SQL).scalar())
+    users_points_sum = int(db.query(func.coalesce(func.sum(User.points), 0)).scalar())
     diff_points = points_ledger_sum - users_points_sum
     status = 1 if abs(diff_payment) > 1 or diff_points != 0 else 0
     row = db.query(ReconciliationDaily).filter(
@@ -345,8 +347,8 @@ def reconcile_daily(db: Session) -> None:
     db.commit()
     log.info("[reconcile] date=%s payments_gross=%d orders_paid=%d diff_payment=%d "
              "points_sum=%d ledger_last=%d diff_points=%d status=%d",
-             today, payments_gross, orders_paid_total, diff_payment,
-             points_ledger_sum, users_points_sum, diff_points, status)
+              today, payments_gross, orders_paid_total, diff_payment,
+              users_points_sum, points_ledger_sum, diff_points, status)
 
 
 def unfreeze_points(db: Session) -> None:

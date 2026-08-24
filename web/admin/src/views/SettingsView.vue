@@ -65,7 +65,8 @@ async function load() {
   loadPayStatus()
   loaded.value = true
 }
-onMounted(load)
+/* 首载初始化（含直链 tab）：与下方 watch 懒加载合并为单个 onMounted，避免重复请求
+ *（原先 onMounted(load) + onMounted(tab 懒加载) 两处各拉一遍） */
 
 /* 模板区重试：单独重拉邮件模板（失败横幅保留） */
 async function retryTemplates() {
@@ -590,14 +591,16 @@ async function onPickFile(e) {
   finally { uploading.value = false }
 }
 
-/* 新 tab 懒加载：首次切入才拉取（直链进入由 onMounted 覆盖） */
+/* 新 tab 懒加载：首次切入才拉取（直链进入由下方合并的 onMounted 覆盖） */
 watch(() => st.tab, (k) => {
   if (k === 'admins' && !adminsLoaded.value) loadAdmins()
   if (k === 'media' && !mLoaded.value) loadMedia(mPage.value)
   if (k === 'ai' && !aiLoaded.value) loadAi()
   if (k === 'payments' && !payCfgLoaded.value) loadPayCfg()
 })
+/* 唯一 onMounted：基础配置 + 直链 tab 懒加载（顺序同原两个钩子的注册执行顺序） */
 onMounted(() => {
+  load()
   if (st.tab === 'admins') loadAdmins()
   if (st.tab === 'media') loadMedia(mPage.value)
   if (st.tab === 'ai' && !aiLoaded.value) loadAi()

@@ -25,6 +25,7 @@ def create_token(user_id: int, role: int, hours: int | None = None) -> str:
     payload = {
         "sub": str(user_id),
         "role": int(role),
+        "purpose": "session",  # 会话用途标识：鉴权层拒收 purpose!='session' 的 token（如密码重置 pwreset）
         "iat": now,
         "exp": now + ttl,
     }

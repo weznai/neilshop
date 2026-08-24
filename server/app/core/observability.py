@@ -47,7 +47,11 @@ RATE_RULES: list[tuple[str, int]] = [
     ("/api/payments/mock-pay", 120),
     ("/api/payments/webhook", 120),
     ("/api/payments/create-intent", 30),
+    # items-batch 批量加购更敏感（30/min），须排在 /api/cart 宽前缀之前；
+    # /api/cart 前缀兜底全部车端点（含 GET /api/cart 与 /api/cart/items 子路径）——
+    # 未鉴权请求也会触发建车写库，60/min per IP 防无限建车刷库
     ("/api/cart/items-batch", 30),
+    ("/api/cart", 60),
     ("/api/returns", 20),
     ("/api/exchanges", 20),
     ("/api/orders/track", 30),

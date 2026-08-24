@@ -7,6 +7,7 @@ import { toast } from '../composables/toast'
 import { money } from '../composables/format'
 import { PRODUCT_TITLES_KEY } from '../constants/cacheKeys'
 import { uploadMedia, uploadErrText } from '../composables/upload'
+import { md2html } from '../composables/md'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -153,33 +154,7 @@ function jump(id) { document.getElementById(id)?.scrollIntoView({ behavior: 'smo
 const pad2 = (n) => String(n).padStart(2, '0')
 const fmtLocal = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`
 
-/* ===== 描述 Markdown 预览：md2html 实现复制自 ContentView.vue（本地工具函数，先整体转义再插标签防 XSS） ===== */
-function md2html(src) {
-  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-  const inline = (t) => t
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
-    .replace(/\*([^*]+)\*/g, '<i>$1</i>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, href) => (/^https?:\/\//i.test(href)
-      ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>`
-      : /^\/(?!\/)/.test(href) ? `<a href="${href}">${text}</a>` : text))
-  const out = []
-  let ul = false
-  const closeUl = () => { if (ul) { out.push('</ul>'); ul = false } }
-  for (const raw of esc(src).split(/\r?\n/)) {
-    const l = raw.trim()
-    let m
-    if (!l) { closeUl(); continue }
-    if ((m = l.match(/^###\s+(.*)$/))) { closeUl(); out.push(`<h3>${inline(m[1])}</h3>`) }
-    else if ((m = l.match(/^##\s+(.*)$/))) { closeUl(); out.push(`<h2>${inline(m[1])}</h2>`) }
-    else if ((m = l.match(/^#\s+(.*)$/))) { closeUl(); out.push(`<h1>${inline(m[1])}</h1>`) }
-    else if ((m = l.match(/^[-*]\s+(.*)$/))) { if (!ul) { out.push('<ul>'); ul = true } out.push(`<li>${inline(m[1])}</li>`) }
-    else if ((m = l.match(/^&gt;\s?(.*)$/))) { closeUl(); out.push(`<blockquote>${inline(m[1])}</blockquote>`) }
-    else { closeUl(); out.push(`<p>${inline(l)}</p>`) }
-  }
-  closeUl()
-  return out.join('')
-}
+/* md2html 抽至 composables/md.js（与 ContentView 文章/FAQ 预览共用，实现完全一致） */
 /* 描述编辑/预览切换（切预览只是隐藏 textarea，v-model 内容不丢） */
 const descPrev = ref(false)
 /* 后端 published_at 为 naive UTC（schemas._parse_published_at 统一落 UTC），展示/提交两端换算 */

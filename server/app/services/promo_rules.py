@@ -39,12 +39,16 @@ def validate_code(
         return False, 0, False, "min_subtotal"
 
     if dc.first_order_only and email:
+        # 首单判定：email 或 user_id 任一命中既有有效订单（已取消 status=8 不算）即非首单。
+        # 归一 strip+lower 与下单落库口径一致；user_id 为 None 时只按 email 匹配
+        email_norm = email.strip().lower()
+        conds = [Order.email == email_norm]
+        if user_id:
+            conds.append(Order.user_id == user_id)
         placed = (
             db.query(Order.id)
-            .filter(Order.email == email, Order.status != 8)  # 已取消订单不算“已下单”
+            .filter(Order.status != 8, or_(*conds))  # 已取消订单不算“已下单”
         )
-        if user_id:
-            placed = placed.filter(or_(Order.email == email, Order.user_id == user_id))
         if db.query(placed.exists()).scalar():
             return False, 0, False, "first_order_only"
 
@@ -52,7 +56,7 @@ def validate_code(
         used = (
             db.query(DiscountRedemption)
             .filter(DiscountRedemption.code_id == dc.id,
-                    DiscountRedemption.email == email)
+                    DiscountRedemption.email == email.strip().lower())
             .count()
         )
         if used >= dc.per_user_limit:

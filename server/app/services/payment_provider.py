@@ -13,6 +13,7 @@ PayPal：paypal_client_id + paypal_secret 齐全且 httpx 可用时启用 PayPal
 
 import json
 import logging
+import time
 import uuid
 from abc import ABC, abstractmethod
 
@@ -119,7 +120,9 @@ class PaymentProvider(ABC):
         ...
 
     @abstractmethod
-    def verify_webhook(self, payload: bytes, sig_header: str | None) -> dict:
+    def verify_webhook(
+        self, payload: bytes, sig_header: str | None, headers: dict | None = None,
+    ) -> dict:
         ...
 
     def webhook_gate_secret(self) -> str:
@@ -139,7 +142,9 @@ class MockProvider(PaymentProvider):
     def confirm(self, order, payment, succeed: bool) -> bool:
         return succeed
 
-    def verify_webhook(self, payload: bytes, sig_header: str | None) -> dict:
+    def verify_webhook(
+        self, payload: bytes, sig_header: str | None, headers: dict | None = None,
+    ) -> dict:
         return json.loads(payload.decode("utf-8"))
 
 
@@ -180,7 +185,9 @@ class StripeProvider(PaymentProvider):
             "amount": amount_cents,
             "currency": "usd",
             "metadata": {"order_no": order.order_no},
-            "idempotency_key": order.order_no,
+            # 时变幂等键：固定 order_no 会让失败重试永远取回同一笔失败 PI（用户卡死）；
+            # 加时间戳后每次重试建新 PI（上限 255 字符，order_no 20 + 冒号 + 10 位时间戳安全）
+            "idempotency_key": f"{order.order_no}:{int(time.time())}",
         }
         if self.klarna:
             kwargs["payment_method_types"] = ["card", "klarna"]
@@ -215,7 +222,9 @@ class StripeProvider(PaymentProvider):
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("stripe payments are driven by webhook events")
 
-    def verify_webhook(self, payload: bytes, sig_header: str | None) -> dict:
+    def verify_webhook(
+        self, payload: bytes, sig_header: str | None, headers: dict | None = None,
+    ) -> dict:
         stripe = self._sdk()
         try:
             event = stripe.Webhook.construct_event(payload, sig_header, self.webhook_secret)
@@ -284,7 +293,8 @@ class PayPalProvider(PaymentProvider):
                 f"{self.base}/v2/checkout/orders",
                 headers={
                     "Authorization": f"Bearer {token}",
-                    "PayPal-Request-Id": order.order_no,
+                    # 时变幂等键（与 Stripe 同因）：固定 order_no 失败重试永远取回旧失败单
+                    "PayPal-Request-Id": f"{order.order_no}:{int(time.time())}",
                 },
                 json={
                     "intent": "CAPTURE",
@@ -312,13 +322,13 @@ class PayPalProvider(PaymentProvider):
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("paypal payments are driven by webhook events")
 
-    def verify_webhook(self, payload: bytes, sig_header: str | None) -> dict:
-        """结构桩：真实实现应携带 webhook_id + paypal-transmission-* headers 调
-        POST /v1/notifications/verify-webhook-signature 校验 VERIFIED（CA cert 或
-        transmission 签名）；此处简化为 transmission header 存在性 + 事件结构
-        （id/type 必填）+ webhook_id 匹配（双方均配置时）。"""
-        if not sig_header:
-            raise InvalidSignatureError("paypal transmission headers missing")
+    def verify_webhook(
+        self, payload: bytes, sig_header: str | None, headers: dict | None = None,
+    ) -> dict:
+        """真实验签：携带 webhook_id + paypal-transmission-* 请求头 POST
+        /v1/notifications/verify-webhook-signature，校验 verification_status == VERIFIED。
+        webhook_id 未配置（dev 降级，非 dev 由 handle_webhook 门禁 400 拒绝）时保持
+        原结构桩行为：事件结构（id/type 必填）+ webhook_id 匹配（双方均配置时）。"""
         try:
             event = json.loads(payload.decode("utf-8"))
         except Exception as exc:
@@ -328,6 +338,29 @@ class PayPalProvider(PaymentProvider):
         expected = self.webhook_id
         if expected and event.get("webhook_id") != expected:
             raise InvalidSignatureError("webhook_id_mismatch")
+        if not expected:
+            return event
+        hdr = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+        fields = {
+            "transmission_id": hdr.get("paypal-transmission-id"),
+            "transmission_time": hdr.get("paypal-transmission-time"),
+            "transmission_sig": hdr.get("paypal-transmission-sig"),
+            "cert_url": hdr.get("paypal-cert-url"),
+            "auth_algo": hdr.get("paypal-auth-algo"),
+        }
+        if not all(fields.values()):
+            raise InvalidSignatureError("paypal transmission headers missing")
+        with self._client() as client:
+            token = self._token(client)
+            resp = client.post(
+                f"{self.base}/v1/notifications/verify-webhook-signature",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"webhook_id": expected, "webhook_event": event, **fields},
+            )
+            resp.raise_for_status()
+            status = (resp.json() or {}).get("verification_status")
+        if status != "VERIFIED":
+            raise InvalidSignatureError(f"paypal_verify_status:{status}")
         return event
 
     def webhook_gate_secret(self) -> str:
@@ -338,15 +371,31 @@ def normalize_event(event) -> dict:
     data = event.get("data") or {}
     if isinstance(data, dict) and isinstance(data.get("object"), dict):
         obj = data["object"] or {}
-        return {
+        # charge.refunded 金额口径：amount_refunded 是累计值（直接当本次退款会重复入账）。
+        # 优先取本次退款对象 refunds.data[0].amount；同时透传 cumulative_refunded（若有）
+        # 供调用方按 delta = cumulative - 已记账 refunded_amount 求本次增量。
+        refund_rows = (obj.get("refunds") or {}).get("data") \
+            if isinstance(obj.get("refunds"), dict) else None
+        this_refund = (
+            refund_rows[0].get("amount")
+            if isinstance(refund_rows, list) and refund_rows
+            and isinstance(refund_rows[0], dict) else None
+        )
+        out = {
             "id": event.get("id") or "",
             "type": event.get("type") or "",
             "data": {
                 "payment_intent": obj.get("payment_intent") or obj.get("id"),
-                "amount": obj.get("amount_refunded") or obj.get("amount"),
+                "amount": (
+                    this_refund if this_refund is not None
+                    else obj.get("amount_refunded") or obj.get("amount")
+                ),
                 "metadata": obj.get("metadata") or {},
             },
         }
+        if obj.get("amount_refunded") is not None:
+            out["data"]["cumulative_refunded"] = obj.get("amount_refunded")
+        return out
     return {
         "id": event.get("id") or "",
         "type": event.get("type") or "",

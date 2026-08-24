@@ -4,7 +4,7 @@ import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
-import { csvCell, downloadCsv } from '../composables/exportCsv'
+import { downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import { TSTATUS, TICKET_ERR, mapErr } from '../constants/trade'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -62,14 +62,18 @@ function buildUrl(status, p, size = SIZE) {
   return '/api/admin/ops/tickets?' + params
 }
 
+/* 请求序号 token：快速切换筛选/翻页时丢弃过期响应（竞态保护，做法同 OrdersView） */
+let reqSeq = 0
 async function load(p = 1) {
   /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
   errMsg.value = ''
+  const token = ++reqSeq
   try {
     /* 已关 tab 由后端组合状态 status=3,4 单请求返回 */
     const stt = TABS.find((t) => t[0] === st.tab)?.[2]
     const d = await req('GET', buildUrl(stt, p))
+    if (token !== reqSeq) return
     tickets.value = d.items || []
     total.value = d.total ?? 0
     st.page = p
@@ -78,6 +82,7 @@ async function load(p = 1) {
     /* 刷新后按 ticket_no 重绑 active 到新数组中的行（旧引用已与列表脱钩；被筛掉则清空） */
     if (active.value) active.value = tickets.value.find((t) => t.ticket_no === active.value.ticket_no) || null
   } catch (e) {
+    if (token !== reqSeq) return
     loadErr.value = true
     errMsg.value = e.message || ''
     toast('工单列表加载失败：' + (e.message || ''), 'error')
@@ -496,11 +501,7 @@ async function reopen() {
 </template>
 
 <style scoped>
-/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
-.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
-/* 订单号深链：plum 色 hover 下划线 */
-.ono{color:var(--ink);text-decoration:none}
-.ono:hover{color:var(--plum);text-decoration:underline}
+/* .err-banner/.ono 已上移 admin.css（v16 公共类，样式完全一致） */
 /* 系统消息（sender=3）：居中灰色小条 */
 .sysmsg{justify-self:center;max-width:90%;text-align:center;background:var(--gray-light);color:var(--gray);font-size:11.5px;line-height:1.5;padding:4px 12px;border-radius:999px;white-space:pre-wrap;word-break:break-all}
 .sysmsg-time{margin-left:6px;font-size:10.5px;opacity:.85}

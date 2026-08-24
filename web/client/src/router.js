@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import StoreLayout from './layouts/StoreLayout.vue'
 import { applyRouteSeo } from './composables/seo'
+import { useAuthStore } from './stores/auth'
 
 /* 旧静态站 URL（*.html）→ SPA 路由重定向（外链/收藏夹兼容） */
 const LEGACY = {
@@ -118,9 +119,14 @@ const router = createRouter({
 router.beforeEach((to) => {
   const legacy = LEGACY[to.path]
   if (legacy) return { path: legacy, query: to.query, hash: to.hash }
-  /* 需登录路由集中守卫（meta 沿父路由继承）；gm_user 为登录后本地缓存，读它避免与 store 耦合 */
-  if (to.meta.requiresAuth && !localStorage.getItem('gm_user')) {
-    return { path: '/login', query: { next: to.fullPath } }
+  /* 需登录路由集中守卫（meta 沿父路由继承）：优先 pinia auth store（router 在 pinia 之后安装），
+     gm_user 本地缓存仅作 store 异常时的回退 */
+  if (to.meta.requiresAuth) {
+    let logged = false
+    try { logged = !!useAuthStore().isLoggedIn } catch (_) {
+      try { logged = !!localStorage.getItem('gm_user') } catch (__) { logged = false }
+    }
+    if (!logged) return { path: '/login', query: { next: to.fullPath } }
   }
   return true
 })

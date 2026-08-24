@@ -94,6 +94,12 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
     if new_v.stock < body.qty:
         raise HTTPException(status_code=409, detail="variant_out_of_stock")
 
+    # 差价按订单实付比例折算实际支付单价（折扣/积分/礼品卡抵扣摊入，对齐 refund_rma 口径）；
+    # subtotal=0（纯抵扣单）防护回退原价；int(x+0.5) 取整到分与现有金额口径一致
+    if order.subtotal > 0:
+        paid_unit = int(item.unit_price * order.grand_total / order.subtotal + 0.5)
+    else:
+        paid_unit = item.unit_price
     ex = Exchange(
         exchange_no="EX" + utcnow().strftime("%y%m%d") + uuid.uuid4().hex[:4].upper(),
         order_id=order.id,
@@ -101,7 +107,7 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
         old_variant_id=item.variant_id,
         new_variant_id=new_v.id,
         qty=body.qty,
-        price_diff=(new_v.price - item.unit_price) * body.qty,
+        price_diff=(new_v.price - paid_unit) * body.qty,
         status=0,
     )
     db.add(ex)
@@ -302,7 +308,13 @@ def approve_exchange(db: Session, admin: User, exchange_no: str) -> dict:
     ex = _get_exchange(db, exchange_no)
     if ex.status != 0:
         raise HTTPException(status_code=409, detail=f"exchange_not_approvable:{ex.status}")
-    ex.status = 2 if ex.price_diff > 0 else 1
+    # CAS 抢占（0 → 按 price_diff 分流 2 待差价/1 直批）：与 reject/重复 approve 并发互斥；
+    # 原生 UPDATE 不经过身份映射，expire 后重读保证响应 status 与 CAS 写入一致
+    if repo.claim_exchange_approved(db, ex.id) == 0:
+        db.rollback()
+        db.expire(ex)
+        raise HTTPException(status_code=409, detail=f"exchange_not_approvable:{ex.status}")
+    db.expire(ex)
     repo.add_timeline(db, ex.order_id, "exchange_approved", actor="admin", detail={
         "exchange_no": ex.exchange_no, "to": ex.status, "price_diff": ex.price_diff,
     })
@@ -317,7 +329,12 @@ def reject_exchange(db: Session, admin: User, exchange_no: str, reason: Optional
     ex = _get_exchange(db, exchange_no)
     if ex.status != 0:
         raise HTTPException(status_code=409, detail=f"exchange_not_rejectable:{ex.status}")
-    ex.status = 5
+    # CAS 抢占（0 → 5 拒绝）：与 approve 并发互斥
+    if repo.claim_exchange_rejected(db, ex.id) == 0:
+        db.rollback()
+        db.expire(ex)
+        raise HTTPException(status_code=409, detail=f"exchange_not_rejectable:{ex.status}")
+    db.expire(ex)
     repo.add_timeline(db, ex.order_id, "exchange_rejected", actor="admin", detail={
         "exchange_no": ex.exchange_no, "reason": reason,
     })
@@ -339,7 +356,12 @@ def mark_paid_exchange(db: Session, admin: User, exchange_no: str) -> dict:
             db.rollback()
             raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
     else:
-        ex.status = 1
+        # 无 payment 行的后台代打款：复用 2→1 CAS（与用户自助支付核销并发互斥）
+        if repo.claim_exchange_diff_paid(db, ex.id) == 0:
+            db.rollback()
+            db.expire(ex)
+            raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
+        db.expire(ex)
         repo.add_timeline(db, ex.order_id, "exchange_diff_paid", actor="admin", detail={
             "exchange_no": ex.exchange_no, "price_diff": ex.price_diff,
         })
@@ -351,6 +373,12 @@ def mark_paid_exchange(db: Session, admin: User, exchange_no: str) -> dict:
 def ship_exchange(db: Session, admin: User, exchange_no: str, body: ShipRequest) -> dict:
     ex = _get_exchange(db, exchange_no)
     if ex.status != 1:
+        raise HTTPException(status_code=409, detail=f"exchange_not_shippable:{ex.status}")
+    # 先 CAS 1→3 抢占（与 mark-paid 竞态/重复发货互斥），再 reserve_stock；
+    # 库存不足时 db.rollback 整体回滚（CAS 一并撤销，状态不悬空）
+    if repo.claim_exchange_shipped(db, ex.id) == 0:
+        db.rollback()
+        db.expire(ex)
         raise HTTPException(status_code=409, detail=f"exchange_not_shippable:{ex.status}")
     if repo.reserve_stock(db, ex.new_variant_id, ex.qty) == 0:
         db.rollback()
@@ -372,8 +400,8 @@ def ship_exchange(db: Session, admin: User, exchange_no: str, body: ShipRequest)
     )
     db.add(shipment)
     db.flush()
+    db.expire(ex)
     ex.shipment_id = shipment.id
-    ex.status = 3
     repo.add_timeline(db, ex.order_id, "exchange_shipped", actor="admin", detail={
         "exchange_no": ex.exchange_no, "shipment_no": shipment.shipment_no,
         "carrier": body.carrier, "tracking_no": body.tracking_no,
@@ -396,6 +424,10 @@ def _force_payment_refund(db: Session, order: Order, amount: int, ex: Exchange) 
     无可退 Payment 行（纯积分/礼品卡抵扣单）时返回 None（无款可退，不阻断 complete）。"""
     payment = repo.refundable_payment_of_order(db, order.id)
     if payment is None or amount <= 0:
+        return None
+    # 剩余可退额度钳制：不把 refunded_amount 记超实付（apply_refund 误拒绕过校验的兜底路径）
+    amount = min(amount, payment.amount - payment.refunded_amount)
+    if amount <= 0:
         return None
     payment.refunded_amount += amount
     if payment.status != 3:
@@ -441,6 +473,12 @@ def complete_exchange(db: Session, admin: User, exchange_no: str) -> dict:
     ex = _get_exchange(db, exchange_no)
     if ex.status != 3:
         raise HTTPException(status_code=409, detail=f"exchange_not_completable:{ex.status}")
+    # CAS 抢占（3→4）：与重复 complete 并发互斥，成功后再回补旧变体/退差价
+    if repo.claim_exchange_completed(db, ex.id) == 0:
+        db.rollback()
+        db.expire(ex)
+        raise HTTPException(status_code=409, detail=f"exchange_not_completable:{ex.status}")
+    db.expire(ex)
     item = repo.get_order_item(db, ex.order_item_id)
     item.exchanged_qty += ex.qty
     repo.release_stock(db, ex.old_variant_id, ex.qty)
@@ -451,7 +489,6 @@ def complete_exchange(db: Session, admin: User, exchange_no: str) -> dict:
     )
     # 负差价退给买家：|price_diff| 退款 + 防重复标记（时间线）
     diff_refund = _refund_negative_diff(db, ex, admin)
-    ex.status = 4
     repo.add_timeline(db, ex.order_id, "exchange_completed", actor="admin", detail={
         "exchange_no": ex.exchange_no, "restock_variant_id": ex.old_variant_id,
         "exchanged_qty": item.exchanged_qty,

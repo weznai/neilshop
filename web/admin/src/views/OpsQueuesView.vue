@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { money, dt } from '../composables/format'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -27,6 +28,11 @@ if (!['nl', 'sn'].includes(st.sub)) st.sub = 'nl'
 /* 各数据槽独立：items/total/pages/loaded/err（err 非空→空态置顶 + 卡内横幅） */
 const slot = () => ({ items: [], total: 0, pages: 1, loaded: false, err: '' })
 const d = reactive({ abandoned: slot(), reconcile: slot(), gdpr: slot(), nl: slot(), sn: slot() })
+/* 五槽独立页码（st.page 仅镜像当前槽的页码供 URL 同步与 Pagination 绑定；
+ * 切回已加载过的槽保留各自页码，不再被其它槽的响应回写串页） */
+const slotPages = reactive({ abandoned: 1, reconcile: 1, gdpr: 1, nl: 1, sn: 1 })
+/* 按槽 key 分发的请求序号 token：快速切 tab/翻页时丢弃过期槽响应（竞态保护） */
+const slotSeq = reactive({ abandoned: 0, reconcile: 0, gdpr: 0, nl: 0, sn: 0 })
 
 /* 对账 ReconciliationDaily.status：0平 1差异告警 2已处理（models/reconcile.py） */
 const RC_STATUS = {
@@ -35,17 +41,22 @@ const RC_STATUS = {
   2: { label: '已处理', cls: 'tag-ship' },
 }
 
-/* 通用拉取：写回对应槽（pages 直消费），失败记 err 不清旧数据 */
-async function fetchSlot(key, url) {
+/* 通用拉取：写回对应槽（pages 直消费），失败记 err 不清旧数据；
+ * 页码写回仅落本槽 slotPages[key]，且只有当前展示槽才镜像到 st.page（防串页） */
+async function fetchSlot(key, url, p = 1) {
   const s = d[key]
+  const token = ++slotSeq[key]
   s.err = ''
   try {
     const r = await req('GET', url)
+    if (token !== slotSeq[key]) return
     s.items = r.items || []
     s.total = r.total ?? 0
     s.pages = Math.max(1, r.pages ?? 1)
-    st.page = r.page || st.page
+    slotPages[key] = r.page || p
+    if (key === curKey.value) st.page = slotPages[key]
   } catch (e) {
+    if (token !== slotSeq[key]) return
     s.err = e.message || ''
     toast('列表加载失败：' + (e.message || ''), 'error')
   }
@@ -54,7 +65,50 @@ async function fetchSlot(key, url) {
 
 /* ===== tab=abandoned 弃购 ===== */
 function loadAbandoned(p = 1) {
-  return fetchSlot('abandoned', `/api/admin/ops/abandoned-carts?page=${p}&size=${SIZE}`)
+  return fetchSlot('abandoned', `/api/admin/ops/abandoned-carts?page=${p}&size=${SIZE}`, p)
+}
+
+/* 一键复制邮箱（clipboard API 失败降级 execCommand，再失败提示手动复制） */
+async function copyEmail(c) {
+  if (!c.email) { toast('该 cart 无邮箱', 'error'); return }
+  try {
+    await navigator.clipboard.writeText(c.email)
+    toast('已复制 ' + c.email + ' ✓', 'success')
+  } catch (_) {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = c.email
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      toast('已复制 ' + c.email + ' ✓', 'success')
+    } catch (_e) { toast('复制失败，请手动复制', 'error') }
+  }
+}
+
+/* 全量导出弃购 cart CSV（用于站外邮件批量触达；上限 20 页防大表拖垮） */
+const abnExporting = ref(false)
+async function exportAbandoned() {
+  if (abnExporting.value) return
+  abnExporting.value = true
+  try {
+    const { all, truncated, total } = await fetchAllPages(
+      (p) => req('GET', `/api/admin/ops/abandoned-carts?page=${p}&size=100`),
+      { maxPages: 20 },
+    )
+    downloadCsv({
+      filename: `abandoned-carts-${new Date().toISOString().slice(0, 10)}`,
+      headers: ['cart_id', 'email', 'items_count', 'total_qty', 'amount', 'days_ago', 'updated_at'],
+      rows: all.map((c) => [c.id, c.email || '', c.items_count ?? 0, c.total_qty ?? 0,
+        (c.amount_cents ?? 0) / 100, c.days_ago ?? '', c.updated_at || '']),
+    })
+    toast(`已导出 ${all.length}/${total} 条弃购 cart` + (truncated ? '（超出上限已截断）' : ''), truncated ? 'error' : 'success')
+  } catch (e) {
+    toast('导出失败：' + (e.data?.detail || e.message), 'error')
+  } finally { abnExporting.value = false }
 }
 
 /* ===== tab=reconcile 对账：date_from/date_to 直传 YYYY-MM-DD ===== */
@@ -66,7 +120,7 @@ function loadReconcile(p = 1) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (rcFrom.value) params.set('date_from', rcFrom.value)
   if (rcTo.value) params.set('date_to', rcTo.value)
-  return fetchSlot('reconcile', '/api/admin/ops/reconciliations?' + params)
+  return fetchSlot('reconcile', '/api/admin/ops/reconciliations?' + params, p)
 }
 function resetRcRange() { rcFrom.value = ''; rcTo.value = ''; loadReconcile(1) }
 
@@ -96,7 +150,7 @@ function loadGdpr(p = 1) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (gType.value !== '') params.set('type', gType.value)
   if (gStatus.value !== '') params.set('status', gStatus.value)
-  return fetchSlot('gdpr', '/api/admin/ops/data-requests?' + params)
+  return fetchSlot('gdpr', '/api/admin/ops/data-requests?' + params, p)
 }
 function setGdprFilter() { loadGdpr(1) }
 
@@ -141,13 +195,13 @@ function loadNl(p = 1) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   const s = nlQ.value.trim()
   if (s) params.set('q', s)
-  return fetchSlot('nl', '/api/admin/ops/newsletters?' + params)
+  return fetchSlot('nl', '/api/admin/ops/newsletters?' + params, p)
 }
 function loadSn(p = 1) {
   const params = new URLSearchParams({ page: p, size: SIZE })
   if (snProd.value.trim()) params.set('product_id', snProd.value.trim())
   if (snVar.value.trim()) params.set('variant_id', snVar.value.trim())
-  return fetchSlot('sn', '/api/admin/catalog/stock-notifies?' + params)
+  return fetchSlot('sn', '/api/admin/catalog/stock-notifies?' + params, p)
 }
 /* sn 本地 email 过滤（不动 total/pages，仅页内筛选） */
 const snRows = computed(() => {
@@ -156,15 +210,25 @@ const snRows = computed(() => {
   return d.sn.items.filter((r) => (r.email || '').toLowerCase().includes(s))
 })
 
-/* ===== 调度：lists tab 映射到 nl/sn 槽；tab/二级切换均重置页码 ===== */
+/* ===== 调度：lists tab 映射到 nl/sn 槽；切换槽时保留各槽已记忆的页码（未加载过的槽页码为 1） ===== */
 const curKey = computed(() => (st.tab === 'lists' ? (st.sub === 'sn' ? 'sn' : 'nl') : st.tab))
 const cur = computed(() => d[curKey.value])
 function load(p = 1) {
   const fn = { abandoned: loadAbandoned, reconcile: loadReconcile, gdpr: loadGdpr, nl: loadNl, sn: loadSn }[curKey.value]
   return fn(p)
 }
-function setTab(k) { if (st.tab !== k) { st.tab = k; st.page = 1; load(1) } }
-function setSub(k) { if (st.sub !== k) { st.sub = k; st.page = 1; load(1) } }
+function setTab(k) {
+  if (st.tab === k) return
+  st.tab = k
+  st.page = slotPages[curKey.value]
+  load(st.page)
+}
+function setSub(k) {
+  if (st.sub === k) return
+  st.sub = k
+  st.page = slotPages[curKey.value]
+  load(st.page)
+}
 onMounted(() => load(st.page))
 </script>
 
@@ -188,9 +252,14 @@ onMounted(() => load(st.page))
     </EmptyState>
     <div v-else class="card tbl-wrap">
       <div v-if="d.abandoned.err" class="err-banner"><span>⚠️ 刷新失败：{{ d.abandoned.err }}</span><button class="btn btn-secondary btn-sm" @click="load(st.page)">重试</button></div>
+      <div class="filter-bar" style="padding:12px 14px;border-bottom:1px solid var(--gray-light)">
+        <span style="color:var(--gray);font-size:12.5px">超 1 小时未结算的购物车，可复制邮箱/导出后走邮件营销触达</span>
+        <span style="flex:1"></span>
+        <button class="btn btn-secondary btn-sm" :class="{ loading: abnExporting }" :disabled="abnExporting" @click="exportAbandoned">导出 CSV</button>
+      </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="text-align:left;color:var(--gray)">
-          <th style="padding:10px">客户邮箱</th><th>商品数</th><th>总件数</th><th>金额</th><th>最后活跃</th><th>搁置天数</th>
+          <th style="padding:10px">客户邮箱</th><th>商品数</th><th>总件数</th><th>金额</th><th>最后活跃</th><th>搁置天数</th><th style="text-align:right">操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="c in d.abandoned.items" :key="c.id" style="border-top:1px solid var(--gray-light)">
@@ -200,6 +269,7 @@ onMounted(() => load(st.page))
             <td style="white-space:nowrap">{{ money(c.amount_cents) }}</td>
             <td style="color:var(--gray);white-space:nowrap">{{ dt(c.updated_at) || '—' }}</td>
             <td><span class="tag" :class="(c.days_ago ?? 0) >= 7 ? 'tag-error' : 'tag-pending'">{{ c.days_ago ?? '—' }} 天</span></td>
+            <td style="text-align:right;white-space:nowrap"><button class="btn btn-secondary btn-sm" :disabled="!c.email" :title="c.email ? '复制邮箱用于站外触达' : '该 cart 无邮箱'" @click="copyEmail(c)">复制邮箱</button></td>
           </tr>
         </tbody>
       </table>
@@ -390,6 +460,5 @@ onMounted(() => load(st.page))
 </template>
 
 <style scoped>
-/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
-.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+/* .err-banner 已上移 admin.css（v16 公共类，样式完全一致） */
 </style>

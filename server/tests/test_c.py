@@ -148,6 +148,9 @@ with TestClient(app) as client:
           and r.json()["discount_cents"] == 1000 and r.json()["reason"] == "")
     r = client.post("/api/promo/validate", json={"code": "WELCOME20", "subtotal_cents": 3000})
     check("validate 正码 未触顶 20%", r.json()["valid"] is True and r.json()["discount_cents"] == 600)
+    r = client.post("/api/promo/validate", json={"code": "WELCOME20", "subtotal_cents": 1999})
+    check("validate 与 checkout 同口径四舍五入（1999 的 20% = 400 而非向下 399）",
+          r.json()["valid"] is True and r.json()["discount_cents"] == 400)
     r = client.post("/api/promo/validate", json={"code": "NOPE", "subtotal_cents": 5000})
     check("validate 误码中文 reason", r.json()["valid"] is False and r.json()["reason"] == "折扣码不存在")
     r = client.post("/api/promo/giftcard", json={"code": "GC-TEST"})
@@ -263,10 +266,14 @@ with TestClient(app) as client:
     r = client.post(f"/api/admin/ops/ugc/{ugc_id}/approve", headers=ADMIN_H)
     check("ugc 过审+奖励100", r.status_code == 200 and r.json()["points_rewarded"] == 100)
     r = client.get("/api/points", headers=CUST_H)
-    check("ugc 奖励入账 balance=600", r.json()["balance"] == 600)
+    check("评价+ugc 奖励入账 balance=610（500+10+100）", r.json()["balance"] == 610)
     r = client.get("/api/points/ledger", headers=CUST_H)
     check("ugc 账务流水 reason=12", r.json()["items"][0]["reason"] == "买家秀奖励"
-          and r.json()["items"][0]["change"] == 100 and r.json()["items"][0]["balance_after"] == 600)
+          and r.json()["items"][0]["change"] == 100 and r.json()["items"][0]["balance_after"] == 610)
+    check("评价奖励流水 reason=3（过审即发 10 分）",
+          r.json()["items"][1]["reason"] == "评价奖励"
+          and r.json()["items"][1]["change"] == 10
+          and r.json()["items"][1]["balance_after"] == 510)
     r = client.post(f"/api/admin/ops/ugc/{ugc_id}/approve", headers=ADMIN_H)
     check("ugc 重复审核 409（不重复发分）", r.status_code == 409)
     r = client.post(f"/api/admin/ops/ugc/{anon_ugc_id}/reject", headers=ADMIN_H)
@@ -291,6 +298,11 @@ with TestClient(app) as client:
     r = client.post(f"/api/support/tickets/{ticket_no}/messages",
                     json={"email": "hacker@evil.com", "content": "give me"})
     check("工单非归属 email 403", r.status_code == 403)
+    r = client.post("/api/support/tickets", json={
+        "email": "hacker@evil.com", "order_no": "NS260815TEST1", "category": 1,
+        "subject": "inject", "content": "give me"})
+    check("工单冒用他人订单号 403 order_email_mismatch",
+          r.status_code == 403 and r.json().get("detail") == "order_email_mismatch")
     r = client.get("/api/support/templates", params={"category": 1})
     check("模板列表", len(r.json()) == 1 and r.json()[0]["title"] == "物流查询模板")
 
@@ -384,7 +396,7 @@ with TestClient(app) as client:
     r = client.get("/api/admin/ops/members", params={"q": "cindy"}, headers=ADMIN_H)
     data = r.json()
     check("members 检索", data["total"] == 1 and data["items"][0]["email"] == customer.email
-          and data["items"][0]["points"] == 600 and data["items"][0]["risk_flag"] == 0)
+          and data["items"][0]["points"] == 610 and data["items"][0]["risk_flag"] == 0)
     r = client.get(f"/api/admin/ops/members/{customer.id}", headers=ADMIN_H)
     check("members 详情含流水", r.status_code == 200 and len(r.json()["ledger"]) >= 5
           and r.json()["ledger"][0]["reason"] == "买家秀奖励")

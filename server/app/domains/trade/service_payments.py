@@ -127,6 +127,7 @@ def mark_order_paid(
     payment.status = 1
 
     items = repo.order_items(db, order.id)
+    sold_qty: dict[int, int] = {}
     for item in items:
         if not item.variant_id:
             continue
@@ -135,6 +136,13 @@ def mark_order_paid(
             db, variant_id=item.variant_id, change=0, stock_after=stock_after,
             type=3, ref_type="order", ref_id=order.id,
         )
+        # 商品销量按 OrderItem 聚合到 product（variant→product 映射）
+        variant = repo.get_variant(db, item.variant_id)
+        if variant:
+            sold_qty[variant.product_id] = sold_qty.get(variant.product_id, 0) + item.qty
+    for pid, qty in sold_qty.items():
+        # sold_count 原子累计（读改写在并发回调下会丢失更新）
+        repo.bump_product_sold_count(db, pid, qty)
 
     _timeline(db, order.id, "payment_succeeded", detail={
         "payment_intent": payment.stripe_payment_intent,
@@ -169,14 +177,15 @@ def mark_order_paid(
     if order.user_id:
         user = repo.get_user(db, order.user_id)
         if user:
-            user.total_spent += order.grand_total
             user.last_order_at = now
-            # 等级晋升（与 seed 离线重算同口径：≥$100 银 / ≥$300 金，只升不降；
-            # 修复前台进度条"即将升级"承诺后端从不兑现的问题）
-            if user.total_spent >= 30000 and user.tier < 2:
+            # total_spent 原子累计（ORM 读改写并发丢失更新）；tier 晋升读原子更新后现值判断
+            # （等级提升非资金关键，允许读侧；≥$100 银 / ≥$300 金，只升不降，
+            # 与 seed 离线重算同口径——修复前台进度条"即将升级"承诺后端从不兑现的问题）
+            total_spent = repo.add_user_total_spent(db, order.user_id, order.grand_total)
+            if total_spent >= 30000 and user.tier < 2:
                 user.tier = 2
                 user.tier_updated_at = now
-            elif user.total_spent >= 10000 and user.tier < 1:
+            elif total_spent >= 10000 and user.tier < 1:
                 user.tier = 1
                 user.tier_updated_at = now
 
@@ -186,9 +195,14 @@ def mark_order_paid(
             db, code_id=order.discount_code_id, order_id=order.id,
             user_id=order.user_id, email=order.email, discount_amount=amount,
         )
-        dc = repo.get_discount_code(db, order.discount_code_id)
-        if dc:
-            dc.used_count += 1
+        # used_count 原子自增（限额守卫进 WHERE）：并发多单抢同码不超发；
+        # rowcount=0 = 已达上限 —— 支付已成功，超发一次比丢单好，仅告警不回滚
+        if repo.bump_discount_used_count(db, order.discount_code_id) == 0:
+            log.warning(
+                "discount_code %s usage_limit exceeded on paid order=%s: "
+                "over-issue accepted (payment already captured, order kept)",
+                order.discount_code_id, order.order_no,
+            )
     return True
 
 
@@ -231,6 +245,13 @@ def create_intent(
     )
     db.add(payment)
     db.commit()
+    # 双击/并发防护：先查后插的窗口可能堆积多条 PENDING —— 提交后废弃同 provider
+    # 旧行（status=2 superseded），只保留最新一笔待支付
+    superseded = repo.supersede_stale_pending(db, payment)
+    if superseded:
+        db.commit()
+        log.info("superseded %d stale PENDING payment(s) for order=%s",
+                 superseded, order.order_no)
     return {
         "payment_intent": payment.stripe_payment_intent,
         "client_secret": intent["client_secret"],
@@ -249,9 +270,9 @@ def mock_pay(
     provider = get_provider(db)
     order = _get_order(db, order_no)
     ensure_order_owner(order, user, email)
-    payment = _get_payment(db, order.id)
     if provider.name != "mock":
         raise HTTPException(status_code=409, detail="use_webhook")
+    payment = _get_payment(db, order.id)
     if payment.status == 1:
         db.expire(order)
         return {
@@ -260,6 +281,10 @@ def mock_pay(
             "order_status": order.status,
             "payment_status": payment.status,
         }
+    # provider 一致性：全局为 mock 时只允许核销 mock 前缀 PI（Payment 无 provider 列，
+    # 以 PI 前缀判定）—— 防真实 provider 建的 PI 被通道切换后的 mock 假支付核销
+    if not (payment.stripe_payment_intent or "").startswith("PI_"):
+        raise HTTPException(status_code=409, detail="provider_mismatch")
     if provider.confirm(order, payment, succeed):
         # CAS 抢占失败（并发回调已处理/订单已取消）→ 直接按现状返回成功响应（幂等）
         mark_order_paid(db, order, payment, source="mock")
@@ -287,14 +312,17 @@ _UNRECOVERABLE_PREFIXES = (
 )
 
 
-def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) -> dict:
+def handle_webhook(
+    db: Session, payload: bytes, stripe_signature: str | None,
+    headers: dict | None = None,
+) -> dict:
     provider = get_provider(db)
     # 环境门禁：非 dev 必须配置对应 provider 的验签密钥，否则任何人可伪造回调
     # （密钥取自 provider 生效配置——settings 表 payment_config 或环境变量，二选一非空即通过）
     if settings.env != "dev" and not provider.webhook_gate_secret():
         raise HTTPException(status_code=400, detail="webhook_secret_not_configured")
     try:
-        raw_event = provider.verify_webhook(payload, stripe_signature)
+        raw_event = provider.verify_webhook(payload, stripe_signature, headers=headers)
     except InvalidSignatureError:
         raise HTTPException(status_code=400, detail="invalid_signature")
     except WebhookVerificationError:
@@ -349,10 +377,21 @@ def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) ->
         elif event_type == "charge.refunded":
             from app.domains.trade.service_admin import apply_refund
 
-            apply_refund(
-                db, order, (data or {}).get("amount"),
-                reason="webhook:charge.refunded", actor="system",
-            )
+            cumulative = (data or {}).get("cumulative_refunded")
+            if cumulative is not None:
+                # 累计口径求增量：delta = 累计退款 - 已记账 refunded_amount；
+                # delta<=0（重复推送/旧事件回放）跳过，防止 amount_refunded 重复入账
+                delta = int(cumulative) - int(payment.refunded_amount or 0)
+                if delta > 0:
+                    apply_refund(
+                        db, order, delta,
+                        reason="webhook:charge.refunded", actor="system",
+                    )
+            else:
+                apply_refund(
+                    db, order, (data or {}).get("amount"),
+                    reason="webhook:charge.refunded", actor="system",
+                )
         else:
             pass
     except HTTPException as exc:

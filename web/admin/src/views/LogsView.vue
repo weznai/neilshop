@@ -5,7 +5,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
-import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -81,7 +81,7 @@ const ENT_ROUTE = {
 }
 const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id, l) || null
 
-const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
+const pages = ref(1)   /* 直接消费响应 pages 字段（与页码钳制同源） */
 
 function buildUrl(p, size = SIZE) {
   const params = new URLSearchParams({ page: p, size })
@@ -104,17 +104,22 @@ function buildUrl(p, size = SIZE) {
 }
 
 let pageRetried = false   /* 页码回拉防递归：单次加载链最多回拉一次 */
+let reqSeq = 0            /* 请求序号 token：快速切换筛选/翻页时丢弃过期响应（竞态保护） */
 async function load(p = 1) {
   loadErr.value = false
   errMsg.value = ''
+  const token = ++reqSeq
   try {
     const d = await req('GET', buildUrl(p))
+    if (token !== reqSeq) return
     items.value = d.items || []
     total.value = d.total ?? 0
+    pages.value = Math.max(1, d.pages ?? Math.ceil(total.value / SIZE))
     f.page = d.page || p
     /* page 越界钳制：URL 直链/筛选收窄后回退导致页码超出总页数 → 回最后一页重拉一次（空结果 pages=0 不钳制） */
     if ((d.pages ?? 0) > 0 && f.page > d.pages && !pageRetried) { pageRetried = true; load(d.pages); return }
   } catch (e) {
+    if (token !== reqSeq) return
     loadErr.value = true
     errMsg.value = e.message || ''
     toast('审计日志加载失败：' + (e.message || ''), 'error')
@@ -122,7 +127,17 @@ async function load(p = 1) {
   pageRetried = false
   loaded.value = true
 }
-onMounted(() => load(f.page))
+onMounted(() => { loadAdmins(); load(f.page) })
+
+/* 操作人下拉：GET /ops/admins（启用账号），拉取失败静默降级为手输 admin_id */
+const admins = ref([])
+const adminsLoaded = ref(false)
+async function loadAdmins() {
+  try {
+    admins.value = (await req('GET', '/api/admin/ops/admins')).items || []
+    adminsLoaded.value = true
+  } catch (_) { /* 失败保持文本输入模式 */ }
+}
 
 function apply() { load(1) }
 function reset() {
@@ -232,8 +247,13 @@ async function exportCsv() {
       </datalist>
     </div>
     <div class="field" style="margin:0">
-      <label>管理员 ID</label>
-      <input v-model="f.admin_id" class="input" style="width:110px" type="number" min="1" placeholder="如 1" @keydown.enter="apply">
+      <label>操作人</label>
+      <!-- 下拉仅列出启用账号；接口失败时降级回手输数字 ID（同位替换） -->
+      <select v-if="adminsLoaded" v-model="f.admin_id" class="input" style="width:150px" @change="apply">
+        <option value="">全部</option>
+        <option v-for="a in admins" :key="a.id" :value="String(a.id)">{{ a.name }}（#{{ a.id }}）</option>
+      </select>
+      <input v-else v-model="f.admin_id" class="input" style="width:110px" type="number" min="1" placeholder="如 1" @keydown.enter="apply">
     </div>
     <div class="field" style="margin:0">
       <label>开始日期</label>

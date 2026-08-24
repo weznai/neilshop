@@ -4,17 +4,19 @@ from collections import Counter
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
+from sqlalchemy import text, update
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.core.enums import PointsReason
 from app.models import (
-    AdminLog, Article, Faq, PointsLedger, Product, Review, UgcSubmission, User,
+    AdminLog, Article, Faq, OrderItem, PointsLedger, Product, Review,
+    UgcSubmission, User,
 )
 from app.domains.content import repository as repo
 from app.domains.content.schemas import (
     ArticleCreateIn, ArticleUpdateIn, FaqCreateIn, FaqUpdateIn, ReasonIn,
-    ReviewIn, UgcIn, FAQ_CATEGORY, UGC_REWARD,
+    ReviewIn, UgcIn, FAQ_CATEGORY, REVIEW_REWARD, UGC_REWARD,
 )
 
 
@@ -148,6 +150,15 @@ def create_review(db: Session, user: User, body: ReviewIn) -> dict:
         raise HTTPException(status_code=400, detail="too many images")
     for u in images:
         _check_image_url(u)
+    # CAS 抢占 reviewed 0→1：并发双提交只有一个赢家，输家 rowcount=0 → 409
+    # （替代双查后插入的 check-then-set，杜绝同 item 并发双评撞唯一索引 500）
+    claimed = db.execute(
+        update(OrderItem)
+        .where(OrderItem.id == item.id, OrderItem.reviewed == 0)
+        .values(reviewed=1)
+    )
+    if claimed.rowcount == 0:
+        raise HTTPException(status_code=409, detail="already reviewed")
     review = Review(
         product_id=product.id,
         user_id=user.id,
@@ -158,7 +169,6 @@ def create_review(db: Session, user: User, body: ReviewIn) -> dict:
         status=0,
     )
     db.add(review)
-    item.reviewed = 1
     db.commit()
     db.refresh(review)
     return {"id": review.id, "status": review.status}
@@ -238,28 +248,40 @@ def _recalc_rating(db: Session, product_id: int):
         product.rating_count = cnt
 
 
-def admin_reviews(db: Session, status: int | None, page: int, size: int) -> dict:
-    rows, total = repo.page(repo.admin_reviews_desc(db, status), page, size)
-    return {
-        "items": [
-            {
-                "id": r.id,
-                "product_id": r.product_id,
-                "user_id": r.user_id,
-                "order_item_id": r.order_item_id,
-                "rating": r.rating,
-                "content": r.content,
-                "images": r.images,
-                "status": r.status,
-                "reject_reason": r.reject_reason,
-                "created_at": r.created_at,
-            }
-            for r in rows
-        ],
-        "total": total,
-        "page": page,
-        "size": size,
-    }
+# 评价奖励积分发放用原子 UPDATE（与 services/points.py 同通道：先原子加分再读余额记流水，
+# 避免与同事务内其他 ORM 脏快照互相覆盖）
+_ADD_POINTS_SQL = text("UPDATE users SET points = points + :amt WHERE id = :uid")
+_POINTS_OF_SQL = text("SELECT points FROM users WHERE id = :uid")
+
+
+def _grant_review_reward(db: Session, review: Review) -> None:
+    """评价过审发放奖励积分（REVIEW_REWARD=10，不冻结，即时可用）。
+    幂等：同 review 只发一次（ledger 查 ref_type='review' + ref_id 命中即跳过），
+    双保险 approve_review 本身已有 status!=0 → 409 挡重复过审。"""
+    if not review.user_id:
+        return
+    dup = (
+        db.query(PointsLedger.id)
+        .filter(PointsLedger.user_id == review.user_id,
+                PointsLedger.reason == int(PointsReason.REVIEW_REWARD),
+                PointsLedger.ref_type == "review",
+                PointsLedger.ref_id == review.id)
+        .first()
+    )
+    if dup:
+        return
+    db.execute(_ADD_POINTS_SQL, {"uid": review.user_id, "amt": REVIEW_REWARD})
+    balance = int(db.execute(_POINTS_OF_SQL, {"uid": review.user_id}).scalar())
+    db.add(PointsLedger(
+        user_id=review.user_id,
+        change=REVIEW_REWARD,
+        reason=int(PointsReason.REVIEW_REWARD),
+        balance_after=balance,
+        ref_type="review",
+        ref_id=review.id,
+        frozen=0,
+        created_at=utcnow(),
+    ))
 
 
 def approve_review(db: Session, admin: User, review_id: int) -> dict:
@@ -270,8 +292,9 @@ def approve_review(db: Session, admin: User, review_id: int) -> dict:
         raise HTTPException(status_code=409, detail="review not pending")
     r.status = 1
     db.flush()
+    _grant_review_reward(db, r)
     _recalc_rating(db, r.product_id)
-    log_admin(db, admin, "approve", "review", r.id, {"status": 1})
+    log_admin(db, admin, "approve", "review", r.id, {"status": 1, "points": REVIEW_REWARD})
     db.commit()
     return {"id": r.id, "status": r.status}
 

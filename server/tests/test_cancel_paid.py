@@ -216,6 +216,63 @@ with TestClient(app) as client:
     r = client.post(f"/api/orders/{no2}/cancel", headers=bob_auth)
     check("非归属人取消 → 404", r.status_code == 404, r.text)
 
+    # ===== 4b. 游客 email 双因子：已付单取消被拒 / 待付单可取消 / 地址脱敏 / track 免 email =====
+    og = Order(order_no="CPTGUEST01", user_id=None, email="guest@glow.test", status=1,
+               subtotal=2000, grand_total=2000, shipping_address=ADDR)
+    s.add(og)
+    s.flush()
+    s.add(OrderItem(order_id=og.id, variant_id=v.id, product_slug="cp-gems",
+                    title_snapshot="CP Gems", qty=1, unit_price=2000, subtotal=2000))
+    s.add(Payment(order_id=og.id, stripe_payment_intent="PI_cp_guest_1",
+                  amount=2000, status=1))
+    s.commit()
+    r = client.post("/api/orders/CPTGUEST01/cancel", params={"email": "guest@glow.test"})
+    s.expire_all()
+    check("游客 email 双因子取消已付单 → 403 login_required_for_paid_cancel（订单保持 PAID）",
+          r.status_code == 403
+          and r.json()["detail"] == "login_required_for_paid_cancel"
+          and s.query(Order).filter(Order.order_no == "CPTGUEST01").first().status == 1,
+          r.text)
+
+    og2 = Order(order_no="CPTGUEST02", user_id=None, email="guest@glow.test", status=0,
+                subtotal=2000, grand_total=2000, shipping_address=ADDR)
+    s.add(og2)
+    s.flush()
+    s.add(OrderItem(order_id=og2.id, variant_id=v.id, product_slug="cp-gems",
+                    title_snapshot="CP Gems", qty=1, unit_price=2000, subtotal=2000))
+    s.commit()
+    r = client.post("/api/orders/CPTGUEST02/cancel", params={"email": "guest@glow.test"})
+    s.expire_all()
+    check("游客 email 双因子取消待付单 → 仍可取消（200 → 8）",
+          r.status_code == 200
+          and s.query(Order).filter(Order.order_no == "CPTGUEST02").first().status == 8,
+          r.text)
+
+    r = client.get("/api/orders/CPTGUEST01", params={"email": "guest@glow.test"})
+    g_addr = r.json().get("shipping_address") or {}
+    check("游客 email 查看订单详情 → 收货地址脱敏（隐街道/邮编/电话，保留城市/省州/姓名首字）",
+          r.status_code == 200 and "line1" not in g_addr and "line2" not in g_addr
+          and "zip" not in g_addr and "phone" not in g_addr
+          and g_addr.get("city") == "SF" and g_addr.get("state") == "CA"
+          and g_addr.get("full_name") == "T***", g_addr)
+    r = client.get(f"/api/orders/{no1}", headers=emma_auth)
+    o_addr = r.json().get("shipping_address") or {}
+    check("登录属主查看订单详情 → 完整地址",
+          r.status_code == 200 and o_addr.get("line1") == "1 Main St"
+          and o_addr.get("zip") == "94110", o_addr)
+
+    r = client.get("/api/orders/track", headers=emma_auth, params={"no": no3})
+    check("登录属主 track 免 email → 200", r.status_code == 200
+          and r.json()["order_no"] == no3, r.text)
+    check("游客 track 缺 email → 404",
+          client.get("/api/orders/track", params={"no": no3}).status_code == 404)
+    check("非属主登录 track 无 email → 404",
+          client.get("/api/orders/track", headers=bob_auth,
+                     params={"no": no3}).status_code == 404)
+    check("游客 track email 双因子 → 200",
+          client.get("/api/orders/track",
+                     params={"no": no3, "email": "emma@glow.test"}).status_code == 200)
+
     # ===== 5. RMA 撤销：误建 → 撤销 → 可重新申请 =====
     no4 = place_and_pay("d", points=0, gc_code="GC-CP-0004")
     o4 = order_by_no(no4)

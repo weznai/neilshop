@@ -29,6 +29,11 @@ def _user_from_token(db: Session, token: str) -> Optional[User]:
     payload = decode_token(token)
     if not payload:
         return None
+    # 会话 token 专用：显携带 purpose 但非 'session'（如密码重置 pwreset）一律拒收，
+    # 防重置 JWT 被当登录会话用；历史 token 无 purpose 字段仍放行（签发过渡兼容）
+    purpose = payload.get("purpose")
+    if purpose is not None and purpose != "session":
+        return None
     user = db.get(User, int(payload["sub"]))
     if not user or user.status != 1:
         return None

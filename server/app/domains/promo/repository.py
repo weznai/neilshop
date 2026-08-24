@@ -31,6 +31,10 @@ def discount_id_by_code(db: Session, code: str):
     return db.query(DiscountCode.id).filter(DiscountCode.code == code).first()
 
 
+def discount_by_code(db: Session, code: str) -> DiscountCode | None:
+    return db.query(DiscountCode).filter(DiscountCode.code == code).first()
+
+
 def discount_id_by_code_excluding(db: Session, code: str, exclude_id: int):
     return (
         db.query(DiscountCode.id)

@@ -10,7 +10,7 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isLoggedIn: (s) => !!s.user,
-    role: (s) => (s.user && s.user.role) | 0,
+    role: (s) => (s.user && s.user.role) || 0,
   },
   actions: {
     _cache(u) {

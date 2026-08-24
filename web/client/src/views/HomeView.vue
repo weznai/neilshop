@@ -77,7 +77,8 @@ watch(() => i18n.lang, () => { loadCards() })
   ugcLoaded.value = true
 })()
 
-const ugcCount = computed(() => (ugcTotal.value > 0 ? ugcTotal.value.toLocaleString() + '+' : '4,800+'))
+/* 无真实数据（0/接口失败）不虚构数字：空串时模板隐藏数量行 */
+const ugcCount = computed(() => (ugcTotal.value > 0 ? ugcTotal.value.toLocaleString() + '+' : ''))
 
 const heroImg = computed(() => (newProducts.value[0] && newProducts.value[0].hero_image) ||
   'https://placehold.co/600x450/F5D8DA/6D2E46?text=New+Season+Glam')
@@ -270,7 +271,7 @@ function ugcFallback(e) {
           <img v-for="i in 6" :key="i" :src="`https://placehold.co/140x140/F5D8DA/6D2E46?text=Glam+${i}`" :alt="i18n.t('home.ugc.alt')" loading="lazy">
         </template>
         <router-link class="ugc-cta" to="/gallery">
-          <b>{{ ugcCount }}</b><span>{{ i18n.t('home.ugc.looks') }}</span><span style="text-decoration:underline">{{ i18n.t('home.ugc.see') }}</span>
+          <b v-if="ugcCount">{{ ugcCount }}</b><span>{{ i18n.t('home.ugc.looks') }}</span><span style="text-decoration:underline">{{ i18n.t('home.ugc.see') }}</span>
         </router-link>
       </div>
     </div>

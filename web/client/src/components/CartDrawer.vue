@@ -59,7 +59,7 @@ function undoRemove() {
 
 const subtotalD = computed(() => (cart.subtotalC / 100).toFixed(2))
 /* 与 CartView/Checkout 同口径：有下架或缺货商品时禁止去结算 */
-const blocked = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0))
+const blocked = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0 || (i.stock > 0 && i.qty > i.stock)))
 /* 免邮门槛（settings 下发，与 CartView/Checkout 同源；失败回落 $35 文案） */
 const freeShipC = ref(3500)
 req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
@@ -150,7 +150,7 @@ function drawerKeydown(e) {
           v-for="i in cart.items" :key="i.id"
           style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--gray-light)"
         >
-          <img :src="i.img || IMG_FALLBACK" style="width:72px;height:72px;border-radius:8px;object-fit:cover;opacity:.6" :alt="i.title || ''" loading="lazy" @error="imgFallback">
+          <img :src="i.img || IMG_FALLBACK" style="width:72px;height:72px;border-radius:8px;object-fit:cover" :style="{ opacity: i.inactive ? 0.6 : 1 }" :alt="i.title || ''" loading="lazy" @error="imgFallback">
           <div style="flex:1;min-width:0">
             <div style="font-weight:600;font-size:14px">{{ i.title || tt('Unavailable item', '已失效商品') }}</div>
             <div style="font-size:12px;color:var(--gray)">{{ i.variant }}</div>

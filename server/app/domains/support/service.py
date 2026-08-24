@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
+from app.core.permissions import ADMIN_ACCOUNT_ROLES
 from app.models import AdminLog, ReplyTemplate, Ticket, TicketMessage, User
 from app.domains.support import repository as repo
 from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TicketCreateIn, TicketMessageIn, TicketStatusIn
@@ -54,6 +55,16 @@ def _ticket_dict(t: Ticket, messages: list[TicketMessage]) -> dict:
 
 
 def create_ticket(db: Session, body: TicketCreateIn, user: User | None = None) -> dict:
+    # 关联订单归属校验：携带 order_no 时订单 email 须与提交 email 一致，
+    # 不一致 403（防冒用他人邮箱向他人订单注入 ticket_linked 时间线）；
+    # 订单号查不到维持既有宽松行为（不关联时间线也不报错）
+    order = None
+    if body.order_no:
+        from app.domains.trade import repository as trade_repo
+
+        order = trade_repo.order_by_no(db, body.order_no.strip().upper())
+        if order and order.email.strip().lower() != body.email.strip().lower():
+            raise HTTPException(status_code=403, detail="order_email_mismatch")
     ticket = Ticket(
         ticket_no=_ticket_no(),
         user_id=user.id if user else None,
@@ -67,15 +78,11 @@ def create_ticket(db: Session, body: TicketCreateIn, user: User | None = None) -
     db.flush()
     db.add(TicketMessage(ticket_id=ticket.id, sender=1, content=body.content))
     # 关联订单侧落 ticket_linked 时间线（客服在订单时间线即可看到工单入口）
-    if body.order_no:
-        from app.domains.trade import repository as trade_repo
-
-        order = trade_repo.order_by_no(db, body.order_no.strip().upper())
-        if order:
-            trade_repo.add_timeline(
-                db, order.id, "ticket_linked", actor="user",
-                detail={"ticket_no": ticket.ticket_no, "subject": body.subject},
-            )
+    if order is not None:
+        trade_repo.add_timeline(
+            db, order.id, "ticket_linked", actor="user",
+            detail={"ticket_no": ticket.ticket_no, "subject": body.subject},
+        )
     db.commit()
     return {"ticket_no": ticket.ticket_no, "status": ticket.status}
 
@@ -226,7 +233,8 @@ def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict
     db.add(TicketMessage(ticket_id=t.id, sender=2, content=body.content))
     if t.first_reply_at is None:
         t.first_reply_at = utcnow()
-    if t.status == 0:
+    if t.status in (0, 2):
+        # 待处理(0)/等待客户(2) 下客服回复 → 处理中(1)（等待客户时回复自动回流，免手动切状态）
         t.status = 1
     log_admin(db, admin, "reply", "ticket", t.id, {"status": t.status})
     db.commit()
@@ -251,6 +259,12 @@ def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict
 
 def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> dict:
     t = _get_ticket(db, ticket_no)
+    # 指派对象必须是在编后台账号（客服/运营/仓库/超管且启用中，与 ops.list_admins 候选同口径），
+    # 防误指普通用户/美甲师/停用账号
+    assignee = db.get(User, body.admin_id)
+    if (assignee is None or assignee.role not in ADMIN_ACCOUNT_ROLES
+            or assignee.status != 1):
+        raise HTTPException(status_code=400, detail="invalid_admin_id")
     t.assignee_admin_id = body.admin_id
     log_admin(db, admin, "assign", "ticket", t.id, {"admin_id": body.admin_id})
     db.commit()
@@ -269,9 +283,9 @@ def _norm_close_reason(value) -> int | None:
     return int(s) if s.lstrip("-").isdigit() else 9
 
 
-# 状态机：1→2/3/4、2→3/4、3→1/4；4→1 为重开（清空关单审计）；3→1 仅切状态不清 close 字段
+# 状态机：1→2/3/4、2→1/3/4、3→1/4；4→1 为重开（清空关单审计）；3→1 仅切状态不清 close 字段
 _ALLOWED_TRANSITIONS = {
-    (1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 1), (3, 4), (4, 1),
+    (1, 2), (1, 3), (1, 4), (2, 1), (2, 3), (2, 4), (3, 1), (3, 4), (4, 1),
 }
 
 

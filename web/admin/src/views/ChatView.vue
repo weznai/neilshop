@@ -56,11 +56,15 @@ function buildUrl(p) {
   return '/api/admin/chat/conversations?' + params
 }
 
-/* quiet=true 为轮询路径：失败静默（console.warn + 顶栏横幅），手动刷新仍 toast */
+/* quiet=true 为轮询路径：失败静默（console.warn + 顶栏横幅），手动刷新仍 toast；
+ * 请求序号 token：轮询/手动刷新并发时丢弃过期响应（竞态保护，做法同 OrdersView） */
+let reqSeq = 0
 async function load(p = 1, quiet = false) {
   if (!quiet) { loadErr.value = false; errMsg.value = '' }
+  const token = ++reqSeq
   try {
     const d = await req('GET', buildUrl(p))
+    if (token !== reqSeq) return
     items.value = d.items || []
     total.value = d.total ?? 0
     pendingTotal.value = d.pending_total
@@ -69,6 +73,7 @@ async function load(p = 1, quiet = false) {
     /* 轮询/翻页后页码越界（会话被关闭致数据收缩）：空页且 total>0 且不在第 1 页 → 回第 1 页重拉（防递归：第 1 页不再回拉） */
     if (!items.value.length && total.value > 0 && st.page > 1) { load(1, quiet); return }
   } catch (e) {
+    if (token !== reqSeq) return
     if (quiet) {
       console.warn('会话列表轮询失败：', e.message || e)
       pollFail.value = true

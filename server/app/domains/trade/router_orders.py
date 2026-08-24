@@ -28,10 +28,12 @@ def list_orders(
 @router.get("/track")
 def track(
     no: str = Query(...),
-    email: str = Query(...),
+    email: Optional[str] = Query(None),
+    user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
-    return service_orders.track(db, no, email)
+    """物流轨迹：登录属主免 email（会话即可）；游客必须 email 双因子。"""
+    return service_orders.track(db, no, email, user)
 
 
 @router.get("/{order_no}")

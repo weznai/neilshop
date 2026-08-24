@@ -74,8 +74,14 @@ onMounted(() => fetchOrder(route.query.no))
 /* 深链响应：已停留在 /order-detail 时 no 变化（列表跳转另一单）重新加载 */
 watch(() => route.query.no, (no) => fetchOrder(no))
 
-/* money/dt 统一走 format.js（dt 补 Z 修时区） */
-const reload = async () => { o.value = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(route.query.no)) }
+/* money/dt 统一走 format.js（dt 补 Z 修时区）
+ * reload 复用 fetchOrder 的请求序号：手动刷新与深链切换并发时，旧响应不覆盖新数据 */
+const reload = async () => {
+  const seq = ++fetchSeq
+  const d = await req('GET', '/api/admin/trade/orders/' + encodeURIComponent(route.query.no))
+  if (seq !== fetchSeq) return
+  o.value = d
+}
 async function doReload() {
   try { await reload() ; toast('已刷新', 'success') } catch (e) { toast('刷新失败：' + (e.message || ''), 'error') }
 }

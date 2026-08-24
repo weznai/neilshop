@@ -1,13 +1,24 @@
 <script setup>
-/* 403 无权访问页：router.beforeEach 权限拦截目标（会话仍有效，仅无该面权限） */
+/* 403 无权访问页：router.beforeEach 权限拦截目标（会话仍有效，仅无该面权限）
+ * 兜底自跳保护：firstAllowedPath 回落 /403 自身（账号未分配任何后台权限）时不再 push，
+ * 改为提示联系管理员并提供「退出登录」 */
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { firstAllowedPath } from '../constants/nav'
 
 const router = useRouter()
 const session = useSessionStore()
+const target = computed(() => firstAllowedPath(session.hasPerm))
+/* 无任何可用落地页（目标即 /403 自身）→ 静态提示 + 退出，避免自我跳转死循环 */
+const noPerms = computed(() => target.value === '/403')
 function backHome() {
-  router.push(firstAllowedPath(session.hasPerm))
+  if (noPerms.value) return
+  router.push(target.value)
+}
+async function doLogout() {
+  await session.logout()
+  router.push('/login')
 }
 </script>
 
@@ -17,8 +28,10 @@ function backHome() {
       <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
     </svg>
     <div class="title">无权访问该页面</div>
-    <div class="desc">当前账号（{{ session.name }}）没有此功能面的权限，如需开通请联系超管调整角色。</div>
-    <button class="btn btn-primary" @click="backHome">返回工作台</button>
+    <div v-if="!noPerms" class="desc">当前账号（{{ session.name }}）没有此功能面的权限，如需开通请联系超管调整角色。</div>
+    <div v-else class="desc">当前账号未分配任何后台权限，请联系管理员开通后再登录使用。</div>
+    <button v-if="!noPerms" class="btn btn-primary" @click="backHome">返回工作台</button>
+    <button v-else class="btn btn-primary" @click="doLogout">退出登录</button>
   </div>
 </template>
 

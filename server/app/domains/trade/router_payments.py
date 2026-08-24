@@ -92,6 +92,9 @@ def _create_intent_via(
     )
     db.add(payment)
     db.commit()
+    # 并发防护：同单同 provider 堆积的旧 PENDING 一并废弃（与 service_payments 同口径）
+    if repo.supersede_stale_pending(db, payment):
+        db.commit()
     return {
         "payment_intent": payment.stripe_payment_intent,
         "client_secret": intent["client_secret"],
@@ -153,4 +156,6 @@ async def webhook(
     stripe_signature: str | None = Header(default=None, alias="stripe-signature"),
 ):
     payload = await request.body()
-    return service_payments.handle_webhook(db, payload, stripe_signature)
+    # 全量请求头透传：PayPal 验签需 paypal-transmission-* / paypal-cert-url / paypal-auth-algo
+    return service_payments.handle_webhook(
+        db, payload, stripe_signature, dict(request.headers))

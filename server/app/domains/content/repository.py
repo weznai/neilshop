@@ -72,13 +72,6 @@ def article_by_id(db: Session, article_id: int) -> Article | None:
 # ===== 评价 =====
 
 
-def admin_reviews_desc(db: Session, status: int | None) -> Query:
-    q = db.query(Review).order_by(Review.id.desc())
-    if status is not None:
-        q = q.filter(Review.status == status)
-    return q
-
-
 def review_by_id(db: Session, review_id: int) -> Review | None:
     return db.get(Review, review_id)
 

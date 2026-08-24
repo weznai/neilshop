@@ -4,9 +4,27 @@
 app/schemas/checkout.py 保留为 re-export shim。
 """
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+# 轻量邮箱格式校验（strip + 单 @ + 域名含点），非法值 422 invalid_email。
+# 不直接用 pydantic EmailStr：email-validator 2.x 默认拒绝 .test/.example 等
+# 保留域，开发/测试环境的 glow.test 邮箱会被整站 422。
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _check_email(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return v
+    v = v.strip()
+    if not _EMAIL_RE.match(v):
+        raise ValueError("invalid_email")
+    return v
+
+
+EmailIn = Annotated[str, AfterValidator(_check_email)]
 
 
 class CartItemIn(BaseModel):
@@ -21,7 +39,7 @@ class PreviewRequest(BaseModel):
     code: Optional[str] = None
     points: int = 0
     gift_card_code: Optional[str] = None
-    email: Optional[str] = None
+    email: Optional[EmailIn] = None
     shipping_method: str = "standard"
 
 
@@ -37,7 +55,7 @@ class AddressIn(BaseModel):
 
 
 class PlaceRequest(BaseModel):
-    email: str
+    email: EmailIn
     address: AddressIn
     shipping_method: str = "standard"
     code: Optional[str] = None
@@ -51,13 +69,13 @@ class PlaceRequest(BaseModel):
 
 class CreateIntentRequest(BaseModel):
     order_no: str
-    email: Optional[str] = None
+    email: Optional[EmailIn] = None
 
 
 class MockPayRequest(BaseModel):
     order_no: str
     succeed: bool = True
-    email: Optional[str] = None
+    email: Optional[EmailIn] = None
 
 
 class WebhookRequest(BaseModel):
@@ -138,7 +156,7 @@ class ExchangeCreateRequest(BaseModel):
     new_variant_id: int
     qty: int = Field(default=1, ge=1)
     reason: Optional[str] = None
-    email: Optional[str] = None
+    email: Optional[EmailIn] = None
 
 
 class ExchangeRejectRequest(BaseModel):

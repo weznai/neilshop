@@ -113,8 +113,12 @@ def apply_refund(
         raise HTTPException(status_code=409, detail=f"invalid_refund_amount:{remaining}")
     full = refund_amount == remaining
 
-    payment.refunded_amount += refund_amount
-    payment.status = 3 if full else 4
+    # 原子累计退款（可退余守卫进 WHERE）：并发双退时输者 rowcount=0 → 409，防丢失更新
+    if repo.claim_payment_refund(db, payment.id, refund_amount, full) == 0:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="already_fully_refunded")
+    # 原生 UPDATE 不经过身份映射：expire 后重读，payment.status 取到 CAS 写入的新值
+    db.expire(payment)
 
     if full:
         _restock_items(db, order, ref_type="order")
@@ -175,6 +179,7 @@ def list_orders(
             "note": o.note,
             "placed_at": o.placed_at.isoformat() if o.placed_at else None,
             "paid_at": o.paid_at.isoformat() if o.paid_at else None,
+            "shipped_at": o.shipped_at.isoformat() if o.shipped_at else None,
         } for o in orders],
         "page": page, "per_page": pp, "total": total,
         "pages": (total + pp - 1) // pp,
@@ -422,8 +427,11 @@ def add_order_note(db: Session, admin: User, order_no: str, body: NoteIn) -> dic
 def list_rmas(
     db: Session, status: Optional[int],
     page: int = 1, per_page: int = PER_PAGE_RMAS, q: Optional[str] = None,
+    status_in: Optional[list[int]] = None,
 ) -> dict:
-    rows, total = repo.list_rmas(db, status, q=q, page=page, per_page=per_page)
+    rows, total = repo.list_rmas(
+        db, status, q=q, page=page, per_page=per_page, status_in=status_in,
+    )
     return {
         "items": [{
             "rma_no": rma.rma_no,
@@ -446,7 +454,12 @@ def approve_rma(db: Session, admin: User, rma_no: str) -> dict:
     rma = _get_rma(db, rma_no)
     if rma.status != 0:
         raise HTTPException(status_code=409, detail=f"rma_not_approvable:{rma.status}")
-    rma.status = 2
+    # CAS 抢占（WHERE status=0）：并发双击/与 reject 互斥；成功后 expire 重读再补写其余字段
+    if repo.claim_rma_approved(db, rma.id) == 0:
+        db.rollback()
+        db.expire(rma)
+        raise HTTPException(status_code=409, detail=f"rma_not_approvable:{rma.status}")
+    db.expire(rma)
     rma.label_url = f"https://mock.glowmag.com/label/{rma.rma_no}.pdf"
     rma.handled_by = admin.id
     _timeline(db, rma.order_id, "rma_label_sent", actor="admin", detail={"rma_no": rma.rma_no})
@@ -456,11 +469,16 @@ def approve_rma(db: Session, admin: User, rma_no: str) -> dict:
 
 
 def reject_rma(db: Session, admin: User, rma_no: str, reason: str | None = None) -> dict:
-    """拒绝退货申请（0→6）：不符合政策的申请走此闭环，落时间线与审计日志"""
-    rma = _get_rma(rma_no)
+    """拒绝退货申请（0→6）：不符合政策的申请走此闭环，落时间线与审计日志；
+    CAS 抢占（WHERE status=0）与 approve 并发互斥。"""
+    rma = _get_rma(db, rma_no)
     if rma.status != 0:
         raise HTTPException(status_code=409, detail=f"rma_not_rejectable:{rma.status}")
-    rma.status = 6
+    if repo.claim_rma_rejected(db, rma.id) == 0:
+        db.rollback()
+        db.expire(rma)
+        raise HTTPException(status_code=409, detail=f"rma_not_rejectable:{rma.status}")
+    db.expire(rma)
     rma.handled_by = admin.id
     _timeline(db, rma.order_id, "rma_rejected", actor="admin", detail={
         "rma_no": rma.rma_no, "reason": reason or "",
@@ -476,6 +494,11 @@ def receive_rma(db: Session, admin: User, rma_no: str) -> dict:
     rma = _get_rma(db, rma_no)
     if rma.status not in (1, 2, 3):
         raise HTTPException(status_code=409, detail=f"rma_not_receivable:{rma.status}")
+    # CAS 抢占（WHERE status IN (1,2,3)）：并发重复收货互斥，成功后再回补库存/流水
+    if repo.claim_rma_received(db, rma.id) == 0:
+        db.rollback()
+        db.expire(rma)
+        raise HTTPException(status_code=409, detail=f"rma_not_receivable:{rma.status}")
     item = repo.get_order_item(db, rma.order_item_id)
     repo.release_stock(db, item.variant_id, rma.qty)
     repo.add_stock_movement(
@@ -483,7 +506,7 @@ def receive_rma(db: Session, admin: User, rma_no: str) -> dict:
         stock_after=repo.stock_of(db, item.variant_id),
         type=5, ref_type="rma", ref_id=rma.order_id,
     )
-    rma.status = 4
+    db.expire(rma)
     rma.restock_qty = rma.qty
     rma.received_at = utcnow()
     rma.handled_by = admin.id
@@ -501,6 +524,12 @@ def refund_rma(
     等于 → 已退款(5)；订单侧沿用 apply_refund 语义（Payment 累计，全额才驱动订单状态）。"""
     rma = _get_rma(db, rma_no)
     if rma.status != 4:
+        raise HTTPException(status_code=409, detail=f"rma_not_refundable:{rma.status}")
+    # 退款占用 CAS（refunded_at NULL→非空 + status=4 守卫）：并发双退后者 rowcount=0 → 409；
+    # 后续 apply_refund 失败抛异常时整体不提交，CAS 占位一并撤销
+    if repo.claim_rma_refund(db, rma.id, utcnow()) == 0:
+        db.rollback()
+        db.expire(rma)
         raise HTTPException(status_code=409, detail=f"rma_not_refundable:{rma.status}")
     order = repo.get_order(db, rma.order_id)
     item = repo.get_order_item(db, rma.order_item_id)
@@ -537,10 +566,23 @@ def refund_rma(
     partial = amount < full_amount
 
     item.refunded_qty += rma.qty
-    result = apply_refund(
-        db, order, amount, reason=f"rma:{rma.rma_no}", actor="admin", admin=admin,
-    )
+    try:
+        result = apply_refund(
+            db, order, amount, reason=f"rma:{rma.rma_no}", actor="admin", admin=admin,
+        )
+    except HTTPException as exc:
+        if exc.detail != "no_refundable_payment":
+            raise
+        # 纯礼品卡/积分抵扣单无 Payment 行（对齐换货 _refund_negative_diff 的 bypass 模式）：
+        # 纯礼品卡单按整单回补礼品卡，不做 Payment 记账，timeline 手动补 refund_issued
+        if order.giftcard_discount > 0:
+            _refund_giftcard_debit(db, order)
+        repo.add_timeline(db, order.id, "refund_issued", actor="admin", detail={
+            "amount": amount, "reason": f"rma:{rma.rma_no}", "full": True,
+        })
+        result = {"amount": amount, "full": True, "payment_status": None}
     # 低于折算额 → 部分退款(7)；等于（含钳到剩余可退收尾的全额）→ 已退款(5)
+    db.expire(rma)
     rma.status = 7 if partial else 5
     rma.refund_amount = amount
     rma.refund_shipping = refund_shipping
@@ -582,15 +624,17 @@ def adjust_stock(db: Session, admin: User, body: StockAdjustRequest) -> dict:
 def stock_movements(
     db: Session, variant_id: Optional[int], page: int,
     type: Optional[int] = None, date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
+    date_to: Optional[str] = None, per_page: Optional[int] = None,
 ) -> dict:
+    # 可选每页条数：缺省 20 兼容；显式传值时钳制到 10-100（前端导出传 100）
+    pp = PER_PAGE_MOVEMENTS if per_page is None else min(max(per_page, 10), 100)
     # 发生时间范围闭区间（与订单时间筛选同款解析）：date_to 补到当日 23:59:59
     start = _parse_date(date_from, "date_from") if date_from else None
     end = None
     if date_to:
         end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
     rows, total = repo.paginate_stock_movements(
-        db, variant_id=variant_id, page=page, per_page=PER_PAGE_MOVEMENTS, type=type,
+        db, variant_id=variant_id, page=page, per_page=pp, type=type,
         date_from=start, date_to=end,
     )
     return {
@@ -600,8 +644,8 @@ def stock_movements(
             "ref_type": m.ref_type, "ref_id": m.ref_id, "operator": m.operator,
             "created_at": m.created_at.isoformat() if m.created_at else None,
         } for m in rows],
-        "page": page, "per_page": PER_PAGE_MOVEMENTS, "total": total,
-        "pages": (total + PER_PAGE_MOVEMENTS - 1) // PER_PAGE_MOVEMENTS,
+        "page": page, "per_page": pp, "total": total,
+        "pages": (total + pp - 1) // pp,
     }
 
 

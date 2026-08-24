@@ -20,6 +20,15 @@ const zh = computed(() => i18n.lang === 'zh')
 const t = (en, cn) => (zh.value ? cn : en)
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 
+/* 订单行项图兜底：回落 placehold + dataset 守卫防循环 */
+const IMG_FALLBACK = 'https://placehold.co/200x200/E8B4B8/552338?text=GLOWMAG'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
+
 const orderNo = computed(() => String(route.query.no || ''))
 const email = computed(() => String(route.query.email || ''))
 const order = ref(null)
@@ -144,14 +153,16 @@ async function copyNo() {
 
 const trackLink = computed(() => '/track?no=' + encodeURIComponent(orderNo.value) + (email.value ? '&email=' + encodeURIComponent(email.value) : ''))
 
-/* 圆环样式/图标随订单状态：0 待付(琥珀) 8 已取消(灰) 9 已退款(红) 其余成功(绿) */
+/* 圆环样式/图标随订单状态：0 待付(琥珀) 8 已取消(灰) 9 已退款(红) 查单失败(琥珀中性) 其余成功(绿) */
 const ringStyle = computed(() => {
   const st = order.value && order.value.status
-  const border = st === 8 ? '2px solid var(--gray)'
+  const border = orderError.value ? '2px solid rgba(234,170,50,.5)'
+    : st === 8 ? '2px solid var(--gray)'
     : st === 9 ? '2px solid var(--error)'
     : st === 0 ? '2px solid rgba(234,170,50,.5)'
     : '2px solid rgba(62,189,147,.4)'
-  const background = st === 8 ? 'var(--gray-light)'
+  const background = orderError.value ? 'var(--pale-warn)'
+    : st === 8 ? 'var(--gray-light)'
     : st === 9 ? 'var(--pale-error)'
     : st === 0 ? 'var(--pale-warn)'
     : 'rgba(62,189,147,.12)'
@@ -163,7 +174,7 @@ const ringStyle = computed(() => {
 })
 const ringIcon = computed(() => {
   const st = order.value && order.value.status
-  return st === 0 ? '⏳' : st === 8 ? '✕' : st === 9 ? '↩' : '✓'
+  return orderError.value ? '⟳' : st === 0 ? '⏳' : st === 8 ? '✕' : st === 9 ? '↩' : '✓'
 })
 
 onMounted(async () => {
@@ -178,7 +189,7 @@ onMounted(async () => {
 <template>
   <section class="section">
     <div class="container" style="max-width:640px;text-align:center">
-      <div class="ok-ring" :style="ringStyle">
+      <div class="ok-ring" :class="{ 'ok-ring-wait': orderError }" :style="ringStyle">
         {{ ringIcon }}
       </div>
       <h1 style="font-family:var(--font-title);font-size:32px;margin-bottom:8px">
@@ -233,7 +244,7 @@ onMounted(async () => {
         </div>
         <div v-if="order.items && order.items.length" style="border-top:1px solid var(--gray-light);padding-top:10px;display:grid;gap:8px">
           <div v-for="it in order.items" :key="it.id" style="display:flex;gap:10px;align-items:center;font-size:13px">
-            <img :src="it.image" :alt="it.title" style="width:40px;height:40px;border-radius:8px;object-fit:cover">
+            <img :src="it.image" :alt="it.title" style="width:40px;height:40px;border-radius:8px;object-fit:cover" @error="imgFallback">
             <span style="flex:1;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ it.title }} × {{ it.qty }}</span>
             <b style="font-variant-numeric:tabular-nums">{{ money(it.subtotal) }}</b>
           </div>
@@ -279,6 +290,8 @@ onMounted(async () => {
 .copy-btn:hover { background: var(--rose-pale); }
 /* 成功圆环：popIn 入场 + 常驻柔光 pulse 组合 */
 .ok-ring { animation: ringIn .45s cubic-bezier(.34,1.56,.64,1) both, ringPulse 2s ease-out .6s infinite; }
+/* 查单失败（确认中）态：仅保留入场动画，去掉成功绿脉冲 */
+.ok-ring-wait { animation: ringIn .45s cubic-bezier(.34,1.56,.64,1) both; }
 @keyframes ringIn { from { transform: scale(.5); opacity: 0; } }
 @keyframes ringPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(62,189,147,.32); } 50% { box-shadow: 0 0 0 14px rgba(62,189,147,0); } }
 </style>

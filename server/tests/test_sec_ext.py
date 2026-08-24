@@ -129,6 +129,7 @@ _expected = {
     "/api/payments/webhook": 120,
     "/api/payments/create-intent": 30,
     "/api/cart/items-batch": 30,
+    "/api/cart": 60,
     "/api/returns": 20,
     "/api/exchanges": 20,
     "/api/orders/track": 30,
@@ -138,7 +139,7 @@ _expected = {
     "/api/chat/": 60,
 }
 _rules = dict(obs.RATE_RULES)
-check("22 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
+check("23 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
 check("全局规则不含 /api/ai（域内 30/min 自治，避免双重 429）",
       not any(p.startswith("/api/ai") for p, _ in obs.RATE_RULES))
 check("admin/login 规则排在宽前缀 login 之前",
@@ -165,6 +166,11 @@ check("/api/account/password-reset 覆盖 /request 与 /confirm 两子路径",
       == "/api/account/password-reset"
       and obs._check_rate_limit("u5", "/api/account/password-reset/confirm")[0]
       == "/api/account/password-reset")
+check("/api/cart 与 /api/cart/items 均命中 /api/cart 宽前缀规则（未鉴权建车写库防刷）",
+      obs._check_rate_limit("u6", "/api/cart")[0] == "/api/cart"
+      and obs._check_rate_limit("u6b", "/api/cart/items")[0] == "/api/cart")
+check("/api/cart/items-batch 先命中专属规则（更具体前缀在前）",
+      obs._check_rate_limit("u7", "/api/cart/items-batch")[0] == "/api/cart/items-batch")
 
 print("== 限流：新规则逐条真 429 ==")
 drain("/api/account/admin/login", 20,

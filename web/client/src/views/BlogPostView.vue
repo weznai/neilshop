@@ -72,7 +72,12 @@ function mdHtml(md) {
 }
 const body = computed(() => mdHtml(post.value?.content_md || ''))
 const PH = 'https://placehold.co/1200x600/F5D8DA/6D2E46?text=GLOWMAG+Journal'
-function coverFallback(e) { e.target.src = PH }
+function coverFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = PH
+}
 
 /* 阅读时长：EN 词数 + CJK 字数折算（~200/分钟） */
 const readMins = computed(() => {

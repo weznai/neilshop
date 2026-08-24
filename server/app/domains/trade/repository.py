@@ -64,10 +64,55 @@ _CLAIM_SHIPPED_SQL = text(
 _CLAIM_EXCHANGE_DIFF_PAID_SQL = text(
     "UPDATE exchanges SET status = 1 WHERE id = :eid AND status = 2"
 )
+# RMA 状态推进 CAS：并发双击互斥（rowcount=0 即已被并发处理）
+_CLAIM_RMA_APPROVED_SQL = text(
+    "UPDATE returns SET status = 2 WHERE id = :rid AND status = 0")
+_CLAIM_RMA_REJECTED_SQL = text(
+    "UPDATE returns SET status = 6 WHERE id = :rid AND status = 0")
+_CLAIM_RMA_RECEIVED_SQL = text(
+    "UPDATE returns SET status = 4 WHERE id = :rid AND status IN (1, 2, 3)")
+# RMA 退款占用：refunded_at 由 NULL 变非 NULL，天然防并发双退
+_CLAIM_RMA_REFUND_SQL = text(
+    "UPDATE returns SET refunded_at = :now "
+    "WHERE id = :rid AND status = 4 AND refunded_at IS NULL")
+# 退款记账原子化：可退余守卫进 WHERE（并发双退后者 rowcount=0），累计防丢失更新
+_CLAIM_PAYMENT_REFUND_SQL = text(
+    "UPDATE payments SET refunded_amount = refunded_amount + :amt, status = :st "
+    "WHERE id = :pid AND amount - refunded_amount >= :amt"
+)
+# 换货状态推进 CAS：approve 按 price_diff 分流待差价(2)/直批(1)；
+# ship 仅批准(1)可发，complete 仅发货中(3)可收尾（CASE WHEN 双库兼容 MySQL/SQLite）
+_CLAIM_EXCHANGE_APPROVED_SQL = text(
+    "UPDATE exchanges SET status = CASE WHEN price_diff > 0 THEN 2 ELSE 1 END "
+    "WHERE id = :eid AND status = 0"
+)
+_CLAIM_EXCHANGE_REJECTED_SQL = text(
+    "UPDATE exchanges SET status = 5 WHERE id = :eid AND status = 0"
+)
+_CLAIM_EXCHANGE_SHIPPED_SQL = text(
+    "UPDATE exchanges SET status = 3 WHERE id = :eid AND status = 1"
+)
+_CLAIM_EXCHANGE_COMPLETED_SQL = text(
+    "UPDATE exchanges SET status = 4 WHERE id = :eid AND status = 3"
+)
 # 礼品卡原子扣减：余额守卫进 WHERE，并发双花时 rowcount=0
 _DEBIT_GIFT_CARD_SQL = text(
     "UPDATE gift_cards SET balance = balance - :amt "
     "WHERE id = :gid AND status = 1 AND balance >= :amt"
+)
+# 折扣码计数原子自增：限额守卫进 WHERE，并发支付回调抢同码不超发（rowcount=0 = 已满）
+_BUMP_DC_USED_SQL = text(
+    "UPDATE discount_codes SET used_count = used_count + 1 "
+    "WHERE id = :cid AND (usage_limit IS NULL OR used_count < usage_limit)"
+)
+# 用户累计消费原子加（读改写在并发回调下会丢失更新）；同时提供读回现值供 tier 判断
+_ADD_TOTAL_SPENT_SQL = text(
+    "UPDATE users SET total_spent = total_spent + :amt WHERE id = :uid"
+)
+_TOTAL_SPENT_OF_SQL = text("SELECT total_spent FROM users WHERE id = :uid")
+# 商品销量原子累计（支付成功按 OrderItem 聚合逐商品 UPDATE）
+_BUMP_SOLD_SQL = text(
+    "UPDATE products SET sold_count = sold_count + :qty WHERE id = :pid"
 )
 
 
@@ -129,11 +174,68 @@ def claim_exchange_diff_paid(db: Session, exchange_id: int) -> int:
     return db.execute(_CLAIM_EXCHANGE_DIFF_PAID_SQL, {"eid": exchange_id}).rowcount
 
 
+def claim_exchange_approved(db: Session, exchange_id: int) -> int:
+    return db.execute(_CLAIM_EXCHANGE_APPROVED_SQL, {"eid": exchange_id}).rowcount
+
+
+def claim_exchange_rejected(db: Session, exchange_id: int) -> int:
+    return db.execute(_CLAIM_EXCHANGE_REJECTED_SQL, {"eid": exchange_id}).rowcount
+
+
+def claim_exchange_shipped(db: Session, exchange_id: int) -> int:
+    return db.execute(_CLAIM_EXCHANGE_SHIPPED_SQL, {"eid": exchange_id}).rowcount
+
+
+def claim_exchange_completed(db: Session, exchange_id: int) -> int:
+    return db.execute(_CLAIM_EXCHANGE_COMPLETED_SQL, {"eid": exchange_id}).rowcount
+
+
+def claim_rma_approved(db: Session, rma_id: int) -> int:
+    return db.execute(_CLAIM_RMA_APPROVED_SQL, {"rid": rma_id}).rowcount
+
+
+def claim_rma_rejected(db: Session, rma_id: int) -> int:
+    return db.execute(_CLAIM_RMA_REJECTED_SQL, {"rid": rma_id}).rowcount
+
+
+def claim_rma_received(db: Session, rma_id: int) -> int:
+    return db.execute(_CLAIM_RMA_RECEIVED_SQL, {"rid": rma_id}).rowcount
+
+
+def claim_rma_refund(db: Session, rma_id: int, now) -> int:
+    return db.execute(_CLAIM_RMA_REFUND_SQL, {"rid": rma_id, "now": now}).rowcount
+
+
+def claim_payment_refund(db: Session, payment_id: int, amount: int, full: bool) -> int:
+    """退款原子累计：全额 → status=3，部分 → status=4；余额守卫失败 rowcount=0"""
+    return db.execute(_CLAIM_PAYMENT_REFUND_SQL, {
+        "pid": payment_id, "amt": amount, "st": 3 if full else 4,
+    }).rowcount
+
+
 # ---------- 礼品卡：原子扣减 ----------
 def debit_gift_card(db: Session, gift_card_id: int, amount: int) -> int:
     return db.execute(_DEBIT_GIFT_CARD_SQL, {
         "gid": gift_card_id, "amt": amount,
     }).rowcount
+
+
+# ---------- 支付成功侧原子累计（折扣码/用户消费/商品销量） ----------
+def bump_discount_used_count(db: Session, code_id: int) -> int:
+    """折扣码 used_count 原子 +1（限额守卫进 WHERE）：rowcount=0 = 已达 usage_limit。
+    支付已成功场景由调用方决定超发语义（记日志放行，不回滚订单）。"""
+    return db.execute(_BUMP_DC_USED_SQL, {"cid": code_id}).rowcount
+
+
+def add_user_total_spent(db: Session, user_id: int, amount: int) -> int:
+    """total_spent 原子累计（UPDATE ... SET total_spent = total_spent + :amt），
+    返回更新后的现值（tier 晋升判断用，避免 ORM 脏快照）。"""
+    db.execute(_ADD_TOTAL_SPENT_SQL, {"uid": user_id, "amt": amount})
+    return int(db.execute(_TOTAL_SPENT_OF_SQL, {"uid": user_id}).scalar())
+
+
+def bump_product_sold_count(db: Session, product_id: int, qty: int) -> None:
+    db.execute(_BUMP_SOLD_SQL, {"pid": product_id, "qty": qty})
 
 
 def variant_stock_map(db: Session, vids: list[int]) -> dict[int, int]:
@@ -373,6 +475,26 @@ def refundable_payment_of_order(db: Session, order_id: int) -> Optional[Payment]
     )
 
 
+def supersede_stale_pending(db: Session, keep: Payment) -> int:
+    """废弃同单同 provider 的旧 PENDING 支付行（保留 keep 最新一条）：
+    create_intent 先查后插的并发窗口（双击）可能堆积多条 PENDING —— 提交后
+    将旧行置 status=2(FAILED) + failure_reason=superseded，返回废弃行数。
+    按 PI id 前缀限定同 provider（跨 provider 行不受影响）。"""
+    pi = keep.stripe_payment_intent or ""
+    prefix = next((p for p in _PI_PREFIXES.values() if pi.startswith(p)), None)
+    if not prefix:
+        return 0
+    return (
+        db.query(Payment)
+        .filter(Payment.order_id == keep.order_id,
+                Payment.status == 0,
+                Payment.id != keep.id,
+                Payment.stripe_payment_intent.like(prefix + "%"))
+        .update({Payment.status: 2, Payment.failure_reason: "superseded_by_newer_intent"},
+                synchronize_session=False)
+    )
+
+
 def payment_by_intent(db: Session, payment_intent: str) -> Optional[Payment]:
     return (
         db.query(Payment)
@@ -394,7 +516,7 @@ def list_user_rmas(db: Session, user_id: int) -> list[tuple[Rma, OrderItem, Orde
 
 def list_rmas(
     db: Session, status: Optional[int] = None, q: Optional[str] = None,
-    page: int = 1, per_page: int = 20,
+    page: int = 1, per_page: int = 20, status_in: Optional[list[int]] = None,
 ) -> tuple[list[tuple[Rma, OrderItem, Order]], int]:
     query = (
         db.query(Rma, OrderItem, Order)
@@ -403,6 +525,8 @@ def list_rmas(
     )
     if status is not None:
         query = query.filter(Rma.status == status)
+    if status_in is not None:
+        query = query.filter(Rma.status.in_(status_in))
     if q:
         # 后台搜索：RMA 单号 / 订单号 / 下单邮箱 三字段模糊
         like = f"%{q.strip()}%"

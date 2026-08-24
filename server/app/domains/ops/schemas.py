@@ -26,8 +26,9 @@ class RiskIn(BaseModel):
 
 
 class BulkModerationIn(BaseModel):
-    """评价/UGC 批量审核入参基类：仅待审(0)记录会被处理，非待审静默跳过"""
-    ids: list[int] = Field(min_length=1)
+    """评价/UGC 批量审核入参基类：仅待审(0)记录会被处理，非待审静默跳过；
+    ids 上限 500 防全表扫描/误粘贴大数组"""
+    ids: list[int] = Field(min_length=1, max_length=500)
     action: str = Field(pattern="^(approve|reject)$")
 
 

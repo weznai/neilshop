@@ -51,6 +51,9 @@ class ConsentIn(BaseModel):
     necessary: bool = True
     analytics: bool = False
     marketing: bool = False
+    # 个性化开关：前端 CookieConsent.vue 会提交；模型 CookieConsent 暂无该列（落库需迁移），
+    # 此处先接收避免 422 静默丢弃，持久化待列补齐后在 service_account.consent 落库
+    personalization: bool = False
     region: str | None = Field(default=None, max_length=10)
 
 

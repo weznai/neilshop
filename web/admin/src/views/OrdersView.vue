@@ -8,7 +8,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import { money, dt } from '../composables/format'
-import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { OSTATUS, OSHIP, ORDER_ERR, mapErr } from '../constants/trade'
 
 const route = useRoute()
@@ -130,7 +130,8 @@ watch(() => route.query, (rq) => {
   load()
 })
 
-function tab(sv) { status.value = sv; page.value = 1; load() }
+/* 点击当前 tab 短路：同状态不重置页码不重拉（对齐 SubscriptionsView setTab） */
+function tab(sv) { if (sv === status.value) return; status.value = sv; page.value = 1; load() }
 function clearDates() { dateFrom.value = ''; dateTo.value = ''; page.value = 1; load() }
 function clearSearch() { q.value = ''; page.value = 1; load() }
 
@@ -145,6 +146,8 @@ function sortBy(k) {
 const sortInd = (k) => (sort.value === k ? '▲' : sort.value === '-' + k ? '▼' : '')
 /* 可排序表头 aria-sort（升/降/无） */
 const ariaSort = (k) => (sort.value === k ? 'ascending' : sort.value === '-' + k ? 'descending' : 'none')
+/* 排序下拉入口：与表头三态排序共用 sort 状态，切换重置页码 */
+function setSort(v) { sort.value = v; page.value = 1; load() }
 
 const shipDlg = ref(null) /* {order_no} */
 const carrier = ref('USPS')
@@ -266,8 +269,8 @@ async function exportCsv() {
     if (truncated) toast('匹配结果超过 5000 单，仅导出前 5000 单', 'error')
     downloadCsv({
       filename: `orders-${statusLabel.value || '全部'}-${new Date().toISOString().slice(0, 10)}`,
-      headers: ['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '留言'],
-      rows: all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.label, OSHIP[o.shipping_status]?.label, dt(o.placed_at), o.paid_at ? dt(o.paid_at) : '', o.note || '']),
+      headers: ['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '发货时间', '留言'],
+      rows: all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.label, OSHIP[o.shipping_status]?.label, dt(o.placed_at), o.paid_at ? dt(o.paid_at) : '', o.shipped_at ? dt(o.shipped_at) : '', o.note || '']),
     })
     toast('已导出 ' + all.length + ' 单 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
@@ -318,6 +321,16 @@ async function exportCsv() {
     <div class="field" style="margin:0">
       <label>下单止</label>
       <input v-model="dateTo" class="input" style="width:160px" type="date" @change="page = 1; load()">
+    </div>
+    <!-- 排序下拉：与表头三态排序共用 sort 状态（sort 为空时显示后端默认的「最新下单」） -->
+    <div class="field" style="margin:0">
+      <label>排序</label>
+      <select class="input" style="width:160px" :value="sort || '-placed_at'" @change="setSort($event.target.value)">
+        <option value="-placed_at">最新下单</option>
+        <option value="placed_at">最早下单</option>
+        <option value="-total">金额从高到低</option>
+        <option value="total">金额从低到高</option>
+      </select>
     </div>
     <button v-if="dateFrom || dateTo" class="btn btn-ghost btn-sm" style="height:36px" @click="clearDates">清空</button>
   </div>
@@ -445,7 +458,5 @@ async function exportCsv() {
 /* 行内取消按钮：红字 ghost（悬停浅红，同详情页危险操作） */
 .row-cancel{color:var(--error)}
 .row-cancel:hover{background:var(--pale-error)}
-/* 搜索框清空钮：悬浮输入框右侧 */
-.q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
-.q-clear:hover{background:var(--gray)}
+/* .q-clear 已上移 admin.css（v16 公共类，样式完全一致） */
 </style>

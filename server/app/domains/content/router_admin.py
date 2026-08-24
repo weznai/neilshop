@@ -66,17 +66,6 @@ def delete_faq(faq_id: int, admin: User = Depends(require_perm("content:manage")
     return service.delete_faq(db, admin, faq_id)
 
 
-@router.get("/api/admin/ops/reviews")
-def admin_reviews(
-    status: int | None = Query(None),
-    page: int = Query(1, ge=1),
-    size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_perm("content:manage")),
-    db: Session = Depends(get_db),
-):
-    return service.admin_reviews(db, status, page, size)
-
-
 @router.post("/api/admin/ops/reviews/{review_id}/approve")
 def approve_review(review_id: int, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.approve_review(db, admin, review_id)

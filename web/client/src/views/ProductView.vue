@@ -182,7 +182,7 @@ async function load() {
   }
   loading.value = false
 }
-watch(() => route.query, load)
+watch(() => [route.query.slug, route.query.id].join('|'), load)
 /* 站内切换语言：重拉详情（locale 翻译口径），标题/描述即时跟随 */
 watch(locale, () => { if (p.value || route.query.id || route.query.slug) load() })
 onMounted(load)
@@ -278,7 +278,11 @@ async function addToCart() {
     qty.value = maxQty.value
   }
   adding.value = true
-  const ok = await cart.add(variant.value.id, Math.min(qty.value, maxQty.value), ui)
+  /* cart.add 失败已由 store toast + refresh，这里吞掉避免全局 errorHandler 重复弹错 */
+  let ok = false
+  try {
+    ok = await cart.add(variant.value.id, Math.min(qty.value, maxQty.value), ui)
+  } catch (e) { console.debug('[ProductView] add to cart failed:', e) }
   if (ok && variant.value.stock - qty.value <= 0) await load()
   adding.value = false
 }
@@ -296,7 +300,10 @@ async function bundleAdd() {
     toast: (msg, type) => { if (type !== 'success' || !/added to cart|已加入购物车/i.test(String(msg))) ui.toast(msg, type) },
     openCart: () => {},
   })
-  const ok = await cart.add(variant.value.id, 2, quietUi)
+  let ok = false
+  try {
+    ok = await cart.add(variant.value.id, 2, quietUi)
+  } catch (e) { console.debug('[ProductView] bundle add failed:', e) }
   if (ok) {
     ui.toast(zh.value ? '已加 2 套 — 15% 折扣结算时自动生效 🎁' : '2 sets in cart — 15% off applied at checkout 🎁', 'success')
     if (variant.value.stock - 2 <= 0) await load()

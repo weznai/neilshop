@@ -119,13 +119,17 @@ export function intentNoChannel(intent) {
 const _byId = {}
 const DETAIL_TTL = 60000
 export function productDetail(pid) {
-  const hit = _byId[pid]
+  /* locale 与列表/详情口径一致：中文环境消费后端多语言（内部读 gm_lang，调用方零改动） */
+  let locale = ''
+  try { if (localStorage.getItem('gm_lang') === 'zh') locale = 'zh-CN' } catch (_) { /* 隐私模式 */ }
+  const key = pid + ':' + locale
+  const hit = _byId[key]
   if (hit && Date.now() - hit.at < DETAIL_TTL) return hit.promise
   const rec = { at: Infinity, promise: null }
-  rec.promise = req('GET', '/api/catalog/products-by-id/' + pid)
+  rec.promise = req('GET', '/api/catalog/products-by-id/' + pid + (locale ? '?locale=' + locale : ''))
     .then((d) => { rec.at = Date.now(); return d })
-    .catch((e) => { if (_byId[pid] === rec) delete _byId[pid]; throw e })
-  _byId[pid] = rec
+    .catch((e) => { if (_byId[key] === rec) delete _byId[key]; throw e })
+  _byId[key] = rec
   return rec.promise
 }
 

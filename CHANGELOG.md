@@ -3,7 +3,33 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.9] · 管理平台全面审计修复：RMA/换货并发 CAS + 工单状态机 + 后台 30+ 体验补全
+
+### Fixed（后端 · 资金与状态机安全）
+- **RMA/换货管理流转补 CAS**：approve/reject/receive/refund 与换货 approve/reject/mark-paid/ship/complete 全部改为原子 UPDATE + rowcount 抢占（对齐订单侧 `_CLAIM_*_SQL` 模式）——并发双击不再双重回补库存/双发货/双完成；RMA 退款以 `refunded_at NULL→非空` 占用防双退。
+- **apply_refund 记账原子化**：`refunded_amount` 改原子累进 SQL（余额守卫进 WHERE），并发退款不再丢失更新，Payment 账面不可超退（订单退款/RMA/换货差价/webhook 共用路径全部受益）。
+- **纯礼品卡/积分订单 RMA 退款死锁解除**：无 Payment 行时按换货 `_force_payment_refund` 同款兜底（礼品卡回补 + timeline 结案），不再永远卡在「已收货」态。
+- **工单状态机缺口**：等待客户(2)时客服回复自动回流处理中(1)（转移表补 (2,1)），待办口径不再失真；`admin_assign` 校验指派对象为在编后台账号（400 invalid_admin_id）。
+- **worker 每日对账两列互换修正**：`points_ledger_sum`（台账最后余额合计）/`users_points_sum`（用户表积分合计）落库方向纠正，后台对账展示口径恢复正确。
+- **已付未发取消降级路径补副作用**：无 Payment 可退时补库存回补/积分作废返还/礼品卡回补，预扣库存不再泄漏。
+- **删除 content 域被遮蔽的重复 reviews 路由**（与 ops 域同路径后注册即死代码，消除注册顺序隐性契约）。
+
+### Added / Changed（后端 · 契约与能力）
+- 库存流水支持 `per_page`（10-100 钳制，默认 20 兼容）；RMA 列表 status 支持 CSV 多值（与订单同口径）；订单列表 items 补 `shipped_at`；批量审核 ids 上限 500；弃购队列过滤无邮箱行（与 worker 口径一致）。
+- （并行批次）评价过审发 10 积分（CAS 防并发双评 + ledger 幂等）；购物车 99 上限同口径 + 游客车合并库存钳制；折扣码首单判定 email 归一化 + validate 与 checkout 四舍五入对齐；工单冒用他人订单 403。
+
+### Fixed（admin SPA · 流程与体验）
+- 换货重发弹窗 × 提交中可关（成功误报失败）；9 个视图列表补请求序号竞态守卫（Members/Tickets/Chat 轮询/Logs/Content 四 loader/Marketing 双 loader/Returns 双 tab）；运营队列五槽独立页码 + 按槽竞态守卫（切 tab 不再串页/丢页位）。
+- 校验补齐：运费模板金额非负、弹窗有效期先后、订阅恢复日期须未来、库存流水日期区间不倒挂。
+- 上传 403 与全局策略对齐（仅提示不再踢回登录）；vite 代理补 `/static`（dev 模式媒体库图片 404）；Settings 重复初始化合并。
+- 功能补全：订单排序下拉（金额/时间）+ 导出补发货时间列；折扣码/礼品卡/SKU 列表/弃购 cart CSV 导出；弃购队列复制邮箱 + 导出（站外触达）；日志操作人下拉（/admins 拉取，失败降级手输）。
+- 体验与质量：404 页返回上一页；403 页无权限账号不再自跳（显示引导 + 退出登录）；批量审核末页空页回拉；md2html 抽公共 composable；`.q-clear`/`.err-banner`/`.ono` 样式上移 admin.css（10 处重复消除）；7 处死 import 清理；分页口径统一后端 `pages`。
+
+### 测试
+- 回归全绿：test_e2e 62/62、test_a 24/24、test_b 76/76、test_c 83/83、test_payments 84/84、test_exchanges 57/57、test_admin_ext 44/44、test_worker(_ext) 64、test_cancel_paid 30/30、test_sec 31、test_sec_ext 40、test_rbac 27；双 SPA `npm run build` 零错误。
+
 ## [0.3.8] · 支付通道后台可视化管理：payment_config 热配置 + 连通性测试
+
 
 ### Added（支付域，0 新表 · settings key=payment_config）
 - **支付配置 DB 化**：`resolve_pay_config()` 统一生效配置解析——后台 settings 表 `payment_config`（字段级覆盖）> `GM_STRIPE_*`/`GM_PAYPAL_*` 环境变量（优先链对齐 llm_config；表内空值回落 env）；StripeProvider/PayPalProvider 改 property 调用时取值（配置热生效），`get_provider(db)` 缓存带配置指纹（`_cfg_sig`）——DB 保存后自动重建无需重启/清缓存，多 worker 自愈；`reset_provider_cache()` 保存路径主动失效。

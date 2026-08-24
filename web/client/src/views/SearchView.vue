@@ -59,14 +59,17 @@ function clearRecent() {
 }
 
 let sSeq = 0
+/* loaded 仅首载为 false（骨架屏）；后续搜索/排序/翻页保留旧列表 + busy 半透明加载态 */
+const busy = ref(false)
 async function search() {
   const seq = ++sSeq
-  loaded.value = false
+  busy.value = true
   loadErr.value = false
   const term = q.value.trim()
   if (!term) {
     items.value = []; total.value = 0; cats.value = []; pages.value = 1
     loaded.value = true
+    busy.value = false
     return
   }
   page.value = Math.max(1, page.value || 1)
@@ -97,6 +100,7 @@ async function search() {
     loadErr.value = true
   }
   loaded.value = true
+  busy.value = false
   if (pendingScroll.value) {
     pendingScroll.value = false
     nextTick(() => gridEl.value && gridEl.value.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' }))
@@ -230,7 +234,7 @@ const pageWindow = () => {
         {{ zh() ? '匹配' : 'for' }} "<mark class="cnt-mark">{{ q }}</mark>"
       </p>
 
-      <div ref="gridEl" class="grid grid-4" style="scroll-margin-top:84px">
+      <div ref="gridEl" class="grid grid-4" style="scroll-margin-top:84px" :style="loaded && busy ? 'opacity:.55;pointer-events:none' : ''">
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="sk-card">
             <div class="sk-img sk-shimmer"></div>

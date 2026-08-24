@@ -19,6 +19,8 @@ export default defineConfig({
     port: 5174,
     proxy: {
       '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // 后端静态资源（媒体库上传文件等 /static/uploads 直链）
+      '/static': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

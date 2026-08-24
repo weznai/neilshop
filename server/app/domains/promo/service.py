@@ -48,6 +48,17 @@ def validate_code(db: Session, body: ValidateIn) -> dict:
     valid, discount_cents, free_shipping, reason = promo_rules.validate_code(
         db, body.code, body.subtotal_cents, email=body.email
     )
+    if valid:
+        # 展示口径与 checkout 实算对齐：promo_rules 百分比码向下取整，而结算
+        # （services/pricing.py price_cart）按四舍五入重算，validate 展示会差 1 分。
+        # pricing/promo_rules 归交易域持有不可改，此处按同式重算保持一致
+        # （百分比：(subtotal*value+50)//100，封顶 max_discount 与 subtotal）。
+        dc = repo.discount_by_code(db, body.code.strip().upper())
+        if dc is not None and dc.type == 1:
+            rounded = (body.subtotal_cents * int(dc.value) + 50) // 100
+            if dc.max_discount:
+                rounded = min(rounded, int(dc.max_discount))
+            discount_cents = min(rounded, body.subtotal_cents)
     return {
         "valid": valid,
         "discount_cents": discount_cents,

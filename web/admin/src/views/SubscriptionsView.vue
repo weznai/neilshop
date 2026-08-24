@@ -87,6 +87,11 @@ async function refreshQuiet() {
 function openPause(r) { target.value = r; pauseResumeAt.value = r.resume_at ? String(r.resume_at).slice(0, 10) : ''; pauseDlg.value = true }
 async function pauseConfirm() {
   if (actBusy.value || !target.value) return
+  /* 恢复时间（可选）校验：填了必须晚于今天（当日 00:00 仍算「今天」拦截） */
+  if (pauseResumeAt.value && new Date(pauseResumeAt.value + 'T00:00:00').getTime() <= new Date(new Date().toDateString()).getTime()) {
+    toast('恢复时间需晚于今天', 'error')
+    return
+  }
   actBusy.value = true
   rowBusy.value = target.value.id
   try {
@@ -239,6 +244,5 @@ async function cancelConfirm() {
 </template>
 
 <style scoped>
-/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
-.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+/* .err-banner 已上移 admin.css（v16 公共类，样式完全一致） */
 </style>

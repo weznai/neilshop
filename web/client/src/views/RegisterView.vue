@@ -16,7 +16,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const name = ref('')
 const email = ref('')
 const password = ref('')
+const password2 = ref('')
 const showPw = ref(false)
+const showPw2 = ref(false)
 const busy = ref(false)
 const err = ref('')
 const agreed = ref(false)
@@ -50,6 +52,7 @@ function fieldCheck() {
   if (!name.value.trim()) return tt('Enter your name', '请输入昵称')
   if (!EMAIL_RE.test(email.value.trim())) return tt('Enter a valid email address', '请输入有效的邮箱地址')
   if (!pwOk.value) return tt('Password must be 8-128 characters', '密码长度需为 8-128 位')
+  if (password.value !== password2.value) return tt('Passwords do not match', '两次输入的密码不一致')
   if (!agreed.value) return tt('Please agree to the Terms of Service & Privacy Policy', '请先阅读并同意服务条款与隐私政策')
   return ''
 }
@@ -113,6 +116,18 @@ async function submit() {
             </div>
             <div v-if="pwWeak" class="field-msg" style="display:block;color:var(--warn)">
               ⚠️ {{ tt('All-digit passwords are easy to crack — mix in letters or symbols', '纯数字密码容易被破解，建议加入字母/符号') }}
+            </div>
+          </div>
+          <div class="field">
+            <label>{{ tt('Confirm password', '确认密码') }}</label>
+            <div class="pw-wrap">
+              <input v-model="password2" class="input" :type="showPw2 ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
+              <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showPw2 = !showPw2">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+              </button>
+            </div>
+            <div v-if="password && password2 && password !== password2" class="field-msg" style="display:block;color:var(--error)">
+              {{ tt('Passwords do not match', '两次输入的密码不一致') }}
             </div>
           </div>
             <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ err }}</div>

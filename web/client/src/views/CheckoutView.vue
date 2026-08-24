@@ -364,23 +364,24 @@ async function place() {
   if (appliedCode.value && pv.value && !pv.value.code_valid) {
     ui.toast(reasonText(pv.value.code_reason), 'error'); return
   }
-  if (cart.items.some((i) => i.inactive)) {
-    ui.toast(tt('Some items are no longer available — please remove them first', '部分商品已下架，请先移除后再下单'), 'error')
-    return
-  }
-  if (itemsView.value.some((i) => (i.stock || 0) <= 0)) {
-    ui.toast(tt('Some items are out of stock — please remove them first', '部分商品缺货，请先移除后再下单'), 'error')
-    return
-  }
-  const overRow = itemsView.value.find((i) => i.stock > 0 && i.qty > i.stock)
-  if (overRow) {
-    ui.toast(tt(`Only ${overRow.stock} left of "${overRow.title}" — please adjust the quantity`, `「${overRow.title}」库存仅剩 ${overRow.stock} 件，请调整数量`), 'error')
-    return
-  }
   placing.value = true
   try {
     try { await cart.refresh() } catch (_) { /* 拉取失败：退回本地 items 判空 */ }
     if (!cart.items.length) throw Object.assign(new Error('empty'), { data: { detail: 'empty_cart' } })
+    /* 失效/缺货/超库存校验基于 refresh 后的最新 cart.items（本地缓存可能滞后） */
+    if (cart.items.some((i) => i.inactive)) {
+      ui.toast(tt('Some items are no longer available — please remove them first', '部分商品已下架，请先移除后再下单'), 'error')
+      return
+    }
+    if (cart.items.some((i) => (i.stock || 0) <= 0)) {
+      ui.toast(tt('Some items are out of stock — please remove them first', '部分商品缺货，请先移除后再下单'), 'error')
+      return
+    }
+    const overRow = cart.items.find((i) => i.stock > 0 && i.qty > i.stock)
+    if (overRow) {
+      ui.toast(tt(`Only ${overRow.stock} left of "${overRow.title}" — please adjust the quantity`, `「${overRow.title}」库存仅剩 ${overRow.stock} 件，请调整数量`), 'error')
+      return
+    }
     const f = form.value
     const body = {
       email: f.email.trim(),

@@ -5,7 +5,7 @@ import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { money, dt } from '../composables/format'
-import { csvCell, downloadCsv } from '../composables/exportCsv'
+import { downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -51,8 +51,13 @@ const RTABS = [
 ]
 /* 高亮按 key 字符串比较（修数组引用比较 R9），筛选值由 key 派生避免双份状态 */
 const rmaFilter = computed(() => RTABS.find(([k]) => k === state.rs)?.[2] ?? null)
+/* 请求序号 token：两列表各自防竞态（快速切筛选/翻页时丢弃过期响应，做法同 OrdersView） */
+let rmaSeq = 0
+let exSeq = 0
 async function loadRmas() {
   loadCnt.value++
+  const token = ++rmaSeq
+  const fin = () => { loadCnt.value-- }
   const f = rmaFilter.value
   try {
     if (!f || f.length === 1) {
@@ -60,6 +65,7 @@ async function loadRmas() {
       if (f) params.status = f[0]
       if (q.value.trim()) params.q = q.value.trim()
       const d = await req('GET', '/api/admin/trade/rmas?' + new URLSearchParams(params))
+      if (token !== rmaSeq) { fin(); return }
       rmas.value = d.items || []
       rmaTotal.value = d.total ?? 0
       rmaPages.value = d.pages ?? 1
@@ -69,6 +75,7 @@ async function loadRmas() {
       const res = await Promise.all(
         f.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))),
       )
+      if (token !== rmaSeq) { fin(); return }
       const all = res
         .flatMap((d) => d.items || [])
         .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
@@ -88,8 +95,12 @@ async function loadRmas() {
       loadRmas()
       return
     }
-  } catch (e) { rmaErr.value = e.message || '加载失败'; toast('退货列表加载失败：' + (e.message || ''), 'error') }
-  loadCnt.value--
+  } catch (e) {
+    if (token !== rmaSeq) { fin(); return }
+    rmaErr.value = e.message || '加载失败'
+    toast('退货列表加载失败：' + (e.message || ''), 'error')
+  }
+  fin()
 }
 function rmaTab(k) { state.rs = k; state.rp = 1; loadRmas() }
 
@@ -103,11 +114,14 @@ const ETABS = [
 const exFilter = computed(() => ETABS.find(([k]) => k === state.es)?.[2] ?? null)
 async function loadExch() {
   loadCnt.value++
+  const token = ++exSeq
+  const fin = () => { loadCnt.value-- }
   const params = { page: state.ep, size: 20 }
   if (exFilter.value != null) params.status = exFilter.value
   if (q.value.trim()) params.q = q.value.trim()
   try {
     const d = await req('GET', '/api/admin/trade/exchanges?' + new URLSearchParams(params))
+    if (token !== exSeq) { fin(); return }
     exch.value = d.items || []
     exTotal.value = d.total ?? 0
     exPages.value = d.pages ?? 1
@@ -120,10 +134,11 @@ async function loadExch() {
       return
     }
   } catch (e) {
+    if (token !== exSeq) { fin(); return }
     exErr.value = e.message || '加载失败'
     toast('换货列表加载失败：' + (e.message || ''), 'error')
   }
-  loadCnt.value--
+  fin()
 }
 function exTab(k) { state.es = k; state.ep = 1; loadExch() }
 
@@ -487,7 +502,7 @@ async function exShipConfirm() {
   <!-- 换货重发弹窗 -->
   <div v-if="shipDlg" class="modal open" @click.self="!shipSubmitting && (shipDlg = null)">
     <div class="modal-box" style="max-width:420px">
-      <button class="modal-x" @click="shipDlg = null">×</button>
+      <button class="modal-x" @click="!shipSubmitting && (shipDlg = null)">×</button>
       <div class="dhead"><h3 class="dtitle">📦 重发 {{ shipDlg.exchange_no }}</h3></div>
       <p style="font-size:13px;color:var(--gray);margin-bottom:14px">
         发出新变体并扣库存：{{ shipDlg.new_variant?.title || (shipDlg.new_variant ? '#' + shipDlg.new_variant.id : '（变体已删除）') }}
@@ -543,9 +558,7 @@ async function exShipConfirm() {
 </template>
 
 <style scoped>
-/* 订单号深链：plum 色 hover 下划线 */
-.ono{color:var(--ink);text-decoration:none}
-.ono:hover{color:var(--plum);text-decoration:underline}
+/* .ono 已上移 admin.css（v16 公共类，样式完全一致） */
 /* 分页槽：卡内贴底居中（带上分割线） */
 .pg-slot{display:flex;justify-content:center;padding:12px 10px;border-top:1px solid var(--gray-light)}
 .pg-slot :deep(.pg){margin-top:0}

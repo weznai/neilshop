@@ -154,6 +154,8 @@ function onConsentThen(p) {
 function onExitOut(e) {
   if (e.relatedTarget || e.clientY > 0) return
   if (Date.now() - landedAt < 15000) return
+  /* 未做任何 consent 选择（无 gm_consent）不弹，待 gm:consent-saved 后再触发 */
+  if (!lsGet('gm_consent')) return
   if (readConsent().mar === false) return
   const p = exitPop.value
   if (!p || exitSeen() || showWelcome.value) return

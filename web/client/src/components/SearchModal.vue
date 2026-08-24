@@ -225,7 +225,7 @@ function cardTitle(p) {
             <button
               v-for="c in suggestions.categories.slice(0, 4)" :key="c.slug"
               type="button" class="trend-chip"
-              @click="go('/store?cat=' + c.slug)"
+              @click="go('/store?cat=' + c.slug + (q.trim() ? '&q=' + encodeURIComponent(q) : ''))"
             >{{ c.name }}</button>
           </div>
           <button class="btn btn-secondary btn-sm btn-block" style="margin-top:10px" @click="searchAll">

@@ -96,7 +96,12 @@ async function payAndActivate() {
   paying.value = true
   const em = purchaser.value.trim()
   try {
-    const intent = await req('POST', '/api/payments/create-intent', { order_no: result.value.order_no, email: em })
+    /* provider 沿用结算页选择（localStorage gm_pay_provider，与 SuccessView 同读取方式） */
+    let provider = ''
+    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
+    const ib = { order_no: result.value.order_no, email: em }
+    if (provider && provider !== 'mock') ib.provider = provider
+    const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intent && intent.redirect_url) {
       window.location.href = intent.redirect_url
       return

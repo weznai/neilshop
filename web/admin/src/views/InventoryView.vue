@@ -5,7 +5,7 @@ import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt, money } from '../composables/format'
-import { csvCell, downloadCsv } from '../composables/exportCsv'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -97,6 +97,11 @@ async function loadLow() {
   catch (e) { if (t !== lowSeq) return; lowErr.value = e.message || '请求失败'; toast('低库存预警加载失败：' + (e.message || ''), 'error') }
 }
 async function loadMovements() {
+  /* 日期校验：截止早于起始时不发请求（对齐 OrdersView） */
+  if (state.mfrom && state.mto && state.mto < state.mfrom) {
+    toast('结束日期不能早于开始日期', 'error')
+    return
+  }
   const t = ++movSeq
   movErr.value = ''
   try {
@@ -154,7 +159,8 @@ function clearMDates() { state.mfrom = ''; state.mto = ''; state.mp = 1; loadMov
 /* 流水空态文案：SKU/类型/日期任一筛选生效→未匹配，否则暂无 */
 const movFiltered = computed(() => !!(state.mv || mType.value !== null || state.mfrom || state.mto))
 
-/* CSV 导出：按当前 SKU + 类型筛选循环翻页拉全量（后端每页 20，上限 20 页）
+/* CSV 导出：按当前 SKU + 类型筛选循环翻页拉全量（导出请求带 per_page=100 提速，后端 10-100 钳制；
+ * 页数以响应回显 pages 为准，与实际每页条数联动）
  * 流水仅含 variant_id：已选 SKU 直接用其 sku，否则拉变体列表建 id→sku 映射 */
 const exporting = ref(false)
 const EXPORT_MAX_PAGES = 50
@@ -163,7 +169,7 @@ async function exportCsv() {
   exporting.value = true
   try {
     const qs = () => {
-      const p = { page: 1 }
+      const p = { page: 1, per_page: 100 }
       if (mVar.value) p.variant_id = mVar.value.id
       if (mType.value !== null) p.type = mType.value
       if (state.mfrom) p.date_from = state.mfrom
@@ -201,6 +207,29 @@ async function exportCsv() {
     toast('已导出 ' + all.length + ' 条 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false
+}
+
+/* SKU 列表导出：当前搜索/排序筛选全量翻页（size=200 上限 50 页，与流水导出同按钮风格） */
+const varExporting = ref(false)
+async function exportVariants() {
+  if (varExporting.value) return
+  varExporting.value = true
+  try {
+    const kw = q.value.trim()
+    const { all, truncated } = await fetchAllPages((p) => req('GET', '/api/admin/catalog/variants?' + new URLSearchParams({
+      page: p, size: 200,
+      ...(kw ? { q: kw } : {}),
+      ...(state.sort ? { sort: state.sort } : {}),
+    })), { pageSize: 200, maxPages: 50 })
+    if (truncated) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
+    downloadCsv({
+      filename: 'variants-' + new Date().toISOString().slice(0, 10),
+      headers: ['SKU', '商品', '价格', '库存', '安全库存', '状态'],
+      rows: all.map((v) => [v.sku, v.product_title || '', money(v.price), v.stock ?? 0, v.safety_stock ?? 0, v.is_active ? '启用' : '停用']),
+    })
+    toast('已导出 ' + all.length + ' 条 ✓', 'success')
+  } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
+  varExporting.value = false
 }
 
 /* 调整弹窗：打开统一入口（表格行/低库存行共用） */
@@ -246,6 +275,7 @@ async function doAdjust() {
         <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
       </div>
       <button class="btn btn-secondary" @click="search">搜索</button>
+      <button class="btn btn-secondary" :disabled="varExporting" @click="exportVariants">{{ varExporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
     </div>
   </div>
 
@@ -395,7 +425,5 @@ async function doAdjust() {
 .mchip.on{border-color:var(--plum);background:var(--plum);color:#fff}
 /* 可排序表头键盘可达：焦点环 */
 th.sortable:focus-visible{outline:2px solid var(--plum);outline-offset:-2px}
-/* 搜索框清空钮：悬浮输入框右侧 */
-.q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
-.q-clear:hover{background:var(--gray)}
+/* .q-clear 已上移 admin.css（v16 公共类，样式完全一致） */
 </style>

@@ -19,6 +19,15 @@ const err = ref('')
 const loading = ref(true)
 const busy = ref(false)
 
+/* 订单商品图兜底：回落 placehold + dataset 守卫防循环（对齐 ProductCard imgFallback） */
+const IMG_FALLBACK = 'https://placehold.co/200x200/E8B4B8/552338?text=%E2%9C%A8'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
+
 /* OrderStatus 共享映射（composables/orderStatus.js）：0待付 1已付 2备货 3已发货 4已送达 5已完成 8已取消 9已退款 */
 /* 标签统一 [en, zh]（tt 局部双语），对齐 TrackView EVENT_TEXT 模式 */
 /* RmaReason 1-6 */
@@ -540,7 +549,7 @@ async function submitReview(it) {
             <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Items', '商品') }}</h3>
             <div v-for="it in o.items || []" :key="it.id" style="padding:12px 0;border-bottom:1px solid var(--gray-light)">
               <div style="display:flex;gap:12px;align-items:center">
-                <img :src="it.image" :alt="it.title" style="width:56px;height:56px;border-radius:9px;object-fit:cover">
+                <img :src="it.image" :alt="it.title" style="width:56px;height:56px;border-radius:9px;object-fit:cover" @error="imgFallback">
                 <div style="flex:1;font-size:13.5px;min-width:0">
                   <b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ it.title }}</b>
                   <div style="color:var(--gray);font-size:12px">

@@ -96,6 +96,9 @@ def add_item(db: Session, cart: Cart, token: str | None, variant_id: int, qty: i
     new_qty = qty + (int(current["qty"]) if current else 0)
     if new_qty > variant.stock:
         raise HTTPException(status_code=409, detail="insufficient_stock")
+    # 累计上限与 CartQtyIn le=99 同口径：多次累加不可绕过单行 99 上限
+    if new_qty > 99:
+        raise HTTPException(status_code=409, detail="qty_limit")
     if current:
         current["qty"] = new_qty
     else:
@@ -122,6 +125,10 @@ def add_batch(db: Session, cart: Cart, token: str | None, items: list) -> dict:
         new_qty = it.qty + (int(current["qty"]) if current else 0)
         if new_qty > variant.stock:
             failed.append({"variant_id": it.variant_id, "reason": "insufficient_stock"})
+            continue
+        if new_qty > 99:
+            # 与 add_item 同口径：累计超 99 上限该件失败（其余件继续）
+            failed.append({"variant_id": it.variant_id, "reason": "qty_limit"})
             continue
         if current:
             current["qty"] = new_qty
@@ -172,12 +179,22 @@ def merge(db: Session, user: User, guest_token: str) -> tuple[dict, str]:
     cart, token = resolve_cart(db, user, None)
     if guest and guest.id != cart.id:
         merged = {e.get("variantId"): int(e.get("qty", 0)) for e in cart.items or []}
+        guest_vids = {e.get("variantId") for e in guest.items or [] if e.get("variantId")}
+        vmap = repo.variants_by_ids(db, list(guest_vids)) if guest_vids else {}
         for e in guest.items or []:
             vid = e.get("variantId")
             if not vid:
                 continue
-            merged[vid] = min(99, merged.get(vid, 0) + int(e.get("qty", 0)))
-        cart.items = [{"variantId": k, "qty": q} for k, q in merged.items()]
+            v = vmap.get(vid)
+            base = merged.get(vid, 0)
+            # 库存钳制（静默继续，合并场景不报错）：失效/无货变体不并入新量
+            # （购物车已有量保留）；有效变体钳到库存与 99 上限
+            if not v or not v.is_active or v.stock <= 0:
+                if vid in merged:
+                    merged[vid] = min(base, 99)
+                continue
+            merged[vid] = min(99, base + int(e.get("qty", 0)), v.stock)
+        cart.items = [{"variantId": k, "qty": q} for k, q in merged.items() if q > 0]
         db.delete(guest)
         db.commit()
     token = token or cart.session_id

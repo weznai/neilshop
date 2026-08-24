@@ -243,7 +243,8 @@ def main() -> int:
               r.status_code == 409 and pay_neg.refunded_amount == 200,
               (r.status_code, pay_neg.refunded_amount))
 
-        # 可退余不足（remaining 100 < 200）：绕过校验单独走 Payment 账务落库
+        # 可退余不足（remaining 100 < 200）：绕过校验单独走 Payment 账务落库，
+        # 钳制到剩余可退 100 —— 不再把 refunded_amount 记超实付（P1-11）
         o_by, it_by = make_order(s, "FLW26EXBYP001", [(v_old.id, 1, 1000)])
         s.add(Payment(order_id=o_by.id, stripe_payment_intent="PI_FLOWBYP",
                       amount=1000, status=4, refunded_amount=900))
@@ -252,11 +253,13 @@ def main() -> int:
                        new_variant_id=v_new.id, qty=1, price_diff=-200, status=3))
         s.commit()
         r = client.post("/api/admin/trade/exchanges/FLW26EXBYP01/complete", headers=H)
+        d = r.json()
         s.expire_all()
         pay_by = (s.query(Payment).filter(Payment.order_id == o_by.id)
                   .order_by(Payment.id.desc()).first())
-        check("可退余不足绕过校验：refunded 900→1100（仍部分退 4，不驱动订单状态）",
-              r.status_code == 200 and pay_by.refunded_amount == 1100
+        check("可退余不足绕过校验：钳制到剩余可退（refunded 900→1000，仍部分退 4，不驱动订单状态）",
+              r.status_code == 200 and d["diff_refund"] == 100
+              and pay_by.refunded_amount == 1000
               and pay_by.status == 4
               and s.query(Order).filter(Order.order_no == "FLW26EXBYP001").first().status == 1,
               (r.status_code, pay_by.refunded_amount))

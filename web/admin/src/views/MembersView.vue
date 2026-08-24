@@ -46,18 +46,23 @@ function buildUrl(p, size = SIZE) {
   return '/api/admin/ops/members?' + params
 }
 
+/* 请求序号 token：快速切换筛选/翻页时丢弃过期响应（竞态保护，做法同 OrdersView） */
+let reqSeq = 0
 async function load(p = 1) {
   /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
   errMsg.value = ''
+  const token = ++reqSeq
   try {
     const d = await req('GET', buildUrl(p))
+    if (token !== reqSeq) return
     members.value = d.items || []
     total.value = d.total ?? 0
     st.page = d.page || p
     /* 页码越界回拉：空页且 total>0 且不在第 1 页 → 回第 1 页重拉（防递归：第 1 页不再回拉） */
     if (!members.value.length && total.value > 0 && st.page > 1) { load(1); return }
   } catch (e) {
+    if (token !== reqSeq) return
     loadErr.value = true
     errMsg.value = e.message || ''
     toast('会员列表加载失败：' + (e.message || ''), 'error')
@@ -330,6 +335,5 @@ async function applyRisk(flag = 2) {
 </template>
 
 <style scoped>
-/* 刷新失败横幅：pale-error 底 + error 字，圆角，卡内顶部 */
-.err-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 14px;margin:12px 12px 0;background:var(--pale-error);color:var(--error);border-radius:10px;font-size:12.5px}
+/* .err-banner 已上移 admin.css（v16 公共类，样式完全一致） */
 </style>

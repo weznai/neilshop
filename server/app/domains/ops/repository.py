@@ -252,10 +252,12 @@ ABANDON_CUTOFF = timedelta(hours=1)
 
 
 def abandoned_carts_query(db: Session, cutoff: datetime) -> Query:
-    """cutoff = now - ABANDON_CUTOFF，由 service 层计算传入（naive UTC 口径）"""
+    """cutoff = now - ABANDON_CUTOFF，由 service 层计算传入（naive UTC 口径）；
+    仅保留有邮箱可触达的行（email 非空，与 worker scan_abandoned_carts 过滤口径一致）"""
     return (
         db.query(Cart)
-        .filter(_has_items(db), Cart.updated_at <= cutoff)
+        .filter(_has_items(db), Cart.updated_at <= cutoff,
+                Cart.email.isnot(None), Cart.email != "")
         .order_by(Cart.updated_at.desc(), Cart.id.desc())
     )
 

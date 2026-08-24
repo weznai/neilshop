@@ -6,6 +6,9 @@ FAQ_CATEGORY = {1: "尺码", 2: "佩戴", 3: "物流", 4: "退换", 5: "保养",
 
 UGC_REWARD = 100
 
+# 评价过审奖励积分（enums.PointsReason.REVIEW_REWARD 无运营配置项，先用常量）
+REVIEW_REWARD = 10
+
 
 class ReviewIn(BaseModel):
     order_no: str

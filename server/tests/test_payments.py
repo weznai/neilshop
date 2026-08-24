@@ -443,6 +443,65 @@ try:
         check("已标 status=2 的退款事件重发 → 幂等 skipped",
               r.status_code == 200 and r.json().get("skipped") is True, r.text)
 
+        # ===== charge.refunded 累计口径（stripe 形态 data.object）：按累计增量入账不重复 =====
+        o11 = make_order(s, "NS260815PAY11", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
+        s.commit()
+        pi11 = client.post("/api/payments/create-intent", headers=emma_auth,
+                           json={"order_no": "NS260815PAY11"}).json()["payment_intent"]
+        assert client.post("/api/payments/mock-pay", headers=emma_auth,
+                           json={"order_no": "NS260815PAY11",
+                                 "succeed": True}).status_code == 200
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_ref_a", "type": "charge.refunded",
+            "data": {"object": {"id": "ch_11", "payment_intent": pi11,
+                                "amount": 1000, "amount_refunded": 400}}})
+        s.expire_all()
+        pay11 = s.query(Payment).filter(
+            Payment.stripe_payment_intent == pi11).first()
+        check("stripe 形态部分退款（amount_refunded=400）→ 仅入账增量 400 / payment 4",
+              r.status_code == 200 and pay11.refunded_amount == 400
+              and pay11.status == 4, (r.text, pay11.refunded_amount))
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_ref_b", "type": "charge.refunded",
+            "data": {"object": {"id": "ch_11", "payment_intent": pi11,
+                                "amount": 1000, "amount_refunded": 1000}}})
+        s.expire_all()
+        pay11 = s.query(Payment).filter(
+            Payment.stripe_payment_intent == pi11).first()
+        check("累计推进到 1000 → 只补增量 600（不重复入账）→ 全退 3",
+              r.status_code == 200 and pay11.refunded_amount == 1000
+              and pay11.status == 3, (r.text, pay11.refunded_amount))
+        r = client.post("/api/payments/webhook", json={
+            "id": "evt_ref_c", "type": "charge.refunded",
+            "data": {"object": {"id": "ch_11", "payment_intent": pi11,
+                                "amount": 1000, "amount_refunded": 1000}}})
+        s.expire_all()
+        pay11 = s.query(Payment).filter(
+            Payment.stripe_payment_intent == pi11).first()
+        check("重复累计事件（delta=0）→ 跳过不重复入账",
+              r.status_code == 200 and pay11.refunded_amount == 1000, r.text)
+
+        # ===== create_intent 并发堆积防护（repo 级 supersede）：旧 PENDING 废弃 =====
+        from app.domains.trade import repository as tr_repo
+        s.add(Payment(order_id=o2.id, stripe_payment_intent="PI_stale_x1",
+                      amount=1500, status=0))
+        s.commit()
+        kept = Payment(order_id=o2.id, stripe_payment_intent="PI_kept_x1",
+                       amount=1500, status=0)
+        s.add(kept)
+        s.commit()
+        n_sup = tr_repo.supersede_stale_pending(s, kept)
+        s.commit()
+        s.expire_all()
+        stale_row = s.query(Payment).filter(
+            Payment.stripe_payment_intent == "PI_stale_x1").first()
+        kept_row = s.query(Payment).filter(
+            Payment.stripe_payment_intent == "PI_kept_x1").first()
+        check("supersede_stale_pending: 同 provider 旧 PENDING → FAILED+superseded，保留最新",
+              n_sup == 1 and stale_row.status == 2
+              and stale_row.failure_reason == "superseded_by_newer_intent"
+              and kept_row.status == 0, (n_sup, stale_row.status))
+
         # ===== provider 选择 =====
         logs = []
 
@@ -475,10 +534,11 @@ try:
               and isinstance(p_stripe, pp.StripeProvider), type(p_stripe))
 
         res = p_stripe.create_intent(o1, 2000)
-        check("StripeProvider.create_intent 参数 amount/currency/metadata/idempotency_key",
-              calls and calls[0] == {"amount": 2000, "currency": "usd",
-                                     "metadata": {"order_no": "NS260815PAY01"},
-                                     "idempotency_key": "NS260815PAY01"}
+        check("StripeProvider.create_intent 参数 amount/currency/metadata + 时变 idempotency_key",
+              calls and {k: v for k, v in calls[0].items() if k != "idempotency_key"}
+              == {"amount": 2000, "currency": "usd",
+                  "metadata": {"order_no": "NS260815PAY01"}}
+              and str(calls[0].get("idempotency_key", "")).startswith("NS260815PAY01:")
               and res == {"payment_intent": "pi_fake_123",
                           "client_secret": "pi_fake_123_secret"}, calls)
 
@@ -555,6 +615,27 @@ try:
         check("stripe 模式 webhook 无效签名 → 400 invalid_signature",
               r.status_code == 400 and r.json()["detail"] == "invalid_signature", r.text)
 
+        # ===== mock-pay provider 一致性：通道切回 mock 后旧 stripe PI 拒绝假支付核销 =====
+        o3b = make_order(s, "NS260815PAY3B", 1000, [(v1.id, 1, 1000)], user_id=emma.id)
+        s.commit()
+        r = client.post("/api/payments/create-intent", headers=emma_auth,
+                        json={"order_no": "NS260815PAY3B"})
+        check("stripe 模式建 PI（供 provider_mismatch 用例）",
+              r.status_code == 200 and r.json()["payment_intent"].startswith("pi_"), r.text)
+        sys.modules.pop("stripe", None)
+        app_settings.stripe_key = ""
+        pp._provider = None
+        r = client.post("/api/payments/mock-pay", headers=emma_auth,
+                        json={"order_no": "NS260815PAY3B", "succeed": True})
+        s.expire_all()
+        pay3b = s.query(Payment).filter(Payment.order_id == o3b.id).first()
+        check("通道切回 mock 后 mock-pay 旧 stripe PI → 409 provider_mismatch（payment 不被核销）",
+              r.status_code == 409 and r.json()["detail"] == "provider_mismatch"
+              and pay3b.status == 0, (r.text, pay3b.status))
+        sys.modules["stripe"] = fake_stripe
+        app_settings.stripe_key = "sk_test_fake"
+        pp._provider = None
+
         # ===== 智能体 B：PayPal / Klarna / provider 选择矩阵（全 monkeypatch，无外呼） =====
         sys.modules.pop("stripe", None)
         app_settings.stripe_key = ""
@@ -606,6 +687,7 @@ try:
         class _FakeHTTP:
             def __init__(self):
                 self.calls = []
+                self.verify_status = "VERIFIED"  # verify-webhook-signature 应答可控
 
             def post(self, url, **kwargs):
                 self.calls.append((url, kwargs))
@@ -613,6 +695,10 @@ try:
                     return SimpleNamespace(
                         status_code=200, raise_for_status=_pp_noop,
                         json=lambda: {"access_token": "tok_b_1"})
+                if url.endswith("/v1/notifications/verify-webhook-signature"):
+                    return SimpleNamespace(
+                        status_code=200, raise_for_status=_pp_noop,
+                        json=lambda: {"verification_status": self.verify_status})
                 return SimpleNamespace(
                     status_code=201, raise_for_status=_pp_noop,
                     json=lambda: {"id": "PAYID-B-0001",
@@ -637,10 +723,10 @@ try:
 
         order_url, order_kw = fake_http.calls[1]
         pu = order_kw["json"]["purchase_units"][0]
-        check("B PayPal orders: Bearer token + PayPal-Request-Id 幂等 + amount USD + metadata.order_no",
+        check("B PayPal orders: Bearer token + PayPal-Request-Id 时变幂等 + amount USD + metadata.order_no",
               order_url == "https://api-m.sandbox.paypal.com/v2/checkout/orders"
-              and order_kw["headers"] == {"Authorization": "Bearer tok_b_1",
-                                          "PayPal-Request-Id": "NS260815PAY04"}
+              and order_kw["headers"]["Authorization"] == "Bearer tok_b_1"
+              and str(order_kw["headers"]["PayPal-Request-Id"]).startswith("NS260815PAY04:")
               and pu["amount"] == {"currency_code": "USD", "value": "20.00"}
               and pu["custom_id"] == "NS260815PAY04"
               and pu["metadata"] == {"order_no": "NS260815PAY04"}, order_kw)
@@ -652,16 +738,16 @@ try:
 
         try:
             pay_provider.verify_webhook(b"{}", None)
-            no_hdr = False
-        except pp.InvalidSignatureError:
-            no_hdr = True
+            no_evt = False
+        except pp.WebhookVerificationError:
+            no_evt = True
         try:
             pay_provider.verify_webhook(b"{not-json", "t=1")
             bad_json = False
         except pp.WebhookVerificationError:
             bad_json = True
-        check("B PayPal verify_webhook 桩: 无 header → InvalidSignature / 坏 JSON → WebhookVerificationError",
-              no_hdr and bad_json)
+        check("B PayPal verify_webhook: 事件缺 id → WebhookVerificationError / 坏 JSON → WebhookVerificationError",
+              no_evt and bad_json)
 
         ok_evt = _json.dumps({"id": "WH-1", "type": "PAYMENT.CAPTURE.COMPLETED",
                               "resource": {"id": "CAP-1"}}).encode()
@@ -671,7 +757,7 @@ try:
         except pp.WebhookVerificationError:
             no_type = True
         vw = pay_provider.verify_webhook(ok_evt, "t=1")
-        check("B PayPal verify_webhook 桩: 正常事件返回 / 缺 type → WebhookVerificationError",
+        check("B PayPal verify_webhook 无 webhook_id（dev 降级结构检查）: 正常事件返回 / 缺 type → WebhookVerificationError",
               vw["id"] == "WH-1" and vw["type"] == "PAYMENT.CAPTURE.COMPLETED" and no_type, vw)
 
         app_settings.paypal_webhook_id = "WHID-OK"
@@ -681,10 +767,47 @@ try:
             wid_bad = False
         except pp.InvalidSignatureError:
             wid_bad = True
-        wid_evt = pay_provider.verify_webhook(_json.dumps(
-            {"id": "WH-4", "type": "T", "webhook_id": "WHID-OK"}).encode(), "t=1")
-        check("B PayPal verify_webhook 桩: webhook_id 匹配通过 / 不匹配 → InvalidSignatureError",
-              wid_bad and wid_evt["id"] == "WH-4")
+        check("B PayPal verify_webhook: webhook_id 不匹配 → InvalidSignatureError", wid_bad)
+        wh4_evt = _json.dumps(
+            {"id": "WH-4", "type": "T", "webhook_id": "WHID-OK"}).encode()
+        try:
+            pay_provider.verify_webhook(wh4_evt, "t=1")
+            no_hdr = False
+        except pp.InvalidSignatureError:
+            no_hdr = True
+        check("B PayPal 真实验签: 配 webhook_id 但缺 transmission 头 → InvalidSignatureError", no_hdr)
+
+        # 真实验签（fake httpx 全程拦截）：POST /v1/notifications/verify-webhook-signature
+        pp_hdrs = {
+            "paypal-transmission-id": "tid-1",
+            "paypal-transmission-time": "2026-08-25T00:00:00Z",
+            "paypal-transmission-sig": "sig-1",
+            "paypal-cert-url": "https://cert.paypal.example/c",
+            "paypal-auth-algo": "SHA256withRSA",
+        }
+        wid_evt = pay_provider.verify_webhook(wh4_evt, "t=1", headers=pp_hdrs)
+        v_url, v_kw = fake_http.calls[-1]
+        check("B PayPal 真实验签: oauth token + verify 接口全字段（webhook_id/webhook_event/transmission-*）",
+              wid_evt["id"] == "WH-4"
+              and v_url == ("https://api-m.sandbox.paypal.com"
+                            "/v1/notifications/verify-webhook-signature")
+              and v_kw["headers"] == {"Authorization": "Bearer tok_b_1"}
+              and v_kw["json"] == {
+                  "webhook_id": "WHID-OK",
+                  "webhook_event": {"id": "WH-4", "type": "T", "webhook_id": "WHID-OK"},
+                  "transmission_id": "tid-1",
+                  "transmission_time": "2026-08-25T00:00:00Z",
+                  "transmission_sig": "sig-1",
+                  "cert_url": "https://cert.paypal.example/c",
+                  "auth_algo": "SHA256withRSA"}, (v_url, v_kw))
+        fake_http.verify_status = "FAILURE"
+        try:
+            pay_provider.verify_webhook(wh4_evt, "t=1", headers=pp_hdrs)
+            v_fail = False
+        except pp.InvalidSignatureError:
+            v_fail = True
+        check("B PayPal 真实验签: verification_status != VERIFIED → InvalidSignatureError", v_fail)
+        fake_http.verify_status = "VERIFIED"
         del app_settings.paypal_webhook_id
 
         try:
@@ -820,7 +943,7 @@ try:
         plain_call = dict(calls[-1])
         check("B stripe_klarna=1 → payment_method_types=[card,klarna]；=0 → 不传（默认不变）",
               klarna_call.get("payment_method_types") == ["card", "klarna"]
-              and klarna_call["idempotency_key"] == "NS260815PAY05"
+              and str(klarna_call["idempotency_key"]).startswith("NS260815PAY05:")
               and klarna_call["amount"] == 1000
               and "payment_method_types" not in plain_call, (klarna_call, plain_call))
 

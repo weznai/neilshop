@@ -204,6 +204,14 @@ check("有效签名 role=9 payload 仍可读身份", r.status_code == 200, r.tex
 r = client.get("/api/admin/ops/dashboard", headers=H_ROLE_DB)
 check("role 从 DB 读：payload 9 实际普通用户 → 后台 403", r.status_code == 403,
       r.text[:120])
+H_PWRESET = {"Authorization": "Bearer " + pyjwt.encode(
+    {"sub": str(IDS["alice"]), "role": 1, "purpose": "pwreset",
+     "iat": _now, "exp": _now + 900},
+    settings.jwt_secret, algorithm="HS256")}
+r = client.get("/api/account/me", headers=H_PWRESET)
+check("密码重置 JWT（purpose=pwreset）当会话用 → 401", r.status_code == 401, r.text[:120])
+r = client.get("/api/account/me", headers=H_ALICE)
+check("登录会话 token（purpose=session）不受影响", r.status_code == 200, r.text[:120])
 
 print("== 输入校验：分页 size 上限 ==")
 r = client.get("/api/content/articles", params={"size": 10000})

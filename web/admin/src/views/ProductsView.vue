@@ -5,7 +5,7 @@ import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt, money } from '../composables/format'
-import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -68,7 +68,8 @@ async function load() {
     if (token !== reqSeq) return
     items.value = d.items || []
     total.value = d.total ?? 0
-    pages.value = Math.max(1, Math.ceil(total.value / state.per_page))
+    /* 后端 admin_products 响应已含 pages（ceil(total/size)），直消费避免本地口径漂移 */
+    pages.value = Math.max(1, d.pages ?? Math.ceil(total.value / state.per_page))
     /* 当前页删空回落：本页记录被删光且不在第 1 页时回第 1 页重拉一次（已在第 1 页则空态渲染，无递归） */
     if (!items.value.length && state.page > 1) { state.page = 1; load(); return }
   } catch (e) {
@@ -548,7 +549,5 @@ async function doDelCat() {
 .topbar-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 /* 可排序表头键盘可达：焦点环 */
 th.sortable:focus-visible{outline:2px solid var(--plum);outline-offset:-2px}
-/* 搜索框清空钮：悬浮输入框右侧 */
-.q-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:17px;height:17px;border:none;border-radius:50%;background:var(--gray-light);color:#fff;font-size:11px;line-height:1;cursor:pointer;padding:0}
-.q-clear:hover{background:var(--gray)}
+/* .q-clear 已上移 admin.css（v16 公共类，样式完全一致） */
 </style>

@@ -64,7 +64,12 @@ function pickTag(t) {
   load(true)
 }
 function loadMore() { load(false) }
-function coverFallback(e) { e.target.src = PH }
+function coverFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = PH
+}
 /* 列表摘要剥 markdown 语法残留（加粗、链接、代码、标题符、行首列表标记等） */
 function stripMd(s) {
   return String(s || '')
