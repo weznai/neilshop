@@ -672,197 +672,187 @@ onMounted(() => {
     <EmptyState v-if="loaded && !tplErr && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
   </div>
 
-  <!-- 支付通道：状态带 + Stripe/PayPal 配置卡 + Mock 开关（payment_config 后台可配，热生效） -->
-  <div v-else-if="st.tab === 'payments'" class="card" style="padding:0">
-    <div v-if="payCfgErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
+  <!-- 支付通道：摘要条 + Stripe/PayPal 双通道卡 + Mock 条 + 机制说明（payment_config 后台可配，热生效） -->
+  <div v-else-if="st.tab === 'payments'">
+    <div v-if="payCfgErr" class="card" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;margin-bottom:16px;background:var(--pale-error);border:1px solid var(--error);border-radius:12px;font-size:12.5px;color:var(--error)">
       <span>⚠️ 支付配置加载失败</span>
       <button class="btn btn-secondary btn-sm" @click="loadPayCfg">重试</button>
     </div>
-    <div v-if="!payCfgLoaded && !payCfgErr" class="skeleton" style="min-height:200px" />
+    <div v-if="!payCfgLoaded && !payCfgErr" class="card skeleton" style="min-height:320px" />
     <template v-else>
-      <!-- 状态带：当前默认通道 + 前台可用列表 -->
-      <div class="pay-status">
-        <div class="pay-status-ico" :class="{ on: payCfg.effective.provider !== 'mock' }">💳</div>
-        <div style="flex:1;min-width:0">
-          <b style="font-size:14px">支付通道</b>
-          <div class="pay-status-sub">
-            默认走 <b style="color:var(--ink)">{{ defaultChainText }}</b>
-            · 前台可用：
+      <!-- 摘要条：默认链 + 前台可用 + 回调地址（一览全局，配色随通道状态） -->
+      <div class="card pay-hero" :class="{ ok: payCfg.effective.provider !== 'mock' && payCfg.effective.available.length }">
+        <div class="pay-hero-ico" :class="{ on: payCfg.effective.provider !== 'mock' && payCfg.effective.available.length }">💳</div>
+        <div class="pay-hero-main">
+          <div class="pay-hero-title">
+            默认走 <b>{{ defaultChainText }}</b>
+            <span v-if="payCfg.effective.env !== 'prod'" class="pay-hero-env">{{ payCfg.effective.env }}</span>
+          </div>
+          <div class="pay-hero-sub">
+            前台可用：
             <template v-if="payCfg.effective.available.length">
-              <span v-for="p in payCfg.effective.available" :key="p" class="pay-chip">{{ p === 'stripe(klarna)' ? 'Stripe + Klarna' : p === 'stripe' ? 'Stripe' : p }}</span>
+              <span v-for="p in payCfg.effective.available" :key="p" class="pay-chip">{{ p === 'stripe(klarna)' ? 'Stripe + Klarna' : p === 'stripe' ? 'Stripe' : p === 'paypal' ? 'PayPal' : 'Mock' }}</span>
             </template>
             <span v-else class="pay-chip warn">无（前台结算按钮置灰）</span>
-            <template v-if="payCfg.effective.env !== 'prod'"> · 环境 {{ payCfg.effective.env }}</template>
           </div>
         </div>
-        <button class="btn btn-ghost btn-sm" @click="loadPayCfg">刷新</button>
+        <div class="pay-hero-side">
+          <button class="btn btn-ghost btn-sm" @click="loadPayCfg">↻ 刷新</button>
+          <button v-if="payCfg.effective.webhook_url" class="pay-hook" title="复制 Webhook 回调地址" @click="copyWebhookUrl">
+            <code>{{ payCfg.effective.webhook_url }}</code>
+          </button>
+        </div>
       </div>
 
-      <!-- ===== Stripe ===== -->
-      <section class="pay-sec">
-        <div class="pay-sec-head">
-          <div class="pay-brand">
-            <span class="pay-brand-tile" style="background:#635BFF">S</span>
-            <div>
-              <div class="pay-brand-name">Stripe <span class="pay-brand-sub">信用卡 / 借记卡{{ payCfg.stripe.klarna ? ' / Klarna' : '' }}</span></div>
-              <div class="pay-status-sub" style="margin-top:2px">
+      <!-- 双通道卡（宽屏并排 / 窄屏堆叠） -->
+      <div class="pay-cards">
+        <!-- ===== Stripe ===== -->
+        <section class="pay-card">
+          <header class="pay-card-head">
+            <span class="pay-brand-tile" style="background:linear-gradient(135deg,#7A73FF,#635BFF)">S</span>
+            <div class="pay-card-head-txt">
+              <div class="pay-card-name">Stripe <span class="pay-card-sub">信用卡 / 借记卡{{ payCfg.stripe.klarna ? ' / Klarna' : '' }}</span></div>
+              <div class="pay-card-meta">
                 密钥 <code v-if="payCfg.stripe.key_set">{{ payCfg.stripe.key_masked }}</code><code v-else>未配置</code>
-                <template v-if="payCfg.stripe.source"> · 来源 {{ payCfg.stripe.source === 'db' ? '后台配置' : '环境变量' }}<template v-if="payCfg.updated_at && payCfg.stripe.source === 'db'"> · {{ dt(payCfg.updated_at) }}</template></template>
+                <template v-if="payCfg.stripe.source"> · {{ payCfg.stripe.source === 'db' ? '后台配置' : '环境变量' }}<template v-if="payCfg.updated_at && payCfg.stripe.source === 'db'"> · {{ dt(payCfg.updated_at) }}</template></template>
               </div>
             </div>
-          </div>
-          <span v-if="payCfg.stripe.key_set && payCfg.stripe.key_mode === 'live'" class="tag tag-paid">live 生产密钥</span>
-          <span v-else-if="payCfg.stripe.key_set" class="tag tag-ship">test 测试密钥</span>
-          <span v-else class="tag tag-pending">未配置</span>
-        </div>
+            <span v-if="payCfg.stripe.key_set && payCfg.stripe.key_mode === 'live'" class="tag tag-paid">live</span>
+            <span v-else-if="payCfg.stripe.key_set" class="tag tag-ship">test</span>
+            <span v-else class="tag tag-pending">未配置</span>
+          </header>
 
-        <!-- 缺包降级提示：有密钥但容器未装 stripe 包时仍为 mock -->
-        <div v-if="payCfg.stripe.key_set && !payCfg.package.stripe" class="pay-warn">
-          ⚠️ 已配置密钥，但服务端未安装 <code>stripe</code> 包——当前实际降级为 Mock。容器内 <code>pip install stripe</code> 后重启即切换。
-        </div>
+          <!-- 缺包降级提示：有密钥但容器未装 stripe 包时仍为 mock -->
+          <div v-if="payCfg.stripe.key_set && !payCfg.package.stripe" class="pay-warn">
+            ⚠️ 已配置密钥，但服务端未安装 <code>stripe</code> 包——当前实际降级为 Mock。容器内 <code>pip install stripe</code> 后重启即切换。
+          </div>
 
-        <div class="pay-grid">
-          <div class="field s7" style="margin:0">
-            <label>API 密钥 <span v-if="payCfg.stripe.key_set" class="pay-hint">（留空 = 沿用已保存密钥）</span></label>
-            <div style="display:flex;gap:8px">
-              <input v-model="payForm.stripe_key" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.stripe.key_set ? payCfg.stripe.key_masked : 'sk_test_… 或 sk_live_…'" autocomplete="new-password">
-              <button v-if="isSuper && payCfg.stripe.source === 'db' && payCfg.stripe.key_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('stripe_key', '清除 Stripe 密钥', '确认清除后台保存的 Stripe 密钥？清除后回落环境变量 GM_STRIPE_KEY（如有），前台通道可能变化。')">清除</button>
+          <div class="pay-card-body">
+            <div class="field" style="margin:0">
+              <label>API 密钥 <span v-if="payCfg.stripe.key_set" class="pay-hint">（留空 = 沿用已保存密钥）</span></label>
+              <div style="display:flex;gap:8px">
+                <input v-model="payForm.stripe_key" class="input" type="password" style="flex:1;min-width:0" :disabled="!isSuper" :placeholder="payCfg.stripe.key_set ? payCfg.stripe.key_masked : 'sk_test_… 或 sk_live_…'" autocomplete="new-password">
+                <button v-if="isSuper && payCfg.stripe.source === 'db' && payCfg.stripe.key_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('stripe_key', '清除 Stripe 密钥', '确认清除后台保存的 Stripe 密钥？清除后回落环境变量 GM_STRIPE_KEY（如有），前台通道可能变化。')">清除</button>
+              </div>
+              <p class="pay-note">Stripe 后台 Developers → API keys 复制 Secret key（sk_ 开头）</p>
             </div>
-            <p class="pay-note">Stripe 后台 Developers → API keys 复制 Secret key（sk_ 开头）</p>
-          </div>
-          <div class="field s5" style="margin:0">
-            <label>Webhook 签名密钥 <span v-if="payCfg.stripe.webhook_secret_set" class="pay-hint">（已存 {{ payCfg.stripe.webhook_secret_masked }}）</span></label>
-            <div style="display:flex;gap:8px">
-              <input v-model="payForm.stripe_webhook_secret" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.stripe.webhook_secret_set ? 'whsec_***（留空沿用）' : 'whsec_…'" autocomplete="new-password">
-              <button v-if="isSuper && payCfg.stripe.webhook_secret_set && payCfg.stripe.source === 'db'" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('stripe_webhook_secret', '清除 Webhook 签名密钥', '确认清除？非 dev 环境下未配置验签密钥时 webhook 回调将被拒绝。')">清除</button>
+            <div class="field" style="margin:0">
+              <label>Webhook 签名密钥 <span v-if="payCfg.stripe.webhook_secret_set" class="pay-hint">（已存 {{ payCfg.stripe.webhook_secret_masked }}）</span></label>
+              <div style="display:flex;gap:8px">
+                <input v-model="payForm.stripe_webhook_secret" class="input" type="password" style="flex:1;min-width:0" :disabled="!isSuper" :placeholder="payCfg.stripe.webhook_secret_set ? 'whsec_***（留空沿用）' : 'whsec_…'" autocomplete="new-password">
+                <button v-if="isSuper && payCfg.stripe.webhook_secret_set && payCfg.stripe.source === 'db'" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('stripe_webhook_secret', '清除 Webhook 签名密钥', '确认清除？非 dev 环境下未配置验签密钥时 webhook 回调将被拒绝。')">清除</button>
+              </div>
+              <p class="pay-note">Developers → Webhooks 端点 Signing secret（whsec_ 开头）</p>
             </div>
-            <p class="pay-note">Developers → Webhooks 端点 Signing secret（whsec_ 开头）</p>
-          </div>
-          <div class="field s12" style="margin:0">
             <label class="pay-switch-row">
               <span class="pay-switch" :class="{ on: payForm.klarna }" role="switch" :aria-checked="payForm.klarna" tabindex="0" @click="isSuper && (payForm.klarna = !payForm.klarna)" @keydown.enter.prevent="isSuper && (payForm.klarna = !payForm.klarna)"><i /></span>
-              <span>启用 Klarna <span class="pay-hint">—— 支付方式增加「Klarna 先买后付」（Stripe 账户需已开通，US/UK/DE 等地区可用）</span></span>
+              <span>启用 Klarna<span class="pay-hint"> —— 先买后付（US/UK/DE 等，需 Stripe 账户已开通）</span></span>
             </label>
           </div>
-        </div>
 
-        <div class="pay-actions">
-          <button v-if="isSuper" class="btn btn-primary" :class="{ loading: paySaving === 'stripe' }" :disabled="paySaving !== ''" @click="savePay('stripe')">保存 Stripe 配置{{ stripeDirty ? ' *' : '' }}</button>
-          <button class="btn btn-secondary" :class="{ loading: payTesting === 'stripe' }" :disabled="payTesting !== ''" title="用已保存密钥真实调用一次 Stripe API，验证密钥可用性" @click="testPay('stripe')">⚡ 测试连接</button>
-          <span v-if="!isSuper" class="pay-hint">🔒 仅超管可修改，以下为只读视图</span>
-        </div>
-        <div v-if="payTest.stripe.done" class="pay-test" :class="payTest.stripe.ok ? 'ok' : 'err'">
-          <span>{{ payTest.stripe.ok ? '✅' : '⚠️' }}</span><span style="flex:1">{{ payTest.stripe.msg }}</span>
-        </div>
-      </section>
+          <footer class="pay-card-foot">
+            <button v-if="isSuper" class="btn btn-primary" :class="{ loading: paySaving === 'stripe' }" :disabled="paySaving !== ''" @click="savePay('stripe')">保存{{ stripeDirty ? ' *' : '' }}</button>
+            <button class="btn btn-secondary" :class="{ loading: payTesting === 'stripe' }" :disabled="payTesting !== ''" title="用已保存密钥真实调用一次 Stripe API，验证密钥可用性" @click="testPay('stripe')">⚡ 测试连接</button>
+            <span v-if="!isSuper" class="pay-hint">🔒 仅超管可修改，此处只读</span>
+            <div v-if="payTest.stripe.done" class="pay-test" :class="payTest.stripe.ok ? 'ok' : 'err'">
+              <span>{{ payTest.stripe.ok ? '✅' : '⚠️' }}</span><span style="flex:1">{{ payTest.stripe.msg }}</span>
+            </div>
+          </footer>
+        </section>
 
-      <!-- ===== PayPal ===== -->
-      <section class="pay-sec">
-        <div class="pay-sec-head">
-          <div class="pay-brand">
-            <span class="pay-brand-tile" style="background:#0070BA">P</span>
-            <div>
-              <div class="pay-brand-name">PayPal <span class="pay-brand-sub">PayPal 余额 / 绑卡</span></div>
-              <div class="pay-status-sub" style="margin-top:2px">
+        <!-- ===== PayPal ===== -->
+        <section class="pay-card">
+          <header class="pay-card-head">
+            <span class="pay-brand-tile" style="background:linear-gradient(135deg,#1D8FE0,#0070BA)">P</span>
+            <div class="pay-card-head-txt">
+              <div class="pay-card-name">PayPal <span class="pay-card-sub">PayPal 余额 / 绑卡</span></div>
+              <div class="pay-card-meta">
                 Client ID <code v-if="payCfg.paypal.client_id">{{ payCfg.paypal.client_id.slice(0, 10) }}…</code><code v-else>未配置</code>
-                · 密钥 <code v-if="payCfg.paypal.secret_set">{{ payCfg.paypal.secret_masked }}</code><code v-else>未配置</code>
-                <template v-if="payCfg.paypal.source"> · 来源 {{ payCfg.paypal.source === 'db' ? '后台配置' : '环境变量' }}</template>
+                <template v-if="payCfg.paypal.source"> · {{ payCfg.paypal.source === 'db' ? '后台配置' : '环境变量' }}</template>
+              </div>
+            </div>
+            <span v-if="payCfg.paypal.client_id && payCfg.paypal.secret_set && ppMode === 'live'" class="tag tag-paid">live</span>
+            <span v-else-if="payCfg.paypal.client_id && payCfg.paypal.secret_set" class="tag tag-ship">sandbox</span>
+            <span v-else class="tag tag-pending">未配置</span>
+          </header>
+
+          <div v-if="(payCfg.paypal.client_id || payCfg.paypal.secret_set) && !payCfg.package.httpx" class="pay-warn">
+            ⚠️ 已配置凭据，但服务端缺 <code>httpx</code> 包——PayPal 通道不可用（默认镜像已含，如缺失请检查依赖）。
+          </div>
+
+          <div class="pay-card-body">
+            <div class="field" style="margin:0">
+              <label>Client ID</label>
+              <input v-model="payForm.paypal_client_id" class="input" :disabled="!isSuper" placeholder="PayPal Developer 应用的 Client ID">
+            </div>
+            <div class="field" style="margin:0">
+              <label>Secret <span v-if="payCfg.paypal.secret_set" class="pay-hint">（留空 = 沿用已保存）</span></label>
+              <div style="display:flex;gap:8px">
+                <input v-model="payForm.paypal_secret" class="input" type="password" style="flex:1;min-width:0" :disabled="!isSuper" :placeholder="payCfg.paypal.secret_set ? payCfg.paypal.secret_masked : '应用 Secret'" autocomplete="new-password">
+                <button v-if="isSuper && payCfg.paypal.source === 'db' && payCfg.paypal.secret_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('paypal_secret', '清除 PayPal Secret', '确认清除后台保存的 PayPal Secret？清除后回落环境变量 GM_PAYPAL_SECRET（如有）。')">清除</button>
+              </div>
+            </div>
+            <div class="field" style="margin:0">
+              <label>API 环境 <span class="pay-hint">—— 先沙箱联调，切生产改这里</span></label>
+              <div class="pay-seg">
+                <button type="button" :class="{ on: ppMode === 'sandbox' }" :disabled="!isSuper" @click="payForm.paypal_base = PP_SANDBOX">🧪 沙箱</button>
+                <button type="button" :class="{ on: ppMode === 'live' }" :disabled="!isSuper" @click="payForm.paypal_base = PP_LIVE">🚀 生产</button>
+              </div>
+              <p class="pay-note">基址 <code>{{ payForm.paypal_base || PP_SANDBOX }}</code>{{ ppMode === 'custom' ? '（自定义）' : '' }}</p>
+            </div>
+            <div class="field" style="margin:0">
+              <label>Webhook ID <span class="pay-hint">（可选，非 dev 环境必配）</span></label>
+              <div style="display:flex;gap:8px">
+                <input v-model="payForm.paypal_webhook_id" class="input" type="password" style="flex:1;min-width:0" :disabled="!isSuper" :placeholder="payCfg.paypal.webhook_id_set ? payCfg.paypal.webhook_id_masked + '（留空沿用）' : '1XY…（Webhook 详情页 ID）'" autocomplete="new-password">
+                <button v-if="isSuper && payCfg.paypal.webhook_id_set && payCfg.paypal.source === 'db'" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('paypal_webhook_id', '清除 PayPal Webhook ID', '确认清除？非 dev 环境下未配置 Webhook ID 时回调将被拒绝。')">清除</button>
               </div>
             </div>
           </div>
-          <span v-if="payCfg.paypal.client_id && payCfg.paypal.secret_set && ppMode === 'live'" class="tag tag-paid">live 生产凭据</span>
-          <span v-else-if="payCfg.paypal.client_id && payCfg.paypal.secret_set" class="tag tag-ship">sandbox 沙箱</span>
-          <span v-else class="tag tag-pending">未配置</span>
-        </div>
 
-        <div v-if="(payCfg.paypal.client_id || payCfg.paypal.secret_set) && !payCfg.package.httpx" class="pay-warn">
-          ⚠️ 已配置凭据，但服务端缺 <code>httpx</code> 包——PayPal 通道不可用（默认镜像已含，如缺失请检查依赖）。
-        </div>
+          <footer class="pay-card-foot">
+            <button v-if="isSuper" class="btn btn-primary" :class="{ loading: paySaving === 'paypal' }" :disabled="paySaving !== ''" @click="savePay('paypal')">保存{{ paypalDirty ? ' *' : '' }}</button>
+            <button class="btn btn-secondary" :class="{ loading: payTesting === 'paypal' }" :disabled="payTesting !== ''" title="用已保存凭据真实获取一次 OAuth token，验证凭据可用性" @click="testPay('paypal')">⚡ 测试连接</button>
+            <span v-if="!isSuper" class="pay-hint">🔒 仅超管可修改，此处只读</span>
+            <div v-if="payTest.paypal.done" class="pay-test" :class="payTest.paypal.ok ? 'ok' : 'err'">
+              <span>{{ payTest.paypal.ok ? '✅' : '⚠️' }}</span><span style="flex:1">{{ payTest.paypal.msg }}</span>
+            </div>
+          </footer>
+        </section>
+      </div>
 
-        <div class="pay-grid">
-          <div class="field s7" style="margin:0">
-            <label>Client ID</label>
-            <input v-model="payForm.paypal_client_id" class="input" :disabled="!isSuper" placeholder="PayPal Developer 应用的 Client ID">
-          </div>
-          <div class="field s5" style="margin:0">
-            <label>Secret <span v-if="payCfg.paypal.secret_set" class="pay-hint">（留空 = 沿用已保存）</span></label>
-            <div style="display:flex;gap:8px">
-              <input v-model="payForm.paypal_secret" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.paypal.secret_set ? payCfg.paypal.secret_masked : '应用 Secret'" autocomplete="new-password">
-              <button v-if="isSuper && payCfg.paypal.source === 'db' && payCfg.paypal.secret_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('paypal_secret', '清除 PayPal Secret', '确认清除后台保存的 PayPal Secret？清除后回落环境变量 GM_PAYPAL_SECRET（如有）。')">清除</button>
-            </div>
-          </div>
-          <div class="field s7" style="margin:0">
-            <label>API 环境</label>
-            <div class="pay-seg">
-              <button type="button" :class="{ on: ppMode === 'sandbox' }" :disabled="!isSuper" @click="payForm.paypal_base = PP_SANDBOX">🧪 沙箱 Sandbox</button>
-              <button type="button" :class="{ on: ppMode === 'live' }" :disabled="!isSuper" @click="payForm.paypal_base = PP_LIVE">🚀 生产 Live</button>
-            </div>
-            <p class="pay-note">当前 API 基址：<code>{{ payForm.paypal_base || PP_SANDBOX }}</code>{{ ppMode === 'custom' ? '（自定义）' : '' }}——先在沙箱联调，切生产改这里即可</p>
-          </div>
-          <div class="field s5" style="margin:0">
-            <label>Webhook ID <span class="pay-hint">（可选，非 dev 环境必配）</span></label>
-            <div style="display:flex;gap:8px">
-              <input v-model="payForm.paypal_webhook_id" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.paypal.webhook_id_set ? payCfg.paypal.webhook_id_masked + '（留空沿用）' : '1XY…（Webhook 详情页 ID）'" autocomplete="new-password">
-              <button v-if="isSuper && payCfg.paypal.webhook_id_set && payCfg.paypal.source === 'db'" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('paypal_webhook_id', '清除 PayPal Webhook ID', '确认清除？非 dev 环境下未配置 Webhook ID 时回调将被拒绝。')">清除</button>
-            </div>
-          </div>
+      <!-- ===== Mock 模拟收款（联调用；settings key=mock_pay，优先于 GM_MOCK_PAY）紧凑条 -->
+      <div class="card pay-mock">
+        <span class="pay-brand-tile" style="background:linear-gradient(135deg,#B8B2B7,#9B949A)">M</span>
+        <div style="flex:1;min-width:0">
+          <div class="pay-card-name">Mock 模拟收款 <span class="pay-card-sub">联调 / 试运营</span></div>
+          <div class="pay-card-meta">下单即视为支付成功，不发生真实资金——接入真实通道后请保持关闭</div>
         </div>
-
-        <div class="pay-actions">
-          <button v-if="isSuper" class="btn btn-primary" :class="{ loading: paySaving === 'paypal' }" :disabled="paySaving !== ''" @click="savePay('paypal')">保存 PayPal 配置{{ paypalDirty ? ' *' : '' }}</button>
-          <button class="btn btn-secondary" :class="{ loading: payTesting === 'paypal' }" :disabled="payTesting !== ''" title="用已保存凭据真实获取一次 OAuth token，验证凭据可用性" @click="testPay('paypal')">⚡ 测试连接</button>
-        </div>
-        <div v-if="payTest.paypal.done" class="pay-test" :class="payTest.paypal.ok ? 'ok' : 'err'">
-          <span>{{ payTest.paypal.ok ? '✅' : '⚠️' }}</span><span style="flex:1">{{ payTest.paypal.msg }}</span>
-        </div>
-      </section>
-
-      <!-- ===== Mock 模拟收款（联调用；settings key=mock_pay，优先于 GM_MOCK_PAY） ===== -->
-      <section class="pay-sec">
-        <div class="pay-sec-head">
-          <div class="pay-brand">
-            <span class="pay-brand-tile" style="background:var(--gray)">M</span>
-            <div>
-              <div class="pay-brand-name">Mock 模拟收款 <span class="pay-brand-sub">联调 / 试运营</span></div>
-              <div class="pay-status-sub" style="margin-top:2px">下单即视为支付成功，不发生真实资金——接入真实通道后请保持关闭</div>
-            </div>
-          </div>
-          <span class="tag" :class="mockVal === 1 ? 'tag-paid' : mockVal === 0 ? 'tag-done' : 'tag-pending'">
-            {{ mockVal === 1 ? '已开启' : mockVal === 0 ? '已关闭' : '未设置 · 跟随环境' }}
-          </span>
-        </div>
-        <div class="pay-actions" style="margin-top:2px">
+        <span class="tag" :class="mockVal === 1 ? 'tag-paid' : mockVal === 0 ? 'tag-done' : 'tag-pending'">
+          {{ mockVal === 1 ? '已开启' : mockVal === 0 ? '已关闭' : '未设置 · 跟随环境' }}
+        </span>
+        <div class="pay-mock-ops">
           <template v-if="isSuper">
-            <button v-if="mockVal !== 1" class="btn btn-primary" :class="{ loading: payBusy }" :disabled="payBusy" @click="mockOnDlg = true">开启 Mock 支付</button>
-            <button v-else class="btn btn-secondary" :class="{ loading: payBusy }" :disabled="payBusy" @click="mockOffDlg = true">关闭 Mock 支付</button>
-            <button class="btn btn-ghost btn-sm" :disabled="payBusy" @click="loadPayStatus">刷新前台生效状态</button>
+            <button v-if="mockVal !== 1" class="btn btn-primary btn-sm" :class="{ loading: payBusy }" :disabled="payBusy" @click="mockOnDlg = true">开启</button>
+            <button v-else class="btn btn-secondary btn-sm" :class="{ loading: payBusy }" :disabled="payBusy" @click="mockOffDlg = true">关闭</button>
           </template>
-          <span v-else class="pay-hint">🔒 仅超管可修改支付开关</span>
-          <span style="flex:1"></span>
-          <span class="pay-status-sub">前台视角可用：
-            <template v-if="payStatus && payStatus.providers.length">
-              <span v-for="p in payStatus.providers" :key="p.id" class="pay-chip">{{ p.name }}</span>
-            </template>
-            <span v-else-if="payStatus" class="pay-chip warn">无</span>
-            <span v-else>…</span>
-          </span>
+          <span v-else class="pay-hint">🔒 仅超管可改</span>
         </div>
-      </section>
+      </div>
 
-      <!-- 机制说明 -->
-      <section class="pay-sec pay-sec-foot pay-foot">
-        <div class="pay-hook-row">
-          <b>回调地址</b>
-          <span style="flex:1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <!-- 机制说明（2 列小卡） -->
+      <div class="pay-foot-card">
+        <div class="pay-foot-item pay-foot-hook">
+          <b>Webhook 回调</b>
+          <span style="flex:1;min-width:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <code style="background:var(--gray-light);border-radius:5px;padding:2px 7px;font-size:11.5px;word-break:break-all">{{ payCfg.effective.webhook_url || '未配置站点地址（site_url），无法生成' }}</code>
             <button v-if="payCfg.effective.webhook_url" class="btn btn-secondary btn-sm" @click="copyWebhookUrl">复制</button>
           </span>
         </div>
-        <div class="pay-foot-row"><b>优先级</b><span>本页配置（settings 表 payment_config）&gt; 服务器环境变量（GM_STRIPE_* / GM_PAYPAL_*），保存即时生效无需重启；清除字段 = 回落环境变量</span></div>
-        <div class="pay-foot-row"><b>选择链</b><span>Stripe &gt; PayPal &gt; Mock 逐级降级；Stripe 需镜像内安装 stripe 包，Klarna 需 Stripe 账户开通相应地区</span></div>
-        <div class="pay-foot-row"><b>验签门禁</b><span>非 dev 环境必须配置 Webhook 签名密钥（Stripe whsec_… / PayPal Webhook ID），否则回调一律 400 拒绝</span></div>
-        <div class="pay-foot-row"><b>安全</b><span>密钥仅存服务端 settings 表，界面掩码展示；修改/清除均记入管理日志；写操作仅超管可执行</span></div>
-      </section>
+        <div class="pay-foot-item"><b>优先级</b><span>本页配置 &gt; 环境变量（GM_STRIPE_* / GM_PAYPAL_*），保存即时生效；清除字段 = 回落环境变量</span></div>
+        <div class="pay-foot-item"><b>选择链</b><span>Stripe &gt; PayPal &gt; Mock 逐级降级；Stripe 需 stripe 包，Klarna 需账户开通相应地区</span></div>
+        <div class="pay-foot-item"><b>验签门禁</b><span>非 dev 环境必须配 Webhook 签名密钥（whsec_… / Webhook ID），否则回调一律 400</span></div>
+        <div class="pay-foot-item"><b>安全</b><span>密钥仅存服务端，界面掩码；修改/清除记管理日志；写操作仅超管</span></div>
+      </div>
     </template>
   </div>
 
@@ -1241,56 +1231,73 @@ onMounted(() => {
 .ai-foot{padding-top:14px;padding-bottom:14px}
 .ai-foot-row{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11.5px;color:var(--gray);line-height:1.7;padding:2px 0}
 .ai-foot-row b{color:var(--plum);font-weight:600}
-/* ===== 支付通道 tab：状态带 + 通道卡（Stripe/PayPal/Mock）===== */
-.pay-status{display:flex;gap:14px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--gray-light)}
-.pay-status-ico{width:42px;height:42px;border-radius:12px;background:var(--gray-light);display:flex;align-items:center;justify-content:center;font-size:21px;flex:none}
-.pay-status-ico.on{background:var(--rose-pale)}
-.pay-status-sub{font-size:12px;color:var(--gray);margin-top:3px;line-height:1.6}
-.pay-status-sub code{background:var(--gray-light);border-radius:5px;padding:1px 5px;font-size:11.5px}
+/* ===== 支付通道 tab：摘要条 + 双通道卡 + Mock 条 + 说明卡 ===== */
+/* 摘要条：图标 + 默认链/前台可用 + 右侧刷新与回调地址快捷复制（有真实通道时染品牌色） */
+.pay-hero{display:flex;gap:16px;align-items:center;padding:18px 20px;margin-bottom:16px;flex-wrap:wrap;position:relative;overflow:hidden}
+.pay-hero::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--gray-light)}
+.pay-hero.ok::before{background:var(--plum)}
+.pay-hero-ico{width:46px;height:46px;border-radius:14px;background:var(--gray-light);display:flex;align-items:center;justify-content:center;font-size:22px;flex:none}
+.pay-hero-ico.on{background:var(--rose-pale)}
+.pay-hero-main{flex:1;min-width:230px}
+.pay-hero-title{font-size:14px}
+.pay-hero-title b{color:var(--ink)}
+.pay-hero-env{display:inline-block;margin-left:8px;font-size:10.5px;font-weight:700;letter-spacing:.5px;color:var(--warn);background:var(--pale-warn);border-radius:999px;padding:1px 8px;vertical-align:1px}
+.pay-hero-sub{font-size:12px;color:var(--gray);margin-top:4px;line-height:1.7}
+.pay-hero-side{display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+/* 回调地址胶囊按钮（hover 提示可复制） */
+.pay-hook{border:1px dashed var(--gray-light);background:#fff;border-radius:8px;padding:3px 8px;cursor:pointer;max-width:340px;overflow:hidden}
+.pay-hook:hover{border-color:var(--plum)}
+.pay-hook code{font-size:11px;color:var(--gray);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 /* 前台可用通道小胶囊 */
 .pay-chip{display:inline-flex;align-items:center;background:var(--pale-success);color:#1E7A45;font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px;margin:0 3px}
 .pay-chip.warn{background:var(--pale-warn);color:var(--warn)}
-/* 分区 */
-.pay-sec{padding:18px 20px;border-top:1px solid var(--gray-light)}
-.pay-sec:first-of-type{border-top:none}
-.pay-sec-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
-/* 品牌行：色块字母 + 名称/副标题 */
-.pay-brand{display:flex;gap:12px;align-items:center;min-width:0}
-.pay-brand-tile{width:42px;height:42px;border-radius:12px;color:#fff;font-size:19px;font-weight:800;font-style:italic;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 2px 6px rgba(0,0,0,.12)}
-.pay-brand-name{font-size:14.5px;font-weight:700}
-.pay-brand-sub{font-size:11.5px;color:var(--gray);font-weight:400;margin-left:4px}
+/* 双通道卡：宽屏并排（Stripe / PayPal 同屏对照），窄屏堆叠 */
+.pay-cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-bottom:16px}
+@media(max-width:1100px){.pay-cards{grid-template-columns:1fr}}
+.pay-card{background:#fff;border-radius:14px;box-shadow:var(--shadow-card);overflow:hidden}
+/* 卡头：品牌渐变色块 + 名称/掩码 + 状态徽章 */
+.pay-card-head{display:flex;gap:12px;align-items:center;padding:15px 18px;border-bottom:1px solid var(--gray-light);background:linear-gradient(180deg,#FDFBFC,#fff)}
+.pay-card-head-txt{flex:1;min-width:0}
+.pay-card-name{font-size:14.5px;font-weight:700}
+.pay-card-sub{font-size:11.5px;color:var(--gray);font-weight:400;margin-left:6px}
+.pay-card-meta{font-size:11.5px;color:var(--gray);margin-top:3px;line-height:1.6}
+.pay-card-meta code{background:var(--gray-light);border-radius:5px;padding:1px 5px;font-size:11px}
+.pay-brand-tile{width:42px;height:42px;border-radius:12px;color:#fff;font-size:19px;font-weight:800;font-style:italic;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 2px 6px rgba(0,0,0,.14)}
+/* 卡体：单列表单（卡已窄），字段间距 14px */
+.pay-card-body{padding:16px 18px;display:flex;flex-direction:column;gap:14px}
+/* 卡脚：浅底操作带，测试结果整行展开 */
+.pay-card-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 18px;border-top:1px solid var(--gray-light);background:var(--bg-page)}
+.pay-card-foot .pay-test{flex-basis:100%;margin:0}
 .pay-hint{font-size:11.5px;color:var(--gray);font-weight:400}
 .pay-note{font-size:11.5px;color:var(--gray);margin-top:5px;line-height:1.6}
 /* 缺包降级横幅 */
-.pay-warn{display:flex;gap:8px;align-items:flex-start;background:var(--pale-warn);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.6;margin-bottom:14px;color:#8A6D1B}
+.pay-warn{display:flex;gap:8px;align-items:flex-start;background:var(--pale-warn);padding:10px 18px;font-size:12px;line-height:1.6;color:#8A6D1B;border-bottom:1px solid #F0E3C2}
 .pay-warn code{background:rgba(0,0,0,.06);border-radius:5px;padding:1px 5px}
-/* 12 列栅格（同 ai-grid 口径） */
-.pay-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
-.pay-grid .s5{grid-column:span 5}
-.pay-grid .s7{grid-column:span 7}
-.pay-grid .s12{grid-column:span 12}
-@media(max-width:768px){.pay-grid .s5,.pay-grid .s7{grid-column:span 12}}
-/* 操作行 + 测试结果条 */
-.pay-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
-.pay-test{display:flex;gap:8px;align-items:flex-start;margin-top:12px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.6;word-break:break-all}
+/* 测试结果条 */
+.pay-test{display:flex;gap:8px;align-items:flex-start;padding:9px 12px;border-radius:10px;font-size:12.5px;line-height:1.6;word-break:break-all}
 .pay-test.ok{background:var(--pale-success);color:#1E7A45}
 .pay-test.err{background:var(--pale-error);color:var(--error)}
 /* Klarna 开关：胶囊滑块（键盘可达 role=switch） */
 .pay-switch-row{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600;padding:10px 12px;background:var(--bg-page);border-radius:10px}
-.pay-switch{width:40px;height:22px;border-radius:999px;background:var(--gray-light);position:relative;transition:background .2s;flex:none;border:none;padding:0}
+.pay-switch-row:has(.pay-switch:not(.on)){background:#fff;border:1px solid var(--gray-light)}
+.pay-switch{width:40px;height:22px;border-radius:999px;background:var(--gray-light);position:relative;transition:background .2s;flex:none;border:none;padding:0;flex-shrink:0}
 .pay-switch i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s}
 .pay-switch.on{background:var(--plum)}
 .pay-switch.on i{left:21px}
 /* PayPal 环境分段选择 */
 .pay-seg{display:inline-flex;border:1.5px solid var(--gray-light);border-radius:10px;overflow:hidden;background:#fff}
-.pay-seg button{border:none;background:none;padding:8px 16px;font-size:12.5px;font-weight:600;color:var(--gray);cursor:pointer;transition:background .15s,color .15s}
+.pay-seg button{border:none;background:none;padding:8px 18px;font-size:12.5px;font-weight:600;color:var(--gray);cursor:pointer;transition:background .15s,color .15s}
 .pay-seg button+button{border-left:1.5px solid var(--gray-light)}
 .pay-seg button.on{background:var(--plum);color:#fff}
 .pay-seg button:disabled{cursor:not-allowed;opacity:.6}
-/* 底部说明区（含回调地址行） */
-.pay-sec-foot{background:var(--bg-page)}
-.pay-foot{padding-top:14px;padding-bottom:14px}
-.pay-hook-row{display:flex;gap:10px;align-items:flex-start;font-size:11.5px;color:var(--gray);line-height:1.7;padding:3px 0 8px;flex-wrap:wrap}
-.pay-hook-row b,.pay-foot-row b{color:var(--plum);font-weight:600}
-.pay-foot-row{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11.5px;color:var(--gray);line-height:1.7;padding:2px 0}
+/* Mock 紧凑条：单行卡片（色块 + 文案 + 状态 + 开关） */
+.pay-mock{display:flex;gap:12px;align-items:center;padding:14px 18px;margin-bottom:16px;flex-wrap:wrap}
+.pay-mock .pay-brand-tile{width:38px;height:38px;font-size:17px;border-radius:11px}
+.pay-mock-ops{display:flex;gap:8px;align-items:center}
+/* 机制说明卡：首行回调地址整行 + 2 列小注 */
+.pay-foot-card{background:#fff;border-radius:14px;box-shadow:var(--shadow-card);padding:14px 18px;display:grid;grid-template-columns:1fr 1fr;gap:4px 28px}
+.pay-foot-item{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11.5px;color:var(--gray);line-height:1.7;padding:5px 0}
+.pay-foot-item b{color:var(--plum);font-weight:600}
+.pay-foot-hook{grid-column:1 / -1;border-bottom:1px dashed var(--gray-light);margin-bottom:4px;padding-bottom:10px}
+@media(max-width:768px){.pay-foot-card{grid-template-columns:1fr}.pay-hero-side{align-items:flex-start}}
 </style>
