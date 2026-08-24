@@ -221,14 +221,15 @@ input, select, textarea { font-family: inherit; font-size: 14px; }
 .pay-icons span { background: #fff; border: 1px solid rgba(138,74,99,.12); border-radius: 6px; padding: 3px 8px; font-size: 9px; font-weight: 700; color: #7D5A64; letter-spacing: .3px; box-shadow: 0 1px 4px rgba(138,74,99,.06); }
 
 /* ===== 面包屑 ===== */
-.crumbs { font-size: 12.5px; color: var(--gray); padding: 14px 0 0; }
+/* 垂直间距走 margin-top：避免 padding 简写/覆盖抹掉 .container 的水平内边距（导致面包屑与下方内容错位） */
+.crumbs { font-size: 12.5px; color: var(--gray); margin-top: 14px; }
 .crumbs a { color: var(--gray); transition: color .15s; }
 .crumbs a:hover { color: var(--plum); }
 /* 有面包屑时，首个 section 顶部留白收敛（避免 14px + 64px 叠加过大） */
 main:has(.crumbs) .page-wrap > .section:first-child { padding-top: 26px; }
 @media (max-width: 768px) {
   main:has(.crumbs) .page-wrap > .section:first-child { padding-top: 18px; }
-  .crumbs { padding-top: 10px; }
+  .crumbs { margin-top: 10px; }
 }
 
 /* ===== 动画 ===== */
