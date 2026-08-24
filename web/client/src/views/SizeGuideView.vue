@@ -47,7 +47,15 @@ const unitLabel = computed(() => (unit.value === 'mm' ? 'mm' : 'in'))
           </div>
         </div>
         <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
-          <img src="https://placehold.co/220x140/F5D8DA/6D2E46?text=Measure+widest+point" :alt="i18n.t('size.measureAlt')" style="border-radius:12px;flex:none" loading="lazy">
+          <div class="sg-measure-img" style="width:220px;height:140px;flex:none;border-radius:12px;background:linear-gradient(135deg,var(--rose-pale),#fff);border:1px solid var(--rose-light);display:flex;align-items:center;justify-content:center;position:relative">
+            <svg viewBox="0 0 200 120" style="width:180px;height:100px">
+              <ellipse cx="100" cy="60" rx="60" ry="40" fill="none" stroke="var(--plum)" stroke-width="2" stroke-dasharray="4,2"/>
+              <line x1="40" y1="60" x2="160" y2="60" stroke="var(--coral)" stroke-width="2"/>
+              <circle cx="40" cy="60" r="3" fill="var(--coral)"/>
+              <circle cx="160" cy="60" r="3" fill="var(--coral)"/>
+              <text x="100" y="95" text-anchor="middle" fill="var(--plum)" font-size="12" font-weight="600">{{ i18n.t('size.measureImgLabel') }}</text>
+            </svg>
+          </div>
           <p class="sg-measure" style="font-size:13.5px;color:var(--gray);line-height:1.7;flex:1;min-width:220px" v-html="i18n.t('size.measureD')" />
         </div>
       </div>

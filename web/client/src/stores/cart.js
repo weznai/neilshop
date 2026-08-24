@@ -71,7 +71,7 @@ export const useCartStore = defineStore('cart', {
         this.removed = null
         if (ui) { ui.toast(tt('Added to cart', '已加入购物车'), 'success'); ui.openCart() }
         return true
-      } catch (e) { this._err(e, ui); return false }
+      } catch (e) { this._err(e, ui); throw e }
     },
     async addByProductId(pid, qty, ui) {
       /* 按 product id 加购：动态解析变体（优先选有货变体，避免首选变体售罄即失败）；

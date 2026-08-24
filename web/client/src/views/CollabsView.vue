@@ -1,11 +1,29 @@
 <script setup>
+import { onMounted, ref } from 'vue'
+import { req } from '../api/client'
 import { i18n, tt } from '../i18n'
 
-/* seed 目录无 collab 专属 tag —— CTA 指向最新上架；卡片为编辑部精选合辑（非在售联名系列） */
-const PICKS = [
-  ['@nailbedbynia', 'Nia x GLOWMAG', 'Editorial pick — her favorite chrome & glass looks', '编辑部精选——她最爱的铬玻璃质感造型', 'https://placehold.co/400x500/DDD6E8/552338?text=NIA+x+GM'],
-  ['@thedailyglam', 'Daily Glam Capsule', 'Editorial pick — six everyday neutrals she swears by', '编辑部精选——她日常必戴的六款百搭色', 'https://placehold.co/400x500/FBEBD4/8A6D3B?text=Daily+Glam'],
-]
+/* 从 API 获取联名系列数据，失败回落硬编码 */
+const picks = ref([])
+const stats = ref({ creators: 12, drops: 8, reach: '40k+' })
+const loaded = ref(false)
+
+onMounted(async () => {
+  try {
+    const res = await req('GET', '/api/catalog/collections?tag=collab&size=2')
+    if (res && res.items && res.items.length) {
+      picks.value = res.items.map(c => ({
+        handle: c.handle || '@glowmag',
+        name: c.title,
+        desc_en: c.description || 'Editorial pick',
+        desc_zh: c.description_zh || '编辑部精选',
+        image: c.hero_image || c.image,
+      }))
+    }
+  } catch (_) { /* 回落 */ }
+  loaded.value = true
+})
+
 /* 合作流程三步 */
 const STEPS = [
   ['📝', 'Apply', '申请', 'Send your handle, audience & 3 best sets.', '提交社交账号、粉丝画像与 3 张最佳作品。'],
@@ -39,18 +57,46 @@ const REQS = [
 
       <!-- 精选合辑卡：图上浮 handle pill + 底部渐层，hover 浮起 -->
       <div class="grid grid-2 collab-grid">
-        <div v-for="c in PICKS" :key="c[1]" class="card collab-card">
-          <div class="collab-img">
-            <img :src="c[4]" :alt="c[1]" loading="lazy">
-            <span class="collab-handle">{{ c[0] }}</span>
-            <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
+        <template v-if="picks.length">
+          <div v-for="c in picks" :key="c.name" class="card collab-card">
+            <div class="collab-img">
+              <img :src="c.image || 'https://placehold.co/400x500/DDD6E8/552338?text=Collab'" :alt="c.name" loading="lazy">
+              <span class="collab-handle">{{ c.handle }}</span>
+              <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
+            </div>
+            <div class="collab-body">
+              <b class="collab-name">{{ c.name }}</b>
+              <p class="collab-desc">{{ tt(c.desc_en, c.desc_zh) }}</p>
+              <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
+            </div>
           </div>
-          <div class="collab-body">
-            <b class="collab-name">{{ c[1] }}</b>
-            <p class="collab-desc">{{ tt(c[2], c[3]) }}</p>
-            <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
+        </template>
+        <template v-else-if="loaded">
+          <div class="card collab-card">
+            <div class="collab-img">
+              <img src="https://placehold.co/400x500/DDD6E8/552338?text=NIA+x+GM" alt="Nia x GLOWMAG" loading="lazy">
+              <span class="collab-handle">@nailbedbynia</span>
+              <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
+            </div>
+            <div class="collab-body">
+              <b class="collab-name">Nia x GLOWMAG</b>
+              <p class="collab-desc">{{ tt('Editorial pick — her favorite chrome & glass looks', '编辑部精选——她最爱的铬玻璃质感造型') }}</p>
+              <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
+            </div>
           </div>
-        </div>
+          <div class="card collab-card">
+            <div class="collab-img">
+              <img src="https://placehold.co/400x500/FBEBD4/8A6D3B?text=Daily+Glam" alt="Daily Glam Capsule" loading="lazy">
+              <span class="collab-handle">@thedailyglam</span>
+              <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
+            </div>
+            <div class="collab-body">
+              <b class="collab-name">Daily Glam Capsule</b>
+              <p class="collab-desc">{{ tt('Editorial pick — six everyday neutrals she swears by', '编辑部精选——她日常必戴的六款百搭色') }}</p>
+              <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- 合作流程三步 -->

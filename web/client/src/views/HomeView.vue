@@ -8,7 +8,9 @@ import ProductCard from '../components/ProductCard.vue'
 
 const newProducts = ref([])
 const bestProducts = ref([])
+const ugcItems = ref([])
 const loaded = ref(false)
+const ugcLoaded = ref(false)
 
 /* 甲型导购卡：icon 为符号非文案，t/d 为 i18n 键 */
 const SHAPES = [
@@ -56,6 +58,15 @@ function seedCards() {
   bestProducts.value = br.status === 'fulfilled' && br.value.items && br.value.items.length
     ? br.value.items : seedCards().slice(4, 8)
   loaded.value = true
+})()
+
+/* UGC 买家秀：从 API 获取真实数据，失败回落空数组 */
+;(async () => {
+  try {
+    const res = await req('GET', '/api/content/ugc?size=6')
+    ugcItems.value = res && res.items ? res.items : []
+  } catch (_) { ugcItems.value = [] }
+  ugcLoaded.value = true
 })()
 
 const heroImg = computed(() => (newProducts.value[0] && newProducts.value[0].hero_image) ||
@@ -233,7 +244,12 @@ function heroFallback(e) {
   <section class="section" style="padding-top:0">
     <div class="container">
       <div class="ugc-band" style="margin-bottom:18px">
-        <img v-for="i in 6" :key="i" :src="`https://placehold.co/140x140/F5D8DA/6D2E46?text=Glam+${i}`" :alt="i18n.t('home.ugc.alt')" loading="lazy">
+        <template v-if="ugcItems.length">
+          <img v-for="item in ugcItems" :key="item.id" :src="item.image || item.media_url" :alt="item.caption || i18n.t('home.ugc.alt')" loading="lazy">
+        </template>
+        <template v-else-if="ugcLoaded">
+          <img v-for="i in 6" :key="i" :src="`https://placehold.co/140x140/F5D8DA/6D2E46?text=Glam+${i}`" :alt="i18n.t('home.ugc.alt')" loading="lazy">
+        </template>
         <router-link class="ugc-cta" to="/gallery">
           <b>4,800+</b><span>{{ i18n.t('home.ugc.looks') }}</span><span style="text-decoration:underline">{{ i18n.t('home.ugc.see') }}</span>
         </router-link>
