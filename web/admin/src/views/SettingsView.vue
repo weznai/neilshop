@@ -281,6 +281,14 @@ const payTest = reactive({ stripe: { done: false, ok: false, msg: '' }, paypal: 
 const payClearDlg = reactive({ open: false, field: '', title: '', body: '' })
 const PP_SANDBOX = 'https://api-m.sandbox.paypal.com'
 const PP_LIVE = 'https://api-m.paypal.com'
+/* 状态带「默认走 X」文案：无真实凭据时 get_provider 兜底链对象恒为 mock，但开关关闭时
+ * mock 不可用——真实语义是「无可用通道」，不能误导为「还在走 Mock」 */
+const defaultChainText = computed(() => {
+  const p = payCfg.effective.provider
+  if (p === 'stripe') return 'Stripe'
+  if (p === 'paypal') return 'PayPal'
+  return payCfg.effective.mock_pay ? 'Mock（模拟收款）' : '无可用通道（Mock 已关闭，配置真实通道或开启 Mock）'
+})
 
 async function loadPayCfg() {
   payCfgErr.value = false
@@ -678,7 +686,7 @@ onMounted(() => {
         <div style="flex:1;min-width:0">
           <b style="font-size:14px">支付通道</b>
           <div class="pay-status-sub">
-            默认走 <b style="color:var(--ink)">{{ payCfg.effective.provider === 'stripe' ? 'Stripe' : payCfg.effective.provider === 'paypal' ? 'PayPal' : payCfg.effective.provider === 'none' ? '无可用通道' : 'Mock（模拟收款）' }}</b>
+            默认走 <b style="color:var(--ink)">{{ defaultChainText }}</b>
             · 前台可用：
             <template v-if="payCfg.effective.available.length">
               <span v-for="p in payCfg.effective.available" :key="p" class="pay-chip">{{ p === 'stripe(klarna)' ? 'Stripe + Klarna' : p === 'stripe' ? 'Stripe' : p }}</span>
