@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dDate, dt } from '../composables/format'
+import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -449,10 +450,8 @@ function delArticle(a) {
 /* 文章前台链接：client 路由为 /blog/post?slug=（BlogPostView 按 query.slug 拉取），仅已发布可见 */
 const artUrl = (a) => '/blog/post?slug=' + encodeURIComponent(a.slug)
 
-/* ===== CSV 导出：仅当前 tab + 当前筛选，size=100 循环翻页上限 2000 行 ===== */
+/* ===== CSV 导出：仅当前 tab + 当前筛选 ===== */
 const exporting = ref(false)
-const EXPORT_SIZE = 100
-const EXPORT_MAX_ROWS = 2000
 const REV_STATUS = ['待审', '已发布', '已驳回']
 /* 各 tab 当前筛选参数（与列表拉取同口径） */
 function exportParams() {
@@ -496,37 +495,19 @@ async function exportCsv() {
   exporting.value = true
   try {
     const { url, qs } = exportParams()
-    const fetchPage = (p) => req('GET', url + '?' + new URLSearchParams({ page: p, size: EXPORT_SIZE, ...qs }))
-    const first = await fetchPage(1)
-    const all = [...(first.items || [])]
-    const totalMatch = first.total ?? all.length
-    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_SIZE) || 1, Math.ceil(EXPORT_MAX_ROWS / EXPORT_SIZE))
-    for (let p = 2; p <= maxPage; p++) {
-      const d = await fetchPage(p)
-      all.push(...(d.items || []))
-    }
-    if (all.length > EXPORT_MAX_ROWS) all.length = EXPORT_MAX_ROWS
-    if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
-      toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
-    }
-    const cell = (v) => {
-      const s = String(v ?? '')
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-    }
+    const { all, truncated } = await fetchAllPages((p) => req('GET', url + '?' + new URLSearchParams({ page: p, size: 100, ...qs })), { pageSize: 100, maxPages: 20 })
+    if (truncated) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
     const head = {
       reviews: ['ID', '商品', '星级', '内容', '状态', '驳回原因', '时间'],
       ugc: ['ID', 'Instagram', '文案', '关联商品', '状态', '积分奖励', '时间'],
       faqs: ['ID', '分类', '问题', '答案', '排序', '显示'],
       articles: ['ID', 'Slug', '标题', '作者', '状态', '发布时间', '标签'],
     }[tab.value]
-    const rows = [head, ...all.map(exportRow)]
-    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
-    const blobUrl = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = blobUrl
-    a.download = tab.value + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
-    a.click()
-    URL.revokeObjectURL(blobUrl)
+    downloadCsv({
+      filename: tab.value + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+      headers: head,
+      rows: all.map(exportRow),
+    })
     toast('已导出 ' + all.length + ' 条 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

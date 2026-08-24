@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { money, dt } from '../composables/format'
+import { csvCell, downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -159,13 +160,9 @@ watch(() => route.query.q, (v) => {
 /* 空态文案：当前 tab 状态筛选或关键词生效→未匹配，否则暂无 */
 const filtered = computed(() => q.value.trim() !== '' || (tab.value === 'rma' ? state.rs !== 'all' : state.es !== 'all'))
 
-/* CSV 导出：仅导出当前 tab 当前筛选（状态+关键词）下全部页；转义/BOM 写法照抄 OrdersView */
+/* CSV 导出：仅导出当前 tab 当前筛选（状态+关键词）下全部页 */
 const exporting = ref(false)
 const EXPORT_MAX_PAGES = 20
-const csvCell = (v) => {
-  const s = String(v ?? '')
-  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-}
 /* 循环翻页拉全量：按首页 total 重算页数；size 为该接口单页条数（rma per_page=100 / exch size=100，后端上限 100） */
 async function fetchAll(url, params, size) {
   const first = await req('GET', url + '?' + new URLSearchParams(params))
@@ -214,18 +211,14 @@ async function exportCsv() {
       all = r.all; overflow = r.overflow
     }
     if (overflow) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
-    const rows = [['单号', '订单号', '邮箱', '状态', '金额', '原因', '创建时间'],
-      ...all.map((r) => curTab === 'rma'
-        ? [r.rma_no, r.order_no, r.email, RMA_STATUS[r.status]?.label, r.refund_amount != null ? money(r.refund_amount) : '—', reasonLabel(r), dt(r.created_at)]
-        : [r.exchange_no, r.order_no, r.email, ESTATUS[r.status]?.label, r.price_diff ? money(r.price_diff) : '', '', dt(r.created_at)])]
-    const csv = rows.map((r) => r.map(csvCell).join(',')).join('\n')
     const label = (curTab === 'rma' ? RTABS.find(([k]) => k === curRs)?.[1] : ETABS.find(([k]) => k === curEs)?.[1]) || '全部'
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${curTab === 'rma' ? 'rmas' : 'exchanges'}-${label}-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadCsv({
+      filename: `${curTab === 'rma' ? 'rmas' : 'exchanges'}-${label}-${new Date().toISOString().slice(0, 10)}`,
+      headers: ['单号', '订单号', '邮箱', '状态', '金额', '原因', '创建时间'],
+      rows: all.map((r) => curTab === 'rma'
+        ? [r.rma_no, r.order_no, r.email, RMA_STATUS[r.status]?.label, r.refund_amount != null ? money(r.refund_amount) : '—', reasonLabel(r), dt(r.created_at)]
+        : [r.exchange_no, r.order_no, r.email, ESTATUS[r.status]?.label, r.price_diff ? money(r.price_diff) : '', '', dt(r.created_at)]),
+    })
     toast('已导出 ' + all.length + ' 条 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { money, dt, dDate } from '../composables/format'
@@ -57,7 +57,7 @@ onMounted(() => load(st.page))
 function setTab(v) { if (st.status !== v) { st.status = v; load(1) } }
 function search() { load(1) }
 /* 空态文案：任一筛选生效→未匹配，否则暂无 */
-const filtered = () => st.q.trim() !== '' || st.status !== ''
+const filtered = computed(() => st.q.trim() !== '' || st.status !== '')
 
 /* ===== 代操作：暂停（可选恢复日期）/ 恢复 / 取消（可选原因枚举），409/404 toast 展示 detail 原串加中文前缀 ===== */
 const target = ref(null)      /* 当前操作的行 */

@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt, money } from '../composables/format'
+import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -65,8 +66,8 @@ async function load() {
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(total.value / 50))
-    /* 当前页删空回落：本页记录被删光且不在第 1 页时回退一页重拉一次，防停留在空页 */
-    if (!items.value.length && state.page > 1) { state.page--; load(); return }
+    /* 当前页删空回落：本页记录被删光且不在第 1 页时回退一页重拉一次，防停留在空页（防递归：已在第 1 页则不再重拉） */
+    if (!items.value.length && state.page > 1) { state.page--; if (state.page !== 1) { load(); return } }
   } catch (e) {
     if (token !== reqSeq) return
     /* 首载失败记错误走错误空态（不再误导为「暂无商品」）；刷新失败保留旧数据仅 toast */
@@ -139,57 +140,31 @@ async function runBatch(action) {
   load()
 }
 
-/* ===== CSV 导出：按当前状态tab+搜索+分类+排序循环翻页拉全量（size=100，上限 20 页）；转义/BOM 照抄 OrdersView ===== */
+/* ===== CSV 导出 ===== */
 const exporting = ref(false)
-const EXPORT_PER_PAGE = 100
-const EXPORT_MAX_PAGES = 20
 async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
   try {
-    /* 分类兜底：导出前分类仍为空先重拉一次，仍失败仅警告（分类列留空，不阻断导出） */
     if (!categories.value.length) await loadCategories()
     if (!categories.value.length) toast('分类列缺失（分类数据加载失败）', 'error')
-    const params = { page: 1, size: EXPORT_PER_PAGE }
-    if (state.q.trim()) params.q = state.q.trim()
-    if (status.value !== null) params.status = status.value
-    if (state.category_id !== '') params.category_id = state.category_id
-    if (state.sort) params.sort = state.sort
-    const first = await req('GET', '/api/admin/catalog/products?' + new URLSearchParams(params))
-    const all = [...(first.items || [])]
-    const totalMatch = first.total ?? all.length
-    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_PER_PAGE) || 1, EXPORT_MAX_PAGES)
-    /* 第 2 页起每 5 页一批 Promise.all 并发（批间 await 控压，结果按页序拼接） */
-    for (let s = 2; s <= maxPage; s += 5) {
-      const end = Math.min(s + 4, maxPage)
-      const batch = await Promise.all(
-        Array.from({ length: end - s + 1 }, (_, i) =>
-          req('GET', '/api/admin/catalog/products?' + new URLSearchParams({ ...params, page: s + i })))
-      )
-      for (const d of batch) all.push(...(d.items || []))
-    }
-    /* 达到页数上限截断：toast + 文件名均标注「已截断至 N 条」 */
-    const truncated = Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES
-    if (truncated) toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 款，已截断至 ${all.length} 条`, 'error')
-    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号 */
-    const cell = (v) => {
-      const s = String(v ?? '')
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-    }
+    const { all, truncated } = await fetchAllPages((p) => req('GET', '/api/admin/catalog/products?' + new URLSearchParams({
+      page: p, size: 100,
+      ...(state.q.trim() ? { q: state.q.trim() } : {}),
+      ...(status.value !== null ? { status: status.value } : {}),
+      ...(state.category_id !== '' ? { category_id: state.category_id } : {}),
+      ...(state.sort ? { sort: state.sort } : {}),
+    })), { pageSize: 100, maxPages: 20 })
+    if (truncated) toast(`匹配结果超过 2000 款，已截断至 ${all.length} 条`, 'error')
     const catName = (p) => categories.value.find((c) => c.id === p.category_id)?.name || ''
-    const rows = [['ID', '标题', 'slug', '状态', '分类', '价格区间', '变体数', '创建时间'],
-      ...all.map((p) => [p.id, p.title, p.slug, SMeta[p.status]?.[0] || p.status, catName(p),
-        /* 区间第二个金额去掉 $ 前缀（money 恒带 '$'），避免 $15.99~$19.99 双 $ */
-        p.price_max > p.price_min ? money(p.price_min) + '~' + money(p.price_max).slice(1) : money(p.price_min),
-        p.variant_count ?? '', dt(p.created_at)])]
-    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
     const stLabel = TABS.find(([sv]) => sv === status.value)?.[1] || '全部'
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `products-${stLabel}-${new Date().toISOString().slice(0, 10)}${truncated ? `-已截断至${all.length}条` : ''}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadCsv({
+      filename: `products-${stLabel}-${new Date().toISOString().slice(0, 10)}${truncated ? `-已截断至${all.length}条` : ''}`,
+      headers: ['ID', '标题', 'slug', '状态', '分类', '价格区间', '变体数', '创建时间'],
+      rows: all.map((p) => [p.id, p.title, p.slug, SMeta[p.status]?.[0] || p.status, catName(p),
+        p.price_max > p.price_min ? money(p.price_min) + '~' + money(p.price_max).slice(1) : money(p.price_min),
+        p.variant_count ?? '', dt(p.created_at)]),
+    })
     toast('已导出 ' + all.length + ' 款 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

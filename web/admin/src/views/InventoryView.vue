@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt, money } from '../composables/format'
+import { csvCell, downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -69,8 +70,8 @@ async function loadVariants() {
     variants.value = d.items || []
     varTotal.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(varTotal.value / 50))
-    /* 当前页删空回落：本页 SKU 被删光且不在第 1 页时回退一页重拉一次，防停留在空页 */
-    if (!variants.value.length && state.page > 1) { state.page--; loadVariants(); return }
+    /* 当前页删空回落：本页 SKU 被删光且不在第 1 页时回退一页重拉一次，防停留在空页（防递归：已在第 1 页则不再重拉） */
+    if (!variants.value.length && state.page > 1) { state.page--; if (state.page !== 1) { loadVariants(); return } }
   } catch (e) { if (t !== varSeq) return; varErr.value = e.message || '请求失败'; toast('SKU 列表加载失败：' + (e.message || ''), 'error') }
 }
 async function loadLow() {
@@ -172,21 +173,12 @@ async function exportCsv() {
         vp++
       }
     }
-    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号（同 OrdersView） */
-    const cell = (v) => {
-      const s = String(v ?? '')
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-    }
-    const rows = [['时间', 'SKU', '类型', '变更数', '结果库存', '关联', '操作人'],
-      ...all.map((m) => [dt(m.created_at), mVar.value ? mVar.value.sku : (skuMap[m.variant_id] || '#' + m.variant_id),
-        MTYPE[m.type] || m.type, m.change, m.stock_after, m.ref_type ? `${m.ref_type}#${m.ref_id ?? ''}` : '', m.operator || ''])]
-    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `movements-${mType.value !== null ? MTYPE[mType.value] : '全部'}-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadCsv({
+      filename: `movements-${mType.value !== null ? MTYPE[mType.value] : '全部'}-${new Date().toISOString().slice(0, 10)}`,
+      headers: ['时间', 'SKU', '类型', '变更数', '结果库存', '关联', '操作人'],
+      rows: all.map((m) => [dt(m.created_at), mVar.value ? mVar.value.sku : (skuMap[m.variant_id] || '#' + m.variant_id),
+        MTYPE[m.type] || m.type, m.change, m.stock_after, m.ref_type ? `${m.ref_type}#${m.ref_id ?? ''}` : '', m.operator || '']),
+    })
     toast('已导出 ' + all.length + ' 条 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

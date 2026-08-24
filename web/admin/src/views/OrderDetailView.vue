@@ -11,8 +11,7 @@ const route = useRoute()
 const router = useRouter()
 /* 返回列表：优先回退历史（保留列表筛选 query），直链进入无历史时兜底 /orders */
 function backToList() {
-  if (window.history.state && window.history.state.back) router.back()
-  else router.push('/orders')
+  try { router.back() } catch { router.push('/orders') }
 }
 const o = ref(null)
 const err = ref('')

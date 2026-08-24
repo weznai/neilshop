@@ -7,6 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import { money, dt } from '../composables/format'
+import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { OSTATUS, OSHIP, ORDER_ERR, mapErr } from '../constants/trade'
 
 const route = useRoute()
@@ -71,6 +72,8 @@ function syncUrl() {
   if (normQuery(route.query) !== syncedQuery) router.replace({ query })
 }
 
+/* 请求序号 token：快速切换筛选/翻页时丢弃过期响应（竞态保护） */
+let reqSeq = 0
 async function load() {
   /* 日期校验：结束早于开始时不发请求 */
   if (dateFrom.value && dateTo.value && dateTo.value < dateFrom.value) {
@@ -80,6 +83,7 @@ async function load() {
   /* 筛选/翻页保留旧数据不清空，骨架只在首次出现；勾选随列表刷新清空（防跨页误发货） */
   refreshing.value = true
   selected.value = []
+  const token = ++reqSeq
   /* 后端支持可选 per_page（钳制 10-100），分页以响应 pages/total 为准 */
   const params = { page: page.value, per_page: perPage.value }
   if (status.value != null) params.status = status.value
@@ -89,18 +93,20 @@ async function load() {
   if (sort.value) params.sort = sort.value
   try {
     const d = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
+    if (token !== reqSeq) return
     items.value = d.items || []
     total.value = d.total ?? 0
     pages.value = d.pages ?? 1
     loadErr.value = ''
-    /* 页码越界（筛选/数据收缩后总页数变少）：回第 1 页重拉一次 */
-    if (page.value > pages.value && pages.value >= 1) {
+    /* 页码越界（筛选/数据收缩后总页数变少）：回第 1 页重拉一次（防递归：已在第 1 页则不再重拉） */
+    if (page.value > pages.value && pages.value >= 1 && page.value !== 1) {
       page.value = 1
       await load()
     } else {
       syncUrl()
     }
   } catch (e) {
+    if (token !== reqSeq) return
     loadErr.value = e.message || '加载失败'
     toast('加载失败：' + (e.message || ''), 'error')
   }
@@ -226,50 +232,24 @@ async function batchShipConfirm() {
 }
 
 const exporting = ref(false)
-/* CSV 导出：per_page=100 循环拉全量，页数按 total/100 重算；上限 50 页（5000 单）防滥用 */
-const EXPORT_PER_PAGE = 100
-const EXPORT_MAX_PAGES = 50
 async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
   try {
-    const params = { page: 1, per_page: EXPORT_PER_PAGE }
-    if (status.value != null) params.status = status.value
-    if (q.value.trim()) params.q = q.value.trim()
-    if (dateFrom.value) params.date_from = dateFrom.value
-    if (dateTo.value) params.date_to = dateTo.value
-    if (sort.value) params.sort = sort.value
-    const first = await req('GET', '/api/admin/trade/orders?' + new URLSearchParams(params))
-    const all = [...(first.items || [])]
-    const totalMatch = first.total ?? all.length
-    const maxPage = Math.min(Math.ceil(totalMatch / EXPORT_PER_PAGE) || 1, EXPORT_MAX_PAGES)
-    /* 第 2 页起每 5 页一批 Promise.all 并发（批间 await 控压，结果按页序拼接） */
-    for (let s = 2; s <= maxPage; s += 5) {
-      const end = Math.min(s + 4, maxPage)
-      const batch = await Promise.all(
-        Array.from({ length: end - s + 1 }, (_, i) =>
-          req('GET', '/api/admin/trade/orders?' + new URLSearchParams({ ...params, page: s + i })))
-      )
-      for (const d of batch) all.push(...(d.items || []))
-    }
-    if (Math.ceil(totalMatch / EXPORT_PER_PAGE) > EXPORT_MAX_PAGES) {
-      toast(`匹配结果超过 ${EXPORT_MAX_PAGES * EXPORT_PER_PAGE} 单，仅导出前 ${all.length} 单`, 'error')
-    }
-    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号；公式注入防护：= + - @ 开头前缀 ' */
-    const cell = (v) => {
-      let s = String(v ?? '')
-      if (/^[=+\-@]/.test(s)) s = "'" + s
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-    }
-    const rows = [['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '留言'],
-      ...all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.label, OSHIP[o.shipping_status]?.label, dt(o.placed_at), o.paid_at ? dt(o.paid_at) : '', o.note || ''])]
-    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `orders-${statusLabel.value || '全部'}-${new Date().toISOString().slice(0, 10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    const { all, truncated } = await fetchAllPages((p) => req('GET', '/api/admin/trade/orders?' + new URLSearchParams({
+      page: p, per_page: 100,
+      ...(status.value != null ? { status: status.value } : {}),
+      ...(q.value.trim() ? { q: q.value.trim() } : {}),
+      ...(dateFrom.value ? { date_from: dateFrom.value } : {}),
+      ...(dateTo.value ? { date_to: dateTo.value } : {}),
+      ...(sort.value ? { sort: sort.value } : {}),
+    })), { pageSize: 100, maxPages: 50 })
+    if (truncated) toast('匹配结果超过 5000 单，仅导出前 5000 单', 'error')
+    downloadCsv({
+      filename: `orders-${statusLabel.value || '全部'}-${new Date().toISOString().slice(0, 10)}`,
+      headers: ['订单号', '邮箱', '金额', '状态', '履约', '下单时间', '支付时间', '留言'],
+      rows: all.map((o) => [o.order_no, o.email, money(o.grand_total), OSTATUS[o.status]?.label, OSHIP[o.shipping_status]?.label, dt(o.placed_at), o.paid_at ? dt(o.paid_at) : '', o.note || '']),
+    })
     toast('已导出 ' + all.length + ' 单 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

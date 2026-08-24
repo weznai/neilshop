@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { money, dDate } from '../composables/format'
+import { csvCell, downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -81,20 +82,12 @@ async function exportCsv() {
     if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
       toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
     }
-    const cell = (v) => {
-      const s = String(v ?? '')
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-    }
-    const rows = [['邮箱', '姓名', '等级', '积分', '累计消费', '最近下单', '风控标记'],
-      ...all.map((m) => [m.email, m.name || '', TIER[m.tier || 0] || '', (m.points || 0).toLocaleString(),
-        money(m.total_spent), dDate(m.last_order_at) || '', ['正常', '关注', '黑名单'][m.risk_flag || 0]])]
-    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'members_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+    downloadCsv({
+      filename: 'members_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+      headers: ['邮箱', '姓名', '等级', '积分', '累计消费', '最近下单', '风控标记'],
+      rows: all.map((m) => [m.email, m.name || '', TIER[m.tier || 0] || '', (m.points || 0).toLocaleString(),
+        money(m.total_spent), dDate(m.last_order_at) || '', ['正常', '关注', '黑名单'][m.risk_flag || 0]]),
+    })
     toast('已导出 ' + all.length + ' 位 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

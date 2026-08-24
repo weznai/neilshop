@@ -4,6 +4,7 @@ import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
+import { csvCell, downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import { TSTATUS, TICKET_ERR, mapErr } from '../constants/trade'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -257,22 +258,13 @@ async function exportCsv() {
     if (Math.ceil(totalMatch / EXPORT_SIZE) > maxPage || all.length >= EXPORT_MAX_ROWS) {
       toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
     }
-    /* CSV 转义：含逗号/引号/换行的字段包引号并双写引号 */
-    const cell = (v) => {
-      const s = String(v ?? '')
-      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
-    }
-    const rows = [['工单号', '主题', '邮箱', '分类', '状态', '优先级', '指派', '创建时间', '最后消息时间', '最后消息方'],
-      ...all.map((t) => [t.ticket_no, t.subject, t.email, CATEGORY[t.category] || '其他', TSTATUS[t.status]?.label,
+    downloadCsv({
+      filename: 'tickets_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+      headers: ['工单号', '主题', '邮箱', '分类', '状态', '优先级', '指派', '创建时间', '最后消息时间', '最后消息方'],
+      rows: all.map((t) => [t.ticket_no, t.subject, t.email, CATEGORY[t.category] || '其他', TSTATUS[t.status]?.label,
         t.priority === 0 ? '紧急' : '普通', assigneeText(t), dt(t.created_at),
-        t.last_message_at ? dt(t.last_message_at) : '', t.last_sender != null ? (SENDER_LABEL[t.last_sender] || '—') : ''])]
-    const csv = rows.map((r) => r.map(cell).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'tickets_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv'
-    a.click()
-    URL.revokeObjectURL(url)
+        t.last_message_at ? dt(t.last_message_at) : '', t.last_sender != null ? (SENDER_LABEL[t.last_sender] || '—') : '']),
+    })
     toast('已导出 ' + all.length + ' 张 ✓', 'success')
   } catch (e) { toast('导出失败：' + (e.message || ''), 'error') }
   exporting.value = false

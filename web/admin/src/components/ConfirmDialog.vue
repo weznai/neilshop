@@ -14,6 +14,7 @@ const props = defineProps({
   /* reason 输入渲染为 textarea rows=3（多行原因场景）；Enter 换行不提交，Ctrl/Cmd+Enter 才确认 */
   reasonTextarea: { type: Boolean, default: false },
   busy: { type: Boolean, default: false },
+  reasonRequired: { type: Boolean, default: false },
 })
 const emit = defineEmits(['confirm', 'close'])
 
@@ -49,6 +50,10 @@ function close() {
 }
 function onConfirm() {
   if (props.busy) return
+  if (props.reasonLabel && !reason.value.trim()) {
+    nextTick(() => reasonEl.value?.focus())
+    return
+  }
   emit('confirm', props.reasonLabel ? reason.value.trim() : undefined)
 }
 </script>
@@ -59,7 +64,7 @@ function onConfirm() {
       <h3 class="cd-title">{{ title }}</h3>
       <p v-if="body" class="cd-body">{{ body }}</p>
       <div v-if="reasonLabel" class="field cd-field">
-        <label>{{ reasonLabel }}</label>
+        <label>{{ reasonLabel }}<span v-if="reasonRequired" class="cd-required">*</span></label>
         <textarea
           v-if="reasonTextarea"
           ref="reasonEl"
@@ -93,5 +98,6 @@ function onConfirm() {
 .cd-body{color:var(--gray);font-size:13px;line-height:1.6;white-space:pre-line}
 .cd-field{margin:14px 0 2px}
 .cd-field textarea{resize:vertical;line-height:1.6}
+.cd-required{color:var(--error);margin-left:2px}
 .cd-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:20px}
 </style>
