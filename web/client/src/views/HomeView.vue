@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { req } from '../api/client'
 import { GM_CATALOG } from '../data/catalog'
 import { i18n } from '../i18n'
@@ -9,6 +9,7 @@ import ProductCard from '../components/ProductCard.vue'
 const newProducts = ref([])
 const bestProducts = ref([])
 const ugcItems = ref([])
+const ugcTotal = ref(0)
 const loaded = ref(false)
 const ugcLoaded = ref(false)
 
@@ -46,28 +47,37 @@ function seedCards() {
 
 /* LCP：请求前置到 setup 顶层立即发出（不等 onMounted）；
    两组卡片并行拉取（allSettled：单接口失败回落种子数据，不拖住另一组）；
-   中文环境带 locale 消费后端多语言标题 */
-;(async () => {
+   中文环境带 locale 消费后端多语言标题；seq 防语言切换竞态 */
+let cardsSeq = 0
+async function loadCards() {
+  const seq = ++cardsSeq
   const loc = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
   const [nr, br] = await Promise.allSettled([
     req('GET', '/api/catalog/products?sort=new&size=4' + loc),
     req('GET', '/api/catalog/products?sort=best&size=4' + loc),
   ])
+  if (seq !== cardsSeq) return
   newProducts.value = nr.status === 'fulfilled' && nr.value.items && nr.value.items.length
     ? nr.value.items : seedCards().slice(0, 4)
   bestProducts.value = br.status === 'fulfilled' && br.value.items && br.value.items.length
     ? br.value.items : seedCards().slice(4, 8)
   loaded.value = true
-})()
+}
+loadCards()
+/* 站内切换语言：重拉带 locale 的列表（口径对齐 ProductView watch(locale)） */
+watch(() => i18n.lang, () => { loadCards() })
 
-/* UGC 买家秀：从 API 获取真实数据，失败回落空数组 */
+/* UGC 买家秀：从 API 获取真实数据，失败回落空数组；total 供 CTA 数量文案 */
 ;(async () => {
   try {
     const res = await req('GET', '/api/content/ugc?size=6')
     ugcItems.value = res && res.items ? res.items : []
+    ugcTotal.value = (res && res.total) || 0
   } catch (_) { ugcItems.value = [] }
   ugcLoaded.value = true
 })()
+
+const ugcCount = computed(() => (ugcTotal.value > 0 ? ugcTotal.value.toLocaleString() + '+' : '4,800+'))
 
 const heroImg = computed(() => (newProducts.value[0] && newProducts.value[0].hero_image) ||
   'https://placehold.co/600x450/F5D8DA/6D2E46?text=New+Season+Glam')
@@ -79,6 +89,15 @@ function heroFallback(e) {
   if (img.dataset.fb) return
   img.dataset.fb = '1'
   img.src = HERO_FALLBACK
+}
+
+/* UGC 图（外链 media）：同款 dataset 守卫兜底 */
+const UGC_FALLBACK = 'https://placehold.co/140x140/E8B4B8/552338?text=GLOWMAG'
+function ugcFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = UGC_FALLBACK
 }
 </script>
 
@@ -245,13 +264,13 @@ function heroFallback(e) {
     <div class="container">
       <div class="ugc-band" style="margin-bottom:18px">
         <template v-if="ugcItems.length">
-          <img v-for="item in ugcItems" :key="item.id" :src="item.image || item.media_url" :alt="item.caption || i18n.t('home.ugc.alt')" loading="lazy">
+          <img v-for="item in ugcItems" :key="item.id" :src="item.image_url" :alt="item.caption || i18n.t('home.ugc.alt')" loading="lazy" @error="ugcFallback">
         </template>
         <template v-else-if="ugcLoaded">
           <img v-for="i in 6" :key="i" :src="`https://placehold.co/140x140/F5D8DA/6D2E46?text=Glam+${i}`" :alt="i18n.t('home.ugc.alt')" loading="lazy">
         </template>
         <router-link class="ugc-cta" to="/gallery">
-          <b>4,800+</b><span>{{ i18n.t('home.ugc.looks') }}</span><span style="text-decoration:underline">{{ i18n.t('home.ugc.see') }}</span>
+          <b>{{ ugcCount }}</b><span>{{ i18n.t('home.ugc.looks') }}</span><span style="text-decoration:underline">{{ i18n.t('home.ugc.see') }}</span>
         </router-link>
       </div>
     </div>

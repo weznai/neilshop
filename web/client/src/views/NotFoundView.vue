@@ -11,11 +11,25 @@ const SUGGEST = [
   ['Best sellers', '热卖爆款', '/store?sort=best'],
   ['New arrivals', '新品上架', '/store?sort=new'],
   ['Sale', '限时特惠', '/sale'],
+  ['FAQ', '常见问题', '/faq'],
+  ['Size guide', '尺码指南', '/size-guide'],
+  ['Contact us', '联系我们', '/contact'],
   ['Track order', '订单查询', '/track'],
 ]
+/* /api/ai/hot 模块级 30s 缓存（对齐 api/client.js productDetail 缓存模式；rejected promise 不滞留） */
+let _hotCache = { at: 0, promise: null }
+function fetchHot() {
+  if (_hotCache.promise && Date.now() - _hotCache.at < 30000) return _hotCache.promise
+  const rec = { at: Infinity, promise: null }
+  rec.promise = req('GET', '/api/ai/hot?size=4')
+    .then((d) => { rec.at = Date.now(); return d })
+    .catch((e) => { if (_hotCache === rec) _hotCache = { at: 0, promise: null }; throw e })
+  _hotCache = rec
+  return rec.promise
+}
 onMounted(async () => {
   try {
-    const d = await req('GET', '/api/ai/hot?size=4')
+    const d = await fetchHot()
     hot.value = (d.items || []).slice(0, 4)
   } catch (_) { hot.value = [] }
 })
@@ -28,7 +42,7 @@ onMounted(async () => {
         <div class="b44" style="font-family:var(--font-title);font-size:76px;font-weight:700;letter-spacing:2px">
           <span>4</span><span>0</span><span>4</span>
         </div>
-        <h1 style="font-family:var(--font-title);font-size:24px;margin:8px 0 4px">
+        <h1 style="font-family:var(--font-title);font-size:28px;margin:8px 0 4px">
           {{ tt('Page not found — but your perfect set is 💅', '页面走丢了 — 但你的本命美甲就在附近 💅') }}
         </h1>
         <p style="color:var(--gray);font-size:14px;margin-bottom:22px">

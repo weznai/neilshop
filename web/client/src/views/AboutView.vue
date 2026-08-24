@@ -1,12 +1,12 @@
 <script setup>
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 </script>
 
 <template>
   <section class="section">
     <div class="container" style="max-width:760px">
       <div class="about-hero">
-        <h1 style="font-family:var(--font-title);font-size:34px;margin-bottom:8px">{{ i18n.t('about.title') }}</h1>
+        <h1 style="font-family:var(--font-title);font-size:32px;margin-bottom:8px">{{ i18n.t('about.title') }}</h1>
         <p style="color:var(--gray)">{{ i18n.t('about.heroSub') }}</p>
       </div>
       <div class="about-body">
@@ -25,6 +25,7 @@ import { i18n } from '../i18n'
             <b>{{ i18n.t('about.ctaT') }}</b>
             <p style="font-size:13.5px;color:var(--gray);margin:4px 0 0">{{ i18n.t('about.ctaD') }}</p>
           </div>
+          <router-link to="/store?sort=best" class="btn btn-primary btn-sm">{{ tt('Shop best sellers', '逛热卖爆款') }}</router-link>
           <router-link to="/how-it-works" class="btn btn-secondary btn-sm">{{ i18n.t('about.ctaBtn1') }}</router-link>
           <router-link to="/blog" class="btn btn-ghost btn-sm">{{ i18n.t('about.ctaBtn2') }}</router-link>
         </div>

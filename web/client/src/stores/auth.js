@@ -1,6 +1,6 @@
 /* 会话 store：HttpOnly Cookie 承载鉴权，本地仅缓存认证后的用户概要 */
 import { defineStore } from 'pinia'
-import { req } from '../api/client'
+import { req, wishlistReset } from '../api/client'
 import { useCartStore } from './cart'
 
 export const useAuthStore = defineStore('auth', {
@@ -22,10 +22,13 @@ export const useAuthStore = defineStore('auth', {
     expireLocal() {
       this._cache(null)
       this.points = null
+      wishlistReset()
+      try { localStorage.removeItem('gm_wl_count') } catch (_) { /* 隐私模式 */ }
     },
     async login(email, password) {
       const d = await req('POST', '/api/account/login', { email, password })
       this._cache(d.user)
+      wishlistReset()
       await this.fetchPoints().catch(() => {})
       /* 登录后同步心愿单角标（沿用 gm_wl_count + gm:wl-changed 机制） */
       this.syncWishlist().catch(() => {})
@@ -37,11 +40,13 @@ export const useAuthStore = defineStore('auth', {
       if (refCode) body.ref_code = refCode
       const d = await req('POST', '/api/account/register', body)
       this._cache(d.user)
+      this.syncWishlist().catch(() => {})
       return d.user
     },
     async logout() {
       this._cache(null)
       this.points = null
+      wishlistReset()
       /* 心愿单角标缓存随会话一起清，避免下个游客看到上个账号的数字 */
       try { localStorage.removeItem('gm_wl_count') } catch (_) { /* 隐私模式 */ }
       /* 丢弃上个账号的游客车 token，让服务端建全新游客车 */

@@ -311,7 +311,7 @@ onMounted(() => load(st.page))
       <div v-else class="card tbl-wrap">
         <div v-if="d.nl.err" class="err-banner"><span>⚠️ 刷新失败：{{ d.nl.err }}</span><button class="btn btn-secondary btn-sm" @click="loadNl(st.page)">重试</button></div>
         <div class="filter-bar" style="padding:12px 14px;border-bottom:1px solid var(--gray-light)">
-          <input v-model="nlQ" class="input" style="width:220px" placeholder="搜订阅邮箱" @keydown.enter="loadNl(1)">
+          <input v-model="nlQ" class="input js-search" style="width:220px" placeholder="搜订阅邮箱" @keydown.enter="loadNl(1)">
           <button class="btn btn-secondary btn-sm" style="height:38px" @click="loadNl(1)">搜索</button>
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -341,7 +341,8 @@ onMounted(() => load(st.page))
       <div v-else class="card tbl-wrap">
         <div v-if="d.sn.err" class="err-banner"><span>⚠️ 刷新失败：{{ d.sn.err }}</span><button class="btn btn-secondary btn-sm" @click="loadSn(st.page)">重试</button></div>
         <div class="filter-bar" style="padding:12px 14px;border-bottom:1px solid var(--gray-light)">
-          <input v-model="snQ" class="input" style="width:200px" placeholder="搜登记邮箱（本页）">
+          <input v-model="snQ" class="input js-search" style="width:170px" placeholder="搜登记邮箱">
+          <span class="tag tag-pending" style="font-size:10px;flex:none" title="邮箱为前端本地过滤，仅作用于当前页已加载数据">仅本页</span>
           <input v-model="snProd" class="input" type="number" min="1" style="width:130px" placeholder="商品 ID" @keydown.enter="loadSn(1)">
           <input v-model="snVar" class="input" type="number" min="1" style="width:130px" placeholder="变体 ID" @keydown.enter="loadSn(1)">
           <button class="btn btn-secondary btn-sm" style="height:38px" @click="loadSn(1)">筛选</button>

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { req } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
@@ -30,17 +30,18 @@ const prefsErr = ref(false)
 
 /* 删除请求：POST → {request_id, effective_at}；DELETE 撤销 */
 const deletePending = ref(null) /* { effective_at } */
+/* 注销冷静期回显消费 Shell 已有会话（/me 含 delete_request），不重复拉取 */
+watch(
+  () => auth.user && auth.user.delete_request,
+  (d) => { if (d) deletePending.value = { effective_at: d.effective_at } },
+  { immediate: true },
+)
 
-onMounted(async () => {
+onMounted(() => {
   if (auth.user) {
     form.name = auth.user.name || ''
     form.birthday = auth.user.birthday || ''
   }
-  /* /me 附带回显进行中的注销申请：刷新后恢复冷静期状态（避免重复提交撞 409 才发现） */
-  try {
-    const u = await auth.me()
-    if (u && u.delete_request) deletePending.value = { effective_at: u.delete_request.effective_at }
-  } catch (_) { /* 网络失败保留本地状态（AccountShell 亦会重试） */ }
   loadPrefs()
 })
 
@@ -85,6 +86,7 @@ const showConfirmPw = ref(false)
 function pwCheck() {
   if (!pwForm.old_password) return tt('Enter your current password', '请输入当前密码')
   if (pwForm.new_password.length < 8 || pwForm.new_password.length > 128) return tt('New password must be 8-128 characters', '新密码长度需为 8-128 位')
+  if (pwForm.new_password === pwForm.old_password) return tt('New password must be different from your current password', '新密码不能与当前密码相同')
   if (pwForm.new_password !== pwForm.confirm) return tt('New passwords do not match', '两次输入的新密码不一致')
   return ''
 }

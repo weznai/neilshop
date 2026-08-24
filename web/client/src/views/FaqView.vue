@@ -40,16 +40,32 @@ function askHot(hq) { q.value = hq }
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
-/* 关键词高亮（纯文本安全）：答案先整体转义、再注入 <mark>、最后做 md 转换（不使用未转义原文拼 HTML） */
+/* 关键词高亮（纯文本安全、大小写不敏感）：答案整体转义后 lowercase 扫描切片注入 <mark>（对齐 segs 逻辑），
+ * 再做 mini-md 转换（不使用未转义原文拼 HTML） */
 function mdHtml(s) {
   let t = esc(s)
   const kw = q.value.trim()
   if (kw) {
     const ek = esc(kw)
-    t = t.split(ek).join('<mark class="gm-hl">' + ek + '</mark>')
+    const kl = ek.toLowerCase()
+    if (kl) {
+      const tl = t.toLowerCase()
+      let out = ''
+      let i = 0
+      for (;;) {
+        const j = tl.indexOf(kl, i)
+        if (j < 0) { out += t.slice(i); break }
+        out += t.slice(i, j) + '<mark class="gm-hl">' + t.slice(j, j + kl.length) + '</mark>'
+        i = j + kl.length
+      }
+      t = out
+    }
   }
   return t
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/^\s*\d{1,3}[.)]\s+/gm, '')
     .replace(/\n{2,}/g, '<br><br>')
     .replace(/\n/g, '<br>')
 }
@@ -88,6 +104,7 @@ watch(q, () => {
   clearTimeout(qTimer)
   qTimer = setTimeout(syncUrl, 400)
 })
+watch(() => i18n.lang, () => { open.value = -1 })
 
 /* FAQPage 结构化数据（gm:seo 事件通道）：加载失败/空列表不注入（mainEntity 为空时跳过） */
 function stripMd(s) {
@@ -142,7 +159,7 @@ async function loadFaqs() {
         >{{ icon }} {{ i18n.t('faq.cat.' + key) }}</button>
       </div>
 
-      <p v-if="!loading && faqs.length" class="faq-count">
+      <p v-if="!loading && shown.length" class="faq-count">
         {{ i18n.t('faq.count', shown.length) }}
       </p>
 
@@ -172,7 +189,7 @@ async function loadFaqs() {
       </div>
 
       <div v-else style="display:grid;gap:10px">
-        <div v-for="(f, i) in shown" :key="f.id" class="card faq-card" :class="{ 'faq-open': open === i }" style="padding:0;overflow:hidden">
+        <div v-for="(f, i) in shown" :id="'faq-' + f.id" :key="f.id" class="card faq-card" :class="{ 'faq-open': open === i }" style="padding:0;overflow:hidden">
           <button
             style="width:100%;display:flex;justify-content:space-between;gap:12px;align-items:center;padding:16px 18px;background:none;border:none;cursor:pointer;font:inherit;font-weight:600;font-size:14.5px;text-align:left"
             @click="toggle(i)"
@@ -202,8 +219,8 @@ async function loadFaqs() {
 /* 结果计数 */
 .faq-count { font-size: 12.5px; color: var(--gray); margin: 0 0 14px; }
 
-/* 分类 chips 吸顶（避开 56px 吸顶头部，cream 底防透） */
-.faq-cats { position: sticky; top: 56px; z-index: 90; background: var(--cream); padding: 8px 0 10px; margin-bottom: 6px; display: flex; gap: 8px; flex-wrap: wrap; }
+/* 分类 chips 吸顶（top 起步 64px，transition 与 header 收缩 .25s ease-out 同步，cream 底防透） */
+.faq-cats { position: sticky; top: 64px; z-index: 90; background: var(--cream); padding: 8px 0 10px; margin-bottom: 6px; display: flex; gap: 8px; flex-wrap: wrap; transition: top .25s ease-out; }
 
 /* 空态热门问题 chips（单条超长省略，点击填入搜索框） */
 .faq-hot { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 0 0 16px; }
@@ -213,7 +230,8 @@ async function loadFaqs() {
 .faq-still { text-align: center; margin-top: 20px; font-size: 13.5px; color: var(--gray); }
 .faq-still :deep(a) { color: var(--plum); }
 
-/* 打开态卡片：rose 边框 + 浅渐变底 */
+/* 打开态卡片：rose 边框 + 浅渐变底；#faq-id 锚点定位时避开吸顶头部 */
+.faq-card { scroll-margin-top: 84px; }
 .faq-card.faq-open { border-color: var(--rose); background: linear-gradient(180deg, #fff 40%, var(--rose-pale)); }
 
 /* 答案展开动画：grid-template-rows 0fr→1fr 过渡 */

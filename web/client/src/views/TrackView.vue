@@ -6,10 +6,12 @@ import { statusLabel } from '../composables/orderStatus'
 import { fmtDateTime } from '../composables/datetime'
 import { useArmConfirm } from '../composables/useArmConfirm'
 import { useUiStore } from '../stores/ui'
+import { useAuthStore } from '../stores/auth'
 import { i18n, tt } from '../i18n'
 
 const route = useRoute()
 const ui = useUiStore()
+const auth = useAuthStore()
 const { is: armIs, hit: armHit } = useArmConfirm()
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -73,7 +75,9 @@ async function cancelOrder() {
   if (cancelBusy.value || !result.value) return
   cancelBusy.value = true
   try {
-    await req('POST', '/api/orders/' + encodeURIComponent(result.value.order_no) + '/cancel?email=' + encodeURIComponent(email.value.trim()))
+    /* 登录属主仅凭订单号；游客带 email 双因子（与后端 cancel 同口径） */
+    const q = auth.isLoggedIn ? '' : '?email=' + encodeURIComponent(email.value.trim())
+    await req('POST', '/api/orders/' + encodeURIComponent(result.value.order_no) + '/cancel' + q)
     ui.toast(tt('Order canceled', '订单已取消'), 'success')
     await track()
   } catch (e) {
@@ -90,6 +94,17 @@ function shipState(s) {
   return { text: tt('Preparing', '备货中'), cls: 'tag-pending' }
 }
 const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
+
+/* 物流单号 → 承运商官方跟踪链接（未知 carrier 返回空串，只显示文本） */
+function carrierUrl(carrier, no) {
+  const c = String(carrier || '').toLowerCase()
+  const enc = encodeURIComponent(no || '')
+  if (c === 'ups') return 'https://www.ups.com/track?tracknum=' + enc
+  if (c === 'dhl') return 'https://www.dhl.com/us-en/home/tracking.html?tracking-id=' + enc
+  if (c === 'fedex') return 'https://www.fedex.com/fedextrack/?trknbr=' + enc
+  if (c === 'usps') return 'https://tools.usps.com/go/TrackConfirmAction?tLabels=' + enc
+  return ''
+}
 
 async function track() {
   err.value = ''
@@ -162,7 +177,15 @@ onMounted(() => {
         <div v-for="s in result.shipments || []" :key="s.shipment_no" style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--gray-light);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:13.5px">
           <div>
             <b>{{ (s.carrier || 'CARRIER').toUpperCase() }}</b>
-            <div style="font-family:monospace;font-size:12.5px;color:var(--gray);margin-top:2px">{{ s.tracking_no }}</div>
+            <div style="font-family:monospace;font-size:12.5px;color:var(--gray);margin-top:2px">
+              <a
+                v-if="carrierUrl(s.carrier, s.tracking_no)"
+                :href="carrierUrl(s.carrier, s.tracking_no)"
+                target="_blank" rel="noopener"
+                style="color:var(--plum);text-decoration:underline"
+              >{{ s.tracking_no }} ↗</a>
+              <template v-else>{{ s.tracking_no }}</template>
+            </div>
             <div v-if="s.delivered_at || s.shipped_at" style="font-size:11.5px;color:var(--gray);margin-top:2px">
               {{ s.delivered_at ? tt('Delivered ', '已送达 ') + fmtTime(s.delivered_at) : tt('Shipped ', '已发货 ') + fmtTime(s.shipped_at) }}
             </div>

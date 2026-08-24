@@ -605,7 +605,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .rel-card p { font-size: 13px; color: var(--gray); line-height: 1.6; margin: 0; }
 @media (max-width: 768px) { .policy-side { position: static; } }
 @media print {
-  .announce, .header, .footer, .tabbar, .mnav, .drawer, .overlay, .consent-banner, .crumbs, .toc-card, .policy-side, .back-top, .chat-fab, .chat-panel { display: none !important; }
+  .announce, .header, .footer, .tabbar, .mnav, .drawer, .overlay, .consent-banner, .crumbs, .toc-card, .policy-side, .back-top, .chat-fab, .chat-panel, .newsletter-band, .trust-row, .sg-bar, .toast-wrap { display: none !important; }
   body { background: #fff; }
   .policy-grid { display: block; padding: 0; }
   .container { max-width: 100%; }

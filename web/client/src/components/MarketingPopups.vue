@@ -3,6 +3,7 @@ import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { i18n } from '../i18n'
 import { useUiStore } from '../stores/ui'
 import { req } from '../api/client'
+import { lsGet, lsSet } from '../composables/ls'
 
 const ui = useUiStore()
 
@@ -15,14 +16,14 @@ const emailErr = ref(false)
 const wBusy = ref(false) /* 订阅提交中（防双击） */
 
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches }
-function today() { return new Date().toISOString().slice(0, 10) }
+function today() { return new Date().toLocaleDateString('sv') }
 function capKey(p) { return 'gm_popup_' + p.id + '_' + p.scene }
-function seenToday(p) { return localStorage.getItem(capKey(p)) === today() }
-function markSeen(p) { localStorage.setItem(capKey(p), today()) }
+function seenToday(p) { return lsGet(capKey(p)) === today() }
+function markSeen(p) { lsSet(capKey(p), today()) }
 function exitSeen() { return !!sessionStorage.getItem('gm_exit') }
 function markExitSeen() { sessionStorage.setItem('gm_exit', '1') }
 function readConsent() {
-  try { return JSON.parse(localStorage.getItem('gm_consent') || '{}') || {} } catch (_) { return {} }
+  try { return JSON.parse(lsGet('gm_consent') || '{}') || {} } catch (_) { return {} }
 }
 const landedAt = Date.now()
 
@@ -131,15 +132,24 @@ async function copyCode(code, popupId) {
 }
 
 function fireWelcome(p) {
-  if (seenToday(p) || showExit.value) return
-  if (readConsent().mar === false) return
+  if (seenToday(p) || showExit.value) return false
+  if (readConsent().mar === false) return false
   welcome.value = p
   markSeen(p)
   showWelcome.value = true
   report('shown', p.id)
+  return true
 }
+/* consent 监听非 once：展示被守卫挡下时保留监听，成功弹出后再手动移除（修复 once 耗尽） */
+let consentHandler = null
 function onConsentThen(p) {
-  window.addEventListener('gm:consent-saved', () => fireWelcome(p), { once: true })
+  consentHandler = () => {
+    if (fireWelcome(p)) {
+      window.removeEventListener('gm:consent-saved', consentHandler)
+      consentHandler = null
+    }
+  }
+  window.addEventListener('gm:consent-saved', consentHandler)
 }
 function onExitOut(e) {
   if (e.relatedTarget || e.clientY > 0) return
@@ -176,10 +186,11 @@ onMounted(async () => {
       }
       return
     }
-    const delay = Math.max(0, Number(r.delaySec == null ? 7 : r.delaySec)) * 1000
+    const delayNum = Number(r.delaySec == null ? 7 : r.delaySec)
+    const delay = Math.max(0, Number.isFinite(delayNum) ? delayNum : 7) * 1000
     setTimeout(() => {
       if (showExit.value || seenToday(w)) return
-      if (!localStorage.getItem('gm_consent')) { onConsentThen(w); return }
+      if (!lsGet('gm_consent')) { onConsentThen(w); return }
       fireWelcome(w)
     }, delay)
   }
@@ -187,6 +198,7 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('mouseout', onExitOut)
   document.removeEventListener('keydown', onEscKey)
+  if (consentHandler) { window.removeEventListener('gm:consent-saved', consentHandler); consentHandler = null }
   ui.popupsOpen = false
 })
 </script>

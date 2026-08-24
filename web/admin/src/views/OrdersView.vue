@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -12,6 +13,7 @@ import { OSTATUS, OSHIP, ORDER_ERR, mapErr } from '../constants/trade'
 
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
 const items = ref([])
 const total = ref(0)
 const pages = ref(1)
@@ -98,9 +100,11 @@ async function load() {
     total.value = d.total ?? 0
     pages.value = d.pages ?? 1
     loadErr.value = ''
-    /* 页码越界（筛选/数据收缩后总页数变少）：回第 1 页重拉一次（防递归：已在第 1 页则不再重拉） */
+    /* 页码越界（筛选/数据收缩后总页数变少）：回第 1 页重拉一次（防递归：已在第 1 页则不再重拉）；
+     * 先 syncUrl 修正 URL，重拉失败也不会残留脏 page */
     if (page.value > pages.value && pages.value >= 1 && page.value !== 1) {
       page.value = 1
+      syncUrl()
       await load()
     } else {
       syncUrl()
@@ -121,7 +125,7 @@ watch(() => route.query, (rq) => {
   if (route.path !== '/orders') return
   if (normQuery(rq) === syncedQuery) return
   q.value = ''; dateFrom.value = ''; dateTo.value = ''
-  status.value = null; page.value = 1; perPage.value = 20; sort.value = ''
+  status.value = null; page.value = 1; sort.value = ''
   initFromQuery()
   load()
 })
@@ -129,7 +133,6 @@ watch(() => route.query, (rq) => {
 function tab(sv) { status.value = sv; page.value = 1; load() }
 function clearDates() { dateFrom.value = ''; dateTo.value = ''; page.value = 1; load() }
 function clearSearch() { q.value = ''; page.value = 1; load() }
-function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
 
 /* 服务端排序：sort 直传后端（placed_at/total，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码 */
 const SORTABLE = ['placed_at', '-placed_at', 'total', '-total']
@@ -195,7 +198,9 @@ function toggleAll() {
 function toggleOne(no, checked) {
   selected.value = checked ? [...selected.value, no] : selected.value.filter((n) => n !== no)
 }
-/* 批量发货弹窗：textarea 每行一个单号，行序对应勾选序；执行中按钮显示逐单进度 n/total */
+/* 批量发货弹窗：textarea 支持两种粘贴格式——
+ * ① 两列「订单号,物流单号」（逗号/制表符分隔，按单号对应勾选单）；
+ * ② 单列物流单号（每行一个，行序对应勾选序，人工按序模式） */
 const batchDlg = ref(false)
 const batchCarrier = ref('USPS')
 const batchTrackings = ref('')
@@ -208,7 +213,21 @@ async function batchShipConfirm() {
   if (batchSubmitting.value) return
   const nos = [...selected.value]
   const lines = batchTrackings.value.split('\n').map((s) => s.trim()).filter(Boolean)
-  if (lines.length !== nos.length) { toast(`物流单号 ${lines.length} 行，与勾选 ${nos.length} 单不一致`, 'error'); return }
+  /* 两列模式探测：所有行均含分隔符且两列均非空才启用按单号对应 */
+  const pairs = lines.map((l) => l.split(/[,\t]/).map((s) => s.trim()))
+  let trackings
+  if (lines.length && pairs.every((p) => p.length === 2 && p[0] && p[1])) {
+    const selSet = new Set(nos)
+    const unmatched = [...new Set(pairs.filter((p) => !selSet.has(p[0])).map((p) => p[0]))]
+    if (unmatched.length) { toast(`以下订单号未在勾选中：${unmatched.join('、')}`, 'error'); return }
+    const missing = nos.filter((n) => !pairs.some((p) => p[0] === n))
+    if (missing.length) { toast(`以下勾选订单缺少物流单号：${missing.join('、')}`, 'error'); return }
+    trackings = nos.map((n) => pairs.find((p) => p[0] === n)[1])
+  } else {
+    /* 单列回落：行序对应勾选序 */
+    if (lines.length !== nos.length) { toast(`物流单号 ${lines.length} 行，与勾选 ${nos.length} 单不一致；也可每行粘贴「订单号,物流单号」两列`, 'error'); return }
+    trackings = lines
+  }
   batchSubmitting.value = true
   batchProg.total = nos.length
   batchProg.done = 0
@@ -217,7 +236,7 @@ async function batchShipConfirm() {
   const fails = []
   for (let i = 0; i < nos.length; i++) {
     try {
-      await req('POST', `/api/admin/trade/orders/${nos[i]}/ship`, { carrier: batchCarrier.value, tracking_no: lines[i] })
+      await req('POST', `/api/admin/trade/orders/${nos[i]}/ship`, { carrier: batchCarrier.value, tracking_no: trackings[i] })
       ok++
     } catch (e) {
       fails.push(`${nos[i]}：${mapErr(e.data?.detail, ORDER_ERR) || e.data?.detail || e.message}`)
@@ -272,10 +291,11 @@ async function exportCsv() {
         <option :value="100">100 条/页</option>
       </select>
       <div style="position:relative">
-        <input v-model="q" class="input" style="width:220px;padding-right:30px" placeholder="搜订单号 / 邮箱" @keydown.enter="page = 1; load()">
+        <input v-model="q" class="input js-search" style="width:220px;padding-right:30px" placeholder="搜订单号 / 邮箱" @keydown.enter="page = 1; load()">
         <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
       </div>
       <button class="btn btn-secondary" @click="page = 1; load()">搜索</button>
+      <button class="btn btn-secondary" :disabled="refreshing" @click="load">⟳ 刷新</button>
       <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
     </div>
   </div>
@@ -310,7 +330,7 @@ async function exportCsv() {
       <!-- 批量操作条：勾选后出现 -->
       <div v-if="selected.length" style="display:flex;align-items:center;gap:8px;font-size:13px;white-space:nowrap">
         已选 <b style="color:var(--plum)">{{ selected.length }}</b> 单
-        <button class="btn btn-primary btn-sm" @click="openBatchShip">📦 批量发货</button>
+        <button v-if="session.hasPerm('trade:ship')" class="btn btn-primary btn-sm" @click="openBatchShip">📦 批量发货</button>
         <button class="btn btn-secondary btn-sm" @click="selected = []">取消选择</button>
       </div>
     </div>
@@ -330,8 +350,8 @@ async function exportCsv() {
         <tr v-for="o in items" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
           <td style="padding:11px 10px"><input type="checkbox" style="cursor:pointer" :checked="selected.includes(o.order_no)" :disabled="o.status !== 1 && o.status !== 2" @change="toggleOne(o.order_no, $event.target.checked)"></td>
           <td><b>{{ o.order_no }}</b></td>
-          <td>{{ esc(o.email) }}</td>
-          <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray)" :title="o.note || ''">{{ o.note ? esc(o.note) : '—' }}</td>
+          <td>{{ o.email }}</td>
+          <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray)" :title="o.note || ''">{{ o.note || '—' }}</td>
           <td><b style="color:var(--plum)">{{ money(o.grand_total) }}</b></td>
           <td><span class="tag" :class="OSTATUS[o.status]?.cls">{{ OSTATUS[o.status]?.label }}</span></td>
           <td><span class="tag" :class="OSHIP[o.shipping_status]?.cls || 'tag-pending'" :title="'shipping_status: ' + o.shipping_status">{{ OSHIP[o.shipping_status]?.label || '—' }}</span></td>
@@ -339,8 +359,8 @@ async function exportCsv() {
           <td style="color:var(--gray)">{{ dt(o.paid_at) || '—' }}</td>
           <td style="text-align:right;white-space:nowrap">
             <router-link class="btn btn-secondary btn-sm" :to="{ path: '/order-detail', query: { no: o.order_no } }">详情</router-link>
-            <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" style="margin-left:6px" @click="ship(o)">📦 发货</button>
-            <button v-if="o.status === 0" class="btn btn-ghost btn-sm row-cancel" style="margin-left:6px" @click="cancelDlg = o">取消</button>
+            <button v-if="(o.status === 1 || o.status === 2) && session.hasPerm('trade:ship')" class="btn btn-primary btn-sm" style="margin-left:6px" @click="ship(o)">📦 发货</button>
+            <button v-if="o.status === 0 && session.hasPerm('trade:manage')" class="btn btn-ghost btn-sm row-cancel" style="margin-left:6px" @click="cancelDlg = o">取消</button>
           </td>
         </tr>
       </tbody>
@@ -387,7 +407,7 @@ async function exportCsv() {
       </div>
       <div class="field">
         <label>物流单号（每行一个）</label>
-        <textarea v-model="batchTrackings" class="input" style="height:auto;min-height:120px;padding:10px 14px;resize:vertical;font-family:inherit" :placeholder="'每行一个单号，顺序对应勾选顺序，共 ' + selected.length + ' 行'"></textarea>
+        <textarea v-model="batchTrackings" class="input" style="height:auto;min-height:120px;padding:10px 14px;resize:vertical;font-family:inherit" :placeholder="'每行一个单号（顺序对应勾选顺序），或「订单号,物流单号」两列，共 ' + selected.length + ' 单'"></textarea>
       </div>
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="batchSubmitting" @click="batchShipConfirm">{{ batchSubmitting ? '发货中 ' + batchProg.done + '/' + batchProg.total + '…' : '确认发货' }}</button>
     </div>

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { req, wishlistAdd, wishlistHas, wishlistRemove } from '../api/client'
 import { i18n, tt } from '../i18n'
 import { catalogById } from '../data/catalog'
+import { fmtDate } from '../composables/datetime'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
@@ -41,6 +42,7 @@ function imgFallback(e) {
 
 const locale = computed(() => (zh.value ? 'zh-CN' : null))
 const variant = computed(() => (p.value?.variants || [])[vIdx.value] || null)
+const noVariants = computed(() => !!p.value && !(p.value.variants || []).length)
 const stockStatus = computed(() => (variant.value ? (variant.value.stock_status || 'in') : 'out'))
 const maxQty = computed(() => Math.max(1, Math.min(10, variant.value?.stock ?? 10)))
 
@@ -56,9 +58,10 @@ const showVideo = computed(() => galIdx.value >= media.value.length && !!p.value
 const mainIdx = computed(() => Math.min(galIdx.value, media.value.length - 1))
 const filled = computed(() => Math.max(0, Math.min(5, Math.round(rvAvg.value))))
 const hasReviews = computed(() => rvCount.value > 0)
-/* 评分口径：优先分布接口实时聚合（已发布全量），回落商品冗余列——避免同屏两个"评价数"不一致 */
+/* 评分口径：优先分布接口实时聚合（rating_avg 为百分制 480=4.8），
+   回落商品冗余列 p.rating（已是 0-5 浮点，×100 对齐量纲再 /100），避免 0.05 级错值 */
 const rvCount = computed(() => (distData.value && distData.value.rating_count) || (p.value?.rating_count || 0))
-const rvAvg = computed(() => ((distData.value && distData.value.rating_avg) || (p.value?.rating || 0)) / 100)
+const rvAvg = computed(() => ((distData.value?.rating_avg ?? Math.round((p.value?.rating || 0) * 100)) / 100))
 
 /* 评分分布：优先服务端聚合（已发布全量），未拉到时回退按已加载评价页估算 */
 const distData = ref(null)
@@ -111,9 +114,13 @@ function toggleRvStar(star) {
 }
 
 let ldSeq = 0
+let lastKey = ''
 async function load() {
   const seq = ++ldSeq
   rvSeq++ /* 作废在途评价请求（切商品瞬间旧响应不得写入新状态） */
+  const key = String(route.query.slug || route.query.id || '')
+  if (lastKey && key && key !== lastKey) window.scrollTo({ top: 0 })
+  lastKey = key
   vIdx.value = 0
   qty.value = 1
   galIdx.value = 0
@@ -121,6 +128,7 @@ async function load() {
   notifyState.value = 0
   wlDone.value = false
   rvRating.value = 0
+  distData.value = null /* 重置评分分布：防上一商品数据残留 */
   const id = parseInt(route.query.id, 10)
   const slug = route.query.slug
   /* 无 id/slug 参数：直接渲染商品不存在态，不兜底请求 */
@@ -380,7 +388,17 @@ async function cancelNotify() {
 function moreReviews() { rvPage.value++; fetchReviews(false) }
 function openLightbox(src, caption) { lightbox.value = { src, caption } }
 function closeLightbox() { lightbox.value = null }
-function onKey(e) { if (e.key === 'Escape') closeLightbox() }
+/* Escape 关闭 / ←→ 在媒体列表内切换（评价晒图不在 media 内则忽略） */
+function onKey(e) {
+  if (!lightbox.value) return
+  if (e.key === 'Escape') { closeLightbox(); return }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const i = media.value.indexOf(lightbox.value.src)
+    if (i < 0) return
+    const n = e.key === 'ArrowRight' ? Math.min(media.value.length - 1, i + 1) : Math.max(0, i - 1)
+    if (n !== i) lightbox.value = { src: media.value[n], caption: lightbox.value.caption }
+  }
+}
 /* Lightbox 滚动锁走 ui.lightboxOpen 全局通道（anyOverlay → StoreLayout gm-locked 统一驱动，
    消除与 StoreLayout watch 的 gm-locked 双写竞态） */
 watch(lightbox, (v) => { ui.lightboxOpen = !!v })
@@ -445,8 +463,9 @@ const gmEta = () => {
               </div>
             </div>
             <span v-if="p.is_new" class="badge badge-new" style="position:absolute;top:14px;left:14px">NEW</span>
-            <span v-if="p.compare_at_price && p.compare_at_price > p.price_min" class="badge badge-sale" style="position:absolute;top:14px;right:14px">
-              -{{ Math.max(1, Math.round((1 - p.price_min / p.compare_at_price) * 100)) }}%
+            <span v-else-if="p.is_best_seller" class="badge badge-best" style="position:absolute;top:14px;left:14px">BEST</span>
+            <span v-if="p.compare_at_price && p.compare_at_price > (variant?.price ?? p.price_min)" class="badge badge-sale" style="position:absolute;top:14px;right:14px">
+              -{{ Math.max(1, Math.round((1 - (variant?.price ?? p.price_min) / p.compare_at_price) * 100)) }}%
             </span>
             <button v-if="!showVideo && media.length > 1" class="pdp-zoom" :aria-label="zh ? '放大查看' : 'Zoom image'" @click="openLightbox(media[mainIdx], p.title)">⤢</button>
           </div>
@@ -477,20 +496,25 @@ const gmEta = () => {
             <span v-else style="font-size:13px;color:var(--gray)">✨ {{ zh ? '全新上架 · 抢先体验' : 'Just launched — be the first to review' }}</span>
           </div>
           <div class="pdp-price-row" style="display:flex;align-items:baseline;gap:10px;margin-bottom:18px">
-            <span style="font-size:32px;font-weight:800;color:var(--plum);font-variant-numeric:tabular-nums">
-              ${{ unit.toFixed(2) }}
-            </span>
-            <span v-if="variant && p.compare_at_price && p.compare_at_price > variant.price" style="color:var(--gray);text-decoration:line-through">
-              ${{ (p.compare_at_price / 100).toFixed(2) }}
-            </span>
-            <span v-if="variant && p.compare_at_price && p.compare_at_price > variant.price" class="save-pill">
-              {{ tt('SAVE', '省') }} ${{ ((p.compare_at_price - variant.price) / 100).toFixed(2) }}
-            </span>
-            <span v-if="variant?.sku" class="pdp-sku" style="font-size:11.5px;color:var(--gray-light);font-weight:600">SKU {{ variant.sku }}</span>
+            <template v-if="noVariants">
+              <span style="font-size:20px;font-weight:700;color:var(--plum)">✨ {{ zh ? '即将上架 · 敬请期待' : 'Coming soon' }}</span>
+            </template>
+            <template v-else>
+              <span style="font-size:32px;font-weight:800;color:var(--plum);font-variant-numeric:tabular-nums">
+                ${{ unit.toFixed(2) }}
+              </span>
+              <span v-if="variant && p.compare_at_price && p.compare_at_price > variant.price" style="color:var(--gray);text-decoration:line-through">
+                ${{ (p.compare_at_price / 100).toFixed(2) }}
+              </span>
+              <span v-if="variant && p.compare_at_price && p.compare_at_price > variant.price" class="save-pill">
+                {{ tt('SAVE', '省') }} ${{ ((p.compare_at_price - variant.price) / 100).toFixed(2) }}
+              </span>
+              <span v-if="variant?.sku" class="pdp-sku" style="font-size:11.5px;color:var(--gray-light);font-weight:600">SKU {{ variant.sku }}</span>
+            </template>
           </div>
 
           <!-- 变体选择 -->
-          <div style="margin-bottom:18px">
+          <div v-if="!noVariants" style="margin-bottom:18px">
             <div style="font-size:12.5px;font-weight:700;letter-spacing:1px;color:var(--gray);margin-bottom:10px">
               {{ zh ? '甲型' : 'SHAPE' }} — <span>{{ variant?.option1_value }}</span>
               <span v-if="variant?.option2_value" style="margin-left:8px;font-weight:500;letter-spacing:0">· {{ variant.option2_value }}</span>
@@ -515,7 +539,7 @@ const gmEta = () => {
           </div>
 
           <!-- 库存提示 -->
-          <div style="margin-bottom:18px;font-size:13.5px">
+          <div v-if="!noVariants" style="margin-bottom:18px;font-size:13.5px">
             <template v-if="stockStatus === 'out'">
               <b style="color:var(--error)">{{ zh ? '已售罄' : 'Out of stock' }}</b>
               <div v-if="notifyState !== 2" style="display:flex;gap:8px;margin-top:10px;max-width:360px">
@@ -543,7 +567,7 @@ const gmEta = () => {
           </div>
 
           <!-- 数量 + 加购 + 心愿单 -->
-          <div style="display:flex;gap:12px;margin-bottom:14px;align-items:stretch">
+          <div v-if="!noVariants" style="display:flex;gap:12px;margin-bottom:14px;align-items:stretch">
             <div style="display:flex;align-items:center;border:1.5px solid var(--gray-light);border-radius:12px">
               <button class="qbtn" :disabled="qty <= 1" @click="qty = Math.max(1, qty - 1)">−</button>
               <input
@@ -562,7 +586,7 @@ const gmEta = () => {
               @click="toggleWishlist"
             ><span aria-hidden="true">{{ wlDone ? '♥' : '♡' }}</span></button>
           </div>
-          <button v-if="bundleable" class="btn btn-secondary btn-block" :disabled="bundling" :class="{ loading: bundling }" @click="bundleAdd">
+          <button v-if="bundleable && !noVariants" class="btn btn-secondary btn-block" :disabled="bundling" :class="{ loading: bundling }" @click="bundleAdd">
             🎁 {{ zh ? '买 2 件享 85 折' : 'Buy 2 & save 15%' }}（{{ zh ? '省' : 'save' }} ${{ (unit * 2 * 0.15).toFixed(2) }}）— {{ zh ? '结算自动生效' : 'applied in cart' }}
           </button>
 
@@ -618,6 +642,7 @@ const gmEta = () => {
                   <span class="rv-ava" aria-hidden="true"><span>{{ (rv.user || rv.user_name || 'A').charAt(0).toUpperCase() }}</span></span>
                   <b style="font-size:13px">{{ rv.user || rv.user_name || 'Glowmag Fan' }}</b>
                   <span style="font-size:10.5px;font-weight:700;color:var(--success);background:rgba(62,189,147,.10);border:1px solid rgba(62,189,147,.35);border-radius:999px;padding:1.5px 9px;white-space:nowrap">✓ {{ zh ? '已验证购买' : 'Verified Buyer' }}</span>
+                  <span v-if="rv.created_at" style="font-size:11.5px;color:var(--gray-light);margin-left:auto;white-space:nowrap">{{ fmtDate(rv.created_at) }}</span>
                 </div>
                 <div class="stars" style="margin:8px 0">{{ '★'.repeat(Math.min(5, Math.max(0, rv.rating))) }}<span class="off">{{ '★'.repeat(5 - Math.min(5, Math.max(0, rv.rating))) }}</span></div>
                 <p style="font-size:14px">{{ rv.content }}</p>
@@ -654,10 +679,10 @@ const gmEta = () => {
     </div>
 
     <!-- v16 移动端粘性加购栏：价格 + 加购（≤768 显示，fixed 于 tabbar 之上；复用 addToCart，SEO/既有交互零改动） -->
-    <div class="pdp-buybar">
+    <div v-if="!noVariants" class="pdp-buybar">
       <div class="pdp-buybar-info">
         <Transition name="tick" mode="out-in">
-          <b :key="unit.toFixed(2) + ':' + qty" class="pdp-buybar-price">{{ qty > 1 ? qty + ' × ' : '' }}${{ unit.toFixed(2) }}</b>
+          <b :key="unit.toFixed(2) + ':' + qty" class="pdp-buybar-price">{{ qty > 1 ? qty + ' × $' + unit.toFixed(2) + ' · ' : '' }}${{ (unit * qty).toFixed(2) }}</b>
         </Transition>
         <s v-if="variant && p.compare_at_price && p.compare_at_price > variant.price">${{ (p.compare_at_price / 100).toFixed(2) }}</s>
         <span class="pdp-buybar-title">{{ p.title }}</span>

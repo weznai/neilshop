@@ -2,20 +2,24 @@
 import { i18n } from '../i18n'
 import { useUiStore } from '../stores/ui'
 const ui = useUiStore()
+function runAction(t) {
+  if (t.action && typeof t.action.fn === 'function') t.action.fn()
+  ui.dismiss(t.id)
+}
 </script>
 
 <template>
   <TransitionGroup name="toast" tag="div" class="toast-wrap">
     <div
       v-for="t in ui.toasts" :key="t.id" class="toast" :class="t.type"
-      :role="t.type === 'loading' ? 'alert' : 'status'"
-      :aria-live="t.type === 'loading' ? 'assertive' : 'polite'"
-      :aria-label="t.msg || undefined"
+      :role="t.type === 'loading' || t.type === 'error' ? 'alert' : 'status'"
+      :aria-live="t.type === 'loading' || t.type === 'error' ? 'assertive' : 'polite'"
     >
       <span v-if="t.type === 'loading'" class="toast-spin" aria-hidden="true"></span>
       <template v-else-if="t.type === 'success'"><span aria-hidden="true">✓</span><span>{{ t.msg }}</span></template>
       <template v-else-if="t.type === 'error'"><span aria-hidden="true">✗</span><span>{{ t.msg }}</span></template>
       <span v-else>{{ t.msg }}</span>
+      <button v-if="t.action" type="button" class="toast-act" @click="runAction(t)">{{ t.action.label }}</button>
       <button
         type="button" class="toast-x"
         :aria-label="i18n.lang === 'zh' ? '关闭提示' : 'Dismiss notification'"
@@ -41,6 +45,13 @@ const ui = useUiStore()
 }
 .toast-x:hover { opacity: 1; }
 .toast-x:focus-visible { outline: 2px solid #fff; outline-offset: 1px; opacity: 1; }
+/* action 按钮（ui.toast 第三参 opts.action = {label, fn}） */
+.toast-act {
+  border: none; background: rgba(255, 255, 255, .18); color: #fff; font-size: 12px; font-weight: 600;
+  padding: 3px 10px; border-radius: 999px; cursor: pointer; flex: none; margin-right: 4px;
+}
+.toast-act:hover { background: rgba(255, 255, 255, .3); }
+.toast-act:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 /* 连续 toast 降级：尊重 prefers-reduced-motion（共享 CSS 已有全站兜底，此处按组件要求显式重复） */
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }

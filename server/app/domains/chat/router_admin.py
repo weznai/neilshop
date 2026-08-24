@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import require_admin
+from app.core.deps import require_perm
 from app.core.enums import UserRole
 from app.domains.chat import service
 from app.domains.chat.schemas import (
@@ -39,7 +39,7 @@ def admin_conversations(
     mine: int | None = Query(None, description="1=我的会话（人工=我接手 / 美甲师=本人）"),
     page: int = Query(1, ge=1),
     size: int = Query(30, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("chat:manage")),
     db: Session = Depends(get_db),
 ):
     # 美甲师(role=4)受限视图：忽略请求参数强制 mine=1，只见本人名下会话
@@ -51,7 +51,7 @@ def admin_conversations(
 
 
 @router.get("/api/admin/chat/conversations/{conv_no}")
-def admin_conversation(conv_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_conversation(conv_no: str, admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db)):
     # 读路径接入美甲师(role=4)归属校验（service 层 _assert_artist_scope，越权 403）
     return service.admin_conversation(db, admin, conv_no)
 
@@ -59,31 +59,31 @@ def admin_conversation(conv_no: str, admin: User = Depends(require_admin), db: S
 @router.post("/api/admin/chat/conversations/{conv_no}/reply")
 def admin_reply(
     conv_no: str, body: ReplyIn,
-    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+    admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db),
 ):
     return service.admin_reply(db, admin, conv_no, body.content)
 
 
 @router.post("/api/admin/chat/conversations/{conv_no}/take")
-def admin_take(conv_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_take(conv_no: str, admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db)):
     return service.admin_take(db, admin, conv_no)
 
 
 @router.post("/api/admin/chat/conversations/{conv_no}/resume-ai")
-def admin_resume_ai(conv_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_resume_ai(conv_no: str, admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db)):
     """人工 → AI 内部切换（同一会话交还 GlowBot 自动应答）"""
     return service.admin_resume_ai(db, admin, conv_no)
 
 
 @router.post("/api/admin/chat/conversations/{conv_no}/close")
-def admin_close(conv_no: str, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_close(conv_no: str, admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db)):
     return service.admin_close(db, admin, conv_no)
 
 
 @router.put("/api/admin/chat/quicks")
 def save_quicks(
     body: dict,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("chat:manage")),
     db: Session = Depends(get_db),
 ):
     """客户快捷问题配置：{"zh": [item], "en": [item]}（结构化校验 + 钳制见 schemas.quick_norm_item）"""
@@ -110,7 +110,7 @@ def save_quicks(
 
 
 @router.get("/api/admin/chat/quicks")
-def get_quicks(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def get_quicks(admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db)):
     """配置态读取：当前生效项（归一后）+ 原始是否自定义标记 + 审计（最后修改人/时间）"""
     row = db.query(Setting).filter(Setting.key == QUICK_SETTING_KEY).first()
     out = {"items": quick_norm(row.value if row else None), "customized": row is not None}
@@ -123,7 +123,7 @@ def get_quicks(admin: User = Depends(require_admin), db: Session = Depends(get_d
 
 
 @router.post("/api/admin/chat/quicks/reset")
-def reset_quicks(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reset_quicks(admin: User = Depends(require_perm("chat:manage")), db: Session = Depends(get_db)):
     """恢复出厂默认（删除自定义配置行）"""
     row = db.query(Setting).filter(Setting.key == QUICK_SETTING_KEY).first()
     if row:
@@ -136,7 +136,7 @@ def reset_quicks(admin: User = Depends(require_admin), db: Session = Depends(get
 
 # ===== AI 客服大模型配置（settings key=llm_config，覆盖 GM_LLM_* 环境变量） =====
 @router.get("/api/admin/ai/config")
-def get_ai_config(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def get_ai_config(admin: User = Depends(require_perm("ai:manage")), db: Session = Depends(get_db)):
     """当前生效配置（API Key 脱敏）+ 来源标记（db=后台配置 / env=环境变量 / 空=未配置）"""
     from app.services.llm import LLM_SETTING_KEY, mask_key, resolve_params
     from app.domains.chat.retrieval import rag_status
@@ -164,7 +164,7 @@ def get_ai_config(admin: User = Depends(require_admin), db: Session = Depends(ge
 
 
 @router.put("/api/admin/ai/config")
-def save_ai_config(body: dict, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def save_ai_config(body: dict, admin: User = Depends(require_perm("ai:manage")), db: Session = Depends(get_db)):
     """保存 LLM 配置：字段存在才更新（api_key 传空串=清除）；立即生效（每次调用实时 resolve）"""
     from app.services.llm import LLM_SETTING_KEY
 
@@ -220,7 +220,7 @@ def save_ai_config(body: dict, admin: User = Depends(require_admin), db: Session
 
 @router.get("/api/admin/ai/prompt-preview")
 def ai_prompt_preview(q: str | None = Query(None, description="模拟客户问题：RAG 就绪时预览 top-k 片段注入效果"),
-                      admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+                      admin: User = Depends(require_perm("ai:manage")), db: Session = Depends(get_db)):
     """最终系统提示词预览：人设 + 安全红线 + 补充指令 + 政策摘要 + FAQ 知识库（实际下发内容）"""
     from app.domains.chat.prompt import DEFAULT_PERSONA, SAFETY_RULES, build_system_prompt
 
@@ -233,7 +233,7 @@ def ai_prompt_preview(q: str | None = Query(None, description="模拟客户问�
 
 
 @router.post("/api/admin/ai/rag/reindex")
-def rag_reindex(body: dict | None = None, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def rag_reindex(body: dict | None = None, admin: User = Depends(require_perm("ai:manage")), db: Session = Depends(get_db)):
     """（重建）FAQ 向量索引：默认只补缺失行，body.full=true 全量重建（换 embedding 模型后用）"""
     from app.domains.chat.retrieval import reindex, rag_status
 
@@ -248,7 +248,7 @@ def rag_reindex(body: dict | None = None, admin: User = Depends(require_admin), 
 
 
 @router.post("/api/admin/ai/test")
-def test_ai_config(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def test_ai_config(admin: User = Depends(require_perm("ai:manage")), db: Session = Depends(get_db)):
     """连通性测试：用当前生效配置发一条极小补全，返回延迟与回复（未配置/失败给原因）"""
     import time
 

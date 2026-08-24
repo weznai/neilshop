@@ -177,8 +177,14 @@ const SEED = Array.from({ length: 8 }, (_, i) => ({
   instagram_handle: '@glowmag_fan',
   product: null,
 }))
-function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') }
-function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/552338?text=%E2%9C%A8' }
+/* 兜底占位：dataset 守卫防循环（对齐 HomeView heroFallback） */
+const IMG_FALLBACK = 'https://placehold.co/300x300/E8B4B8/552338?text=%E2%9C%A8'
+function imgFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = IMG_FALLBACK
+}
 </script>
 
 <template>
@@ -219,7 +225,7 @@ function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/55
           <div class="shot-wrap" :style="{ cursor: usingSeed ? 'default' : 'zoom-in' }" @click="!usingSeed && openLb(i)">
             <img class="shot-img" :src="u.image_url" :alt="(u.instagram_handle || 'Glowmag Fan') + ' wearing GLOWMAG nails'" loading="lazy" @error="imgFallback">
             <span v-if="usingSeed" class="ontag tl">{{ tt('Sample', '示例图') }}</span>
-            <span v-if="u.instagram_handle" class="ontag bl">On {{ esc(u.instagram_handle) }}</span>
+            <span v-if="u.instagram_handle" class="ontag bl">On {{ u.instagram_handle }}</span>
             <span v-if="u.caption" class="shot-cap" style="position:absolute;inset:auto 0 0 0;padding:26px 12px 10px;background:linear-gradient(transparent,rgba(31,27,30,.72));color:#fff;font-size:12px;line-height:1.4">
               {{ u.caption.slice(0, 60) }}{{ u.caption.length > 60 ? '…' : '' }}
             </span>
@@ -316,7 +322,7 @@ function imgFallback(e) { e.target.src = 'https://placehold.co/300x300/E8B4B8/55
     <figure @click.self="lbIdx = -1">
       <img :src="shots[lbIdx].image_url" :alt="shots[lbIdx].instagram_handle || 'GLOWMAG look'" @error="imgFallback">
       <figcaption v-if="shots[lbIdx].caption || shots[lbIdx].instagram_handle">
-        <b v-if="shots[lbIdx].instagram_handle">{{ esc(shots[lbIdx].instagram_handle) }}</b>
+        <b v-if="shots[lbIdx].instagram_handle">{{ shots[lbIdx].instagram_handle }}</b>
         <span v-if="shots[lbIdx].caption">{{ shots[lbIdx].caption }}</span>
         <router-link
           v-if="shots[lbIdx].product"

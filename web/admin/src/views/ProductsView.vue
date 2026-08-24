@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt, money } from '../composables/format'
 import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
@@ -11,6 +12,7 @@ import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
 const router = useRouter()
+const session = useSessionStore()
 const items = ref([])
 const total = ref(0)
 const pages = ref(1)
@@ -27,13 +29,14 @@ const failures = computed(() => (bulkResult.value?.results || []).filter((r) => 
 
 /* ===== URL 同步：page/q/status（tab 映射，'all'=全部）+ 原有 category_id/sort 一并并入 useQuerySync ===== */
 const SORTABLE = ['title', '-title', 'price', '-price', 'created_at', '-created_at']
-const state = reactive({ page: 1, q: '', status: 'all', category_id: '', sort: '' })
-useQuerySync(state, { nums: ['page', 'category_id'], defaults: { page: 1, q: '', status: 'all', category_id: '', sort: '' } })
+const state = reactive({ page: 1, q: '', status: 'all', category_id: '', sort: '', per_page: 50 })
+useQuerySync(state, { nums: ['page', 'category_id', 'per_page'], defaults: { page: 1, q: '', status: 'all', category_id: '', sort: '', per_page: 50 } })
 /* 回填清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
 if (!SORTABLE.includes(state.sort)) state.sort = ''
 if (!['all', '0', '1', '2'].includes(state.status)) state.status = 'all'
 if (!(state.page >= 1)) state.page = 1
 if (!(state.category_id >= 1)) state.category_id = ''
+if (![20, 50, 100].includes(state.per_page)) state.per_page = 50
 const status = computed(() => (state.status === 'all' ? null : Number(state.status)))
 
 /* 分类白名单：onMounted 拉分类列表，批量导入的 category_id 校验以此为准（动态） */
@@ -57,7 +60,7 @@ async function load() {
   selIds.value = []
   const token = ++reqSeq
   try {
-    const qs = { page: state.page, size: 50, q: state.q.trim() }
+    const qs = { page: state.page, size: state.per_page, q: state.q.trim() }
     if (status.value !== null) qs.status = status.value
     if (state.category_id !== '') qs.category_id = state.category_id
     if (state.sort) qs.sort = state.sort
@@ -65,9 +68,9 @@ async function load() {
     if (token !== reqSeq) return
     items.value = d.items || []
     total.value = d.total ?? 0
-    pages.value = Math.max(1, Math.ceil(total.value / 50))
-    /* 当前页删空回落：本页记录被删光且不在第 1 页时回退一页重拉一次，防停留在空页（防递归：已在第 1 页则不再重拉） */
-    if (!items.value.length && state.page > 1) { state.page--; if (state.page !== 1) { load(); return } }
+    pages.value = Math.max(1, Math.ceil(total.value / state.per_page))
+    /* 当前页删空回落：本页记录被删光且不在第 1 页时回第 1 页重拉一次（已在第 1 页则空态渲染，无递归） */
+    if (!items.value.length && state.page > 1) { state.page = 1; load(); return }
   } catch (e) {
     if (token !== reqSeq) return
     /* 首载失败记错误走错误空态（不再误导为「暂无商品」）；刷新失败保留旧数据仅 toast */
@@ -198,13 +201,21 @@ async function doToggle() {
 }
 
 /* 归档行「恢复草稿」：走批量端点单条 status=0（仅归档态可恢复），失败显示后端原因，成功后刷新 */
-async function restoreDraft(p) {
+const restoreDlg = ref(false)
+const restoreBusy = ref(false)
+const restoreTarget = ref(null)
+function askRestore(p) { restoreTarget.value = p; restoreDlg.value = true }
+async function restoreDraft() {
+  const p = restoreTarget.value
+  if (!p || restoreBusy.value) return
+  restoreBusy.value = true
   try {
     const d = await req('POST', '/api/admin/catalog/products/batch-status', { ids: [p.id], status: 0 })
     const fails = d.failed || []
     if (fails.length) toast(`恢复草稿失败：#${fails[0].id} ${failText(fails[0].reason)}`, 'error')
-    else { toast('已恢复为草稿 ✓', 'success'); load() }
+    else { toast('已恢复为草稿 ✓', 'success'); restoreDlg.value = false; load() }
   } catch (e) { toast('恢复草稿失败：' + (e.data?.detail || e.message), 'error') }
+  finally { restoreBusy.value = false }
 }
 
 /* 关闭批量导入弹窗时清空草稿、上次结果与待确认导入 */
@@ -333,15 +344,21 @@ async function doDelCat() {
     </div>
     <!-- 主按钮「新建商品」保持突出，次要操作（分类/导入/导出）收为一组；整行 flex-wrap 防窄屏溢出 -->
     <div class="topbar-actions">
+      <span style="font-size:12px;color:var(--gray)">每页</span>
+      <select v-model.number="state.per_page" class="input" aria-label="每页条数" style="width:auto;height:36px;font-size:13px" @change="state.page = 1; load()">
+        <option :value="20">20 条/页</option>
+        <option :value="50">50 条/页</option>
+        <option :value="100">100 条/页</option>
+      </select>
       <div style="position:relative">
-        <input v-model="state.q" class="input" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
+        <input v-model="state.q" class="input js-search" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
         <button v-if="state.q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
       </div>
       <button class="btn btn-secondary" @click="search">搜索</button>
-      <router-link to="/product-edit" class="btn btn-primary">＋ 新建商品</router-link>
+      <router-link v-if="session.hasPerm('catalog:manage')" to="/product-edit" class="btn btn-primary">＋ 新建商品</router-link>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-left:1px solid var(--gray-light);padding-left:10px">
         <button class="btn btn-secondary" @click="newCat">🏷 分类管理</button>
-        <button class="btn btn-secondary" @click="bulk = true">📦 批量导入</button>
+        <button v-if="session.hasPerm('catalog:manage')" class="btn btn-secondary" @click="bulk = true">📦 批量导入</button>
         <button class="btn btn-secondary" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⌄ 导出 CSV' }}</button>
       </div>
     </div>
@@ -364,7 +381,7 @@ async function doDelCat() {
     <EmptyState icon="⚠️" title="商品列表加载失败" :sub="loadErr">
       <template #action>
         <button class="btn btn-primary btn-sm" @click="retryLoad">重试</button>
-        <router-link to="/product-edit" class="btn btn-secondary btn-sm">➕ 新建商品</router-link>
+        <router-link v-if="session.hasPerm('catalog:manage')" to="/product-edit" class="btn btn-secondary btn-sm">➕ 新建商品</router-link>
       </template>
     </EmptyState>
   </div>
@@ -373,8 +390,8 @@ async function doDelCat() {
     <!-- 批量操作条：勾选任意行后出现，上架/归档均走确认弹窗 -->
     <div v-if="selIds.length" style="display:flex;gap:10px;align-items:center;padding:10px 12px;background:var(--rose-pale);font-size:13px;flex-wrap:wrap">
       已选 <b>{{ selIds.length }}</b> 款
-      <button class="btn btn-primary btn-sm" :disabled="batchBusy" @click="askBatch('publish')">上架</button>
-      <button class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="batchBusy" @click="askBatch('unpublish')">归档</button>
+      <button v-if="session.hasPerm('catalog:manage')" class="btn btn-primary btn-sm" :disabled="batchBusy" @click="askBatch('publish')">上架</button>
+      <button v-if="session.hasPerm('catalog:manage')" class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="batchBusy" @click="askBatch('unpublish')">归档</button>
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" :disabled="batchBusy" @click="selIds = []">取消</button>
     </div>
     <table v-if="items.length" style="width:100%;border-collapse:collapse;font-size:13px">
@@ -413,7 +430,7 @@ async function doDelCat() {
             <div v-if="p.low_stock_count" style="font-size:11px;color:var(--warn)">{{ p.low_stock_count }} 个低水位</div>
           </td>
           <td style="color:var(--gray)">{{ p.sold_count ?? 0 }}</td>
-          <td style="color:var(--gray)">{{ ((p.rating_avg || 0) / 100).toFixed(1) }} <small v-if="p.rating_count">({{ p.rating_count }})</small></td>
+          <td style="color:var(--gray)">{{ p.rating_count ? ((p.rating_avg || 0) / 100).toFixed(1) : '—' }} <small v-if="p.rating_count">({{ p.rating_count }})</small></td>
           <td style="color:var(--gray)">{{ dt(p.created_at) || '—' }}</td>
           <td>
             <span class="tag" :class="SMeta[p.status]?.[1] || 'tag'">{{ SMeta[p.status]?.[0] || p.status }}</span>
@@ -421,10 +438,10 @@ async function doDelCat() {
             <span v-if="p.scheduled" class="tag tag-sched" style="margin-left:4px" :title="p.status === 1 ? '到点后在前台可见' : '注意：需手动上架后才会生效'">定时</span>
           </td>
           <td style="text-align:right;white-space:nowrap">
-            <router-link class="btn btn-secondary btn-sm" :to="{ path: '/product-edit', query: { id: p.id } }">编辑</router-link>
-            <button class="btn btn-ghost btn-sm" style="margin-left:6px" title="复制商品" @click="router.push('/product-edit?copy=' + p.id)">⧉</button>
-            <button class="btn btn-ghost btn-sm" style="margin-left:6px" @click="toggle(p)">{{ p.status === 1 ? '归档' : '上架' }}</button>
-            <button v-if="p.status === 2" class="btn btn-ghost btn-sm" style="margin-left:6px" @click="restoreDraft(p)">恢复草稿</button>
+            <router-link v-if="session.hasPerm('catalog:manage')" class="btn btn-secondary btn-sm" :to="{ path: '/product-edit', query: { id: p.id } }">编辑</router-link>
+            <button v-if="session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" style="margin-left:6px" title="复制商品" @click="router.push('/product-edit?copy=' + p.id)">⧉</button>
+            <button v-if="session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" style="margin-left:6px" @click="toggle(p)">{{ p.status === 1 ? '归档' : '上架' }}</button>
+            <button v-if="p.status === 2 && session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" style="margin-left:6px" @click="askRestore(p)">恢复草稿</button>
           </td>
         </tr>
       </tbody>
@@ -432,7 +449,7 @@ async function doDelCat() {
     <EmptyState v-else icon="🔍" :title="filtered ? '未找到匹配的商品' : '暂无商品'" :sub="filtered ? '试试清除筛选' : '点击右上角「新建商品」创建第一个'">
       <template #action>
         <button v-if="filtered" class="btn btn-secondary btn-sm" @click="clearFilters">清除筛选</button>
-        <router-link to="/product-edit" class="btn btn-primary btn-sm">➕ 新建商品</router-link>
+        <router-link v-if="session.hasPerm('catalog:manage')" to="/product-edit" class="btn btn-primary btn-sm">➕ 新建商品</router-link>
       </template>
     </EmptyState>
   </div>
@@ -469,12 +486,14 @@ async function doDelCat() {
           <span style="color:var(--gray);font-size:12px">id {{ c.id }} · {{ c.slug }}</span>
           <span style="margin-left:auto;display:flex;gap:4px;align-items:center">
             <span v-if="!c.is_active" class="tag tag-pending" style="font-size:10px">停用</span>
-            <button class="btn btn-ghost btn-sm" style="padding:2px 10px" @click="editCat(c)">编辑</button>
-            <button class="btn btn-ghost btn-sm" style="padding:2px 10px;color:var(--error)" @click="delCat(c)">删除</button>
+            <button v-if="session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" style="padding:2px 10px" @click="editCat(c)">编辑</button>
+            <button v-if="session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" style="padding:2px 10px;color:var(--error)" @click="delCat(c)">删除</button>
           </span>
         </div>
         <div v-if="!categories.length" style="padding:10px;font-size:13px;color:var(--gray)">暂无分类</div>
       </div>
+      <!-- 新建/编辑表单与保存按钮：catalog:manage 可见（只读角色仅可查看列表） -->
+      <template v-if="session.hasPerm('catalog:manage')">
       <div style="display:grid;gap:12px">
         <div class="field"><label>名称 *</label><input v-model="catForm.name" class="input" placeholder="Press-On Nails"></div>
         <div class="field"><label>Slug *</label><input v-model="catForm.slug" class="input" placeholder="press-on-nails"></div>
@@ -497,6 +516,7 @@ async function doDelCat() {
         <button class="btn btn-secondary" style="flex:1" :disabled="catBusy" @click="catDlg = false">取消</button>
         <button class="btn btn-primary" style="flex:1" :class="{ loading: catBusy }" :disabled="catBusy" @click="saveCat">{{ catForm.id ? '保存修改' : '创建' }}</button>
       </div>
+      </template>
     </div>
   </div>
 
@@ -515,6 +535,10 @@ async function doDelCat() {
   <ConfirmDialog :open="catDelDlg" title="删除分类"
                  :body="'删除分类「' + (catDelTarget?.name || '') + '」？删除后不可恢复；被商品或子分类引用时将无法删除。'"
                  danger confirm-text="删除" :busy="catDelBusy" @confirm="doDelCat" @close="catDelDlg = false" />
+  <!-- 恢复草稿确认 -->
+  <ConfirmDialog :open="restoreDlg" title="恢复为草稿"
+                 :body="'将「' + (restoreTarget?.title || '') + '」从归档恢复为草稿？恢复后前台不可见，需重新上架。'"
+                 confirm-text="恢复草稿" :busy="restoreBusy" @confirm="restoreDraft" @close="restoreDlg = false" />
 </template>
 
 <style scoped>

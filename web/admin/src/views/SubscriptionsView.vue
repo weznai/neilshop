@@ -1,12 +1,15 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { money, dt, dDate } from '../composables/format'
 import { useQuerySync } from '../composables/useQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
+
+const session = useSessionStore()
 
 /* 订阅盒管理：状态 tab + email 搜索 + 代操作（暂停/恢复/取消，复用用户侧状态机错误码）
  * Subscription.status 实测值域：1生效 2已暂停 5已取消（service_subscriptions.STATUS_TEXT） */
@@ -31,26 +34,31 @@ const stCls = (s) => (s === 1 ? 'tag-paid' : s === 2 ? 'tag-pending' : 'tag-erro
 /* 取消原因：后端 cancel_reason 为 1-4 枚举 int（无文案表，前端自定展示） */
 const CANCEL_REASONS = { 1: '频率太频繁', 2: '暂时不需要', 3: '价格因素', 4: '其他' }
 
+/* 请求序号 token：快速切换筛选/翻页时丢弃过期响应（竞态保护，做法同 OrdersView） */
+let reqSeq = 0
 async function load(p = 1) {
   /* 刷新保留旧数据，骨架只在首载出现 */
   loadErr.value = false
   errMsg.value = ''
+  const token = ++reqSeq
   try {
     const params = new URLSearchParams({ page: p, size: SIZE })
     if (st.status !== '') params.set('status', st.status)
     const s = st.q.trim()
     if (s) params.set('q', s)   /* 后端已支持 q 服务端搜索（邮箱），无需本地兜底 */
     const d = await req('GET', '/api/admin/member/subscriptions?' + params)
+    if (token !== reqSeq) return
     subs.value = d.items || []
     total.value = d.total ?? 0
     pages.value = Math.max(1, d.pages ?? 1)
     st.page = d.page || p
   } catch (e) {
+    if (token !== reqSeq) return
     loadErr.value = true
     errMsg.value = e.message || ''
     toast('订阅列表加载失败：' + (e.message || ''), 'error')
   }
-  loaded.value = true
+  if (token === reqSeq) loaded.value = true
 }
 onMounted(() => load(st.page))
 
@@ -136,7 +144,7 @@ async function cancelConfirm() {
       <span class="page-sub">共 {{ total }} 条订阅</span>
     </div>
     <div class="filter-bar">
-      <input v-model="st.q" class="input" style="width:220px" placeholder="搜订阅邮箱" @keydown.enter="search()">
+      <input v-model="st.q" class="input js-search" style="width:220px" placeholder="搜订阅邮箱" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
     </div>
   </div>
@@ -170,21 +178,21 @@ async function cancelConfirm() {
           <td style="white-space:nowrap">{{ r.price_cents != null ? money(r.price_cents) : '—' }}</td>
           <td><span class="tag" :class="stCls(r.status)">{{ r.status_text || r.status }}</span></td>
           <td style="color:var(--gray);white-space:nowrap">{{ dt(r.next_billing_at) || '—' }}</td>
-          <td style="color:var(--gray);white-space:nowrap">{{ r.resume_at ? dt(r.resume_at) : '—' }}</td>
+          <td style="color:var(--gray);white-space:nowrap">{{ r.resume_at ? dDate(r.resume_at) : '—' }}</td>
           <td style="color:var(--gray);white-space:nowrap">{{ r.skip_until ? '跳过至 ' + dDate(r.skip_until) : '—' }}</td>
           <td style="color:var(--gray);white-space:nowrap">{{ dt(r.created_at) || '—' }}</td>
           <td style="text-align:right;white-space:nowrap">
-            <template v-if="r.status === 1">
+            <template v-if="r.status === 1 && session.hasPerm('member:manage')">
               <button class="btn btn-secondary btn-sm" :class="{ loading: rowBusy === r.id }" :disabled="rowBusy === r.id" @click="openPause(r)">⏸ 暂停</button>
               <button class="btn btn-ghost btn-sm" style="color:var(--error)" :class="{ loading: rowBusy === r.id }" :disabled="rowBusy === r.id" @click="openCancel(r)">✕ 取消</button>
             </template>
-            <button v-else-if="r.status === 2" class="btn btn-primary btn-sm" :class="{ loading: rowBusy === r.id }" :disabled="rowBusy === r.id" @click="openResume(r)">▶ 恢复</button>
+            <button v-else-if="r.status === 2 && session.hasPerm('member:manage')" class="btn btn-primary btn-sm" :class="{ loading: rowBusy === r.id }" :disabled="rowBusy === r.id" @click="openResume(r)">▶ 恢复</button>
             <span v-else style="color:var(--gray);font-size:12px">{{ r.cancel_reason ? '原因：' + (CANCEL_REASONS[r.cancel_reason] || r.cancel_reason) : '—' }}</span>
           </td>
         </tr>
       </tbody>
     </table>
-    <EmptyState v-if="!subs.length" :icon="filtered() ? '🔍' : '📦'" :title="filtered() ? '未找到匹配的订阅' : '暂无订阅'" :sub="filtered() ? '试试调整或清除筛选' : '用户订阅 Nail Club 后将显示在这里'" />
+    <EmptyState v-if="!subs.length" :icon="filtered ? '🔍' : '📦'" :title="filtered ? '未找到匹配的订阅' : '暂无订阅'" :sub="filtered ? '试试调整或清除筛选' : '用户订阅 Nail Club 后将显示在这里'" />
     <Pagination embed :page="st.page" :pages="pages" :total="total" unit="条" @go="load" />
   </div>
 

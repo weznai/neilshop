@@ -29,8 +29,37 @@ const result = ref(null)
 const paid = ref(false)
 const copied = ref(false)
 
-onMounted(() => {
+/* 待付礼品卡订单暂存（hosted 支付跳转回来后可恢复待付卡继续支付） */
+const GC_DRAFT_KEY = 'gm_last_gc_order'
+function saveGcDraft() {
+  if (!result.value) return
+  try {
+    localStorage.setItem(GC_DRAFT_KEY, JSON.stringify({
+      code: result.value.code, order_no: result.value.order_no,
+      amount_cents: result.value.amount_cents, email: purchaser.value.trim(),
+    }))
+  } catch (_) { /* 隐私模式 */ }
+}
+function clearGcDraft() { try { localStorage.removeItem(GC_DRAFT_KEY) } catch (_) { /* 隐私模式 */ } }
+
+onMounted(async () => {
   if (auth.user && auth.user.email) purchaser.value = auth.user.email
+  let saved = null
+  try { saved = JSON.parse(localStorage.getItem(GC_DRAFT_KEY) || 'null') } catch (_) { saved = null }
+  if (saved && saved.order_no) {
+    try {
+      const o = await req('GET', '/api/orders/' + encodeURIComponent(saved.order_no) + '?email=' + encodeURIComponent(saved.email || ''))
+      if (o && o.status === 0) {
+        if (saved.email) purchaser.value = saved.email
+        result.value = { code: saved.code || '', order_no: saved.order_no, amount_cents: saved.amount_cents, status: 0 }
+        paid.value = false
+      } else {
+        clearGcDraft()
+      }
+    } catch (e) {
+      if (e && e.status === 404) clearGcDraft()
+    }
+  }
 })
 
 const purchaserBad = computed(() => !!purchaser.value && !EMAIL_RE.test(purchaser.value))
@@ -49,23 +78,29 @@ async function buy() {
       message: msg.value.trim() || null,
     })
     paid.value = false
+    saveGcDraft()
     ui.toast(t('Gift card created 🎁', '礼品卡已生成 🎁'), 'success')
   } catch (e) {
     const m = e && e.data && e.data.detail ? errMessage(e) : ''
     if (m === 'code collision') ui.toast(t('Please retry — code generation conflict', '生成冲突，请重试'), 'error')
+    else if (e && e.status === 422) ui.toast(t('Please check the email format and retry', '请检查邮箱格式后重试'), 'error')
     else if (m) ui.toast(m, 'error')
     else if (e && e.status === 0) ui.toast(t('Network unreachable — check your connection', '网络连接失败，请检查网络'), 'error')
     else ui.toast(t('Purchase failed — please retry', '购买失败，请稍后再试'), 'error')
   } finally { busy.value = false }
 }
 
-/* 礼品卡订单为待支付订单：mock 支付演示通道（支付成功后后端自动激活 status 0→1）；游客单带购买人 email 过归属校验 */
+/* 礼品卡订单为待支付订单：mock 通道直接演示支付；真实 provider 走 hosted redirect（支付成功后后端自动激活 status 0→1）；游客单带购买人 email 过归属校验 */
 async function payAndActivate() {
   if (paying.value || !result.value) return
   paying.value = true
   const em = purchaser.value.trim()
   try {
     const intent = await req('POST', '/api/payments/create-intent', { order_no: result.value.order_no, email: em })
+    if (intent && intent.redirect_url) {
+      window.location.href = intent.redirect_url
+      return
+    }
     if (intentNoChannel(intent)) {
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
       return
@@ -73,10 +108,11 @@ async function payAndActivate() {
     try {
       await req('POST', '/api/payments/mock-pay', { order_no: result.value.order_no, email: em, succeed: true })
       paid.value = true
+      clearGcDraft()
       ui.toast(t('Paid — gift card activated', '支付成功 · 礼品卡已激活'), 'success')
     } catch (e) {
       const m = (e.data && e.data.detail) || ''
-      if (m === 'already_paid') { paid.value = true; ui.toast(t('Already paid', '已支付'), 'success') }
+      if (m === 'already_paid') { paid.value = true; clearGcDraft(); ui.toast(t('Already paid', '已支付'), 'success') }
       else ui.toast(m === 'use_webhook' ? t('Complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款') : m || i18n.t('pay.failed'), 'error')
     }
   } catch (e) {
@@ -123,7 +159,7 @@ const mailto = computed(() => {
   const body = encodeURIComponent(
     `Here's your GLOWMAG gift card!\n\nCode: ${result.value.code}\nAmount: ${money(result.value.amount_cents)}\n${msg.value.trim() ? '\n' + msg.value.trim() + '\n' : ''}Redeem at checkout — no expiry. Enjoy the glam! 💅`,
   )
-  return `mailto:${recipient.value.trim()}?subject=${subject}&body=${body}`
+  return `mailto:${encodeURIComponent(recipient.value.trim())}?subject=${subject}&body=${body}`
 })
 </script>
 

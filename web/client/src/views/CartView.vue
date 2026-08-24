@@ -59,7 +59,7 @@ async function runPreview() {
 
 async function applyCode() {
   const c = (code.value || '').trim().toUpperCase()
-  if (!c) { appliedCode.value = null; try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ } ui.toast(reasonText('no_code'), 'error'); runPreview(); return }
+  if (!c) { appliedCode.value = null; try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ } runPreview(); return }
   appliedCode.value = c
   await runPreview()
   const p = pv.value
@@ -110,9 +110,9 @@ onMounted(() => {
   req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
     if (d && d.free_shipping_threshold) FREE_SHIP_C.value = Number(d.free_shipping_threshold) || 3500
   }).catch(() => {})
-  /* 跨页恢复已应用的折扣码（抽屉/checkout 同一 localStorage 键，保持三入口一致） */
+  /* 跨页恢复已应用的折扣码（抽屉/checkout 同一 localStorage 键，保持三入口一致）；显式跑一次试算确保码参与计价 */
   const saved = (localStorage.getItem('gm_applied_code') || '').trim().toUpperCase()
-  if (saved && !appliedCode.value) { code.value = saved; appliedCode.value = saved }
+  if (saved && !appliedCode.value) { code.value = saved; appliedCode.value = saved; runPreview() }
 })
 watch(
   () => cart.items.map((i) => i.vid + ':' + i.qty).join('|'),
@@ -147,6 +147,12 @@ const awayC = computed(() => {
   }
   return Math.max(0, FREE_SHIP_C.value - subC.value)
 })
+/* 免邮进度条文案：preview 可用显示「还差 $X」；preview 失败（pv=null）只展示门槛不报金额（以结算页试算为准） */
+const shipBarHtml = computed(() => {
+  if (freeShip.value) return i18n.t('ship.unlocked')
+  if (pv.value) return i18n.t('ship.away', (awayC.value / 100).toFixed(2))
+  return tt(`Free shipping on orders over $${(FREE_SHIP_C.value / 100).toFixed(0)}`, `满 $${(FREE_SHIP_C.value / 100).toFixed(0)} 可免邮`)
+})
 const totalD = computed(() => ((subC.value - bundleC.value - codeC.value + shipC.value) / 100).toFixed(2))
 const shipPct = computed(() => Math.min(100, ((FREE_SHIP_C.value - awayC.value) / FREE_SHIP_C.value) * 100))
 
@@ -158,6 +164,7 @@ const bundleHint = computed(() => i18n.t(pressQty.value >= 3
 
 const checkoutLink = computed(() => '/checkout' + (appliedCode.value ? `?code=${encodeURIComponent(appliedCode.value)}` : ''))
 const hasOos = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0 || i.stockStatus === 'out'))
+const hasOver = computed(() => cart.items.some((i) => i.stock > 0 && i.qty > i.stock))
 const hasInactive = computed(() => cart.items.some((i) => i.inactive))
 async function removeInactive() {
   const dead = cart.items.filter((i) => i.inactive).map((i) => i.vid)
@@ -207,6 +214,9 @@ const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
                   <div v-if="i.inactive" style="font-size:12px;color:var(--error);font-weight:600;margin-top:2px">
                     {{ tt('No longer available — please remove it', '该商品已不可购买，请移除') }}
                   </div>
+                  <div v-else-if="i.stock > 0 && i.qty > i.stock" style="font-size:12px;color:var(--error);font-weight:600;margin-top:2px">
+                    {{ tt('Only ' + i.stock + ' left', '仅剩 ' + i.stock + ' 件') }}
+                  </div>
                   <div v-else-if="i.stock > 0 && i.stock <= 5" style="font-size:12px;color:var(--warn);font-weight:600;margin-top:2px">
                     {{ i18n.t('cart.lowStock', i.stock) }}
                   </div>
@@ -214,7 +224,7 @@ const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
                     {{ i18n.t('cart.oos') }}
                   </div>
                 </div>
-                <b v-if="!i.inactive" style="font-size:15px;color:var(--plum);font-variant-numeric:tabular-nums">${{ ((i.priceC || i.price * 100) * i.qty / 100).toFixed(2) }}</b>
+                <b v-if="!i.inactive" style="font-size:15px;color:var(--plum);font-variant-numeric:tabular-nums">${{ ((i.priceC ?? i.price * 100) * i.qty / 100).toFixed(2) }}</b>
               </div>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
                 <div v-if="!i.inactive" style="display:flex;align-items:center;border:1px solid var(--gray-light);border-radius:8px">
@@ -248,9 +258,7 @@ const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
             class="ship-bar"
             :class="[{ 'gwp-bar': freeShip }, freePop ? 'free-pop' : '']"
             style="margin-bottom:10px"
-            v-html="freeShip
-              ? i18n.t('ship.unlocked')
-              : i18n.t('ship.away', (awayC / 100).toFixed(2))"></div>
+            v-html="shipBarHtml"></div>
           <div class="ship-track" style="margin-bottom:16px"><div class="ship-fill" :style="{ width: shipPct + '%' }"></div></div>
 
           <div style="display:flex;gap:8px;margin-bottom:6px">
@@ -284,15 +292,18 @@ const hasNail = computed(() => cart.items.some((i) => !isLash(i)))
             <div class="srow"><span>{{ i18n.t('cart.tax') }}</span><span class="val" style="color:var(--gray)">{{ i18n.t('cart.taxNote') }}</span></div>
           </div>
           <div style="display:flex;justify-content:space-between;font-weight:800;font-size:17px;margin:16px 0;padding-top:14px;border-top:1px solid var(--gray-light)">
-            <span>{{ i18n.t('cart.total') }}</span><span style="color:var(--plum);font-variant-numeric:tabular-nums">${{ totalD }}</span>
+            <span>{{ tt('Estimated total', '预估总额') }} <span style="font-size:11px;color:var(--gray);font-weight:400">({{ tt('excl. tax', '不含税') }})</span></span><span style="color:var(--plum);font-variant-numeric:tabular-nums">${{ totalD }}</span>
           </div>
-          <router-link v-if="!hasOos" :to="checkoutLink" class="btn btn-primary btn-block btn-lg">{{ i18n.t('cart.checkout') }} · ${{ totalD }}</router-link>
+          <router-link v-if="!hasOos && !hasOver" :to="checkoutLink" class="btn btn-primary btn-block btn-lg">{{ i18n.t('cart.checkout') }} · ${{ totalD }}</router-link>
           <button v-else class="btn btn-primary btn-block btn-lg" disabled>{{ i18n.t('cart.checkout') }}</button>
           <button v-if="hasInactive" class="btn btn-secondary btn-block" style="margin-top:8px" type="button" @click="removeInactive">
             {{ tt('Remove unavailable items', '移除已下架商品') }}
           </button>
           <div v-if="hasOos" style="font-size:12.5px;color:var(--error);font-weight:600;margin-top:10px;text-align:center">
             {{ tt('Please remove out-of-stock items before checkout', '请先移除缺货/下架商品后再结算') }}
+          </div>
+          <div v-if="hasOver" style="font-size:12.5px;color:var(--error);font-weight:600;margin-top:10px;text-align:center">
+            {{ tt('Some items exceed available stock — please adjust quantities', '部分商品库存不足，请调整数量后再结算') }}
           </div>
           <router-link to="/store" style="display:block;text-align:center;margin-top:12px;font-size:13px;color:var(--gray);text-decoration:underline">
             {{ i18n.t('cart.continue') }}

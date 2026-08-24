@@ -1,6 +1,6 @@
 <script setup>
 /* 账户中心外壳：标题 + 侧栏导航 + 登录守卫 */
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useUiStore } from '../../stores/ui'
@@ -12,20 +12,18 @@ const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
 const ready = ref(false)
-/* [href, [en, zh], icon]；订阅/推荐入口挂在账户侧栏（后端已有全量接口，此前仅独立页承载） */
+/* [href, [en, zh], icon]（订阅/推荐入口由页脚承载，不占侧栏） */
 const NAV = [
   ['/account', ['Overview', '总览'], '👤'],
   ['/account/orders', ['Orders', '订单'], '📦'],
   ['/account/returns', ['Returns & Exchanges', '退换货'], '↩️'],
-  ['/subscribe', ['Nail Club', '美甲月盒'], '🗓'],
   ['/account/points', ['Glow Points', '积分'], '⭐'],
   ['/account/address', ['Address Book', '地址簿'], '📍'],
   ['/account/wishlist', ['Wishlist', '心愿单'], '💜'],
-  ['/refer', ['Refer & Earn', '推荐有礼'], '💌'],
   ['/account/settings', ['Settings', '设置'], '⚙️'],
 ]
-/* User.tier：0普通 1银 2金 → 等级色点 */
-const TIER_DOT = { 0: 'var(--plum)', 1: 'var(--gray-light)', 2: 'var(--gold)' }
+/* User.tier：0普通 1银 2金 → 等级色点（银级用可现银灰，避免 var(--gray-light) 隐身） */
+const TIER_DOT = { 0: 'var(--plum)', 1: '#B9B9C8', 2: 'var(--gold)' }
 
 /* 激活态：精确匹配，或子路径（如 /account/orders/detail 高亮 Orders） */
 function isActive(href) {
@@ -33,7 +31,16 @@ function isActive(href) {
   return href !== '/account' && route.path.startsWith(href + '/')
 }
 
+/* 移动端导航为横向滚动 tab 条：active 项自动滚入视野 */
+const navEl = ref(null)
+function scrollActiveNav() {
+  const el = navEl.value && navEl.value.querySelector('a.on')
+  if (el && el.scrollIntoView) { try { el.scrollIntoView({ inline: 'center', block: 'nearest' }) } catch (_) { /* 旧浏览器 */ } }
+}
+watch(() => route.path, () => nextTick(scrollActiveNav))
+
 onMounted(async () => {
+  nextTick(scrollActiveNav)
   if (auth.isLoggedIn) {
     /* 401（会话过期）时 store 已清缓存 → 显示登录引导 */
     try { await auth.me() } catch (_) { /* 网络错误保留缓存，视图内自行容错 */ }
@@ -69,7 +76,7 @@ async function signOut() {
               <span class="acct-user-email">{{ auth.user?.email }}</span>
             </div>
           </div>
-          <nav class="acct-nav">
+          <nav ref="navEl" class="acct-nav">
             <router-link
               v-for="[href, label, ico] in NAV" :key="href" :to="href" :class="{ on: isActive(href) }"
             >{{ ico }} {{ tt(label[0], label[1]) }}</router-link>

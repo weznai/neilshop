@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { money, dt } from '../composables/format'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -9,9 +10,12 @@ import { OSTATUS, PAY, SHIP, RMA_REASON, ORDER_ERR, mapErr } from '../constants/
 
 const route = useRoute()
 const router = useRouter()
-/* 返回列表：优先回退历史（保留列表筛选 query），直链进入无历史时兜底 /orders */
+const session = useSessionStore()
+/* 返回列表：优先回退历史（保留列表筛选 query）；直链/无上一页记录时兜底 /orders */
 function backToList() {
-  try { router.back() } catch { router.push('/orders') }
+  const h = router.options.history.state
+  if (window.history.length > 1 && h && h.back) router.back()
+  else router.push('/orders')
 }
 const o = ref(null)
 const err = ref('')
@@ -358,7 +362,7 @@ async function addrConfirm() {
       <div class="hero-top">
         <div class="hero-left">
           <button class="hero-no" title="点击复制订单号" @click="copyNo">
-            <b>{{ o.order_no }}</b><i>⧉</i>
+            <i class="no-pre">NO.</i><b>{{ o.order_no }}</b><i>⧉</i>
           </button>
           <span class="tag hero-tag" :class="OSTATUS[o.status]?.cls || 'tag-error'">{{ OSTATUS[o.status]?.label ?? o.status }}</span>
         </div>
@@ -386,13 +390,13 @@ async function addrConfirm() {
       </div>
 
       <div class="hero-ops">
-        <button v-if="o.status === 1 || o.status === 2" class="btn btn-primary btn-sm" @click="act('ship')">📦 发货</button>
-        <button v-if="o.status === 1" class="btn btn-secondary btn-sm" @click="prepareDlg = true">🧰 开始备货</button>
-        <button v-if="o.status === 3" class="btn btn-secondary btn-sm" @click="act('deliver')">✅ 标记妥投</button>
-        <button v-if="o.status === 4" class="btn btn-secondary btn-sm" @click="doneDlg = true">✅ 代确认完成</button>
-        <button v-if="o.status <= 2" class="btn btn-secondary btn-sm" @click="openAddr">✏️ 修改地址</button>
-        <button v-if="[1, 2, 3, 4, 5].includes(o.status)" class="btn btn-ghost btn-sm hero-danger" @click="act('refund')">💸 退款（余额 {{ money(refundable) }}）</button>
-        <button v-if="o.status === 0" class="btn btn-ghost btn-sm hero-danger" @click="cancelDlg = true">✕ 取消订单</button>
+        <button v-if="(o.status === 1 || o.status === 2) && session.hasPerm('trade:ship')" class="btn btn-primary btn-sm" @click="act('ship')">📦 发货</button>
+        <button v-if="o.status === 1 && session.hasPerm('trade:ship')" class="btn btn-secondary btn-sm" @click="prepareDlg = true">🧰 开始备货</button>
+        <button v-if="o.status === 3 && session.hasPerm('trade:ship')" class="btn btn-secondary btn-sm" @click="act('deliver')">✅ 标记妥投</button>
+        <button v-if="o.status === 4 && session.hasPerm('trade:manage')" class="btn btn-secondary btn-sm" @click="doneDlg = true">✅ 代确认完成</button>
+        <button v-if="o.status <= 2 && session.hasPerm('trade:manage')" class="btn btn-secondary btn-sm" @click="openAddr">✏️ 修改地址</button>
+        <button v-if="[1, 2, 3, 4, 5].includes(o.status) && session.hasPerm('trade:refund')" class="btn btn-ghost btn-sm hero-danger" @click="act('refund')">💸 {{ o.status === 5 ? '售后退款' : '退款' }}（余额 {{ money(refundable) }}）</button>
+        <button v-if="o.status === 0 && session.hasPerm('trade:manage')" class="btn btn-ghost btn-sm hero-danger" @click="cancelDlg = true">✕ 取消订单</button>
       </div>
     </div>
 
@@ -400,7 +404,7 @@ async function addrConfirm() {
     <div class="od-grid">
       <div class="card od-card" style="padding:20px">
         <div class="dhead">
-          <h3 class="dtitle">商品明细</h3>
+          <h3 class="dtitle"><span class="tchip">🛍️</span>商品明细</h3>
           <span class="item-cnt" v-if="(o.items || []).length">{{ o.items.length }} 项</span>
         </div>
         <div class="oi-wrap">
@@ -441,7 +445,7 @@ async function addrConfirm() {
 
       <!-- 侧栏：基本信息 + 收件地址 + 客户留言 合并为一张高卡，与左栏等高平衡 -->
       <div class="card od-card" style="padding:20px;animation-delay:.06s">
-        <div class="dhead"><h3 class="dtitle">订单信息</h3></div>
+        <div class="dhead"><h3 class="dtitle"><span class="tchip">🧾</span>订单信息</h3></div>
         <div class="kv">
           <div class="kv-row"><span>客户</span><b class="kv-val">{{ o.email }}</b></div>
           <div class="kv-row"><span>下单</span><span class="kv-val">{{ dt(o.placed_at) || '—' }}</span></div>
@@ -471,7 +475,7 @@ async function addrConfirm() {
     <!-- 支付 / 物流：两张矮卡并排一行，消除竖向碎片空白 -->
     <div class="duo">
       <div class="card od-card" style="padding:20px;animation-delay:.1s">
-        <div class="dhead"><h3 class="dtitle">支付信息</h3></div>
+        <div class="dhead"><h3 class="dtitle"><span class="tchip">💳</span>支付信息</h3></div>
         <div v-for="p in o.payments || []" :key="p.id" class="pay-row">
           <div class="pay-main">
             <b>{{ money(p.amount) }}</b>
@@ -489,7 +493,7 @@ async function addrConfirm() {
       </div>
 
       <div class="card od-card" style="padding:20px;animation-delay:.14s">
-        <div class="dhead"><h3 class="dtitle">物流包裹</h3></div>
+        <div class="dhead"><h3 class="dtitle"><span class="tchip">📦</span>物流包裹</h3></div>
         <div v-for="s in o.shipments || []" :key="s.shipment_no" class="pay-row">
           <div class="pay-main">
             <b>{{ s.shipment_no }}</b> · {{ s.carrier || '—' }}
@@ -506,10 +510,10 @@ async function addrConfirm() {
     <!-- 时间线：底部通栏（日志式行填充整行宽度，不再撑高左栏） -->
     <div class="card od-card" style="padding:20px;animation-delay:.18s">
       <div class="dhead">
-        <h3 class="dtitle">时间线</h3>
+        <h3 class="dtitle"><span class="tchip">📜</span>时间线</h3>
         <div style="display:flex;align-items:center;gap:10px">
           <span v-if="(o.timeline || []).length" class="item-cnt">{{ o.timeline.length }} 条</span>
-          <button class="btn btn-secondary btn-sm" @click="openNote">＋ 添加备注</button>
+          <button v-if="session.hasPerm('trade:manage')" class="btn btn-secondary btn-sm" @click="openNote">＋ 添加备注</button>
         </div>
       </div>
       <div class="tl">
@@ -579,6 +583,9 @@ async function addrConfirm() {
       <p style="font-size:13px;color:var(--gray);margin-bottom:14px">
         订单总额 {{ money(o.grand_total) }} · 可退余额 <b style="color:var(--plum)">{{ money(refundable) }}</b>
         （按最新可退支付计算）。全额退款将回补库存、作废本单积分并恢复礼品卡抵扣。
+      </p>
+      <p v-if="o.status === 5" style="font-size:12.5px;color:var(--warn);margin:-6px 0 14px">
+        本单已完成，本次为<b>售后退款</b>：订单状态保持「已完成」不变，仅按可退余额执行退款，请确认售后场景后再操作。
       </p>
       <div class="field">
         <label>退款金额（美元）</label>
@@ -673,6 +680,9 @@ async function addrConfirm() {
 .hero-no{display:inline-flex;align-items:center;gap:8px;background:none;border:none;cursor:pointer;padding:0;
   font-family:var(--font-title);font-size:20px;font-weight:700;color:var(--ink);letter-spacing:-.2px;transition:color .15s}
 .hero-no:hover{color:var(--plum)}
+.hero-no:focus-visible{outline:2px solid var(--rose);outline-offset:3px;border-radius:4px}
+/* NO. 上标前缀：票据编号感 */
+.no-pre{font-style:normal;font-size:10px;font-weight:800;letter-spacing:1.5px;color:var(--plum);opacity:.55;align-self:flex-start;margin-top:2px}
 .hero-no i{font-style:normal;font-size:13px;color:var(--gray);opacity:0;transform:translateX(-3px);transition:opacity .15s,transform .15s}
 .hero-no:hover i{opacity:1;transform:none}
 .hero-tag{font-size:13px;padding:5px 14px}
@@ -688,7 +698,10 @@ async function addrConfirm() {
 .step:not(:last-child)::after{content:"";flex:1;height:2px;background:var(--gray-light);margin:0 10px;border-radius:1px;transition:background .3s}
 .step.done .dot{background:var(--success);border-color:var(--success);color:#fff}
 .step.done:not(:last-child)::after{background:var(--success)}
-.step.now .dot{background:var(--plum);border-color:var(--plum);color:#fff;box-shadow:0 0 0 4px rgba(138,74,99,.14)}
+.step.now .dot{background:var(--plum);border-color:var(--plum);color:#fff;box-shadow:0 0 0 4px rgba(138,74,99,.14);position:relative}
+/* 当前节点呼吸脉冲：表达「进行中」语义 */
+.step.now .dot::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:2px solid var(--plum);opacity:0;animation:odPulse 2.2s ease-out .8s infinite}
+@keyframes odPulse{0%{transform:scale(.6);opacity:.5}70%{transform:scale(1.15);opacity:0}100%{transform:scale(1.15);opacity:0}}
 .step.now span{color:var(--plum)}
 /* 终态（取消/退款）横幅 */
 .closed-banner{margin-top:16px;padding:10px 14px;border-radius:10px;background:rgba(229,72,77,.08);
@@ -702,6 +715,10 @@ async function addrConfirm() {
 .hero-danger{color:var(--error)}
 .hero-danger:hover{background:var(--pale-error)}
 
+/* ===== 卡片标题徽章：渐变底图标 chip，统一各 section 视觉锚点 ===== */
+.tchip{width:28px;height:28px;flex:none;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:14px;background:linear-gradient(135deg,var(--rose-pale),var(--rose-light));box-shadow:inset 0 0 0 1px rgba(232,180,184,.4)}
+
 /* ===== 页面骨架：主栏 1.6fr / 侧栏 1fr，支付物流并排，时间线通栏 ===== */
 .od-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start;margin-top:16px}
 .duo{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;align-items:start}
@@ -709,7 +726,9 @@ async function addrConfirm() {
 /* ===== 商品明细：条目列表 + 发票式汇总并排 ===== */
 .oi-wrap{display:grid;grid-template-columns:1fr 232px;gap:0 22px;align-items:start}
 .oi-list{min-width:0}
-.oitem{display:flex;gap:12px;align-items:center;padding:11px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.oitem{display:flex;gap:12px;align-items:center;padding:11px 10px;margin:0 -10px;border-radius:10px;
+  transition:background .15s;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.oitem:hover{background:var(--row-hover)}
 .oitem:last-of-type{border-bottom:none}
 .oitem-main{flex:1;min-width:0}
 .oitem-title{display:block;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -727,23 +746,28 @@ async function addrConfirm() {
 .sum-row{display:flex;justify-content:space-between;color:var(--ink)}
 .sum-row span+span{font-variant-numeric:tabular-nums}
 .sum-row.disc{color:var(--success)}
-.sum-total{display:flex;justify-content:space-between;align-items:center;background:var(--rose-pale);border-radius:10px;
+.sum-total{display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,var(--rose-pale),var(--rose-light));border-radius:10px;
   padding:10px 14px;margin-top:6px;font-weight:700;font-size:13px}
 .sum-total b{color:var(--plum);font-size:17px;font-weight:800;font-variant-numeric:tabular-nums}
 
 /* ===== 时间线（竖向圆点连线，底部通栏） ===== */
 .tl{position:relative;padding-left:20px}
-.tl::before{content:"";position:absolute;left:5px;top:6px;bottom:10px;width:2px;background:var(--gray-light);border-radius:1px}
+.tl::before{content:"";position:absolute;left:5px;top:6px;bottom:10px;width:2px;background:linear-gradient(180deg,var(--rose-light),var(--gray-light));border-radius:1px}
 .tl-item{position:relative;padding-bottom:16px}
 .tl-item:last-child{padding-bottom:4px}
+/* 最新一条标记 pill（末条即最新） */
+.tl-item:last-child .tl-head b::after{content:"最新";font-size:10px;font-weight:700;letter-spacing:1px;color:var(--plum);
+  background:var(--rose-pale);border-radius:999px;padding:1.5px 8px;margin-left:8px;vertical-align:1.5px}
 .tl-dot{position:absolute;left:-20px;top:4px;width:12px;height:12px;border-radius:50%;background:var(--rose);
-  border:2.5px solid #fff;box-shadow:0 0 0 1.5px var(--rose-light)}
+  border:2.5px solid #fff;box-shadow:0 0 0 1.5px var(--rose-light);transition:transform .2s}
+.tl-item:hover .tl-dot{transform:scale(1.2)}
 .tl-dot.ok{background:var(--success);box-shadow:0 0 0 1.5px var(--pale-success)}
 .tl-dot.err{background:var(--error);box-shadow:0 0 0 1.5px var(--pale-error)}
 .tl-dot.info{background:var(--info);box-shadow:0 0 0 1.5px var(--pale-info)}
 .tl-dot.plum{background:var(--plum);box-shadow:0 0 0 1.5px var(--rose-light)}
 .tl-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
-.tl-head b{font-size:13.5px}
+.tl-head b{font-size:13.5px;transition:color .15s}
+.tl-item:hover .tl-head b{color:var(--plum)}
 .tl-actor{font-size:10.5px;font-weight:700;color:var(--gray);background:var(--gray-light);border-radius:999px;padding:1px 8px}
 .tl-time{font-size:11.5px;color:var(--gray);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
 .tl-text{color:var(--gray);font-size:12.5px;margin-top:3px;line-height:1.6}
@@ -752,6 +776,8 @@ async function addrConfirm() {
 .tl-more:hover{text-decoration:underline}
 
 /* ===== 键值行（.kv/.kv-row/.kv-val 已全局化） ===== */
+.kv-row{margin:0 -8px;padding:9px 8px;border-radius:8px;transition:background .15s}
+.kv-row:hover{background:var(--row-hover)}
 .kv-sub{font-style:normal;color:var(--gray);font-size:12px}
 
 /* ===== 客户留言 ===== */
@@ -760,7 +786,9 @@ async function addrConfirm() {
 .note-txt{font-size:13px;color:var(--plum);line-height:1.6;white-space:pre-wrap}
 
 /* ===== 支付 / 物流行 ===== */
-.pay-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.pay-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 8px;margin:0 -8px;
+  border-radius:10px;transition:background .15s;border-bottom:1px dashed var(--gray-light);font-size:13px}
+.pay-row:hover{background:var(--row-hover)}
 .pay-row:last-of-type{border-bottom:none}
 .pay-main{min-width:0}
 .pay-meta{color:var(--gray);font-size:12px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -778,8 +806,18 @@ async function addrConfirm() {
 .addr p{color:var(--gray)}
 
 /* ===== 入场动画 ===== */
-.od-card{animation:odRise .45s ease-out backwards}
+.od-card{animation:odRise .45s ease-out backwards;transition:box-shadow .25s,border-color .25s}
+.od-card:hover{box-shadow:0 4px 14px rgba(31,27,30,.07),0 18px 40px rgba(31,27,30,.1);border-color:var(--rose-light)}
 @keyframes odRise{from{opacity:0;transform:translateY(10px)}}
+
+/* ===== 空状态：虚线容器化 ===== */
+.empty-line{border:1.5px dashed var(--gray-light);border-radius:10px;padding:16px 12px;text-align:center;margin-top:6px}
+
+/* ===== 无动效偏好：关闭装饰动画 ===== */
+@media (prefers-reduced-motion:reduce){
+  .hero,.od-card{animation:none}
+  .step.now .dot::after,.tl-dot,.tl-head b{animation:none}
+}
 
 /* ===== 响应式：窄屏逐级塌缩 ===== */
 @media (max-width:1080px){

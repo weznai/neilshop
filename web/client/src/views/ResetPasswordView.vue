@@ -20,6 +20,8 @@ const showPw2 = ref(false)
 const busy = ref(false)
 const err = ref('')
 const done = ref(false)
+const invalidTk = ref(false)
+const resending = ref(false)
 
 const pwLen = computed(() => password.value.length)
 /* 弱密码提示：纯数字易被撞库（与注册页一致） */
@@ -45,18 +47,36 @@ async function submit() {
     })
     done.value = true
     ui.toast(tt('Password reset — please sign in with your new password', '密码已重置，请使用新密码登录'), 'success')
-    setTimeout(() => router.push('/login'), 1200)
+    setTimeout(() => router.push({ path: '/login', query: { email: email.value.trim() } }), 1200)
   } catch (e) {
     const d = e && e.data && e.data.detail
     if (e && e.status === 400 && d === 'invalid_token') {
-      err.value = tt('This reset link is invalid or expired — please confirm the email you entered matches the one you registered with, then request a new link.', '重置链接无效或已过期——请确认输入的邮箱与注册邮箱一致（链接只带 token，邮箱需手动输入），必要时重新申请。')
-      token.value = ''
+      /* token 失效不切走表单：保留邮箱/密码输入，引导重新发送重置邮件 */
+      invalidTk.value = true
+      err.value = tt('This reset link is invalid, expired, or already used. Check the email below matches your registered email, then send yourself a new reset link.', '该重置链接无效、已过期或已被使用。请确认下方邮箱与注册邮箱一致，然后重新发送一封重置邮件。')
     } else if (e && e.status === 422) {
       err.value = tt('Please check: valid email + password of 8-128 characters', '请检查：有效邮箱 + 8-128 位密码')
     } else {
       err.value = tt('Reset failed — please retry', '重置失败，请稍后再试')
     }
   } finally { busy.value = false }
+}
+
+/* token 失效后重发：POST /password-reset/request（恒 200 防枚举），新链接走邮件 */
+async function resend() {
+  if (!EMAIL_RE.test(email.value.trim())) {
+    err.value = tt('Enter a valid email', '请输入有效邮箱')
+    return
+  }
+  resending.value = true
+  try {
+    await req('POST', '/api/account/password-reset/request', { email: email.value.trim() })
+    invalidTk.value = false
+    err.value = ''
+    ui.toast(tt('Reset email sent — please open the newest link to continue', '重置邮件已发送，请使用最新链接继续'), 'success')
+  } catch (_) {
+    ui.toast(tt('Could not send — please retry later', '发送失败，请稍后再试'), 'error')
+  } finally { resending.value = false }
 }
 </script>
 
@@ -85,7 +105,7 @@ async function submit() {
           <p style="font-size:13.5px;color:var(--gray);text-align:center;margin-bottom:18px">
             {{ tt('Redirecting you to sign in…', '正在跳转到登录页…') }}
           </p>
-          <router-link class="btn btn-primary btn-block" to="/login">{{ tt('Go to sign in', '去登录') }}</router-link>
+          <router-link class="btn btn-primary btn-block" :to="{ path: '/login', query: { email: email.trim() } }">{{ tt('Go to sign in', '去登录') }}</router-link>
         </template>
 
         <!-- 有效 token：新密码表单 -->
@@ -126,7 +146,8 @@ async function submit() {
                 {{ tt('Passwords do not match', '两次输入的密码不一致') }}
               </div>
             </div>
-            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
+            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ err }}</div>
+            <button v-if="invalidTk" type="button" class="btn btn-secondary btn-block" style="margin-bottom:10px" :class="{ loading: resending }" :disabled="resending" @click="resend">📧 {{ tt('Resend reset email', '重新发送重置邮件') }}</button>
             <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">
               {{ tt('Reset password', '重置密码') }}
             </button>

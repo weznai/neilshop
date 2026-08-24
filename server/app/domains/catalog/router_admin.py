@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import require_admin
+from app.core.deps import require_perm
 from app.models import User
 
 from app.domains.catalog import service
@@ -23,7 +23,7 @@ def admin_stock_notifies(
     variant_id: int | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("stock:read")),
     db: Session = Depends(get_db),
 ):
     """到货通知名单（StockNotification 模型在本 catalog 域，端点落位 catalog）"""
@@ -39,7 +39,7 @@ def admin_list_products(
     sort: str | None = None,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_list_products(
@@ -54,7 +54,7 @@ def admin_list_variants(
     sort: str | None = None,
     page: int = Query(1, ge=1),
     size: int = Query(50, ge=1, le=200),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_list_variants(
@@ -65,7 +65,7 @@ def admin_list_variants(
 @router.get("/products/{product_id}")
 def admin_get_product(
     product_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_get_product(db, product_id)
@@ -74,7 +74,7 @@ def admin_get_product(
 @router.post("/products", status_code=201)
 def admin_create_product(
     body: ProductCreateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_create_product(db, admin, body)
@@ -83,7 +83,7 @@ def admin_create_product(
 @router.post("/products/bulk", status_code=201)
 def admin_bulk_products(
     body: ProductBulkIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_bulk_products(db, admin, body)
@@ -92,7 +92,7 @@ def admin_bulk_products(
 @router.post("/products/batch-status")
 def admin_batch_status(
     body: BatchStatusIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     """批量上下架：1 发布 / 2 归档 / 0 恢复草稿（逐条部分成功，失败返回明细）"""
@@ -103,7 +103,7 @@ def admin_batch_status(
 def admin_update_product(
     product_id: int,
     body: ProductUpdateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_update_product(db, admin, product_id, body)
@@ -112,7 +112,7 @@ def admin_update_product(
 @router.post("/products/{product_id}/publish")
 def admin_publish_product(
     product_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_publish_product(db, admin, product_id)
@@ -121,7 +121,7 @@ def admin_publish_product(
 @router.post("/products/{product_id}/unpublish")
 def admin_unpublish_product(
     product_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_unpublish_product(db, admin, product_id)
@@ -131,7 +131,7 @@ def admin_unpublish_product(
 def admin_create_variant(
     product_id: int,
     body: VariantCreateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_create_variant(db, admin, product_id, body)
@@ -141,7 +141,7 @@ def admin_create_variant(
 def admin_update_variant(
     variant_id: int,
     body: VariantUpdateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_update_variant(db, admin, variant_id, body)
@@ -150,7 +150,7 @@ def admin_update_variant(
 @router.delete("/variants/{variant_id}")
 def admin_delete_variant(
     variant_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_delete_variant(db, admin, variant_id)
@@ -158,7 +158,7 @@ def admin_delete_variant(
 
 @router.get("/categories")
 def admin_list_categories(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_list_categories(db)
@@ -167,7 +167,7 @@ def admin_list_categories(
 @router.post("/categories", status_code=201)
 def admin_create_category(
     body: CategoryCreateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_create_category(db, admin, body)
@@ -177,7 +177,7 @@ def admin_create_category(
 def admin_update_category(
     category_id: int,
     body: CategoryUpdateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_update_category(db, admin, category_id, body)
@@ -186,7 +186,7 @@ def admin_update_category(
 @router.delete("/categories/{category_id}")
 def admin_delete_category(
     category_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_delete_category(db, admin, category_id)
@@ -194,7 +194,7 @@ def admin_delete_category(
 
 @router.get("/collections")
 def admin_list_collections(
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_list_collections(db)
@@ -203,7 +203,7 @@ def admin_list_collections(
 @router.post("/collections", status_code=201)
 def admin_create_collection(
     body: CollectionCreateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_create_collection(db, admin, body)
@@ -213,7 +213,7 @@ def admin_create_collection(
 def admin_update_collection(
     collection_id: int,
     body: CollectionUpdateIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_update_collection(db, admin, collection_id, body)
@@ -222,7 +222,7 @@ def admin_update_collection(
 @router.delete("/collections/{collection_id}")
 def admin_delete_collection(
     collection_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_delete_collection(db, admin, collection_id)
@@ -232,7 +232,7 @@ def admin_delete_collection(
 def admin_set_collection_products(
     collection_id: int,
     body: CollectionProductsIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_set_collection_products(db, admin, collection_id, body)
@@ -241,7 +241,7 @@ def admin_set_collection_products(
 @router.get("/collections/{collection_id}/products")
 def admin_collection_products(
     collection_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_collection_products(db, collection_id)
@@ -250,7 +250,7 @@ def admin_collection_products(
 @router.get("/products/{product_id}/translations")
 def admin_list_translations(
     product_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:read")),
     db: Session = Depends(get_db),
 ):
     return service.admin_list_translations(db, product_id)
@@ -260,7 +260,7 @@ def admin_list_translations(
 def admin_upsert_translation(
     product_id: int,
     body: TranslationUpsertIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_upsert_translation(db, admin, product_id, body)
@@ -270,7 +270,7 @@ def admin_upsert_translation(
 def admin_delete_translation(
     product_id: int,
     locale: str,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("catalog:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_delete_translation(db, admin, product_id, locale)

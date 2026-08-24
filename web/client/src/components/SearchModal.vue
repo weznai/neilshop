@@ -5,16 +5,15 @@ import { i18n } from '../i18n'
 import { useUiStore } from '../stores/ui'
 import { req } from '../api/client'
 import { GM_CATALOG } from '../data/catalog'
+import { TRENDING } from '../data/trending'
 
 const ui = useUiStore()
 const router = useRouter()
 const q = ref('')
 const suggestions = ref(null) /* null = 未搜索（显示最近/热门） */
 const sugLoading = ref(false)
-const trending = [
-  ['french', '法式'], ['glitter', '亮片'], ['cat-eye', '猫眼'], ['short almond', '短杏仁'],
-  ['natural', '自然款'], ['gift', '送礼'],
-]
+/* 有联想分类/商品任一即进入结果区（无 products 但有 categories 时仍展示分类 + 查看全部） */
+const hasCats = computed(() => !!(suggestions.value && suggestions.value.categories && suggestions.value.categories.length))
 /* 联想行图兜底：回落 placehold + dataset 守卫防循环 */
 const IMG_FALLBACK = 'https://placehold.co/72x72/E8B4B8/552338?text=GLOWMAG'
 function imgFallback(e) {
@@ -209,8 +208,8 @@ function cardTitle(p) {
             </div>
           </template>
         </template>
-        <template v-else-if="listOpen">
-          <div id="gm-sug-list" role="listbox" :aria-label="i18n.lang === 'zh' ? '搜索联想结果' : 'Search suggestions'">
+        <template v-else-if="listOpen || hasCats">
+          <div v-if="listOpen" id="gm-sug-list" role="listbox" :aria-label="i18n.lang === 'zh' ? '搜索联想结果' : 'Search suggestions'">
             <a
               v-for="(p, idx) in options" :id="'gm-sug-opt-' + idx" :key="p.id"
               class="sug-row" :class="{ active: activeIdx === idx }"
@@ -222,7 +221,7 @@ function cardTitle(p) {
               <span class="sug-price">${{ (p.price_min / 100).toFixed(2) }}</span>
             </a>
           </div>
-          <div v-if="suggestions.categories && suggestions.categories.length" style="margin-top:4px">
+          <div v-if="hasCats" style="margin-top:4px">
             <button
               v-for="c in suggestions.categories.slice(0, 4)" :key="c.slug"
               type="button" class="trend-chip"
@@ -238,9 +237,9 @@ function cardTitle(p) {
       <div style="margin-top:18px;font-size:13px;color:var(--gray)">
         <b>{{ i18n.t('search.trending') }}</b>
         <button
-          v-for="[k, z] in trending" :key="k" type="button" class="trend-chip"
-          @click="go('/search?q=' + encodeURIComponent(k))"
-        >{{ i18n.lang === 'zh' ? z : k }}</button>
+          v-for="t in TRENDING" :key="t.q" type="button" class="trend-chip"
+          @click="go('/search?q=' + encodeURIComponent(t.q))"
+        >{{ i18n.lang === 'zh' ? t.zh : t.en }}</button>
       </div>
     </div>
   </div>

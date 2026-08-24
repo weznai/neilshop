@@ -460,10 +460,10 @@ def main() -> int:
         check("非超管建号 → 403 superadmin required",
               r.status_code == 403 and r.json()["detail"] == "superadmin required",
               (r.status_code, r.json().get("detail")))
-        check("非法 role=1 / 短密码 → 422",
+        check("非法 role=5 / 短密码 → 422",
               client.post("/api/admin/ops/admins", headers=H_SUP,
                           json={"email": "x3@glow.test", "name": "X",
-                                "password": "strongpass9", "role": 1}).status_code == 422
+                                "password": "strongpass9", "role": 5}).status_code == 422
               and client.post("/api/admin/ops/admins", headers=H_SUP,
                               json={"email": "x4@glow.test", "name": "X",
                                     "password": "short", "role": 2}).status_code == 422)

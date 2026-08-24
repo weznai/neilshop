@@ -7,6 +7,7 @@ import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { fmtDateTime, zulu } from '../../composables/datetime'
+import { money } from '../../composables/format'
 import { i18n, tt } from '../../i18n'
 
 const route = useRoute()
@@ -61,7 +62,6 @@ function eventLabel(t) {
   return row ? tt(row[0], row[1]) : (t.event || '').replace(/_/g, ' ')
 }
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const fmt = fmtDateTime
 function detailText(ev) {
   const d = ev.detail
@@ -106,21 +106,20 @@ const steps = computed(() => {
 const addr = computed(() => o.value?.shipping_address || {})
 /* 可退换：已付且未取消/退款（后端 RETURNABLE_STATUSES {1,2,3,4,5}） */
 const statusReturnable = computed(() => !!o.value && [1, 2, 3, 4, 5].includes(o.value.status))
-/* 30 天退货窗口预判（按 paid_at，缺失回落 placed_at；与后端 return_days=30 口径一致） */
+/* 30 天退货窗口预判（仅按 paid_at 判断，与服务端同口径；paid_at 缺失视为可退） */
 const inReturnWindow = computed(() => {
   const ov = o.value
   if (!ov) return false
-  const base = ov.paid_at || ov.placed_at
-  if (!base) return true
-  const t = new Date(zulu(base)).getTime()
+  if (!ov.paid_at) return true
+  const t = new Date(zulu(ov.paid_at)).getTime()
   return isNaN(t) ? true : Date.now() - t <= 30 * 86400000
 })
 const returnable = computed(() => statusReturnable.value && inReturnWindow.value)
 function avail(it) { return (it.qty || 0) - (it.refunded_qty || 0) - (it.exchanged_qty || 0) }
 /* 已支付且未发货：可自助取消（后端自动全额原路退款） */
 const canSelfCancel = computed(() => !!o.value && o.value.status === 1 && (o.value.shipping_status || 0) === 0)
-/* 再次购买：非待付/非取消（0/8 之外） */
-const canBuyAgain = computed(() => !!o.value && ![0, 8].includes(o.value.status))
+/* 再次购买：非待付/非取消/非退款（0/8/9 之外） */
+const canBuyAgain = computed(() => !!o.value && ![0, 8, 9].includes(o.value.status))
 /* 已送达待确认：可自助确认收货（4→5 已完成） */
 const canConfirmRecv = computed(() => !!o.value && o.value.status === 4)
 
@@ -281,6 +280,7 @@ function restoreFocus(el) {
 
 /* ---------- 退货 RMA ---------- */
 const rma = reactive({ item: null, qty: 1, reason: 1, detail: '', busy: false })
+const rmaSubmitted = ref(false)
 function openRma(it) {
   Object.assign(rma, { item: it, qty: 1, reason: 1, detail: '', busy: false })
   ui.openModal('rma')
@@ -296,6 +296,7 @@ async function submitRma() {
       reason_detail: rma.detail || null,
     })
     ui.toast(tt(`Return request submitted (${d.rma_no}) — pending review`, `退货申请已提交（${d.rma_no}），请耐心等待审核`), 'success')
+    rmaSubmitted.value = true
     ui.closeModal()
     await load()
   } catch (e) {
@@ -618,6 +619,9 @@ async function submitReview(it) {
           <!-- 时间线 -->
           <div class="card" style="padding:20px">
             <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Order activity', '订单动态') }}</h3>
+            <div v-if="rmaSubmitted" style="margin:-4px 0 12px;font-size:13px">
+              <router-link to="/account/returns" style="color:var(--plum);font-weight:600">{{ tt('View return / exchange progress →', '查看退换货进度 →') }}</router-link>
+            </div>
             <div class="tl-list">
               <div v-for="(t, i) in o.timeline || []" :key="i" style="display:flex;gap:10px;font-size:13px;padding:7px 0">
                 <span style="color:var(--gray);flex:none;width:88px">{{ fmt(t.created_at) }}</span>
@@ -646,8 +650,8 @@ async function submitReview(it) {
             <h3 style="font-size:15px;margin-bottom:10px">{{ tt('Shipment', '物流') }}</h3>
             <template v-if="(o.shipments || []).length">
               <div v-for="s in o.shipments" :key="s.shipment_no" style="font-size:13.5px;line-height:1.9;padding-bottom:8px;border-bottom:1px dashed var(--gray-light);margin-bottom:8px">
-                <b>{{ (s.carrier || '').toUpperCase() }}</b> · {{ s.shipment_no }}<br>
-                {{ tt('Tracking no.', '追踪号') }} <code style="font-size:12.5px">{{ s.tracking_no }}</code><br>
+                <b>{{ s.carrier ? s.carrier.toUpperCase() : '—' }}</b> · {{ s.shipment_no }}<br>
+                {{ tt('Tracking no.', '追踪号') }} <code v-if="s.tracking_no" style="font-size:12.5px">{{ s.tracking_no }}</code><span v-else>—</span><br>
                 <span class="tag" :class="s.status >= 4 ? 'tag-done' : 'tag-ship'">{{ SHIP_ST[s.status] ? tt(SHIP_ST[s.status][0], SHIP_ST[s.status][1]) : s.status }}</span>
               </div>
             </template>

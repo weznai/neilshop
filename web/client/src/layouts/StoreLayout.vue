@@ -41,7 +41,21 @@ const ANN = ['announce.a', 'announce.b', 'announce.c']
 const annIdx = ref(0)
 let annTimer = null
 function startAnn() {
+  if (annTimer) return
   annTimer = setInterval(() => { annIdx.value = (annIdx.value + 1) % ANN.length }, 4000)
+}
+function stopAnn() { clearInterval(annTimer); annTimer = null }
+/* 公告栏可关闭：sessionStorage 记忆，本次会话不再显示；标签页隐藏暂停轮播、可见恢复 */
+const annDismissed = ref(sessionStorage.getItem('gm_ann_dismissed') === '1')
+function dismissAnn() {
+  stopAnn()
+  annDismissed.value = true
+  sessionStorage.setItem('gm_ann_dismissed', '1')
+}
+function onAnnVis() {
+  if (annDismissed.value) return
+  if (document.visibilityState === 'hidden') stopAnn()
+  else startAnn()
 }
 
 const NAV = [
@@ -62,6 +76,14 @@ const MEGA_PICKS = ref([
   { slug: 'french-kiss', title: 'French Kiss', titleZh: '法式之吻', price: 14.99, img: 'https://placehold.co/120x120/E8C5D8/552338?text=French+Kiss', show: true },
 ])
 const picksShown = computed(() => MEGA_PICKS.value.filter((p) => p.show))
+/* 编辑精选卡图加载失败兜底：placehold 占位（dataset 防循环，对齐 HomeView heroFallback） */
+const PICK_FALLBACK = 'https://placehold.co/120x120/E8B4B8/552338?text=GLOWMAG'
+function pickFallback(e) {
+  const img = e.target
+  if (img.dataset.fb) return
+  img.dataset.fb = '1'
+  img.src = PICK_FALLBACK
+}
 async function hydratePicks() {
   await Promise.all(MEGA_PICKS.value.map(async (p) => {
     const r = await pickDetail(p.slug)
@@ -85,12 +107,19 @@ const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)')
 function backTop() { window.scrollTo({ top: 0, behavior: reduceMotion() ? 'auto' : 'smooth' }) }
 function openConsent() { window.dispatchEvent(new CustomEvent('gm:open-consent')) }
 
-/* 全局面包屑：由路由 meta.title 链推导（Home / My Account / My Orders…），首页隐藏 */
+/* 全局面包屑：由路由 meta.title 链推导（Home / My Account / My Orders…），首页隐藏；
+   product 页不渲染（ProductView 自绘更丰富面包屑，避免堆叠） */
 const crumbs = computed(() =>
   route.matched
     .filter((r) => r.meta && r.meta.title && r.path !== '/')
     .map((r) => ({ path: r.path, title: r.meta.title })),
 )
+/* 自定义面包屑事件通道：CollectionView 等经 window gm:crumbs 上报（detail 为 {path,title}[]，结构同上），
+   收到即覆盖默认推导；路由 path 变化自动清除恢复默认 */
+const crumbOverride = ref(null)
+function onCrumbs(e) { crumbOverride.value = e.detail || null }
+watch(() => route.path, () => { crumbOverride.value = null })
+const displayCrumbs = computed(() => crumbOverride.value || crumbs.value)
 
 /* 心愿单角标：WishlistView 已把数量写入 gm_wl_count，此处路由切换时同步（登录后访问过心愿单页即有值）；
    ProductView 加入心愿单后广播 gm:wl-changed 即时刷新 */
@@ -138,24 +167,29 @@ watch(() => cart.count, () => {
 })
 
 onMounted(() => {
-  startAnn()
+  if (!annDismissed.value) startAnn()
   syncWl()
   hydratePicks()
   window.addEventListener('gm:wl-changed', onWlChanged)
+  window.addEventListener('gm:crumbs', onCrumbs)
+  document.addEventListener('visibilitychange', onAnnVis)
   window.addEventListener('scroll', onScroll, { passive: true })
 })
 onUnmounted(() => {
-  clearInterval(annTimer)
+  stopAnn()
   clearTimeout(tabPulseT)
   window.removeEventListener('gm:wl-changed', onWlChanged)
+  window.removeEventListener('gm:crumbs', onCrumbs)
+  document.removeEventListener('visibilitychange', onAnnVis)
   window.removeEventListener('scroll', onScroll)
 })
 </script>
 
 <template>
-  <div class="announce" aria-live="off">
+  <div v-if="!annDismissed" class="announce" aria-live="off">
     <!-- 文案含 <b> 强调（本地字典，无注入面）：v-html 渲染，修复 {{}} 转义出字面标签 -->
     <Transition name="ann" mode="out-in"><span :key="annIdx" v-html="i18n.t(ANN[annIdx])"></span></Transition>
+    <button class="icon-btn ann-close" :aria-label="zh ? '关闭公告' : 'Dismiss announcement'" @click="dismissAnn">×</button>
   </div>
 
   <header class="header" :class="{ scrolled: headerScrolled }">
@@ -180,7 +214,7 @@ onUnmounted(() => {
               <div class="mega-col">
                 <h5>{{ zh ? '编辑精选' : "Editors' Picks" }}</h5>
                 <router-link v-for="p in picksShown" :key="p.slug" class="mega-card" :to="`/product?slug=${p.slug}`">
-                  <img :src="p.img" :alt="p.title">
+                  <img :src="p.img" :alt="p.title" @error="pickFallback">
                   <span><b>{{ zh ? p.titleZh : p.title }}</b><i>${{ p.price.toFixed(2) }}</i></span>
                 </router-link>
               </div>
@@ -224,11 +258,11 @@ onUnmounted(() => {
   </header>
 
   <main>
-    <nav v-if="crumbs.length" class="container crumbs" aria-label="Breadcrumb">
+    <nav v-if="route.name !== 'product' && displayCrumbs.length" class="container crumbs" aria-label="Breadcrumb">
       <router-link to="/">{{ i18n.t('crumb.home') }}</router-link>
-      <template v-for="(c, ci) in crumbs" :key="c.path">
+      <template v-for="(c, ci) in displayCrumbs" :key="c.path">
         <GmIcon class="crumb-sep" name="chevron-right" :size="13" />
-        <span v-if="ci === crumbs.length - 1" aria-current="page">{{ c.title }}</span>
+        <span v-if="ci === displayCrumbs.length - 1" aria-current="page">{{ c.title }}</span>
         <router-link v-else :to="c.path">{{ c.title }}</router-link>
       </template>
     </nav>
@@ -307,6 +341,7 @@ onUnmounted(() => {
             <div class="footer-links">
               <router-link to="/about">{{ i18n.t('footer.story') }}</router-link>
               <router-link to="/blog">{{ i18n.t('footer.blog') }}</router-link>
+              <router-link to="/gallery">{{ i18n.t('footer.gallery') }}</router-link>
               <router-link to="/rewards">{{ i18n.t('footer.rewards') }}</router-link>
               <router-link to="/subscribe">{{ i18n.t('footer.club') }}</router-link>
               <router-link to="/privacy">{{ i18n.t('footer.privacy') }}</router-link>
@@ -379,6 +414,11 @@ onUnmounted(() => {
 .ann-enter-active,.ann-leave-active{transition:opacity .2s ease,transform .2s ease}
 .ann-enter-from{opacity:0;transform:translateY(6px)}
 .ann-leave-to{opacity:0;transform:translateY(-6px)}
+
+/* 公告栏关闭钮：icon-btn 基型 + 深底反白缩小（.announce 已 position:relative，右侧留位防文案压钮） */
+.announce{padding-right:44px}
+.ann-close{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:26px;height:26px;font-size:16px;line-height:1;color:rgba(255,255,255,.8)}
+.ann-close:hover{background:rgba(255,255,255,.18);color:#fff}
 
 /* 页脚社交按钮（原 javascript:void(0) 伪链接 button 化；保留 demo toast） */
 .social-btn{display:inline-flex;align-items:center;justify-content:center;background:none;border:none;padding:0;cursor:pointer;color:var(--plum);transition:color .15s,transform .15s ease-out}

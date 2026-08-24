@@ -35,11 +35,19 @@ async function load() {
     : ''
   try {
     prefs.value = await req('GET', '/api/account/email-preferences' + qs)
-    if (prefs.value && prefs.value.email) email.value = prefs.value.email
   } catch (e) {
-    err.value = e && (e.status === 400 || e.status === 401)
-      ? '' : tt('Failed to load, please try again', '加载失败，请稍后再试')
+    /* 带 token 请求 400（token 失效）且已登录：清参数回退会话读取自身偏好 */
+    if (e && e.status === 400 && qs && auth.isLoggedIn) {
+      token.value = ''
+      email.value = ''
+      try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { /* 回退也失败则走下方错误态 */ }
+    }
+    if (!prefs.value) {
+      err.value = e && (e.status === 400 || e.status === 401)
+        ? '' : tt('Failed to load, please try again', '加载失败，请稍后再试')
+    }
   } finally { loading.value = false }
+  if (prefs.value && prefs.value.email) email.value = prefs.value.email
 }
 onMounted(load)
 
@@ -61,12 +69,17 @@ async function save() {
     saved.value = true
     ui.toast(tt('Preferences saved', '偏好已保存'), 'success')
   } catch (e) {
+    const d = e && e.data && e.data.detail
     ui.toast(
-      e && (e.status === 400 || e.status === 401)
-        ? tt('This link is invalid or expired', '链接无效或已过期')
-        : tt('Save failed, please try again', '保存失败，请稍后再试'),
+      d === 'token_required'
+        ? tt('This page requires a valid unsubscribe link — please log in to manage your preferences', '该操作需要有效的退订链接，请登录后再管理邮件偏好')
+        : e && (e.status === 400 || e.status === 401)
+          ? tt('This link is invalid or expired', '链接无效或已过期')
+          : tt('Save failed, please try again', '保存失败，请稍后再试'),
       'error',
     )
+    /* 保存失败：重新拉取回滚开关显示（避免 UI 与服务端状态不一致） */
+    await load()
   } finally { saving.value = false }
 }
 

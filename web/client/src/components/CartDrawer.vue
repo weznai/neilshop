@@ -58,6 +58,8 @@ function undoRemove() {
 }
 
 const subtotalD = computed(() => (cart.subtotalC / 100).toFixed(2))
+/* 与 CartView/Checkout 同口径：有下架或缺货商品时禁止去结算 */
+const blocked = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0))
 /* 免邮门槛（settings 下发，与 CartView/Checkout 同源；失败回落 $35 文案） */
 const freeShipC = ref(3500)
 req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
@@ -196,7 +198,7 @@ function drawerKeydown(e) {
             <img :src="p.hero_image" :alt="p.title" loading="lazy" @error="imgFallback">
             <div class="rec-info">
               <div class="rec-title">{{ recTitle(p) }}</div>
-              <div class="rec-price">${{ (p.price_min / 100).toFixed(2) }}</div>
+              <div class="rec-price">{{ tt('from', '起') }} ${{ (p.price_min / 100).toFixed(2) }}</div>
             </div>
             <button
               class="rec-add"
@@ -211,9 +213,13 @@ function drawerKeydown(e) {
         <span>{{ i18n.t('cart.subtotal') }}</span>
         <b style="font-variant-numeric:tabular-nums">${{ subtotalD }}</b>
       </div>
-      <router-link :to="checkoutLink()" class="btn btn-primary btn-block" @click="ui.closeCart()">
-        {{ i18n.t('cart.checkout') }} · ${{ subtotalD }}
+      <router-link v-if="!blocked" :to="checkoutLink()" class="btn btn-primary btn-block" @click="ui.closeCart()">
+        {{ i18n.t('cart.checkout') }} · {{ tt('Subtotal', '小计') }} ${{ subtotalD }}
       </router-link>
+      <button v-else class="btn btn-primary btn-block" disabled>{{ i18n.t('cart.checkout') }}</button>
+      <div v-if="blocked" style="font-size:11.5px;color:var(--error);font-weight:600;margin-top:8px;text-align:center">
+        {{ tt('Please remove out-of-stock / unavailable items first', '请先移除缺货/下架商品') }}
+      </div>
       <div style="text-align:center;margin-top:10px">
         <router-link to="/cart" style="font-size:13px;color:var(--gray);text-decoration:underline" @click="ui.closeCart()">
           {{ i18n.t('cart.view') }}

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { ROLE_LABEL } from '../constants/roles'
+import { MENU } from '../constants/nav'
 import RouteProgress from '../components/RouteProgress.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
@@ -15,7 +16,7 @@ const guard = ref(true)
 const guardErr = ref('')
 const collapsed = ref(localStorage.getItem('gm_side_min') === '1')
 
-/* 当前登录人角色徽标文案（UserRole 常量收敛至 constants/roles.js：9超管 3仓库 2运营 4美甲师；1客服被守卫拒绝，不进后台） */
+/* 当前登录人角色徽标文案（UserRole 常量收敛至 constants/roles.js：9超管 3仓库 2运营 1客服 4美甲师） */
 const roleBadge = computed(() => ROLE_LABEL[session.role] || '管理')
 
 /* 导航高亮：详情页别名 + 前缀匹配（/order-detail → 订单管理，/product-edit → 商品管理） */
@@ -48,33 +49,18 @@ const P = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
   panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
 }
-/* 侧栏结构：字符串 = 分组小节标题（交易/商品/运营/系统），数组 = [图标, 名称, 路径]；
- * 营销工具/内容管理/会员归「运营」组；审计日志/系统设置归「系统」组；
- * 美甲师（role=4）受限视图：仅在线客服（处理本人名下美甲师会话），其余路由守卫统一重定向 /chat */
-const ITEMS = [
-  ['dash', '数据看板', '/'],
-  '交易',
-  ['orders', '订单管理', '/orders'],
-  ['returns', '退货审核', '/returns'],
-  ['tickets', '客服工单', '/tickets'],
-  ['chat', '在线客服', '/chat'],
-  '商品',
-  ['products', '商品管理', '/products'],
-  ['inventory', '库存中心', '/inventory'],
-  '运营',
-  ['promo', '营销工具', '/marketing'],
-  ['content', '内容管理', '/content'],
-  ['members', '会员管理', '/members'],
-  ['subs', '订阅管理', '/subscriptions'],
-  '系统',
-  ['queue', '运营队列', '/queues'],
-  ['logs', '审计日志', '/logs'],
-  ['settings', '系统设置', '/settings'],
-]
-/* 美甲师菜单白名单：仅在线客服（数据看板等其余路由已被 router.beforeEach 重定向 /chat） */
-const navItems = computed(() => (
-  session.role === 4 ? ITEMS.filter((it) => Array.isArray(it) && it[2] === '/chat') : ITEMS
-))
+/* 侧栏结构：constants/nav.js MENU 单一事实源（[图标, 名称, 路径, 权限点]，字符串=分组标题）；
+ * 按登录人权限过滤菜单项，过滤后清掉空分组标题（连续/尾部孤儿小节不渲染）。
+ * 权限集来自 /admin/me 实时下发：客服只见工单/客服面，仓库不见营销/设置等 */
+const navItems = computed(() => {
+  const kept = []
+  for (const it of MENU) {
+    if (typeof it === 'string') { kept.push(it); continue }
+    if (session.hasPerm(it[3])) kept.push(it)
+  }
+  return kept.filter((it, i) => typeof it !== 'string'
+    || (kept[i + 1] && typeof kept[i + 1] !== 'string'))
+})
 
 function toggleSide() {
   collapsed.value = !collapsed.value
@@ -143,8 +129,9 @@ function onGlobalKey(e) {
 
 onMounted(async () => {
   try {
-    const u = await session.verify()
-    if ((u.role | 0) < 2) throw new Error('该账号无后台权限（role=' + (u.role | 0) + '）')
+    /* 后端 /admin/me 只对后台角色放行（顾客 403）；此处仅验证会话有效性，
+     * 权限差异交给路由 meta.perm + 菜单过滤（verify 已刷新实时 permissions） */
+    await session.verify()
     guard.value = false
   } catch (e) {
     console.error('[admin] 会话校验失败：', e)

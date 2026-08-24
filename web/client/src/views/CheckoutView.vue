@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req, intentNoChannel } from '../api/client'
 import { i18n, tt } from '../i18n'
@@ -47,7 +47,9 @@ function fillAddr(a) {
   f.state = a.state || ''
   f.zip = a.zip || ''
   f.phone = a.phone || ''
-  country.value = (a.country || 'US').toUpperCase()
+  const c = (a.country || 'US').toUpperCase()
+  if (c && !COUNTRIES.includes(c)) COUNTRIES.push(c)
+  country.value = c
 }
 
 function pickAddr(a) {
@@ -268,8 +270,10 @@ function validate() {
   errors.value = e
   const ok = Object.keys(e).length === 0
   if (!ok) {
-    const el = document.querySelector('.field.error')
-    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    nextTick(() => {
+      const el = document.querySelector('.field.error')
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    })
   }
   return ok
 }
@@ -289,7 +293,8 @@ function mapPlaceError(e) {
     return tt('Some items are no longer available — please remove them first', '部分商品已下架，请先移除后再下单')
   }
   if (m === 'account_blocked') return tt('This account cannot place orders. Contact support.', '该账户暂无法下单，请联系客服')
-  return m
+  console.warn('[checkout] unmapped place error:', m || e)
+  return tt('Order failed — please check your details and try again', '下单失败，请检查填写信息后重试')
 }
 
 function utmOf() {
@@ -317,6 +322,36 @@ async function saveAddrBook() {
     })
   } catch (_) { /* 保存失败静默：不影响下单 */ }
 }
+
+/* 结算草稿（sessionStorage）：hosted 支付跳转/回跳或误刷新后恢复表单状态；place 成功即清 */
+const DRAFT_KEY = 'gm_checkout_draft'
+function saveDraft() {
+  try {
+    sessionStorage.setItem(DRAFT_KEY, JSON.stringify({
+      form: form.value, country: country.value, shipMethod: shipMethod.value,
+      paySel: paySel.value, gift: gift.value, giftMsg: giftMsg.value,
+      pointsInput: pointsInput.value, appliedGc: appliedGc.value,
+      appliedCode: appliedCode.value, code: code.value,
+    }))
+  } catch (_) { /* 隐私模式 */ }
+}
+function restoreDraft() {
+  try {
+    const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null')
+    if (!d) return
+    if (d.form) form.value = { ...form.value, ...d.form }
+    if (d.country) country.value = d.country
+    if (d.shipMethod) shipMethod.value = d.shipMethod
+    if (d.paySel) paySel.value = d.paySel
+    if (d.gift != null) gift.value = !!d.gift
+    if (d.giftMsg) giftMsg.value = d.giftMsg
+    if (d.pointsInput) pointsInput.value = d.pointsInput
+    if (d.appliedGc) appliedGc.value = d.appliedGc
+    if (d.appliedCode) appliedCode.value = d.appliedCode
+    if (d.code) code.value = d.code
+  } catch (_) { /* 草稿损坏即弃 */ }
+}
+function clearDraft() { try { sessionStorage.removeItem(DRAFT_KEY) } catch (_) { /* 隐私模式 */ } }
 
 async function place() {
   if (placing.value) return
@@ -370,9 +405,10 @@ async function place() {
     const utm = utmOf()
     if (utm) body.utm = utm
     const d = await req('POST', '/api/checkout/place', body)
-    /* 下单成功即清折扣码残留（与 SuccessView 同一 key/方式），避免弃单后旧码被自动带上 */
+    /* 下单成功即清折扣码残留（与 SuccessView 同一 key/方式）与结算草稿，避免弃单后旧码被自动带上 */
     try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
-    if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) await saveAddrBook()
+    clearDraft()
+    if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) saveAddrBook()
     /* 记住支付方式选择：SuccessView 二次支付沿用同一 provider */
     try { localStorage.setItem('gm_pay_provider', paySel.value || '') } catch (_) { /* 隐私模式 */ }
     /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock） */
@@ -414,15 +450,22 @@ watch(() => form.value.email, schedulePreview)
 watch(() => form.value.state, schedulePreview)
 watch(() => cart.items.map((i) => i.vid + ':' + i.qty).join('|'), schedulePreview)
 watch([country, shipMethod, appliedCode, appliedGc, pointsApplied, () => auth.isLoggedIn], schedulePreview)
+watch([form, country, shipMethod, paySel, gift, giftMsg, pointsInput, appliedGc, appliedCode, code], saveDraft, { deep: true })
 watch(country, loadShipMethods)
+
+/* hosted 支付取消回跳（?canceled=1）：订单已生成待付，购物车已清 → 给保留订单出口 */
+const canceled = computed(() => String(route.query.canceled || '') === '1')
 
 onMounted(async () => {
   cart.refresh().catch(() => {})
+  restoreDraft()
   if (auth.user) form.value.email = auth.user.email || ''
   if (auth.isLoggedIn) auth.fetchPoints().catch(() => {})
   loadAddrs()
-  /* 购物车页带入的折扣码（?code=） */
-  const q = String(route.query.code || '').trim().toUpperCase()
+  /* 购物车页带入的折扣码（?code= 优先，localStorage gm_applied_code 兜底） */
+  let savedCode = ''
+  try { savedCode = (localStorage.getItem('gm_applied_code') || '').trim().toUpperCase() } catch (_) { /* 隐私模式 */ }
+  const q = String(route.query.code || '').trim().toUpperCase() || savedCode
   if (q) { code.value = q; appliedCode.value = q }
   loadShipMethods()
   loadPayMethods()
@@ -455,6 +498,21 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
   <section class="section">
     <div class="container">
       <div class="section-head"><h2 class="section-title">{{ i18n.t('cart.checkout') }}</h2></div>
+
+      <div v-if="canceled && cart.items.length" class="ship-bar" style="margin-bottom:18px">
+        {{ tt('Previous payment was canceled — that order is saved; you can pay it anytime from your order page.', '上次支付已取消，订单已保留，可随时在订单页完成支付。') }}
+      </div>
+
+      <div v-if="canceled && !cart.items.length" class="card" style="text-align:center;padding:42px 24px;margin-bottom:18px">
+        <div style="font-size:40px;margin-bottom:10px">💳</div>
+        <b style="display:block;font-size:17px;margin-bottom:6px">{{ tt('Payment canceled — your order is saved', '支付已取消，你的订单已保留') }}</b>
+        <p style="font-size:13.5px;color:var(--gray);margin-bottom:16px">
+          {{ tt('Complete the payment anytime from your order page.', '可随时在订单页继续完成支付。') }}
+        </p>
+        <router-link class="btn btn-primary" :to="auth.isLoggedIn ? '/account/orders' : '/track'">
+          {{ auth.isLoggedIn ? tt('View my orders', '我的订单') : tt('Track your order', '查询订单') }}
+        </router-link>
+      </div>
 
       <div v-if="!cart.items.length" style="text-align:center;padding:60px 0;color:var(--gray)">
         <div style="font-size:44px;margin-bottom:10px">🛒</div>
@@ -562,8 +620,8 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
           <!-- 备注 / 礼物 / 积分 / 礼品卡 -->
           <div class="card" style="padding:22px;display:grid;gap:14px">
             <div class="field" style="margin:0">
-              <label>{{ i18n.t('co.note') }}</label>
-              <textarea v-model="form.note" class="input" rows="2" :placeholder="i18n.t('co.notePh')"></textarea>
+              <label>{{ i18n.t('co.note') }} ({{ form.note.length }}/255)</label>
+              <textarea v-model="form.note" class="input" rows="2" maxlength="255" :placeholder="i18n.t('co.notePh')"></textarea>
             </div>
 
             <label style="display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer">

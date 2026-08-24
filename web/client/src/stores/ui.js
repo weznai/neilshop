@@ -21,7 +21,7 @@ export const useUiStore = defineStore('ui', {
   actions: {
     toast(msg, type = '', opts) {
       const id = ++_toastSeq
-      this.toasts.push({ id, msg, type })
+      this.toasts.push({ id, msg, type, action: opts && opts.action })
       /* 同屏最多 3 条：超出丢弃最旧 */
       while (this.toasts.length > 3) this.toasts.shift()
       /* loading 态默认常驻（手动 dismiss 收口）；其余 2.5s 自动消失；opts.duration 可覆盖 */

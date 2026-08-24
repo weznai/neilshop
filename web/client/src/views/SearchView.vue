@@ -3,6 +3,7 @@ import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { i18n } from '../i18n'
+import { TRENDING } from '../data/trending'
 import ProductCard from '../components/ProductCard.vue'
 
 const route = useRoute()
@@ -78,8 +79,15 @@ async function search() {
       req('GET', '/api/catalog/search?q=' + encodeURIComponent(term)).catch(() => null),
     ])
     if (seq !== sSeq) return
-    items.value = d.items || []
-    total.value = d.total ?? items.value.length
+    let list = d.items || []
+    /* 主搜索（标题/副题匹配）为空时并入联想接口结果（tags 命中，pastel/natural 等），按 id 去重 */
+    let merged = false
+    if (!list.length && s && Array.isArray(s.products) && s.products.length) {
+      list = s.products.slice(0, 8)
+      merged = true
+    }
+    items.value = list
+    total.value = merged ? list.length : (d.total ?? list.length)
     pages.value = Math.max(1, Math.ceil(total.value / sz))
     cats.value = (s && s.categories) || []
   } catch (_) {
@@ -126,10 +134,16 @@ let timer = null
 let manualAt = 0
 watch(q, (v) => {
   clearTimeout(timer)
-  if (!v.trim()) { items.value = []; total.value = 0; return }
+  const term = v.trim()
+  if (!term) { items.value = []; total.value = 0; return }
   timer = setTimeout(() => {
     if (Date.now() - manualAt < 450) return
     page.value = 1
+    /* URL 同步当前词（replace 不产生历史）：防分页/分享时旧 q 写回；
+       输入含空白时先归一 q，避免 route.query.q watcher 二次搜索 */
+    if (q.value !== term) q.value = term
+    router.replace({ query: { ...route.query, q: term, page: undefined } })
+    manualAt = Date.now()
     search()
   }, 300)
 })
@@ -168,15 +182,13 @@ const pageWindow = () => {
   for (let i = from; i <= to; i++) w.push(i)
   return w
 }
-
-const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
 </script>
 
 <template>
   <section class="section">
     <div class="container">
       <div class="section-head search-head">
-        <h2 class="section-title">{{ zh() ? '搜索' : 'Search' }}</h2>
+        <h1 class="section-title">{{ zh() ? '搜索' : 'Search' }}</h1>
         <div class="search-ctrl">
           <div class="seg" :aria-label="zh() ? '排序' : 'Sort by'">
             <button
@@ -205,20 +217,20 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
       </div>
       <div v-else style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
         <span style="font-size:12px;color:var(--gray);font-weight:700">{{ zh() ? '热门' : 'Trending' }}</span>
-        <button v-for="h in HOT" :key="h" class="trend-chip" style="margin:0" @click="pickTerm(h)">{{ h }}</button>
+        <button v-for="t in TRENDING" :key="t.q" class="trend-chip" style="margin:0" @click="pickTerm(t.q)">{{ zh() ? t.zh : t.en }}</button>
       </div>
 
       <div v-if="cats.length" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
         <span style="font-size:12px;color:var(--gray);font-weight:700;align-self:center">{{ zh() ? '相关分类' : 'Categories' }}</span>
-        <router-link v-for="c in cats" :key="c.slug" class="trend-chip" style="margin:0" :to="'/store?cat=' + c.slug">{{ c.name }} →</router-link>
+        <router-link v-for="c in cats" :key="c.slug" class="trend-chip" style="margin:0" :to="'/store?cat=' + c.slug + '&q=' + encodeURIComponent(q)">{{ c.name }} →</router-link>
       </div>
 
-      <p v-if="q && loaded" class="search-count">
+      <p v-if="q && loaded && !loadErr" class="search-count">
         <span class="cnt-pill">{{ total }} {{ zh() ? '条结果' : (total === 1 ? 'result' : 'results') }}</span>
         {{ zh() ? '匹配' : 'for' }} "<mark class="cnt-mark">{{ q }}</mark>"
       </p>
 
-      <div ref="gridEl" class="grid grid-4">
+      <div ref="gridEl" class="grid grid-4" style="scroll-margin-top:84px">
         <template v-if="!loaded">
           <div v-for="i in 8" :key="'sk' + i" class="sk-card">
             <div class="sk-img sk-shimmer"></div>
@@ -244,7 +256,7 @@ const HOT = ['french', 'glitter', 'cat-eye', 'short almond', 'red', 'pastel']
         <router-link to="/store" style="color:var(--plum)">{{ zh() ? '浏览全部' : 'browse all' }}</router-link>
         <div class="nores-chips">
           <span style="font-size:12px;color:var(--gray);font-weight:700">{{ zh() ? '试试热词' : 'Trending' }}</span>
-          <button v-for="h in HOT" :key="h" class="trend-chip" style="margin:0" @click="pickTerm(h)">🔥 {{ h }}</button>
+          <button v-for="t in TRENDING" :key="t.q" class="trend-chip" style="margin:0" @click="pickTerm(t.q)">🔥 {{ zh() ? t.zh : t.en }}</button>
         </div>
       </div>
 

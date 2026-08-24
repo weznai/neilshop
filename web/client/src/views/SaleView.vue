@@ -10,8 +10,8 @@ const loadErr = ref(false)
 const zh = () => i18n.lang === 'zh'
 
 /* 全量翻页拉取：单页上限 100（后端 size le=100），促销品超 100 件时不再静默截断；
-   防御上限 5 页（500 件）+ 末页不满即止 */
-async function fetchAll(query) {
+   防御上限 5 页（500 件）+ 末页不满即止；首页返回即经 onFirst 撤骨架（后续页静默 append） */
+async function fetchAll(query, onFirst) {
   const out = []
   let total = Infinity
   for (let page = 1; out.length < total && page <= 5; page++) {
@@ -19,6 +19,7 @@ async function fetchAll(query) {
     if (!d) return out.length ? out : null
     out.push(...(d.items || []))
     total = d.total ?? out.length
+    if (onFirst && page === 1) onFirst()
     if (!d.items || d.items.length < 100) break
   }
   return out
@@ -32,10 +33,12 @@ async function load() {
   const isDeal = (p) => p.compare_at_price && p.compare_at_price > (p.price_min ?? p.price ?? 0)
   const offPct = (p) => (isDeal(p) ? 1 - (p.price_min ?? p.price) / p.compare_at_price : 0)
   const locale = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
+  let first = true
+  const mark = () => { if (first) { first = false; loaded.value = true } }
   try {
     const [onSale, tagged] = await Promise.all([
-      fetchAll('on_sale=1' + locale),
-      fetchAll('tag=sale' + locale),
+      fetchAll('on_sale=1' + locale, mark),
+      fetchAll('tag=sale' + locale, mark),
     ])
     if (!onSale && !tagged) throw new Error('load failed') /* 两路全失败 → 错误态（区别于无促销品） */
     const map = new Map()
@@ -72,14 +75,14 @@ const maxOff = computed(() => {
         <p style="color:var(--gray)">
           {{
             maxOff
-              ? (zh() ? `低至 ${100 - maxOff} 折 — 无需折扣码，售完即止。` : `Up to ${maxOff}% off — no code needed. While stocks last.`)
+              ? (zh() ? `低至 ${((100 - maxOff) / 10).toFixed(1).replace(/\.0$/, '')} 折 — 无需折扣码，售完即止。` : `Up to ${maxOff}% off — no code needed. While stocks last.`)
               : (zh() ? '限时精选好物 — 无需折扣码，售完即止。' : 'Limited-time picks — no code needed. While stocks last.')
           }}
         </p>
       </div>
       <div class="grid grid-4">
         <template v-if="!loaded">
-          <div v-for="i in 4" :key="'sk' + i" class="sale-sk">
+          <div v-for="i in 8" :key="'sk' + i" class="sale-sk">
             <div class="sale-sk-img"></div>
             <div class="sale-sk-line" style="width:70%"></div>
             <div class="sale-sk-line" style="width:40%"></div>

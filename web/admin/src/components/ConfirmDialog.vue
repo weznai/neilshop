@@ -1,6 +1,7 @@
 <script setup>
 /* 通用确认弹窗：替代全站原生 confirm；支持危险态主按钮与「原因」输入（reason 模式下 confirm 事件回传原因文本） */
 import { nextTick, ref, watch, onBeforeUnmount } from 'vue'
+import { toast } from '../composables/toast'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -43,7 +44,17 @@ watch(
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 function onKey(e) {
-  if (e.key === 'Escape' && !props.busy) emit('close')
+  if (!props.open || props.busy) return
+  if (e.key === 'Escape') { emit('close'); return }
+  /* 简易 focus trap：Tab 在弹窗内首尾按钮间循环 */
+  if (e.key === 'Tab') {
+    const els = [reasonEl.value, cancelEl.value, confirmEl.value].filter(Boolean)
+    if (!els.length) return
+    const first = els[0]
+    const last = els[els.length - 1]
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+  }
 }
 function close() {
   if (!props.busy) emit('close')
@@ -51,6 +62,7 @@ function close() {
 function onConfirm() {
   if (props.busy) return
   if (props.reasonLabel && !reason.value.trim()) {
+    toast('请填写原因', 'error')
     nextTick(() => reasonEl.value?.focus())
     return
   }

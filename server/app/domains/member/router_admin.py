@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import require_admin
+from app.core.deps import require_perm
 from app.models import User
 from app.domains.member import service_subscriptions
 from app.domains.member.schemas import (
@@ -23,7 +23,7 @@ def admin_subscriptions(
     q: str | None = Query(None, description="按用户 email 模糊搜索"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("member:read")),
     db: Session = Depends(get_db),
 ):
     return service_subscriptions.admin_list(db, status, page, size, q)
@@ -33,7 +33,7 @@ def admin_subscriptions(
 def admin_pause_subscription(
     sub_id: int,
     body: SubscriptionPauseIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("member:manage")),
     db: Session = Depends(get_db),
 ):
     return service_subscriptions.admin_pause(db, admin, sub_id, body)
@@ -42,7 +42,7 @@ def admin_pause_subscription(
 @router.post("/subscriptions/{sub_id}/resume")
 def admin_resume_subscription(
     sub_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("member:manage")),
     db: Session = Depends(get_db),
 ):
     return service_subscriptions.admin_resume(db, admin, sub_id)
@@ -52,7 +52,7 @@ def admin_resume_subscription(
 def admin_cancel_subscription(
     sub_id: int,
     body: SubscriptionCancelIn,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("member:manage")),
     db: Session = Depends(get_db),
 ):
     return service_subscriptions.admin_cancel(db, admin, sub_id, body)

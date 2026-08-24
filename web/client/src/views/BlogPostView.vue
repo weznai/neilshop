@@ -2,9 +2,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
+import { useUiStore } from '../stores/ui'
 
 const route = useRoute()
+const ui = useUiStore()
 const post = ref(null)
 const err = ref(false)
 const loading = ref(true)
@@ -15,8 +17,8 @@ function esc(s) {
 }
 function inline(t) {
   return t
-    /* 图片语法 ![alt](url)：仅允许 src/alt 属性，URL 限 http(s)（先于链接规则匹配） */
-    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '<img src="$2" alt="$1" loading="lazy" decoding="async">')
+    /* 图片语法 ![alt](url)：仅允许 src/alt 属性，URL 限 http(s) 或站内相对路径 /（先于链接规则匹配） */
+    .replace(/!\[([^\]]*)\]\(((?:https?:\/\/|\/(?!\/))[^)\s]+)\)/g, '<img src="$2" alt="$1" loading="lazy" decoding="async">')
     /* 行内代码 `code`（先于加粗/链接，避免代码片段被二次加工） */
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
@@ -41,7 +43,10 @@ function mdHtml(md) {
     const l = raw.trim()
     let m
     if (!l) { closeList(); closeQuote(); continue }
-    if ((m = l.match(/^(#{1,4})\s+(.*)$/))) {
+    if (/^---+$/.test(l)) {
+      closeList(); closeQuote()
+      out.push('<hr>')
+    } else if ((m = l.match(/^(#{1,4})\s+(.*)$/))) {
       closeList(); closeQuote()
       const h = Math.min(m[1].length + 1, 4)
       out.push(`<h${h}>${inline(m[2])}</h${h}>`)
@@ -100,11 +105,11 @@ async function loadRelated(p) {
   const t = (p.tags || [])[0]
   try {
     if (t) {
-      const d = await req('GET', `/api/content/articles?page=1&size=4&tag=${encodeURIComponent(t)}`)
+      const d = await req('GET', `/api/content/articles?page=1&size=6&tag=${encodeURIComponent(t)}`)
       related.value = (d.items || []).filter((x) => x.slug !== p.slug).slice(0, 3)
     }
     if (!related.value.length) {
-      const d = await req('GET', '/api/content/articles?page=1&size=4')
+      const d = await req('GET', '/api/content/articles?page=1&size=6')
       related.value = (d.items || []).filter((x) => x.slug !== p.slug).slice(0, 3)
     }
   } catch (_) { related.value = [] }
@@ -150,8 +155,26 @@ async function load() {
     loading.value = false
   }
 }
-watch(() => route.query.slug, () => { if (route.name === 'blog-post') load() })
+watch(() => route.query.slug, () => { if (route.name === 'blog-post') { window.scrollTo({ top: 0 }); load() } })
 onMounted(load)
+
+/* ===== 分享：Copy link（剪贴板降级）/ X / Facebook ===== */
+async function copyLink() {
+  const url = location.href
+  try { await navigator.clipboard.writeText(url) } catch (_) {
+    const ta = document.createElement('textarea')
+    ta.value = url; document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy') } catch (__) { /* noop */ }
+    document.body.removeChild(ta)
+  }
+  ui.toast(tt('Link copied', '链接已复制'), 'success')
+}
+function shareX() {
+  window.open('https://twitter.com/intent/tweet?url=' + encodeURIComponent(location.href) + '&text=' + encodeURIComponent(post.value?.title || ''), '_blank', 'noopener')
+}
+function shareFb() {
+  window.open('https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(location.href), '_blank', 'noopener')
+}
 </script>
 
 <template>
@@ -180,8 +203,13 @@ onMounted(load)
         <div class="post-meta">
           <span>{{ (post.published_at || '').slice(0, 10) }} · {{ i18n.t('post.by', post.author || i18n.t('post.fallbackAuthor')) }}</span>
           <span class="read-chip">⏱ {{ i18n.t('post.readTime', readMins) }}</span>
+          <span style="display:inline-flex;gap:6px;margin-left:auto">
+            <button class="trend-chip" @click="copyLink">{{ tt('Copy link', '复制链接') }}</button>
+            <button class="trend-chip" @click="shareX">X</button>
+            <button class="trend-chip" @click="shareFb">Facebook</button>
+          </span>
         </div>
-        <article class="prose" style="font-size:15px" v-html="body" />
+        <article class="prose" v-html="body" />
 
         <div v-if="related.length" style="margin-top:44px">
           <h3 style="font-family:var(--font-title);font-size:20px;margin-bottom:16px">{{ i18n.t('post.related') }}</h3>

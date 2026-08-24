@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { req } from '../api/client'
+import { productDetail, req } from '../api/client'
 import { i18n } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
@@ -49,6 +49,7 @@ const bundles = computed(() => {
         soldOut: b.sets.some((s) => s.stock_summary && s.stock_summary.out),
         img: (b.sets[0] && b.sets[0].hero_image) || '',
         img2: (b.sets[1] && b.sets[1].hero_image) || '',
+        img3: (b.sets[2] && b.sets[2].hero_image) || '',
       }
     })
 })
@@ -61,8 +62,8 @@ function failToast(title) {
 async function addBundle(b) {
   if (b.soldOut || busy.value[b.name]) return
   busy.value = { ...busy.value, [b.name]: true }
-  /* 三个商品详情并行请求（allSettled：单品失败不影响其余） */
-  const details = await Promise.allSettled(b.sets.map((s) => req('GET', '/api/catalog/products-by-id/' + s.id)))
+  /* 三个商品详情并行请求（allSettled：单品失败不影响其余；productDetail 带 60s 缓存，与卡片快速加购共享） */
+  const details = await Promise.allSettled(b.sets.map((s) => productDetail(s.id)))
   const picks = []
   details.forEach((r, i) => {
     if (r.status !== 'fulfilled') { failToast(b.sets[i].title); return }
@@ -104,14 +105,21 @@ async function addBundle(b) {
       <div class="grid grid-3">
         <div v-for="b in bundles" :key="b.name" class="card bundle-card" :class="{ sold: b.soldOut }" style="padding:0;overflow:hidden">
           <div class="bundle-imgs">
-            <img v-if="b.img" :src="b.img" :alt="b.name + ' 1'" loading="lazy">
-            <img v-if="b.img2" :src="b.img2" :alt="b.name + ' 2'" loading="lazy">
+            <router-link v-if="b.img" :to="'/product?id=' + b.sets[0].id" :aria-label="b.sets[0].title">
+              <img :src="b.img" :alt="b.name + ' 1'" loading="lazy">
+            </router-link>
+            <router-link v-if="b.img2" :to="'/product?id=' + b.sets[1].id" :aria-label="b.sets[1].title">
+              <img :src="b.img2" :alt="b.name + ' 2'" loading="lazy">
+            </router-link>
+            <router-link v-if="b.img3" :to="'/product?id=' + b.sets[2].id" :aria-label="b.sets[2].title">
+              <img :src="b.img3" :alt="b.name + ' 3'" loading="lazy">
+            </router-link>
             <span class="bundle-off">-{{ b.off }}%</span>
           </div>
           <div style="padding:18px">
             <b style="font-family:var(--font-title);font-size:18px">{{ zh() ? b.nameZh : b.name }}</b>
             <div style="font-size:13px;color:var(--gray);margin:6px 0 4px">
-              <span v-for="(s, i) in b.sets" :key="s.id"><template v-if="i"> · </template>{{ s.title }}</span>
+              <span v-for="(s, i) in b.sets" :key="s.id"><template v-if="i"> · </template><router-link :to="'/product?id=' + s.id" style="color:inherit">{{ s.title }}</router-link></span>
             </div>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:8px 0 14px">
               <b style="font-size:20px;color:var(--plum);font-variant-numeric:tabular-nums">${{ b.pay.toFixed(2) }}</b>
@@ -129,9 +137,14 @@ async function addBundle(b) {
         {{ zh() ? '组套商品加载失败，请稍后重试' : 'Failed to load bundles — please retry' }}
         <div style="margin-top:14px"><button class="btn btn-secondary" @click="load">⟳ {{ zh() ? '重试' : 'Retry' }}</button></div>
       </div>
+      <div v-else-if="loaded && !items.length && !loadErr" style="text-align:center;color:var(--gray);padding:40px 0">
+        <div style="font-size:44px;margin-bottom:10px">🎁</div>
+        {{ zh() ? '组套商品暂未上架 — 先去逛单件' : 'No sets available for bundles yet — shop individual sets' }} ·
+        <router-link to="/store" style="color:var(--plum)">{{ zh() ? '去逛全场' : 'Shop all' }}</router-link>
+      </div>
       <div v-else-if="loaded && !bundles.length" style="text-align:center;color:var(--gray);padding:40px 0">
         <div style="font-size:44px;margin-bottom:10px">🎁</div>
-        {{ zh() ? '组套整理中 — 单买 2 件同样享 85 折' : 'Bundles restocking — any 2 sets still get 15% off in cart' }} ·
+        {{ zh() ? '组套商品数量不足，暂无法成组 — 单买 2 件同样享 85 折' : 'Not enough sets to form bundles right now — any 2 sets still get 15% off in cart' }} ·
         <router-link to="/store" style="color:var(--plum)">{{ zh() ? '去逛全场' : 'Shop all' }}</router-link>
       </div>
     </div>
@@ -140,11 +153,13 @@ async function addBundle(b) {
 
 <style scoped>
 .bundle-card.sold { opacity: .68; }
-/* 商品图层叠扇形：双图旋转错位 + 白边投影，仿拍立得叠放 */
+/* 商品图层叠扇形：多图旋转错位 + 白边投影，仿拍立得叠放（a 包裹可点进商品） */
 .bundle-imgs { position: relative; height: 230px; background: linear-gradient(180deg, var(--rose-pale), #fff); overflow: hidden; }
-.bundle-imgs img { position: absolute; top: 34px; width: 56%; aspect-ratio: 1; object-fit: cover; border-radius: 14px; border: 5px solid #fff; box-shadow: 0 10px 24px rgba(31,27,30,.2); background: #fff; }
-.bundle-imgs img:nth-of-type(1) { left: 6%; transform: rotate(-4deg); z-index: 1; }
-.bundle-imgs img:nth-of-type(2) { right: 6%; top: 44px; transform: rotate(4deg); z-index: 2; }
+.bundle-imgs a { position: absolute; top: 34px; width: 56%; border-radius: 14px; }
+.bundle-imgs a:nth-of-type(1) { left: 6%; transform: rotate(-4deg); z-index: 1; }
+.bundle-imgs a:nth-of-type(2) { right: 6%; top: 44px; transform: rotate(4deg); z-index: 2; }
+.bundle-imgs a:nth-of-type(3) { left: 24%; top: 54px; transform: rotate(2deg); z-index: 3; }
+.bundle-imgs img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 14px; border: 5px solid #fff; box-shadow: 0 10px 24px rgba(31,27,30,.2); background: #fff; display: block; }
 .bundle-off { position: absolute; top: 10px; right: 10px; background: var(--coral); color: #fff; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; box-shadow: 0 2px 8px rgba(31,27,30,.25); z-index: 3; }
 /* save 金额徽章化 */
 .save-pill { background: var(--plum); color: #fff; border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 800; letter-spacing: .3px; }

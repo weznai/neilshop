@@ -5,6 +5,7 @@ import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dDate, dt } from '../composables/format'
 import { csvCell, downloadCsv, fetchAllPages } from '../composables/exportCsv'
+import { PRODUCT_TITLES_KEY } from '../constants/cacheKeys'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -116,8 +117,8 @@ function faqGo(n) {
 }
 
 /* 商品标题映射：评价/UGC 只有 product_id，用商品列表解析标题（翻页拉全，最多 10 页 × 100）；
- * 结果缓存 sessionStorage（带版本号），避免每次挂载全量拉取 */
-const PT_CACHE_KEY = 'admin.productTitles.v2'   /* v2：{ts,data} 结构，键名升级防旧格式冲突 */
+ * 结果缓存 sessionStorage（键名统一 constants/cacheKeys.js，与 ProductEditView 失效逻辑共享），避免每次挂载全量拉取 */
+const PT_CACHE_KEY = PRODUCT_TITLES_KEY
 const PT_TTL = 10 * 60 * 1000                   /* 缓存 10 分钟，超时重拉（商品改名及时生效） */
 const productTitles = reactive({})
 const productName = (id) => productTitles[id] || ('商品 #' + id)
@@ -210,6 +211,11 @@ function togglePending() {
   revPage.value = 1
   /* 待审开关回写 URL（可分享），与 ?tab= 深链同一套 replace 口径 */
   router.replace({ query: { ...route.query, pending: pendingOnly.value ? '1' : '0' } })
+  loadReviews().catch(() => toast('评价列表加载失败', 'error'))
+}
+/* 星级/商品筛选：独立入口（只重置页码 + 重拉，不写 pending 进 URL） */
+function filterReviews() {
+  revPage.value = 1
   loadReviews().catch(() => toast('评价列表加载失败', 'error'))
 }
 function artGo(n) {
@@ -374,17 +380,26 @@ function md2html(src) {
 const artPrev = ref(false)
 const faqPrev = ref(false)
 
-/* FAQ 增改（FaqCreateIn/FaqUpdateIn） */
+/* FAQ 增改（FaqCreateIn/FaqUpdateIn）；关闭守卫：表单与打开快照不同 → 确认丢弃 */
 const faqDlg = ref(false)
 const faqForm = reactive({ id: null, category: 1, question: '', answer_md: '', sort_order: 0, active: 1 })
+const faqSnap = ref('')
+const faqFormJson = () => JSON.stringify({ id: faqForm.id, category: faqForm.category, question: faqForm.question, answer_md: faqForm.answer_md, sort_order: faqForm.sort_order, active: faqForm.active })
+const isFaqDirty = computed(() => faqDlg.value && faqFormJson() !== faqSnap.value)
+function closeFaqDlg() {
+  if (isFaqDirty.value) { askConfirm('放弃未保存的修改？', 'FAQ 内容尚未保存，关闭后将丢失。', () => { faqDlg.value = false }, { danger: true, confirmText: '放弃修改' }); return }
+  faqDlg.value = false
+}
 function newFaq() {
   Object.assign(faqForm, { id: null, category: 1, question: '', answer_md: '', sort_order: faqTotal.value + 1, active: 1 })
   faqPrev.value = false
+  faqSnap.value = faqFormJson()
   faqDlg.value = true
 }
 function editFaq(f) {
   Object.assign(faqForm, { id: f.id, category: f.category, question: f.question, answer_md: f.answer_md, sort_order: f.sort_order ?? 0, active: f.active ? 1 : 0 })
   faqPrev.value = false
+  faqSnap.value = faqFormJson()
   faqDlg.value = true
 }
 async function saveFaq() {
@@ -415,6 +430,8 @@ function delFaq(f) {
       faqs.value = faqs.value.filter((x) => x.id !== f.id)
       faqTotal.value = Math.max(0, faqTotal.value - 1)
       toast('已删除', 'success')
+      /* 本页删空且不在第 1 页：回拉前一页重拉（防停留空页） */
+      if (!faqs.value.length && faqPage.value > 1) { faqPage.value--; loadFaqs().catch(() => {}) }
     } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
   }, { danger: true, confirmText: '删除' })
 }
@@ -443,6 +460,8 @@ function delArticle(a) {
       articles.value = articles.value.filter((x) => x.id !== a.id)
       artTotal.value = Math.max(0, artTotal.value - 1)
       toast('已删除', 'success')
+      /* 本页删空且不在第 1 页：回拉前一页重拉（防停留空页） */
+      if (!articles.value.length && artPage.value > 1) { artPage.value--; loadArticles().catch(() => {}) }
     } catch (e) { toast('删除失败：' + (e.data?.detail || e.message), 'error') }
   }, { danger: true, confirmText: '删除' })
 }
@@ -513,14 +532,23 @@ async function exportCsv() {
   exporting.value = false
 }
 
-/* 文章新建/编辑（ArticleCreateIn：slug/title/author/content_md/tags/status/cover；slug 后端强制小写且唯一） */
+/* 文章新建/编辑（ArticleCreateIn：slug/title/author/content_md/tags/status/cover；slug 后端强制小写且唯一）；
+ * 关闭守卫：表单与打开快照不同 → 确认丢弃 */
 const artDlg = ref(false)
 const artForm = reactive({ id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0, cover: '' })
 const artCoverDirty = ref(false)   /* 编辑态封面是否被改动过（未动过不提交 → 后端不改；空串=清除） */
+const artSnap = ref('')
+const artFormJson = () => JSON.stringify({ id: artForm.id, slug: artForm.slug, title: artForm.title, author: artForm.author, content_md: artForm.content_md, tagsStr: artForm.tagsStr, status: artForm.status, cover: artForm.cover })
+const isArtDirty = computed(() => artDlg.value && artFormJson() !== artSnap.value)
+function closeArtDlg() {
+  if (isArtDirty.value) { askConfirm('放弃未保存的修改？', '文章内容尚未保存，关闭后将丢失。', () => { artDlg.value = false }, { danger: true, confirmText: '放弃修改' }); return }
+  artDlg.value = false
+}
 function newArticle() {
   Object.assign(artForm, { id: null, slug: '', title: '', author: '', content_md: '', tagsStr: '', status: 0, cover: '' })
   artCoverDirty.value = false
   artPrev.value = false
+  artSnap.value = artFormJson()
   artDlg.value = true
 }
 function editArticle(a) {
@@ -536,6 +564,7 @@ function editArticle(a) {
   })
   artCoverDirty.value = false
   artPrev.value = false
+  artSnap.value = artFormJson()
   artDlg.value = true
 }
 async function saveArticle() {
@@ -600,11 +629,11 @@ async function saveArticle() {
         <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--gray);cursor:pointer" title="勾选当前页全部待审评价">
           <input type="checkbox" :checked="revAllChecked" :disabled="!revPendingIds.length" style="width:15px;height:15px" @change="toggleRevAll"> 全选待审
         </label>
-        <select v-model.number="revRating" class="input" style="width:auto;padding:6px 10px" @change="togglePending">
+        <select v-model.number="revRating" class="input" style="width:auto;padding:6px 10px" @change="filterReviews">
           <option :value="0">全部星级</option>
           <option v-for="n in 5" :key="n" :value="n">{{ n }} 星</option>
         </select>
-        <select v-model.number="revProduct" class="input" style="width:auto;max-width:220px;padding:6px 10px;text-overflow:ellipsis" title="按商品筛选评价" @change="togglePending">
+        <select v-model.number="revProduct" class="input" style="width:auto;max-width:220px;padding:6px 10px;text-overflow:ellipsis" title="按商品筛选评价" @change="filterReviews">
           <option :value="0">全部商品</option>
           <option v-for="(title, id) in productTitles" :key="id" :value="Number(id)">{{ title }}</option>
         </select>
@@ -805,10 +834,10 @@ async function saveArticle() {
     </div>
   </div>
 
-  <!-- 文章新建/编辑弹窗（slug 唯一且小写；发布时后端补 published_at） -->
-  <div v-if="artDlg" class="modal open" @click.self="artDlg = false">
+  <!-- 文章新建/编辑弹窗（slug 唯一且小写；发布时后端补 published_at；未保存关闭需确认） -->
+  <div v-if="artDlg" class="modal open">
     <div class="modal-box" style="max-width:640px">
-      <button class="modal-x" @click="artDlg = false">×</button>
+      <button class="modal-x" @click="closeArtDlg">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:10px">{{ artForm.id ? '✏️ 编辑文章 #' + artForm.id : '📝 新文章' }}</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="field"><label>Slug（小写，URL 路径，唯一）</label>
@@ -837,16 +866,16 @@ async function saveArticle() {
       </label>
       <p v-else style="font-size:12px;color:var(--gray);margin-top:6px">发布状态已锁定：请使用列表行的「发布 / 转草稿」按钮切换。</p>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
-        <button class="btn btn-secondary btn-sm" @click="artDlg = false">取消</button>
+        <button class="btn btn-secondary btn-sm" @click="closeArtDlg">取消</button>
         <button class="btn btn-primary btn-sm" @click="saveArticle">保存</button>
       </div>
     </div>
   </div>
 
-  <!-- FAQ 编辑弹窗 -->
-  <div v-if="faqDlg" class="modal open" @click.self="faqDlg = false">
+  <!-- FAQ 编辑弹窗（未保存关闭需确认） -->
+  <div v-if="faqDlg" class="modal open">
     <div class="modal-box" style="max-width:560px">
-      <button class="modal-x" @click="faqDlg = false">×</button>
+      <button class="modal-x" @click="closeFaqDlg">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:10px">{{ faqForm.id ? '编辑 FAQ #' + faqForm.id : '新增 FAQ' }}</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="field">
@@ -873,7 +902,7 @@ async function saveArticle() {
         <input v-model.number="faqForm.active" type="checkbox" :true-value="1" :false-value="0" style="width:16px;height:16px"> 前台显示
       </label>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
-        <button class="btn btn-secondary btn-sm" @click="faqDlg = false">取消</button>
+        <button class="btn btn-secondary btn-sm" @click="closeFaqDlg">取消</button>
         <button class="btn btn-primary btn-sm" @click="saveFaq">保存</button>
       </div>
     </div>

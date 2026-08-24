@@ -11,7 +11,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.db import get_db
 from app.core.deps import get_current_user_optional
 from app.domains.trade import service_payments
@@ -33,25 +32,26 @@ _PROVIDER_LABELS = {
 }
 
 
-def _resolve_provider(provider: str) -> payment_provider.PaymentProvider:
-    default = payment_provider.get_provider()
+def _resolve_provider(provider: str, db: Session) -> payment_provider.PaymentProvider:
+    default = payment_provider.get_provider(db)
     if default.name == "mock" or provider == default.name:
         # 回落分支：默认链是 mock（无真实凭据/缺包降级）——开关未放行直接拒绝而非静默降级
-        if default.name == "mock" and not settings.mock_pay_enabled:
+        if default.name == "mock" and not payment_provider.mock_pay_enabled(db):
             raise HTTPException(status_code=409, detail="mock_provider_disabled")
         return default
+    cfg = payment_provider.resolve_pay_config(db)
     if provider == "stripe":
         try:
             import stripe  # noqa: F401
-            if not settings.stripe_key:
+            if not cfg.get("stripe_key"):
                 raise payment_provider.ProviderUnavailable("stripe key absent")
-            return payment_provider.StripeProvider()
+            return payment_provider.StripeProvider(cfg)
         except (ImportError, payment_provider.ProviderUnavailable):
             raise HTTPException(status_code=400, detail="provider_unavailable")
     if provider == "paypal":
         try:
             import httpx  # noqa: F401
-            return payment_provider.PayPalProvider()
+            return payment_provider.PayPalProvider(cfg)
         except (ImportError, payment_provider.ProviderUnavailable):
             raise HTTPException(status_code=400, detail="provider_unavailable")
     raise HTTPException(status_code=400, detail="provider_unavailable")
@@ -63,7 +63,7 @@ def _create_intent_via(
 ) -> dict:
     from app.domains.trade import repository as repo
 
-    if provider.name == "mock" and not settings.mock_pay_enabled:
+    if provider.name == "mock" and not payment_provider.mock_pay_enabled(db):
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     order = service_payments._get_order(db, order_no)
     service_payments.ensure_order_owner(order, user, email)
@@ -108,7 +108,7 @@ def create_intent(
     user: Optional[User] = Depends(get_current_user_optional),
 ):
     if body.provider:
-        chosen = _resolve_provider(body.provider)
+        chosen = _resolve_provider(body.provider, db)
         if chosen.name == "mock":
             result = service_payments.create_intent(
                 db, body.order_no, user=user, email=body.email)
@@ -121,17 +121,17 @@ def create_intent(
 
 
 @router.get("/methods")
-def payment_methods():
+def payment_methods(db: Session = Depends(get_db)):
     providers = []
-    for name in payment_provider.available_providers():
+    for name in payment_provider.available_providers(db):
         pid = "stripe" if name.startswith("stripe") else name
         providers.append({
             "id": pid,
             "name": _PROVIDER_LABELS.get(pid, pid),
-            "klarna": pid == "stripe" and bool(settings.stripe_klarna),
+            "klarna": pid == "stripe" and "klarna" in name,
         })
-    # 非 dev 无可用真实 provider → 空列表 + default=none（前端隐藏支付入口）
-    default = payment_provider.get_provider().name if providers else "none"
+    # 无可用支付方式（真实凭据缺 + mock 开关关）→ 空列表 + default=none（前端隐藏支付入口）
+    default = payment_provider.get_provider(db).name if providers else "none"
     return {"providers": providers, "default": default}
 
 

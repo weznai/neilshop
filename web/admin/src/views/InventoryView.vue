@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt, money } from '../composables/format'
 import { csvCell, downloadCsv } from '../composables/exportCsv'
@@ -9,6 +11,7 @@ import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
+const session = useSessionStore()
 const variants = ref([])
 const low = ref([])
 const movements = ref([])
@@ -32,16 +35,25 @@ const MTYPE = { 1: '采购', 2: '预扣', 3: '实扣', 4: '释放', 5: '回补',
 const MTYPES = [[null, '全部'], ...Object.entries(MTYPE).map(([k, v]) => [Number(k), v])]
 const ADJ_ERR = { variant_not_found: '变体不存在', zero_change: '调整量不能为 0', stock_adjust_conflict: '库存并发冲突，请刷新重试' }
 
-/* ===== URL 同步：q/page/sort/threshold（SKU 列表）+ mv（流水选中 SKU id）/mt（类型）/mfrom/mto（日期）/mp（流水页） ===== */
+/* ===== URL 同步：page/sort/threshold（SKU 列表）+ mv（流水选中 SKU id）/mt（类型）/mfrom/mto（日期）/mp（流水页）
+ * q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车时才写回 URL（做法同 OrdersView） ===== */
 const SORTABLE = ['sku', '-sku', 'stock', '-stock']
-const state = reactive({ q: '', page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 })
-useQuerySync(state, { nums: ['page', 'mv', 'mp'], defaults: { q: '', page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 } })
+const state = reactive({ page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 })
+useQuerySync(state, { nums: ['page', 'mv', 'mp'], defaults: { page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 } })
 /* 回填清洗：非法值回落默认 */
 if (!['all', ...Object.keys(MTYPE)].includes(state.mt)) state.mt = 'all'
 if (!SORTABLE.includes(state.sort)) state.sort = ''
 if (!(state.page >= 1)) state.page = 1
 if (!(state.mp >= 1)) state.mp = 1
 if (!(state.mv >= 1)) state.mv = ''
+const route = useRoute()
+const router = useRouter()
+/* 搜索词独立 ref：初始化读 query.q，搜索/清空时才 replace 写回（useQuerySync 不追踪 q，无回环） */
+const q = ref(typeof route.query.q === 'string' ? route.query.q : '')
+function syncQ() {
+  const kw = q.value.trim()
+  if ((route.query.q || '') !== kw) router.replace({ query: { ...route.query, q: kw || undefined } })
+}
 const thrNum = Number(state.threshold)
 state.threshold = Number.isInteger(thrNum) && thrNum >= 0 && thrNum <= 9999 ? thrNum : 8
 /* 流水选中 SKU：URL 存 id，展示 sku 从已加载变体列表解析；未命中时用点击时带来的 skuHint（URL 直开暂以 #id 占位，列表载入后自动替换） */
@@ -63,15 +75,15 @@ async function loadVariants() {
   const t = ++varSeq
   varErr.value = ''
   try {
-    const params = { page: state.page, size: 50, q: state.q.trim() }
+    const params = { page: state.page, size: 50, q: q.value.trim() }
     if (state.sort) params.sort = state.sort
     const d = await req('GET', '/api/admin/catalog/variants?' + new URLSearchParams(params))
     if (t !== varSeq) return
     variants.value = d.items || []
     varTotal.value = d.total ?? 0
     pages.value = Math.max(1, Math.ceil(varTotal.value / 50))
-    /* 当前页删空回落：本页 SKU 被删光且不在第 1 页时回退一页重拉一次，防停留在空页（防递归：已在第 1 页则不再重拉） */
-    if (!variants.value.length && state.page > 1) { state.page--; if (state.page !== 1) { loadVariants(); return } }
+    /* 当前页删空回落：本页 SKU 被删光且不在第 1 页时回第 1 页重拉一次（已在第 1 页则空态渲染，无递归） */
+    if (!variants.value.length && state.page > 1) { state.page = 1; loadVariants(); return }
   } catch (e) { if (t !== varSeq) return; varErr.value = e.message || '请求失败'; toast('SKU 列表加载失败：' + (e.message || ''), 'error') }
 }
 async function loadLow() {
@@ -113,8 +125,8 @@ const stockCls = (v) => { const r = stockRatio(v); return r <= 0.25 ? 'low' : r 
 /* 规格列：option2 存在且非 Default 时拼接（如 "Short Almond / XL"） */
 const specLabel = (v) => (v.option2_value && v.option2_value !== 'Default' ? v.option1_value + ' / ' + v.option2_value : v.option1_value)
 
-function search() { state.page = 1; loadVariants() }
-function clearSearch() { state.q = ''; state.page = 1; loadVariants() }
+function search() { state.page = 1; syncQ(); loadVariants() }
+function clearSearch() { q.value = ''; state.page = 1; syncQ(); loadVariants() }
 
 /* 服务端排序：sort 直传后端（sku/stock，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码（URL 同步） */
 function sortBy(k) {
@@ -125,6 +137,13 @@ function sortBy(k) {
 const sortInd = (k) => (state.sort === k ? '▲' : state.sort === '-' + k ? '▼' : '')
 const ariaSort = (k) => (state.sort === k ? 'ascending' : state.sort === '-' + k ? 'descending' : 'none')
 function applyThreshold() {
+  /* 输入清空 → 0（列出所有 SKU），应用前明确提示语义 */
+  if (state.threshold === '' || state.threshold === null || state.threshold === undefined) {
+    toast('0 表示列出所有 SKU')
+    state.threshold = 0
+    loadLow()
+    return
+  }
   state.threshold = Math.max(0, Math.min(9999, parseInt(state.threshold, 10) || 0))
   loadLow()
 }
@@ -138,7 +157,7 @@ const movFiltered = computed(() => !!(state.mv || mType.value !== null || state.
 /* CSV 导出：按当前 SKU + 类型筛选循环翻页拉全量（后端每页 20，上限 20 页）
  * 流水仅含 variant_id：已选 SKU 直接用其 sku，否则拉变体列表建 id→sku 映射 */
 const exporting = ref(false)
-const EXPORT_MAX_PAGES = 20
+const EXPORT_MAX_PAGES = 50
 async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
@@ -223,8 +242,8 @@ async function doAdjust() {
     </div>
     <div style="display:flex;gap:10px">
       <div style="position:relative">
-        <input v-model="state.q" class="input" style="width:220px;padding-right:30px" placeholder="搜 SKU / 标题" @keydown.enter="search">
-        <button v-if="state.q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
+        <input v-model="q" class="input js-search" style="width:220px;padding-right:30px" placeholder="搜 SKU / 标题" @keydown.enter="search">
+        <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
       </div>
       <button class="btn btn-secondary" @click="search">搜索</button>
     </div>
@@ -269,12 +288,12 @@ async function doAdjust() {
           </td>
           <td style="text-align:right;white-space:nowrap">
             <button class="btn btn-ghost btn-sm" title="查看该 SKU 变动流水" @click="filterVar(v)">流水</button>
-            <button class="btn btn-secondary btn-sm" style="margin-left:6px" @click="openAdjust(v)">调整</button>
+            <button v-if="session.hasPerm('stock:manage')" class="btn btn-secondary btn-sm" style="margin-left:6px" @click="openAdjust(v)">调整</button>
           </td>
         </tr>
       </tbody>
       </table>
-      <EmptyState v-if="!variants.length" :icon="state.q.trim() ? '🔍' : '📦'" :title="state.q.trim() ? '未找到匹配的 SKU' : '暂无 SKU'" :sub="state.q.trim() ? '试试调整或清除筛选' : '商品变体将显示在这里'" />
+      <EmptyState v-if="!variants.length" :icon="q.trim() ? '🔍' : '📦'" :title="q.trim() ? '未找到匹配的 SKU' : '暂无 SKU'" :sub="q.trim() ? '试试调整或清除筛选' : '商品变体将显示在这里'" />
       <Pagination embed :page="state.page" :pages="pages" :total="varTotal" unit="条" @go="state.page = $event; loadVariants()" />
     </template>
   </div>
@@ -305,7 +324,7 @@ async function doAdjust() {
             <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ l.sku }} <small style="color:var(--gray)">{{ l.product_title }}</small></span>
             <span style="display:flex;gap:8px;align-items:center;flex:none">
               <b style="color:var(--error)">{{ l.stock }}<small style="color:var(--gray)"> / 安全线 {{ l.safety_stock }}</small></b>
-              <button class="btn btn-secondary btn-sm" title="调整该 SKU 库存" @click.stop="openAdjust({ id: l.variant_id, sku: l.sku, stock: l.stock, safety_stock: l.safety_stock })">调整</button>
+              <button v-if="session.hasPerm('stock:manage')" class="btn btn-secondary btn-sm" title="调整该 SKU 库存" @click.stop="openAdjust({ id: l.variant_id, sku: l.sku, stock: l.stock, safety_stock: l.safety_stock })">调整</button>
             </span>
           </div>
           <div v-if="!low.length" style="font-size:13px;color:var(--gray);padding:10px 0">库存充足，无预警项 ✓</div>
@@ -360,7 +379,7 @@ async function doAdjust() {
         调整后库存：<b :style="{ color: adjAfter < 0 ? 'var(--error)' : 'var(--plum)' }">{{ adjust.stock }} {{ adjChange > 0 ? '+' : '' }}{{ adjChange }} = {{ adjAfter }}</b>
         <span v-if="adjAfter < 0" style="color:var(--error)">（不能为负）</span>
       </p>
-      <button class="btn btn-primary btn-block" style="margin-top:12px" :class="{ loading: adjBusy }" :disabled="adjBusy" @click="doAdjust">{{ adjBusy ? '调整中…' : '确认调整' }}</button>
+      <button v-if="session.hasPerm('stock:manage')" class="btn btn-primary btn-block" style="margin-top:12px" :class="{ loading: adjBusy }" :disabled="adjBusy" @click="doAdjust">{{ adjBusy ? '调整中…' : '确认调整' }}</button>
     </div>
   </div>
 

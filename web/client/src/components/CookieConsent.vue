@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { i18n } from '../i18n'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
@@ -9,14 +9,17 @@ const ui = useUiStore()
 function readConsent() {
   try { return JSON.parse(localStorage.getItem('gm_consent') || '{}') || {} } catch (_) { return {} }
 }
+/* ver!==2（旧结构）视为未同意：重新弹 banner */
+const consented = () => readConsent().ver === 2
 const saved = readConsent()
+const savedOk = saved.ver === 2
 const banner = ref(false)
-try { banner.value = !localStorage.getItem('gm_consent') } catch (_) { banner.value = true }
+try { banner.value = !localStorage.getItem('gm_consent') || !consented() } catch (_) { banner.value = true }
 const settings = ref(false)
 const model = reactive({
-  ana: !!saved.ana,
-  mar: !!saved.mar,
-  per: !!saved.per,
+  ana: savedOk && !!saved.ana,
+  mar: savedOk && !!saved.mar,
+  per: savedOk && !!saved.per,
 })
 const ROWS = ['ana', 'mar', 'per']
 
@@ -25,7 +28,11 @@ function openSettings() {
   settings.value = true
 }
 function onOpenReq() { openSettings() }
-function onEsc(e) { if (e.key === 'Escape' && settings.value) settings.value = false }
+function onEsc(e) {
+  if (e.key !== 'Escape' || !settings.value) return
+  settings.value = false
+  if (!consented()) banner.value = true
+}
 
 /* ===== a11y：settings 弹窗焦点管理（开→入框 / Esc 关 / 关→还焦）+ 简易 focus trap（对齐 MarketingPopups） ===== */
 const settingsBox = ref(null)
@@ -62,17 +69,18 @@ watch(settings, async (v) => {
   const f = dialogFocusables(settingsBox.value)
   if (f.length) f[0].focus({ preventScroll: true })
 })
-onUnmounted(() => { ui.consentOpen = false })
+onUnmounted(() => {
+  ui.consentOpen = false
+  window.removeEventListener('gm:open-consent', onOpenReq)
+  window.removeEventListener('keydown', onEsc)
+})
 onMounted(() => {
   window.addEventListener('gm:open-consent', onOpenReq)
   window.addEventListener('keydown', onEsc)
 })
-onUnmounted(() => {
-  window.removeEventListener('gm:open-consent', onOpenReq)
-  window.removeEventListener('keydown', onEsc)
-})
 
-/* 后台上报同意记录（POST /api/account/consent）：fire-and-forget，失败静默不打扰 UI */
+/* 后台上报同意记录（POST /api/account/consent）：fire-and-forget，失败静默不打扰 UI；
+ * personalization 本地保存并随 payload 透传（后端忽略未知字段） */
 function reportConsent(c) {
   let sid = ''
   try { sid = localStorage.getItem('gm_consent_sid') || '' } catch (_) { /* 隐私模式 */ }
@@ -85,11 +93,12 @@ function reportConsent(c) {
     necessary: true,
     analytics: !!c.ana,
     marketing: !!c.mar,
+    personalization: !!c.per,
   }).catch(() => {})
 }
 
 function save(c) {
-  try { localStorage.setItem('gm_consent', JSON.stringify({ ...c, at: Date.now() })) } catch (_) { /* 隐私模式等写入失败即弃 */ }
+  try { localStorage.setItem('gm_consent', JSON.stringify({ ...c, ver: 2, at: Date.now() })) } catch (_) { /* 隐私模式等写入失败即弃 */ }
   reportConsent(c)
   banner.value = false
   settings.value = false
@@ -99,11 +108,20 @@ function save(c) {
 function saveFromModal() {
   save({ nec: true, ana: model.ana, mar: model.mar, per: model.per })
 }
+
+/* banner 文案拆分：从 i18n 文案中切出 /privacy 链接段，改用 router-link（SPA 内跳转不整页刷新） */
+const consentParts = computed(() => {
+  const raw = i18n.t('consent.text')
+  const m = raw.match(/^([\s\S]*?)<a href="\/privacy">([\s\S]*?)<\/a>([\s\S]*)$/)
+  return m ? { before: m[1], link: m[2], after: m[3] } : { before: raw, link: '', after: '' }
+})
 </script>
 
 <template>
   <div v-if="banner" class="consent-banner" role="region" :aria-label="i18n.t('consent.title')">
-    <p style="font-size:13px;line-height:1.5;margin:0 0 12px" v-html="i18n.t('consent.text')" />
+    <p style="font-size:13px;line-height:1.5;margin:0 0 12px">
+      {{ consentParts.before }}<router-link v-if="consentParts.link" to="/privacy">{{ consentParts.link }}</router-link>{{ consentParts.after }}
+    </p>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn btn-primary btn-sm" @click="save({ nec: true, ana: true, mar: true, per: true })">
         {{ i18n.t('consent.accept') }}

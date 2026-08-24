@@ -1,14 +1,18 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import { API_BASE, fmtDetail, req } from '../api/client'
+import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { money } from '../composables/format'
+import { PRODUCT_TITLES_KEY } from '../constants/cacheKeys'
+import { uploadMedia, uploadErrText } from '../composables/upload'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
 /* 响应式 pid：新建保存成功后 router.replace 挂 id，此处随之变为编辑态
  * （此前一次性快照导致重复保存会重复建品、变体区不出现）
  * 非法 id（NaN / <1）不静默落入新建模式：onMounted/watch 中 toast 后跳回 /products */
@@ -104,43 +108,19 @@ const brokenImgs = reactive({})
 watch(() => form.hero_image, () => { brokenHero.value = false })
 watch(() => form.images.join('\n'), () => { Object.keys(brokenImgs).forEach((k) => delete brokenImgs[k]) })
 
-/* ===== 图片上传（POST /api/admin/media/upload：multipart 字段 file，png/jpg/jpeg/webp/gif ≤5MB）
+/* ===== 图片上传（POST /api/admin/media/upload，composables/upload 统一 401/403 兜底）
  * 单隐藏 input + 目标槽复用：pickImage 记来源后弹选择框，成功按目标回填；各入口共用一个 uploading ===== */
 const fileInput = ref(null)
 const upTarget = ref(null) /* 'hero' | 'gallery' | 'newVar' | 'editVar' */
 const uploading = ref(false)
 function pickImage(t) { if (uploading.value) return; upTarget.value = t; fileInput.value?.click() }
-/* 鉴权照 client.js 现有取法：API_BASE 前缀 + cookie 会话（credentials include，后台无 Authorization 头）；
- * 不设 Content-Type，multipart 边界由浏览器生成；30s 超时同 req */
-async function uploadFile(file) {
-  const fd = new FormData()
-  fd.append('file', file)
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 30000)
-  let r
-  try { r = await fetch(API_BASE + '/api/admin/media/upload', { method: 'POST', credentials: 'include', body: fd, signal: ctrl.signal }) }
-  catch (err) { throw new Error(err && err.name === 'AbortError' ? '上传超时，请稍后重试' : '网络错误，请检查连接') }
-  finally { clearTimeout(timer) }
-  const data = await r.json().catch(() => null)
-  if (!r.ok) {
-    const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
-    e.status = r.status
-    throw e
-  }
-  if (!data || !data.url) throw new Error('响应缺少 url')
-  return data.url
-}
 async function onPickFile(e) {
   const f = e.target.files && e.target.files[0]
   e.target.value = '' /* 复位 value，否则重选同一文件不触发 change */
   if (!f) return
   uploading.value = true
-  try { applyUpUrl(await uploadFile(f)) }
-  catch (err) {
-    const s = err.status
-    /* 400=后端不支持该类型（unsupported image type）、422=校验失败，均归一为格式提示 */
-    toast(s === 413 ? '图片不能超过 5MB' : s === 400 || s === 422 ? '仅支持 PNG/JPG/WebP/GIF 图片' : '上传失败：' + (err.message || ''), 'error')
-  }
+  try { applyUpUrl(await uploadMedia(f)) }
+  catch (err) { const m = uploadErrText(err); if (m) toast(m, 'error') }
   finally { uploading.value = false }
 }
 /* 回填：主图覆盖；图集/变体图片为追加一行（各守上限，文案与保存校验一致）；图集写 galText 保持草稿同步 */
@@ -290,7 +270,8 @@ onMounted(async () => {
     return
   }
   try {
-    cats.value = await req('GET', '/api/admin/catalog/categories')
+    const d = await req('GET', '/api/admin/catalog/categories')
+    cats.value = Array.isArray(d) ? d : (d.items || [])
     if (!pid.value && cats.value.length && !cats.value.some((c) => c.id === form.category_id)) form.category_id = cats.value[0].id
   } catch (_) { catsFailed.value = true; toast('分类加载失败，保存前请刷新重试', 'error') }
   if (pid.value) loadProduct(pid.value)
@@ -347,8 +328,8 @@ async function loadCopy(id) {
 /* URL 前缀校验：主图/图集/变体图须 http(s):// 开头（空值放行） */
 const badUrl = (u) => !!u && !/^https?:\/\//i.test(u)
 
-/* 保存成功后失效 ContentView 的商品标题缓存（键名同 ContentView PT_CACHE_KEY；新建/改名后需重拉） */
-function clearTitleCache() { try { sessionStorage.removeItem('admin.productTitles.v1') } catch (_) { /* 存储不可用忽略 */ } }
+/* 保存成功后失效 ContentView 的商品标题缓存（键名统一 constants/cacheKeys.js；新建/改名后需重拉） */
+function clearTitleCache() { try { sessionStorage.removeItem(PRODUCT_TITLES_KEY) } catch (_) { /* 存储不可用忽略 */ } }
 
 async function save() {
   if (loading.value) return
@@ -448,7 +429,7 @@ async function addVariant() {
     newVar.imgs = ''
     variants.value = await loadVariants(pid.value)
     markVarsClean()
-    toast('变体已添加 ✓', 'success')
+    toast('变体已添加 ✓ 价格区间已按在售变体重算', 'success')
   } catch (e) {
     const d = e.data?.detail
     if (typeof d === 'string' && d.includes('sku')) toast('添加失败：SKU 已存在——请修改规格名或联系技术', 'error')
@@ -616,7 +597,7 @@ async function doDelTr() {
     <div style="display:flex;gap:10px">
       <a v-if="pid" class="btn btn-secondary" :href="'/product?id=' + pid" target="_blank" rel="noopener">前台预览 ↗</a>
       <router-link to="/products" class="btn btn-ghost">← 列表</router-link>
-      <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
+      <button v-if="session.hasPerm('catalog:manage')" class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
     </div>
   </div>
 
@@ -651,6 +632,7 @@ async function doDelTr() {
         <div class="field">
           <label>分类</label>
           <select v-model="form.category_id" class="input" :disabled="!cats.length">
+            <option v-if="form.category_id && !cats.some((c) => c.id === form.category_id)" :value="form.category_id">原分类 #{{ form.category_id }}（可能已删除）</option>
             <option v-for="c in cats" :key="c.id" :value="c.id">{{ c.name }}</option>
           </select>
           <!-- 编辑态提交原 category_id 能保存成功，不吓唬用户；新建/复制才会因缺分类报错 -->
@@ -721,8 +703,8 @@ async function doDelTr() {
                 <b style="margin-left:auto">{{ money(v.price) }}</b>
                 <!-- 颜色语义与列表页统一：为 0 红 error、≤安全线黄 warn、充足灰 done -->
                 <span class="tag" :class="!v.stock ? 'tag-error' : (v.stock <= (v.safety_stock ?? 0) ? 'tag-pending' : 'tag-done')" :title="`安全库存 ${v.safety_stock ?? 0}`">{{ v.stock }}</span>
-                <!-- 复制预览行无 id（未落库），不提供操作 -->
-                <template v-if="v.id">
+                <!-- 复制预览行无 id（未落库），不提供操作；写操作需 catalog:manage -->
+                <template v-if="v.id && session.hasPerm('catalog:manage')">
                   <button class="btn btn-ghost btn-sm" @click="startEdit(v)">编辑</button>
                   <button class="btn btn-ghost btn-sm" @click="toggleVar(v)">{{ v.is_active ? '停用' : '启用' }}</button>
                   <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="askDelVar(v)">删除</button>
@@ -732,8 +714,8 @@ async function doDelTr() {
           </div>
         </div>
         <p v-else style="font-size:13px;color:var(--gray);margin-bottom:12px">暂无变体（新建商品请先保存再添加）</p>
-        <!-- 新增变体 6 列 grid：<900px 降 3 列、<600px 降 2 列 -->
-        <div v-if="pid" class="var-new-grid">
+        <!-- 新增变体 6 列 grid：<900px 降 3 列、<600px 降 2 列；写操作需 catalog:manage -->
+        <div v-if="pid && session.hasPerm('catalog:manage')" class="var-new-grid">
           <div class="field"><label>规格（如 Short Almond）</label><input v-model="newVar.option1" class="input" maxlength="50"></div>
           <div class="field"><label>副规格</label><input v-model="newVar.option2" class="input" maxlength="50"></div>
           <div class="field"><label>价格（分）</label><input v-model.number="newVar.price" class="input" type="number" min="0" step="1"></div>
@@ -811,21 +793,21 @@ async function doDelTr() {
       <div v-if="pid" id="sec-i18n" class="card" style="padding:20px">
         <div class="dhead">
           <h3 class="dtitle">多语言</h3>
-          <button class="btn btn-secondary btn-sm" @click="newTr">＋ 添加语言</button>
+          <button v-if="session.hasPerm('catalog:manage')" class="btn btn-secondary btn-sm" @click="newTr">＋ 添加语言</button>
         </div>
         <p v-if="!translations.length" style="font-size:12.5px;color:var(--gray)">暂无翻译，前台将展示上方主商品信息。</p>
         <div v-for="t in translations" :key="t.locale" style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--gray-light);font-size:13px">
           <span class="tag tag-cat" style="flex:none" :title="LOCALE_LABEL[t.locale] || t.locale">{{ t.locale }}</span>
           <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="t.title">{{ t.title }}</span>
-          <button class="btn btn-ghost btn-sm" @click="editTr(t)">编辑</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delTr(t)">删除</button>
+          <button v-if="session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" @click="editTr(t)">编辑</button>
+          <button v-if="session.hasPerm('catalog:manage')" class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delTr(t)">删除</button>
         </div>
       </div>
 
       <div class="card" style="padding:20px">
         <div class="dhead"><h3 class="dtitle">组织</h3></div>
         <div class="field"><label>标签（逗号分隔）</label>
-          <input :value="form.tags.join(',')" class="input" @input="form.tags = $event.target.value.split(',').map((s) => s.trim()).filter(Boolean)">
+          <input :value="form.tags.join(',')" class="input" @input="form.tags = $event.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)">
         </div>
         <label style="display:flex;gap:10px;align-items:center;font-size:13.5px;margin:8px 0;cursor:pointer">
           <input v-model="form.is_new" type="checkbox" style="width:16px;height:16px"> NEW 徽标
@@ -840,8 +822,8 @@ async function doDelTr() {
   <div v-if="loading" class="load-mask">加载商品数据…</div>
   </fieldset>
 
-  <!-- 吸底保存条：dirty / 保存中才出现 -->
-  <div v-if="dirty || busy" class="save-bar">
+  <!-- 吸底保存条：dirty / 保存中才出现（写操作需 catalog:manage） -->
+  <div v-if="(dirty || busy) && session.hasPerm('catalog:manage')" class="save-bar">
     <span class="save-dot" aria-hidden="true"></span>
     <span style="flex:1;font-size:13px">有未保存的修改</span>
     <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
@@ -863,7 +845,7 @@ async function doDelTr() {
         <div class="field"><label>副标题（可选）</label><input v-model="trForm.subtitle" class="input"></div>
         <div class="field"><label>描述 Markdown（可选）</label><textarea v-model="trForm.description_md" class="input" rows="5"></textarea></div>
       </div>
-      <button class="btn btn-primary btn-block" style="margin-top:14px" @click="saveTr">保存</button>
+      <button v-if="session.hasPerm('catalog:manage')" class="btn btn-primary btn-block" style="margin-top:14px" @click="saveTr">保存</button>
     </div>
   </div>
 

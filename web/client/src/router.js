@@ -52,8 +52,13 @@ const router = createRouter({
     /* 返回（含详情↔列表）优先恢复滚动位置；锚点定位留出吸顶高度 */
     if (saved) return saved
     if (to.hash) return { el: to.hash, top: 84 }
-    /* 同页仅 query 变化（筛选/排序/分页）：保持当前滚动位置，不跳顶 */
-    if (to.path === from.path) return false
+    /* 同页仅 query 变化（筛选/排序/分页）：保持当前滚动位置，不跳顶；
+       例外：商品/文章详情切换（同 path 换 id/slug）需回顶（视图内亦有切换逻辑，此处仅保证不冲突） */
+    if (to.path === from.path) {
+      const detailSwap = (to.name === 'product' || to.name === 'blog-post')
+        && (to.query.id !== from.query.id || to.query.slug !== from.query.slug)
+      return detailSwap ? { top: 0 } : false
+    }
     return { top: 0 }
   },
   routes: [
@@ -112,7 +117,7 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const legacy = LEGACY[to.path]
-  if (legacy) return { path: legacy, query: to.query }
+  if (legacy) return { path: legacy, query: to.query, hash: to.hash }
   /* 需登录路由集中守卫（meta 沿父路由继承）；gm_user 为登录后本地缓存，读它避免与 store 耦合 */
   if (to.meta.requiresAuth && !localStorage.getItem('gm_user')) {
     return { path: '/login', query: { next: to.fullPath } }

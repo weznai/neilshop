@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { API_BASE, fmtDetail, req } from '../api/client'
+import { req } from '../api/client'
 import { toast } from '../composables/toast'
 import { dt, money, dDate } from '../composables/format'
+import { uploadMedia, uploadErrText } from '../composables/upload'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
@@ -448,12 +449,20 @@ function editPopup(p) {
   popupCoupon0 = (p.coupon_code || '').trim().toUpperCase()
   popupDlg.value = true
 }
+/* 绑定券码精确校验：走接口按精确码搜索第一页（不再只查当前页 discounts）；
+ * 接口异常时放行（后端保存仍有外键/存在性校验兜底） */
+async function codeExists(code) {
+  try {
+    const d = await req('GET', '/api/admin/ops/discounts?' + new URLSearchParams({ page: 1, size: 20, q: code }))
+    return (d.items || []).some((c) => c.code === code)
+  } catch (_) { return true }
+}
 async function savePopup() {
   if (!popupForm.title.trim()) { toast('标题必填', 'error'); return }
-  /* 绑定券码严格校验：仅「新建」或「券码已改动」时要求存在于折扣码列表（当前页），防绑定错误码；
-   * 编辑未改码跳过校验（原券码可能不在当前页 discounts 中） */
+  /* 绑定券码严格校验：仅「新建」或「券码已改动」时要求精确查询命中，防绑定错误码；
+   * 编辑未改码跳过校验（原券码可能不在折扣码列表） */
   const code = popupForm.coupon_code ? popupForm.coupon_code.trim().toUpperCase() : ''
-  if (code && (!popupForm.id || code !== popupCoupon0) && !discounts.value.some((c) => c.code === code)) { toast('券码不存在或不在当前页，请核对', 'error'); return }
+  if (code && (!popupForm.id || code !== popupCoupon0) && !(await codeExists(code))) { toast('券码不存在，请核对', 'error'); return }
   const body = {
     scene: popupForm.scene.trim().toLowerCase(),
     title: popupForm.title.trim(),
@@ -519,6 +528,9 @@ async function toggleRate(r) {
 
 const rateDlg = ref(false)
 const rateForm = reactive({ id: null, dest_country: 'US', carrier: 'usps', method: 'standard', price: 499, free_over: null, eta_min_days: 3, eta_max_days: 7, max_weight_g: 500 })
+/* 目的地选项：当前值（编辑历史数据）不在 7 国白名单时动态插入该项，防 select 静默改写成 US */
+const DEST_COUNTRIES = ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'JP']
+const destOptions = computed(() => (DEST_COUNTRIES.includes(rateForm.dest_country) ? DEST_COUNTRIES : [rateForm.dest_country, ...DEST_COUNTRIES]))
 function newRate() {
   Object.assign(rateForm, { id: null, dest_country: 'US', carrier: 'usps', method: 'standard', price: 499, free_over: null, eta_min_days: 3, eta_max_days: 7, max_weight_g: 500 })
   rateDlg.value = true
@@ -760,43 +772,25 @@ async function doDelCollection() {
   delColBusy.value = false
 }
 
-/* ===== 集合 Banner 上传（POST /api/admin/media/upload：multipart，核心逻辑照搬 ProductEditView）
+/* ===== 集合 Banner 上传（统一走 composables/upload，401/403 全局兜底）
  * 单隐藏 input + 目标槽：'colNew'（新建弹窗）/ 'colEdit'（编辑弹窗），成功回填 URL 到输入框（保留手填能力） ===== */
 const bannerFile = ref(null)
 const bannerTarget = ref('colNew')
 const bannerUploading = ref(false)
 function pickBanner(t) { if (bannerUploading.value) return; bannerTarget.value = t; bannerFile.value?.click() }
-async function uploadBanner(file) {
-  const fd = new FormData()
-  fd.append('file', file)
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), 30000)
-  let r
-  try { r = await fetch(API_BASE + '/api/admin/media/upload', { method: 'POST', credentials: 'include', body: fd, signal: ctrl.signal }) }
-  catch (err) { throw new Error(err && err.name === 'AbortError' ? '上传超时，请稍后重试' : '网络错误，请检查连接') }
-  finally { clearTimeout(timer) }
-  const data = await r.json().catch(() => null)
-  if (!r.ok) {
-    const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)
-    e.status = r.status
-    throw e
-  }
-  if (!data || !data.url) throw new Error('响应缺少 url')
-  return data.url
-}
 async function onBannerFile(e) {
   const f = e.target.files && e.target.files[0]
   e.target.value = '' /* 复位 value，否则重选同一文件不触发 change */
   if (!f) return
   bannerUploading.value = true
   try {
-    const url = await uploadBanner(f)
+    const url = await uploadMedia(f)
     if (bannerTarget.value === 'colEdit') colEdit.banner = url
     else colForm.banner = url
     toast('Banner 已上传并回填 ✓', 'success')
   } catch (err) {
-    const s = err.status
-    toast(s === 413 ? '图片不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
+    const m = uploadErrText(err)
+    if (m) toast(m, 'error')
   }
   finally { bannerUploading.value = false }
 }
@@ -852,12 +846,13 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
       <div class="dhead" style="padding:14px 16px 0">
         <h3 class="dtitle">折扣码</h3>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:12.5px;color:var(--gray)">共 {{ dscTotal }} 个 · 启用 {{ discounts.filter((c) => c.is_active).length }}（当前页）<span v-if="discounts.some((c) => isExpired(c))"> · 当前页 {{ discounts.filter((c) => isExpired(c)).length }} 个已过期</span></span>
+          <span style="display:block;font-size:12.5px;color:var(--gray)">共 {{ dscTotal }} 个</span>
+          <span style="display:block;font-size:12.5px;color:var(--gray)">当前页：启用 {{ discounts.filter((c) => c.is_active).length }}<span v-if="discounts.some((c) => isExpired(c))"> · 已过期 {{ discounts.filter((c) => isExpired(c)).length }}</span></span>
           <button class="btn btn-primary btn-sm" @click="openNew">＋ 新建折扣码</button>
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px 0">
-        <input v-model="dscQ" class="input" style="width:200px" placeholder="搜折扣码 / 名称" @keydown.enter="dscSearch">
+        <input v-model="dscQ" class="input js-search" style="width:200px" placeholder="搜折扣码 / 名称" @keydown.enter="dscSearch">
         <button class="btn btn-secondary btn-sm" @click="dscSearch">搜索</button>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
@@ -1001,7 +996,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
           </div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px 0">
-          <input v-model="gcQ" class="input" style="width:200px" placeholder="搜卡号 / 邮箱" @keydown.enter="gcSearch">
+          <input v-model="gcQ" class="input js-search" style="width:200px" placeholder="搜卡号 / 邮箱" @keydown.enter="gcSearch">
           <button class="btn btn-secondary btn-sm" @click="gcSearch">搜索</button>
           <select v-model="gcStatus" class="input" style="width:auto;padding:6px 10px" @change="gcSearch">
             <option value="">全部状态</option>
@@ -1143,7 +1138,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
         <div class="grid2">
           <div class="field"><label>目的地（国家码）</label>
             <select v-model="rateForm.dest_country" class="input">
-              <option v-for="c in ['US', 'CA', 'GB', 'AU', 'DE', 'FR', 'JP']" :key="c">{{ c }}</option>
+              <option v-for="c in destOptions" :key="c">{{ c }}</option>
             </select>
           </div>
           <div class="field"><label>承运商</label>

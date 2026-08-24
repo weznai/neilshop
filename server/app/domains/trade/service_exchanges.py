@@ -11,13 +11,12 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.domains.trade import service_admin
 from app.domains.trade.schemas import ExchangeCreateRequest, ShipRequest
 from app.models import Exchange, Order, OrderItem, Payment, Shipment, User
-from app.services.payment_provider import get_provider
+from app.services.payment_provider import get_provider, mock_pay_enabled
 from app.services.pricing import _setting
 
 EXCHANGEABLE_STATUSES = {1, 2, 3, 4, 5}
@@ -200,8 +199,8 @@ def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
         raise HTTPException(status_code=409, detail="no_diff_to_pay")
     if ex.status != 2:
         raise HTTPException(status_code=409, detail=f"exchange_not_awaiting_diff:{ex.status}")
-    provider = get_provider()
-    if provider.name == "mock" and not settings.mock_pay_enabled:
+    provider = get_provider(db)
+    if provider.name == "mock" and not mock_pay_enabled(db):
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     # 幂等：已挂 PENDING payment 直接复用（不堆积新行）；已核销 409
     if ex.diff_payment_id:
@@ -245,9 +244,9 @@ def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
 
 def mock_pay_diff(db: Session, user: User, exchange_no: str, succeed: bool) -> dict:
     """换货差价 mock 支付（仅开关放行时开放）：镜像订单 mock-pay 门禁与失败语义。"""
-    if not settings.mock_pay_enabled:
+    if not mock_pay_enabled(db):
         raise HTTPException(status_code=404, detail="not_found")
-    provider = get_provider()
+    provider = get_provider(db)
     if provider.name != "mock":
         raise HTTPException(status_code=409, detail="use_webhook")
     ex = _owned_exchange(db, user, exchange_no)

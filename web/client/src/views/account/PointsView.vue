@@ -1,8 +1,9 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../../api/client'
 import { fmtDate, fmtDateTime } from '../../composables/datetime'
+import { money } from '../../composables/format'
 import { i18n, tt } from '../../i18n'
 
 const route = useRoute()
@@ -40,7 +41,6 @@ const ledgerFailed = ref(false)
 /* page ↔ route.query（replace）：刷新/回退不丢状态 */
 const page = ref(Math.max(1, Number(route.query.page) || 1))
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const fmt = fmtDateTime
 
 async function load() {
@@ -63,7 +63,7 @@ async function load() {
 }
 onMounted(load)
 
-const pages = () => Math.max(1, Math.ceil(total.value / size))
+const pages = computed(() => Math.max(1, Math.ceil(total.value / size)))
 function syncQuery() {
   const query = Object.assign({}, route.query)
   if (page.value > 1) query.page = String(page.value)
@@ -71,13 +71,14 @@ function syncQuery() {
   router.replace({ query })
 }
 function go(p) {
-  if (p < 1 || p > pages() || p === page.value) return
+  if (p < 1 || p > pages.value || p === page.value) return
   page.value = p
   syncQuery()
   load()
 }
 /* 浏览器回退/前进（同路由 query 变化）时恢复页码 */
 watch(() => route.query, (q) => {
+  if (route.name !== 'account-points') return
   const np = Math.max(1, Number(q.page) || 1)
   if (np !== page.value) { page.value = np; load() }
 })
@@ -151,6 +152,7 @@ const RULES = [
               <span style="min-width:0">
                 <span style="color:var(--gray)">{{ fmt(h.created_at) }}</span> · {{ reasonText(h) }}
                 <span v-if="h.frozen === 1 && h.change > 0" class="tag tag-pending" style="margin-left:4px">{{ tt('Frozen', '冻结中') }}</span>
+                <span v-if="h.expires_at" class="exp-chip" style="margin-left:4px">{{ fmtDate(h.expires_at) }}</span>
               </span>
               <span style="text-align:right;flex:none">
                 <b class="pl-amount" :class="(h.change || 0) >= 0 ? 'in' : 'out'">
@@ -161,10 +163,10 @@ const RULES = [
             </div>
           </div>
           <!-- 分页控件置于滚动容器外：不滚到底也可见 -->
-          <div v-if="ledger.length && pages() > 1" style="display:flex;gap:8px;align-items:center;justify-content:center;padding-top:10px">
+          <div v-if="ledger.length && pages > 1" style="display:flex;gap:8px;align-items:center;justify-content:center;padding-top:10px">
             <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="go(page - 1)">←</button>
-            <span style="font-size:12.5px;color:var(--gray)">{{ tt(`Page ${page} / ${pages()}`, `第 ${page} / ${pages()} 页`) }}</span>
-            <button class="btn btn-secondary btn-sm" :disabled="page >= pages()" @click="go(page + 1)">→</button>
+            <span style="font-size:12.5px;color:var(--gray)">{{ tt(`Page ${page} / ${pages}`, `第 ${page} / ${pages} 页`) }}</span>
+            <button class="btn btn-secondary btn-sm" :disabled="page >= pages" @click="go(page + 1)">→</button>
           </div>
           <div v-else style="font-size:13.5px;color:var(--gray)">{{ tt('No points yet — place an order to start earning ✨', '暂无积分记录，下单即可开始攒分 ✨') }}</div>
         </template>

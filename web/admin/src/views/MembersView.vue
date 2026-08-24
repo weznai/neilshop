@@ -1,14 +1,16 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import { req } from '../api/client'
+import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { money, dDate } from '../composables/format'
-import { csvCell, downloadCsv } from '../composables/exportCsv'
+import { downloadCsv } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 
+const session = useSessionStore()
 const members = ref([])
 const total = ref(0)
 const SIZE = 50
@@ -53,6 +55,8 @@ async function load(p = 1) {
     members.value = d.items || []
     total.value = d.total ?? 0
     st.page = d.page || p
+    /* 页码越界回拉：空页且 total>0 且不在第 1 页 → 回第 1 页重拉（防递归：第 1 页不再回拉） */
+    if (!members.value.length && total.value > 0 && st.page > 1) { load(1); return }
   } catch (e) {
     loadErr.value = true
     errMsg.value = e.message || ''
@@ -99,9 +103,9 @@ function setRiskFilter(v) { st.risk = v; load(1) }
 /* 表格空态文案：搜索/等级/风控任一筛选生效→未匹配，否则暂无 */
 const filtered = computed(() => st.q.trim() !== '' || st.tier !== '' || st.risk !== '')
 
-/* 服务端排序（积分/累计消费）：同列点击 asc/desc 循环，sort 传后端白名单；切换回第一页 */
+/* 服务端排序（积分/累计消费）：三态循环（无 → 升 → 降 → 无），sort 传后端白名单；切换回第一页 */
 function sortBy(k) {
-  st.sort = st.sort === k ? '-' + k : k
+  st.sort = st.sort === k ? '-' + k : (st.sort === '-' + k ? '' : k)
   load(1)
 }
 const sortInd = (k) => (st.sort === k ? '▲' : st.sort === '-' + k ? '▼' : '')
@@ -123,6 +127,19 @@ async function openDetail(m) {
 /* ===== 调整积分：delta 非零整数 + reason 必填 → POST /ops/members/{id}/points（成功返回新余额） ===== */
 const ptsForm = reactive({ delta: 0, reason: '' })
 const ptsBusy = ref(false)
+/* 画像弹窗关闭守卫：积分草稿未提交时先确认丢弃（防误触遮罩丢输入） */
+const profileDiscardDlg = ref(false)
+const ptsDirty = computed(() => !!(ptsForm.delta || ptsForm.reason.trim()))
+function closeProfile() {
+  if (ptsBusy.value) return
+  if (ptsDirty.value) { profileDiscardDlg.value = true; return }
+  active.value = null
+}
+function doDiscardProfile() {
+  profileDiscardDlg.value = false
+  Object.assign(ptsForm, { delta: 0, reason: '' })
+  active.value = null
+}
 async function submitPoints() {
   if (ptsBusy.value || !active.value) return
   const d = Number(ptsForm.delta)
@@ -190,7 +207,7 @@ async function applyRisk(flag = 2) {
         <option value="1">关注</option>
         <option value="2">黑名单</option>
       </select>
-      <input v-model="st.q" class="input" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
+      <input v-model="st.q" class="input js-search" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
       <button class="btn btn-secondary btn-sm" style="height:38px" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
     </div>
@@ -242,10 +259,10 @@ async function applyRisk(flag = 2) {
     <Pagination embed :page="st.page" :pages="pages" :total="total" unit="位" @go="load" />
   </div>
 
-  <!-- 会员画像弹窗 -->
-  <div v-if="active" class="modal open" @click.self="active = null">
+  <!-- 会员画像弹窗：积分草稿未提交时先确认丢弃 -->
+  <div v-if="active" class="modal open" @click.self="closeProfile">
     <div class="modal-box" style="max-width:540px">
-      <button class="modal-x" @click="active = null">×</button>
+      <button class="modal-x" @click="closeProfile">×</button>
       <div class="dhead">
         <div class="dtitle">{{ active.name || active.email }}</div>
         <span class="tag" :style="tierStyle(active.tier || 0)">{{ TIER[active.tier || 0] || '—' }}</span>
@@ -259,7 +276,7 @@ async function applyRisk(flag = 2) {
       </div>
 
       <!-- 调整积分：delta 非零整数 + 原因必填（成功显示新余额并刷新详情） -->
-      <div class="field">
+      <div v-if="session.hasPerm('member:manage')" class="field">
         <label>调整积分</label>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <input v-model.number="ptsForm.delta" class="input" type="number" step="1" style="width:110px" placeholder="如 100 / -50">
@@ -269,7 +286,7 @@ async function applyRisk(flag = 2) {
         <p style="font-size:11.5px;color:var(--gray);margin-top:6px">正数增加、负数扣减；扣减超过当前余额将被拒绝。</p>
       </div>
 
-      <div class="field">
+      <div v-if="session.hasPerm('member:manage')" class="field">
         <label>风控状态</label>
         <select v-model="riskDraft" class="input" @change="setRisk(parseInt(riskDraft, 10))">
           <option value="0">正常</option><option value="1">关注</option><option value="2">黑名单</option>
@@ -302,6 +319,13 @@ async function applyRisk(flag = 2) {
     :open="banDlg" title="加入黑名单" danger confirm-text="确认拉黑" :busy="banBusy"
     :body="'黑名单会员「' + (active?.name || active?.email || '') + '」下单时将被风控拦截，无法完成支付；「关注」仅标记观察不影响下单。'"
     @confirm="applyRisk(2)" @close="cancelBan"
+  />
+
+  <!-- 丢弃积分草稿确认 -->
+  <ConfirmDialog
+    :open="profileDiscardDlg" title="放弃未提交的积分调整？" danger confirm-text="放弃"
+    body="已填写调整数量或原因，关闭画像将丢失该草稿。"
+    @confirm="doDiscardProfile" @close="profileDiscardDlg = false"
   />
 </template>
 

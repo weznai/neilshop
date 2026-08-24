@@ -38,8 +38,8 @@ from app.core.security import create_token, hash_password
 from app.main import app
 from app.models import (
     Category, DiscountCode, DiscountRedemption, Order, OrderItem, OrderTimeline,
-    OutboxEvent, Payment, PointsLedger, Product, StockMovement, User, Variant,
-    WebhookEvent,
+    OutboxEvent, Payment, PointsLedger, Product, Setting, StockMovement, User,
+    Variant, WebhookEvent,
 )
 from app.services import payment_provider as pp
 
@@ -251,6 +251,28 @@ try:
         app_settings._mock_pay = ""
         r = client.get("/api/payments/methods")
         check("GM_MOCK_PAY 还原空 → prod 再次 default=none",
+              r.json() == {"providers": [], "default": "none"}, r.text)
+
+        # ===== 后台 settings 表 mock_pay（系统设置 → 支付通道）：优先级 DB > GM_MOCK_PAY > env 默认 =====
+        row = Setting(key="mock_pay", value=1, updated_by=1)
+        s.add(row)
+        s.commit()
+        r = client.get("/api/payments/methods")
+        check("settings mock_pay=1（DB 开）→ prod 也恢复 mock provider",
+              r.json() == {"providers": [
+                  {"id": "mock", "name": "Mock Pay (dev)", "klarna": False}],
+                  "default": "mock"}, r.text)
+        row.value = 0
+        s.commit()
+        app_settings._mock_pay = "1"
+        r = client.get("/api/payments/methods")
+        check("settings mock_pay=0（DB 关）覆盖 GM_MOCK_PAY=1 → 空",
+              r.json() == {"providers": [], "default": "none"}, r.text)
+        s.delete(row)
+        s.commit()
+        app_settings._mock_pay = ""
+        r = client.get("/api/payments/methods")
+        check("DB 行删除 → 回落环境链（prod → none）",
               r.json() == {"providers": [], "default": "none"}, r.text)
 
         app_settings.env = "dev"

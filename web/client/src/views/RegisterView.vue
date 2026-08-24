@@ -22,12 +22,22 @@ const err = ref('')
 const agreed = ref(false)
 /* 推荐落地：/register?ref=GLOW-XXXX（存表单，注册请求体带 ref_code 由后端绑定） */
 const refCode = ref(String(route.query.ref || '').trim())
+/* 「直接登录」透传 next 与 ref（好友邀请登录后仍可回来注册拿奖励） */
+const loginLink = computed(() => {
+  const q = {}
+  if (route.query.next) q.next = String(route.query.next)
+  if (refCode.value) q.ref = refCode.value
+  return { path: '/login', query: Object.keys(q).length ? q : undefined }
+})
 
-/* 注册即自动登录（后端注册返回 token 并写会话 Cookie） */
+/* 注册即自动登录（后端注册返回 token 并写会话 Cookie）；
+   认证页互跳（login/register/reset-password）回落 /account，避免重定向循环 */
 function nextRoute() {
   const n = route.query.next
   if (n === undefined || n === null) return '/account'
-  return typeof n === 'string' && /^\/(?!\/)/.test(n) ? n : '/'
+  if (typeof n !== 'string' || !/^\/(?!\/)/.test(n)) return '/'
+  if (n === '/login' || n === '/register' || n.startsWith('/reset-password')) return '/account'
+  return n
 }
 if (auth.isLoggedIn) router.replace(nextRoute())
 
@@ -105,7 +115,7 @@ async function submit() {
               ⚠️ {{ tt('All-digit passwords are easy to crack — mix in letters or symbols', '纯数字密码容易被破解，建议加入字母/符号') }}
             </div>
           </div>
-            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
+            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ err }}</div>
             <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;font-size:13px;color:var(--gray)">
               <input v-model="agreed" type="checkbox" style="width:16px;height:16px;margin-top:1px;accent-color:var(--plum)">
               <span>{{ tt('I have read and agree to the', '我已阅读并同意') }}
@@ -118,7 +128,7 @@ async function submit() {
         </form>
         <div style="text-align:center;margin-top:14px;font-size:13px;color:var(--gray)">
           {{ tt('Already a member?', '已是会员？') }}
-          <router-link :to="{ path: '/login', query: route.query.next ? { next: String(route.query.next) } : undefined }" style="color:var(--plum);font-weight:600">{{ tt('Sign in', '直接登录') }}</router-link>
+          <router-link :to="loginLink" style="color:var(--plum);font-weight:600">{{ tt('Sign in', '直接登录') }}</router-link>
         </div>
       </div>
     </div>

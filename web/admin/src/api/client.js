@@ -60,18 +60,11 @@ export async function req(method, path, body, opts) {
       window.dispatchEvent(new CustomEvent('gm-admin-401'))
       setTimeout(() => { fired401 = false }, 3000)
     }
-    /* 权限不足/角色已变更：仅 /api/admin/ 前缀提示 + 广播 + 回登录页带 next（与 401 同构）；
-     * 其余路径（如 /api/support/*）403 不 toast 不跳转，只抛错给调用方自行处理 */
+    /* 权限不足（/api/admin/ 前缀且非登录接口）：仅 toast 提示，不清会话不跳转 ——
+     * 会话仍有效（401 才代表过期），按钮级越权由调用方就地处理 */
     if (r.status === 403 && path.startsWith('/api/admin/') && !path.includes('/login') && !fired403) {
       fired403 = true
-      toast('权限不足或已变更，请重新登录', 'error')
-      window.dispatchEvent(new CustomEvent('gm-admin-403'))
-      if (!location.pathname.includes('/login')) {
-        /* 动态引入 router 规避静态循环依赖（router → stores/session → 本模块）；
-         * next 取 router 路由层 fullPath（不含 /admin base），登录后 push 才能匹配到目标路由
-         * （location.pathname 带 base 会导致回跳被 catch-all 弹回首页） */
-        import('../router').then((m) => m.default.push({ path: '/login', query: { next: m.default.currentRoute.value.fullPath } }))
-      }
+      toast('当前账号无此操作权限', 'error')
       setTimeout(() => { fired403 = false }, 3000)
     }
     const e = new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status)

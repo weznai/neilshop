@@ -10,10 +10,20 @@ import { useUiStore } from './ui'
 let _qtySeq = 0
 
 function readCartCache() {
-  try { return JSON.parse(localStorage.getItem('gm_cart') || '[]') || [] } catch (_) { return [] }
+  try {
+    const raw = localStorage.getItem('gm_cart_v2')
+    if (raw != null) return JSON.parse(raw) || []
+    /* v2 不存在：回落读 v1 一次并迁移清除，避免旧结构反复回落 */
+    const v1 = localStorage.getItem('gm_cart')
+    if (v1 != null) {
+      try { localStorage.removeItem('gm_cart') } catch (_) { /* 隐私模式 */ }
+      return JSON.parse(v1) || []
+    }
+  } catch (_) { /* 缓存损坏即弃 */ }
+  return []
 }
 function writeCartCache(items) {
-  try { localStorage.setItem('gm_cart', JSON.stringify(items)) } catch (_) { /* 隐私模式等写入失败即弃 */ }
+  try { localStorage.setItem('gm_cart_v2', JSON.stringify(items)) } catch (_) { /* 隐私模式等写入失败即弃 */ }
 }
 
 function viewToItems(view) {
@@ -46,7 +56,7 @@ export const useCartStore = defineStore('cart', {
     count: (s) => s.items.reduce((n, i) => n + i.qty, 0),
     subtotal: (s) => s.items.reduce((n, i) => n + i.price * i.qty, 0),
     /* 美分整数小计（避免浮点误差，与后端一致） */
-    subtotalC: (s) => s.items.reduce((n, i) => n + (i.priceC || Math.round(i.price * 100)) * i.qty, 0),
+    subtotalC: (s) => s.items.reduce((n, i) => n + (i.priceC ?? Math.round(i.price * 100)) * i.qty, 0),
   },
   actions: {
     _apply(view) {

@@ -105,7 +105,8 @@ const unitLabel = computed(() => (unit.value === 'mm' ? 'mm' : 'in'))
 </template>
 
 <style scoped>
-/* 尺码表：接入全局 .table 视觉（hover rose-pale），选中行左侧 3px plum 指示条 + 首列 ✓ 对勾 */
+/* 尺码表：接入全局 .table 视觉（hover rose-pale），选中行左侧 3px plum 指示条 + 首列 ✓ 对勾；窄屏保最小可读宽 */
+.sg-table { min-width: 420px; }
 .sg-row { cursor: pointer; }
 .sg-row.sel td { background: var(--rose-pale); }
 .sg-row.sel td:first-child { box-shadow: inset 3px 0 0 var(--plum); }
@@ -115,7 +116,7 @@ const unitLabel = computed(() => (unit.value === 'mm' ? 'mm' : 'in'))
 .sg-measure :deep(a), .sg-between :deep(a) { color: var(--plum); }
 
 /* 移动端 sticky 总结条 */
-.sg-bar { position: fixed; left: 16px; right: 16px; bottom: calc(70px + env(safe-area-inset-bottom, 0px)); z-index: 140; display: none; align-items: center; justify-content: space-between; gap: 12px; background: #fff; border: 1px solid var(--gray-light); border-radius: 14px; box-shadow: var(--shadow-pop); padding: 12px 16px; }
+.sg-bar { position: fixed; left: 16px; right: 16px; bottom: calc(62px + env(safe-area-inset-bottom, 0px)); z-index: 140; display: none; align-items: center; justify-content: space-between; gap: 12px; background: #fff; border: 1px solid var(--gray-light); border-radius: 14px; box-shadow: var(--shadow-pop); padding: 12px 16px; }
 .sg-bar b { font-size: 14px; color: var(--plum); }
 .sg-clear { flex: none; width: 26px; height: 26px; border-radius: 50%; border: none; background: var(--rose-pale); color: var(--plum); font-size: 13px; cursor: pointer; }
 .sg-clear:hover { background: var(--rose); color: #fff; }

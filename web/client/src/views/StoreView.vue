@@ -45,11 +45,11 @@ const SORTS = [
   ['price_asc', 'store.sort.priceAsc'], ['price_desc', 'store.sort.priceDesc'],
 ]
 const SORT_KEYS = ['new', 'best', 'price_asc', 'price_desc']
-/* sort 白名单：缺省 new，非法值回落 best */
+/* sort 白名单：缺省 new，非法值回落 new（与 SearchView 统一） */
 const curSort = () => {
   const s = route.query.sort
   if (!s) return 'new'
-  return SORT_KEYS.includes(s) ? s : 'best'
+  return SORT_KEYS.includes(s) ? s : 'new'
 }
 
 const activeCat = () => {
@@ -126,6 +126,8 @@ watch(() => route.query, (nq, oq) => {
   load()
 })
 onMounted(load)
+/* 站内切换语言：重拉带 locale 的列表 */
+watch(() => i18n.lang, () => load())
 
 const pages = ref(1)
 watch(() => state.total, (t) => { pages.value = Math.max(1, Math.ceil(t / state.size)) })
@@ -141,13 +143,17 @@ const pageWindow = () => {
   return w
 }
 
+/* 标题组合：q / 分类 / 风格 tag / 甲型依次拼接（如 `"pastel" · Press-on Nails · #french`） */
 const heading = () => {
-  if (route.query.q) return `"${route.query.q}"`
-  if (route.query.sale) return i18n.t('footer.sale')
+  const parts = []
+  if (route.query.q) parts.push(`"${route.query.q}"`)
   const cat = activeCat()
-  let base = cat ? cat.name : (route.query.tag ? `#${route.query.tag}` : i18n.t('footer.all'))
-  if (route.query.shape) base += ' · ' + shapeLabel(route.query.shape)
-  return base
+  if (cat) parts.push(cat.name)
+  const st = route.query.style || route.query.tag
+  if (st) parts.push('#' + st)
+  if (route.query.shape) parts.push(shapeLabel(route.query.shape))
+  if (!parts.length) return route.query.sale ? i18n.t('footer.sale') : i18n.t('footer.all')
+  return parts.join(' · ')
 }
 
 /* 空态回显：逐条列出当前生效筛选（pill 带 × 单独移除）+ 清除全部 */
@@ -218,14 +224,11 @@ const HOT_LINKS = [
             <router-link class="trend-chip" :class="{ on: !route.query.style && !route.query.tag }" :to="{ path: '/store', query: { ...route.query, style: undefined, tag: undefined } }">
               {{ tt('All', '全部') }}
             </router-link>
-            <router-link class="trend-chip" :class="{ on: route.query.style === 'french' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'french', tag: undefined } }">
+            <router-link class="trend-chip" :class="{ on: route.query.style === 'french' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || undefined, style: 'french', tag: undefined } }">
               {{ i18n.t('store.style.french') }}
             </router-link>
-            <router-link class="trend-chip" :class="{ on: route.query.style === 'glitter' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || 'nails', style: 'glitter', tag: undefined } }">
+            <router-link class="trend-chip" :class="{ on: route.query.style === 'glitter' }" :to="{ path: '/store', query: { ...route.query, cat: route.query.cat || undefined, style: 'glitter', tag: undefined } }">
               {{ i18n.t('store.style.glitter') }}
-            </router-link>
-            <router-link class="trend-chip" :class="{ on: !!route.query.sale }" :to="route.query.sale ? { path: '/store', query: { ...route.query, sale: undefined } } : { path: '/store', query: { ...route.query, sale: 1 } }">
-              🔥 {{ i18n.t('store.chip.sale') }}
             </router-link>
           </div>
         </div>
@@ -248,14 +251,17 @@ const HOT_LINKS = [
             <router-link class="trend-chip" :class="{ on: !route.query.min && !route.query.max }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: undefined } }">
               {{ i18n.t('store.price.any') }}
             </router-link>
-            <router-link class="trend-chip" :class="{ on: route.query.max === '15' }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: 15 } }">
+            <router-link class="trend-chip" :class="{ on: !route.query.min && parseFloat(route.query.max) === 15 }" :to="{ path: '/store', query: { ...route.query, min: undefined, max: 15 } }">
               {{ i18n.t('store.price.under') }}
             </router-link>
-            <router-link class="trend-chip" :class="{ on: route.query.min === '15' && route.query.max === '18' }" :to="{ path: '/store', query: { ...route.query, min: 15, max: 18 } }">
+            <router-link class="trend-chip" :class="{ on: parseFloat(route.query.min) === 15 && parseFloat(route.query.max) === 18 }" :to="{ path: '/store', query: { ...route.query, min: 15, max: 18 } }">
               $15 – $18
             </router-link>
-            <router-link class="trend-chip" :class="{ on: route.query.min === '18' }" :to="{ path: '/store', query: { ...route.query, min: 18, max: undefined } }">
+            <router-link class="trend-chip" :class="{ on: parseFloat(route.query.min) === 18 && !route.query.max }" :to="{ path: '/store', query: { ...route.query, min: 18, max: undefined } }">
               $18+
+            </router-link>
+            <router-link class="trend-chip" :class="{ on: !!route.query.sale }" :to="route.query.sale ? { path: '/store', query: { ...route.query, sale: undefined } } : { path: '/store', query: { ...route.query, sale: 1 } }">
+              🔥 {{ i18n.t('store.chip.sale') }}
             </router-link>
           </div>
         </div>
@@ -300,7 +306,7 @@ const HOT_LINKS = [
         </div>
       </div>
 
-      <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:32px">
+      <div v-if="pages > 1" style="display:flex;justify-content:center;gap:8px;margin-top:32px;flex-wrap:wrap">
         <button class="btn btn-secondary btn-sm" :disabled="state.page <= 1" :aria-label="tt('Previous page', '上一页')" @click="goPage(state.page - 1)">←</button>
         <button v-if="pageWindow()[0] > 1" class="btn btn-secondary btn-sm" disabled>…</button>
         <button

@@ -119,7 +119,10 @@ async function save() {
     reset()
     await load()
   } catch (e) {
-    ui.toast(e && e.status === 404 ? tt('This address no longer exists — please refresh', '该地址不存在，请刷新') : tt('Save failed — please check the fields', '保存失败，请检查填写'), 'error')
+    const d = e && e.data && e.data.detail
+    if (e && e.status === 422 && d === 'last_default_required') ui.toast(tt('Keep at least one default address — set another one as default first', '需保留至少一个默认地址，可先将其他地址设为默认'), 'error')
+    else if (e && e.status === 404) ui.toast(tt('This address no longer exists — please refresh', '该地址不存在，请刷新'), 'error')
+    else ui.toast(tt('Save failed — please check the fields', '保存失败，请检查填写'), 'error')
   } finally { busy.value = false }
 }
 
@@ -153,8 +156,13 @@ async function makeDefault(a) {
     })
     ui.toast(tt('Default address updated', '默认地址已更新'), 'success')
     await load()
-  } catch (_) {
-    ui.toast(tt('Could not set default — please retry', '设置失败，请稍后再试'), 'error')
+  } catch (e) {
+    if (e && e.status === 404) {
+      ui.toast(tt('This address was deleted — list refreshed', '地址已被删除，已刷新'), 'error')
+      await load()
+    } else {
+      ui.toast(tt('Could not set default — please retry', '设置失败，请稍后再试'), 'error')
+    }
   } finally { settingDefault.value = 0 }
 }
 
@@ -186,7 +194,7 @@ async function remove(a) {
         <div v-if="list.length" class="grid grid-2">
         <div v-for="a in list" :key="a.id" class="card" style="padding:18px">
           <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-            <span v-if="a.is_default" class="tag tag-paid">{{ tt('Default', '默认地址') }}</span>
+            <span v-if="a.is_default" class="tag tag-default">{{ tt('Default', '默认地址') }}</span>
             <span v-else class="tag tag-done">{{ tt('Saved', '已保存') }}</span>
             <div style="display:flex;gap:6px">
               <button v-if="!a.is_default" class="btn btn-ghost btn-sm" style="color:var(--plum)" :class="{ loading: settingDefault === a.id }" :disabled="!!settingDefault" @click="makeDefault(a)">{{ tt('Set as default', '设为默认') }}</button>
@@ -259,4 +267,6 @@ async function remove(a) {
 .addr-editing { border-left: 3px solid var(--plum); }
 /* 默认地址锁定态（原误用全局 gm-locked 滚动锁类名，改局部语义类） */
 .addr-locked { cursor: not-allowed; }
+/* 默认地址标签（plum 底白字，与 tag-paid 支付语义解耦） */
+.tag-default { background: var(--plum); color: #fff; }
 </style>

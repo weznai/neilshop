@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import require_admin
+from app.core.deps import require_perm
 from app.domains.content import service
 from app.domains.content.schemas import (
     ArticleCreateIn, ArticleUpdateIn, FaqCreateIn, FaqUpdateIn, ReasonIn,
@@ -19,24 +19,24 @@ def list_articles(
     status: str | None = Query(None, description="published/draft 映射模型 status 1/0"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("content:manage")),
     db: Session = Depends(get_db),
 ):
     return service.list_articles_admin(db, status, page, size)
 
 
 @router.post("/api/admin/ops/articles")
-def create_article(body: ArticleCreateIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def create_article(body: ArticleCreateIn, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.create_article(db, admin, body)
 
 
 @router.put("/api/admin/ops/articles/{article_id}")
-def update_article(article_id: int, body: ArticleUpdateIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def update_article(article_id: int, body: ArticleUpdateIn, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.update_article(db, admin, article_id, body)
 
 
 @router.delete("/api/admin/ops/articles/{article_id}")
-def delete_article(article_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def delete_article(article_id: int, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.delete_article(db, admin, article_id)
 
 
@@ -45,24 +45,24 @@ def list_faqs(
     category: str | None = Query(None, description="分类数字或中文名，如 1/尺码"),
     page: int = Query(1, ge=1),
     size: int = Query(100, ge=1, le=200),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("content:manage")),
     db: Session = Depends(get_db),
 ):
     return service.list_faqs_admin(db, category, page, size)
 
 
 @router.post("/api/admin/ops/faqs")
-def create_faq(body: FaqCreateIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def create_faq(body: FaqCreateIn, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.create_faq(db, admin, body)
 
 
 @router.put("/api/admin/ops/faqs/{faq_id}")
-def update_faq(faq_id: int, body: FaqUpdateIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def update_faq(faq_id: int, body: FaqUpdateIn, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.update_faq(db, admin, faq_id, body)
 
 
 @router.delete("/api/admin/ops/faqs/{faq_id}")
-def delete_faq(faq_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def delete_faq(faq_id: int, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.delete_faq(db, admin, faq_id)
 
 
@@ -71,19 +71,19 @@ def admin_reviews(
     status: int | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("content:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_reviews(db, status, page, size)
 
 
 @router.post("/api/admin/ops/reviews/{review_id}/approve")
-def approve_review(review_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def approve_review(review_id: int, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.approve_review(db, admin, review_id)
 
 
 @router.post("/api/admin/ops/reviews/{review_id}/reject")
-def reject_review(review_id: int, body: ReasonIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_review(review_id: int, body: ReasonIn, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.reject_review(db, admin, review_id, body)
 
 
@@ -92,17 +92,17 @@ def admin_ugc(
     status: int | None = Query(None),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("content:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_ugc(db, status, page, size)
 
 
 @router.post("/api/admin/ops/ugc/{ugc_id}/approve")
-def approve_ugc(ugc_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def approve_ugc(ugc_id: int, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.approve_ugc(db, admin, ugc_id)
 
 
 @router.post("/api/admin/ops/ugc/{ugc_id}/reject")
-def reject_ugc(ugc_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def reject_ugc(ugc_id: int, admin: User = Depends(require_perm("content:manage")), db: Session = Depends(get_db)):
     return service.reject_ugc(db, admin, ugc_id)

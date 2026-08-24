@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
+from app.core.permissions import ADMIN_ACCOUNT_ROLES
 from app.core.security import hash_password
 from app.models import AdminLog, ReconciliationDaily, Review, UgcSubmission, User
 from app.domains.content import service as content_service
@@ -193,11 +194,11 @@ def member_risk(db: Session, admin: User, user_id: int, body: RiskIn) -> dict:
 
 
 def list_admins(db: Session) -> dict:
-    """管理账号列表（供工单指派选择器）：role>=2 且启用中，按 id 升序；
-    美甲师(role=4)虽可登录后台但只处理聊天会话，不进工单指派候选"""
+    """管理账号列表（供工单指派选择器）：客服/运营/仓库/超管且启用中，按 id 升序；
+    美甲师(role=4)只处理本人聊天会话，不进工单指派候选"""
     rows = (
         db.query(User)
-        .filter(User.role >= 2, User.role != 4, User.status == 1)
+        .filter(User.role.in_(ADMIN_ACCOUNT_ROLES), User.status == 1)
         .order_by(User.id.asc())
         .all()
     )
@@ -568,7 +569,7 @@ def create_admin(db: Session, admin: User, body: AdminCreateIn) -> dict:
 
 def update_admin(db: Session, admin: User, admin_id: int, body: AdminUpdateIn) -> dict:
     account = repo.admin_by_id(db, admin_id)
-    if not account or account.role < 2:
+    if not account or account.role not in ADMIN_ACCOUNT_ROLES:
         raise HTTPException(status_code=404, detail="admin not found")
     data = body.model_dump(exclude_unset=True)
     if admin_id == admin.id and ("role" in data or "status" in data):
@@ -588,6 +589,6 @@ def update_admin(db: Session, admin: User, admin_id: int, body: AdminUpdateIn) -
 
 def admin_detail(db: Session, admin_id: int) -> dict:
     account = repo.admin_by_id(db, admin_id)
-    if not account or account.role < 2:
+    if not account or account.role not in ADMIN_ACCOUNT_ROLES:
         raise HTTPException(status_code=404, detail="admin not found")
     return _admin_out(account)

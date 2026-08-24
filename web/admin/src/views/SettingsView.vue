@@ -1,16 +1,17 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { req, API_BASE, fmtDetail } from '../api/client'
+import { req, API_BASE } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { dt } from '../composables/format'
+import { uploadMedia, uploadErrText } from '../composables/upload'
 import { useQuerySync } from '../composables/useQuerySync'
-import { ROLE_LABEL, ROLE_BADGE } from '../constants/roles'
+import { ROLE_LABEL, ROLE_BADGE, ROLE_SCOPE_DESC } from '../constants/roles'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 
-const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['ai', 'AI 客服'], ['admins', '管理员账号'], ['media', '媒体库'], ['raw', '全部参数']]
+const TABS = [['shipping', '运费与运营'], ['email', '邮件模板'], ['payments', '支付通道'], ['ai', 'AI 客服'], ['admins', '管理员账号'], ['media', '媒体库'], ['raw', '全部参数']]
 /* tab 进 URL（刷新/分享保持当前面板） */
 const st = reactive({ tab: 'shipping' })
 useQuerySync(st, { defaults: { tab: 'shipping' } })
@@ -61,6 +62,7 @@ async function load() {
   tplErr.value = false
   try { templates.value = (await req('GET', '/api/admin/ops/email-templates')).items || [] }
   catch (_) { tplErr.value = true }
+  loadPayStatus()
   loaded.value = true
 }
 onMounted(load)
@@ -240,6 +242,169 @@ async function saveAll() {
   } finally { savingAll.value = false }
 }
 
+/* ===== 支付通道 · Mock 开关（settings key=mock_pay，优先于 GM_MOCK_PAY 环境变量；后端白名单外仅超管可写） ===== */
+const payStatus = ref(null)   /* GET /api/payments/methods 实时生效状态（公开端点，前台同款视角） */
+const payBusy = ref(false)
+const mockOnDlg = ref(false)
+const mockOffDlg = ref(false)
+const mockVal = computed(() => ('mock_pay' in settings ? Number(settings.mock_pay.value) : null))
+async function loadPayStatus() {
+  try { payStatus.value = await req('GET', '/api/payments/methods') }
+  catch (_) { payStatus.value = null }
+}
+async function setMockPay(v) {
+  payBusy.value = true
+  try {
+    await req('PUT', '/api/admin/ops/settings', { key: 'mock_pay', value: v })
+    settings.mock_pay = { ...(settings.mock_pay || {}), value: v }
+    toast(v ? 'Mock 支付已开启，前台立即可下单 ✓' : 'Mock 支付已关闭 ✓', 'success')
+    loadPayStatus()
+  } catch (e) { toast('保存失败：' + serr(e), 'error') }
+  finally { payBusy.value = false }
+}
+
+/* ===== 支付通道配置（settings key=payment_config，覆盖 GM_STRIPE_ 与 GM_PAYPAL_ 环境变量；保存即时生效） ===== */
+const payCfg = reactive({
+  stripe: { key_set: false, key_masked: '', key_mode: '', webhook_secret_set: false, webhook_secret_masked: '', klarna: false, source: '' },
+  paypal: { client_id: '', secret_set: false, secret_masked: '', base: 'https://api-m.sandbox.paypal.com', webhook_id_set: false, webhook_id_masked: '', source: '' },
+  package: { stripe: false, httpx: true },
+  effective: { provider: 'mock', available: [], mock_pay: true, env: 'dev', webhook_url: '' },
+  updated_at: null,
+})
+const payForm = reactive({ stripe_key: '', stripe_webhook_secret: '', klarna: false, paypal_client_id: '', paypal_secret: '', paypal_base: '', paypal_webhook_id: '' })
+const payCfgLoaded = ref(false)
+const payCfgErr = ref(false)
+const paySaving = ref('')          /* 'stripe' | 'paypal' */
+const payTesting = ref('')         /* 'stripe' | 'paypal' */
+const payTest = reactive({ stripe: { done: false, ok: false, msg: '' }, paypal: { done: false, ok: false, msg: '' } })
+/* 清除密钥确认弹窗（单弹窗多目标）：field=后端字段名 */
+const payClearDlg = reactive({ open: false, field: '', title: '', body: '' })
+const PP_SANDBOX = 'https://api-m.sandbox.paypal.com'
+const PP_LIVE = 'https://api-m.paypal.com'
+
+async function loadPayCfg() {
+  payCfgErr.value = false
+  try {
+    const d = await req('GET', '/api/admin/trade/payments/config')
+    Object.assign(payCfg, d)
+    payForm.stripe_key = ''
+    payForm.stripe_webhook_secret = ''
+    payForm.klarna = !!d.stripe?.klarna
+    payForm.paypal_client_id = d.paypal?.client_id || ''
+    payForm.paypal_secret = ''
+    payForm.paypal_base = d.paypal?.base || PP_SANDBOX
+    payForm.paypal_webhook_id = ''
+    payCfgLoaded.value = true
+  } catch (e) {
+    payCfgErr.value = true
+    toast('支付配置加载失败：' + (e.message || ''), 'error')
+  }
+}
+
+/* 分区 dirty：密钥看「是否输入」，非密钥字段看「是否与已保存值不同」 */
+const stripeDirty = computed(() => payForm.stripe_key.trim() !== ''
+  || payForm.stripe_webhook_secret.trim() !== ''
+  || payForm.klarna !== !!payCfg.stripe.klarna)
+const paypalDirty = computed(() => payForm.paypal_secret.trim() !== ''
+  || payForm.paypal_webhook_id.trim() !== ''
+  || payForm.paypal_client_id.trim() !== (payCfg.paypal.client_id || '')
+  || (payForm.paypal_base.trim() || PP_SANDBOX) !== (payCfg.paypal.base || PP_SANDBOX))
+const ppMode = computed(() => {
+  const b = (payForm.paypal_base || '').trim()
+  if (b === PP_SANDBOX) return 'sandbox'
+  if (b === PP_LIVE) return 'live'
+  return b ? 'custom' : ''
+})
+
+const PAY_ERR = {
+  'stripe_key 需以 sk_ 开头（sk_test_ / sk_live_）': 'Stripe 密钥需以 sk_ 开头（sk_test_ / sk_live_），请完整复制',
+  'stripe_webhook_secret 需以 whsec_ 开头': 'Webhook 签名密钥需以 whsec_ 开头，请完整复制',
+  'superadmin required': '仅超管可修改支付配置',
+}
+const perr = (e) => PAY_ERR[e.data?.detail] || e.data?.detail || e.message
+
+/* 保存单个通道：只回传该通道的 dirty 字段（未输入的密钥不回传 = 沿用已保存值） */
+async function savePay(section) {
+  if (!isSuper.value) { toast('仅超管可修改支付配置', 'error'); return }
+  const body = {}
+  if (section === 'stripe') {
+    if (payForm.stripe_key.trim()) body.stripe_key = payForm.stripe_key.trim()
+    if (payForm.stripe_webhook_secret.trim()) body.stripe_webhook_secret = payForm.stripe_webhook_secret.trim()
+    if (payForm.klarna !== !!payCfg.stripe.klarna) body.stripe_klarna = payForm.klarna
+  } else {
+    if (payForm.paypal_client_id.trim() !== (payCfg.paypal.client_id || '')) body.paypal_client_id = payForm.paypal_client_id.trim()
+    if (payForm.paypal_secret.trim()) body.paypal_secret = payForm.paypal_secret.trim()
+    if ((payForm.paypal_base.trim() || PP_SANDBOX) !== (payCfg.paypal.base || PP_SANDBOX)) body.paypal_base = payForm.paypal_base.trim()
+    if (payForm.paypal_webhook_id.trim()) body.paypal_webhook_id = payForm.paypal_webhook_id.trim()
+  }
+  if (!Object.keys(body).length) { toast('没有未保存的修改', 'error'); return }
+  paySaving.value = section
+  try {
+    const d = await req('PUT', '/api/admin/trade/payments/config', body)
+    Object.assign(payCfg, d)
+    payForm.stripe_key = ''; payForm.stripe_webhook_secret = ''
+    payForm.paypal_secret = ''; payForm.paypal_webhook_id = ''
+    payForm.klarna = !!d.stripe?.klarna
+    payForm.paypal_client_id = d.paypal?.client_id || ''
+    payForm.paypal_base = d.paypal?.base || PP_SANDBOX
+    payTest.stripe.done = false; payTest.paypal.done = false
+    toast((section === 'stripe' ? 'Stripe' : 'PayPal') + ' 配置已保存，即时生效 ✓', 'success')
+    loadPayStatus()
+  } catch (e) { toast('保存失败：' + perr(e), 'error') }
+  finally { paySaving.value = '' }
+}
+
+/* 清除已存密钥（db 来源才显示清除按钮；清除=回落环境变量配置） */
+function openPayClear(field, title, body) {
+  payClearDlg.field = field; payClearDlg.title = title; payClearDlg.body = body
+  payClearDlg.open = true
+}
+async function payClearConfirm() {
+  if (paySaving.value) return
+  paySaving.value = 'clear'
+  try {
+    const d = await req('PUT', '/api/admin/trade/payments/config', { [payClearDlg.field]: '' })
+    Object.assign(payCfg, d)
+    payClearDlg.open = false
+    payTest.stripe.done = false; payTest.paypal.done = false
+    toast('已清除，该字段回落环境变量配置（如有）✓', 'success')
+    loadPayStatus()
+  } catch (e) { toast('清除失败：' + perr(e), 'error') }
+  finally { paySaving.value = '' }
+}
+
+/* 连通性测试：用已保存配置真实外呼一次（表单有未保存修改时先提示保存） */
+async function testPay(section) {
+  if ((section === 'stripe' && stripeDirty.value) || (section === 'paypal' && paypalDirty.value)) {
+    toast('有未保存的修改，请先保存再测试（测试使用已生效配置）', 'error'); return
+  }
+  payTesting.value = section
+  payTest[section].done = false
+  try {
+    const d = await req('POST', '/api/admin/trade/payments/test', { provider: section })
+    payTest[section].done = true
+    payTest[section].ok = !!d.ok
+    if (d.ok) {
+      const modeTxt = d.mode === 'test' ? '测试模式' : d.mode === 'sandbox' ? '沙箱' : d.mode === 'live' ? '生产模式' : ''
+      const bal = d.provider === 'stripe' && d.balance_cents != null ? ` · 可用余额 $${(d.balance_cents / 100).toFixed(2)}` : ''
+      payTest[section].msg = `连通 ✓ ${modeTxt} · ${d.latency_ms}ms${bal}`
+    } else {
+      payTest[section].msg = d.reason || '测试失败'
+    }
+  } catch (e) {
+    payTest[section].done = true; payTest[section].ok = false
+    payTest[section].msg = e.data?.detail || e.message || '请求失败'
+  }
+  finally { payTesting.value = '' }
+}
+
+async function copyWebhookUrl() {
+  const u = payCfg.effective?.webhook_url
+  if (!u) { toast('未配置站点地址（系统设置 site_url），无法生成回调地址', 'error'); return }
+  try { await navigator.clipboard.writeText(u); toast('已复制 ' + u, 'success') }
+  catch (_) { toast(u, 'success') }
+}
+
 const previewTpl = ref(null)
 function showTpl(t) { previewTpl.value = t }
 const tplList = () => (Array.isArray(templates.value) ? templates.value : [])
@@ -253,10 +418,10 @@ const rawRows = computed(() => {
   return entries.filter(([key, v]) => key.toLowerCase().includes(k) || String(v.description || '').toLowerCase().includes(k))
 })
 
-/* ===== 管理员账号 tab（写操作仅超管；列表接口 role>=2 可读，仅含启用中账号） ===== */
+/* ===== 管理员账号 tab（写操作仅超管；列表接口 admin:read 可读，仅含启用中账号） ===== */
 const session = useSessionStore()
-const isSuper = computed(() => session.user?.role === 9)
-/* 角色文案/徽标配色收敛至 constants/roles.js（2运营 3仓库 4美甲师 9超管） */
+const isSuper = computed(() => session.hasPerm('admin:manage'))
+/* 角色文案/徽标配色收敛至 constants/roles.js（1客服 2运营 3仓库 4美甲师 9超管） */
 const roleCls = (r) => ROLE_BADGE[r] || 'tag-done'
 const admins = ref([])
 const adminsLoaded = ref(false)
@@ -279,7 +444,7 @@ const ADMIN_ERR = {
 }
 const aerr = (e) => ADMIN_ERR[e.data?.detail] || e.data?.detail || e.message
 
-/* 新建表单：email/name/密码≥8/角色 2|3|9 */
+/* 新建表单：email/name/密码≥8/角色 1|2|3|9（权限口径见 ROLE_SCOPE_DESC） */
 const adminForm = reactive({ email: '', name: '', password: '', role: '2' })
 const creating = ref(false)
 async function createAdmin() {
@@ -289,7 +454,7 @@ async function createAdmin() {
   if (!email.includes('@')) { toast('请输入有效的邮箱地址', 'error'); return }
   if (!name) { toast('请填写姓名', 'error'); return }
   if (adminForm.password.length < 8) { toast('密码至少 8 位', 'error'); return }
-  if (!['2', '3', '9'].includes(adminForm.role)) { toast('请选择角色', 'error'); return }
+  if (!['1', '2', '3', '9'].includes(adminForm.role)) { toast('请选择角色', 'error'); return }
   creating.value = true
   try {
     const r = await req('POST', '/api/admin/ops/admins', { email, name, password: adminForm.password, role: Number(adminForm.role) })
@@ -397,7 +562,7 @@ async function delMediaConfirm() {
   finally { delMBusy.value = false }
 }
 
-/* 上传：POST /api/admin/media/upload（multipart 字段 file，png/jpg/webp/gif ≤5MB，写法对齐 ProductEditView） */
+/* 上传：POST /api/admin/media/upload（统一走 composables/upload，401/403 全局兜底） */
 const fileInput = ref(null)
 const uploading = ref(false)
 function pickFile() { if (!uploading.value) fileInput.value?.click() }
@@ -407,30 +572,12 @@ async function onPickFile(e) {
   if (!f) return
   uploading.value = true
   try {
-    const fd = new FormData()
-    fd.append('file', f)
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 30000)
-    let r
-    try { r = await fetch(API_BASE + '/api/admin/media/upload', { method: 'POST', credentials: 'include', body: fd, signal: ctrl.signal }) }
-    catch (err) { throw new Error(err && err.name === 'AbortError' ? '上传超时，请稍后重试' : '网络错误，请检查连接') }
-    finally { clearTimeout(timer) }
-    const data = await r.json().catch(() => null)
-    if (!r.ok) throw Object.assign(new Error(fmtDetail(data && data.detail) || 'HTTP ' + r.status), { status: r.status })
+    await uploadMedia(f)
     toast('上传成功 ✓（新文件排在最前）', 'success')
     loadMedia(1)
   } catch (err) {
-    /* 会话失效全局广播（App.vue 监听 gm-admin-401 接管跳登录）；403 事件全站无监听，
-     * 改为与 api/client.js 403 分支同构的即时处理：提示 + 动态引入 router（避循环依赖）回登录页带 next */
-    const s = err.status
-    if (s === 401) window.dispatchEvent(new CustomEvent('gm-admin-401'))
-    else if (s === 403) {
-      toast('权限不足或已变更，请重新登录', 'error')
-      if (!location.pathname.includes('/login')) {
-        import('../router').then((m) => m.default.push({ path: '/login', query: { next: m.default.currentRoute.value.fullPath } }))
-      }
-    }
-    toast(s === 413 ? '文件不能超过 5MB' : s === 422 ? '仅支持 PNG/JPG/WebP/GIF' : '上传失败：' + (err.message || ''), 'error')
+    const m = uploadErrText(err)
+    if (m) toast(m, 'error')
   }
   finally { uploading.value = false }
 }
@@ -440,11 +587,13 @@ watch(() => st.tab, (k) => {
   if (k === 'admins' && !adminsLoaded.value) loadAdmins()
   if (k === 'media' && !mLoaded.value) loadMedia(mPage.value)
   if (k === 'ai' && !aiLoaded.value) loadAi()
+  if (k === 'payments' && !payCfgLoaded.value) loadPayCfg()
 })
 onMounted(() => {
   if (st.tab === 'admins') loadAdmins()
   if (st.tab === 'media') loadMedia(mPage.value)
   if (st.tab === 'ai' && !aiLoaded.value) loadAi()
+  if (st.tab === 'payments' && !payCfgLoaded.value) loadPayCfg()
 })
 </script>
 
@@ -452,7 +601,7 @@ onMounted(() => {
   <div class="topbar">
     <div>
       <h1 class="page-title">系统设置</h1>
-      <span class="page-sub">运费 / 税率 / 邮件模板 / 管理员 / 媒体库</span>
+      <span class="page-sub">运费 / 税率 / 邮件模板 / 支付通道 / 管理员 / 媒体库</span>
     </div>
   </div>
 
@@ -493,7 +642,8 @@ onMounted(() => {
       </template>
     </div>
     <p style="font-size:12.5px;color:var(--gray);margin-top:12px">
-      捆绑折扣参数已移至 <router-link :to="{ path: '/marketing', query: { tab: 'bundles' } }" style="color:var(--plum)">营销工具 · 捆绑折扣</router-link> 统一管理
+      捆绑折扣参数已移至 <router-link :to="{ path: '/marketing', query: { tab: 'bundles' } }" style="color:var(--plum)">营销工具 · 捆绑折扣</router-link> 统一管理；
+      支付通道（Stripe / PayPal / Mock）已移至本页 <a style="color:var(--plum);cursor:pointer" @click="st.tab = 'payments'">「支付通道」</a> 标签
     </p>
     <div v-if="loaded && !settingsErr && !Object.keys(settings).length" style="color:var(--gray);font-size:13px;margin-top:6px">
       服务端暂无预置参数，上方表单保存后将写入并即时生效。
@@ -512,6 +662,200 @@ onMounted(() => {
       <button class="btn btn-secondary btn-sm" @click="showTpl(t)">👁 预览</button>
     </div>
     <EmptyState v-if="loaded && !tplErr && !tplList().length" icon="✉️" title="暂无邮件模板" sub="服务端未内置模板时此处为空" />
+  </div>
+
+  <!-- 支付通道：状态带 + Stripe/PayPal 配置卡 + Mock 开关（payment_config 后台可配，热生效） -->
+  <div v-else-if="st.tab === 'payments'" class="card" style="padding:0">
+    <div v-if="payCfgErr" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;margin:12px;background:var(--pale-error);border:1px solid var(--error);border-radius:10px;font-size:12.5px;color:var(--error)">
+      <span>⚠️ 支付配置加载失败</span>
+      <button class="btn btn-secondary btn-sm" @click="loadPayCfg">重试</button>
+    </div>
+    <div v-if="!payCfgLoaded && !payCfgErr" class="skeleton" style="min-height:200px" />
+    <template v-else>
+      <!-- 状态带：当前默认通道 + 前台可用列表 -->
+      <div class="pay-status">
+        <div class="pay-status-ico" :class="{ on: payCfg.effective.provider !== 'mock' }">💳</div>
+        <div style="flex:1;min-width:0">
+          <b style="font-size:14px">支付通道</b>
+          <div class="pay-status-sub">
+            默认走 <b style="color:var(--ink)">{{ payCfg.effective.provider === 'stripe' ? 'Stripe' : payCfg.effective.provider === 'paypal' ? 'PayPal' : payCfg.effective.provider === 'none' ? '无可用通道' : 'Mock（模拟收款）' }}</b>
+            · 前台可用：
+            <template v-if="payCfg.effective.available.length">
+              <span v-for="p in payCfg.effective.available" :key="p" class="pay-chip">{{ p === 'stripe(klarna)' ? 'Stripe + Klarna' : p === 'stripe' ? 'Stripe' : p }}</span>
+            </template>
+            <span v-else class="pay-chip warn">无（前台结算按钮置灰）</span>
+            <template v-if="payCfg.effective.env !== 'prod'"> · 环境 {{ payCfg.effective.env }}</template>
+          </div>
+        </div>
+        <button class="btn btn-ghost btn-sm" @click="loadPayCfg">刷新</button>
+      </div>
+
+      <!-- ===== Stripe ===== -->
+      <section class="pay-sec">
+        <div class="pay-sec-head">
+          <div class="pay-brand">
+            <span class="pay-brand-tile" style="background:#635BFF">S</span>
+            <div>
+              <div class="pay-brand-name">Stripe <span class="pay-brand-sub">信用卡 / 借记卡{{ payCfg.stripe.klarna ? ' / Klarna' : '' }}</span></div>
+              <div class="pay-status-sub" style="margin-top:2px">
+                密钥 <code v-if="payCfg.stripe.key_set">{{ payCfg.stripe.key_masked }}</code><code v-else>未配置</code>
+                <template v-if="payCfg.stripe.source"> · 来源 {{ payCfg.stripe.source === 'db' ? '后台配置' : '环境变量' }}<template v-if="payCfg.updated_at && payCfg.stripe.source === 'db'"> · {{ dt(payCfg.updated_at) }}</template></template>
+              </div>
+            </div>
+          </div>
+          <span v-if="payCfg.stripe.key_set && payCfg.stripe.key_mode === 'live'" class="tag tag-paid">live 生产密钥</span>
+          <span v-else-if="payCfg.stripe.key_set" class="tag tag-ship">test 测试密钥</span>
+          <span v-else class="tag tag-pending">未配置</span>
+        </div>
+
+        <!-- 缺包降级提示：有密钥但容器未装 stripe 包时仍为 mock -->
+        <div v-if="payCfg.stripe.key_set && !payCfg.package.stripe" class="pay-warn">
+          ⚠️ 已配置密钥，但服务端未安装 <code>stripe</code> 包——当前实际降级为 Mock。容器内 <code>pip install stripe</code> 后重启即切换。
+        </div>
+
+        <div class="pay-grid">
+          <div class="field s7" style="margin:0">
+            <label>API 密钥 <span v-if="payCfg.stripe.key_set" class="pay-hint">（留空 = 沿用已保存密钥）</span></label>
+            <div style="display:flex;gap:8px">
+              <input v-model="payForm.stripe_key" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.stripe.key_set ? payCfg.stripe.key_masked : 'sk_test_… 或 sk_live_…'" autocomplete="new-password">
+              <button v-if="isSuper && payCfg.stripe.source === 'db' && payCfg.stripe.key_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('stripe_key', '清除 Stripe 密钥', '确认清除后台保存的 Stripe 密钥？清除后回落环境变量 GM_STRIPE_KEY（如有），前台通道可能变化。')">清除</button>
+            </div>
+            <p class="pay-note">Stripe 后台 Developers → API keys 复制 Secret key（sk_ 开头）</p>
+          </div>
+          <div class="field s5" style="margin:0">
+            <label>Webhook 签名密钥 <span v-if="payCfg.stripe.webhook_secret_set" class="pay-hint">（已存 {{ payCfg.stripe.webhook_secret_masked }}）</span></label>
+            <div style="display:flex;gap:8px">
+              <input v-model="payForm.stripe_webhook_secret" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.stripe.webhook_secret_set ? 'whsec_***（留空沿用）' : 'whsec_…'" autocomplete="new-password">
+              <button v-if="isSuper && payCfg.stripe.webhook_secret_set && payCfg.stripe.source === 'db'" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('stripe_webhook_secret', '清除 Webhook 签名密钥', '确认清除？非 dev 环境下未配置验签密钥时 webhook 回调将被拒绝。')">清除</button>
+            </div>
+            <p class="pay-note">Developers → Webhooks 端点 Signing secret（whsec_ 开头）</p>
+          </div>
+          <div class="field s12" style="margin:0">
+            <label class="pay-switch-row">
+              <span class="pay-switch" :class="{ on: payForm.klarna }" role="switch" :aria-checked="payForm.klarna" tabindex="0" @click="isSuper && (payForm.klarna = !payForm.klarna)" @keydown.enter.prevent="isSuper && (payForm.klarna = !payForm.klarna)"><i /></span>
+              <span>启用 Klarna <span class="pay-hint">—— 支付方式增加「Klarna 先买后付」（Stripe 账户需已开通，US/UK/DE 等地区可用）</span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="pay-actions">
+          <button v-if="isSuper" class="btn btn-primary" :class="{ loading: paySaving === 'stripe' }" :disabled="paySaving !== ''" @click="savePay('stripe')">保存 Stripe 配置{{ stripeDirty ? ' *' : '' }}</button>
+          <button class="btn btn-secondary" :class="{ loading: payTesting === 'stripe' }" :disabled="payTesting !== ''" title="用已保存密钥真实调用一次 Stripe API，验证密钥可用性" @click="testPay('stripe')">⚡ 测试连接</button>
+          <span v-if="!isSuper" class="pay-hint">🔒 仅超管可修改，以下为只读视图</span>
+        </div>
+        <div v-if="payTest.stripe.done" class="pay-test" :class="payTest.stripe.ok ? 'ok' : 'err'">
+          <span>{{ payTest.stripe.ok ? '✅' : '⚠️' }}</span><span style="flex:1">{{ payTest.stripe.msg }}</span>
+        </div>
+      </section>
+
+      <!-- ===== PayPal ===== -->
+      <section class="pay-sec">
+        <div class="pay-sec-head">
+          <div class="pay-brand">
+            <span class="pay-brand-tile" style="background:#0070BA">P</span>
+            <div>
+              <div class="pay-brand-name">PayPal <span class="pay-brand-sub">PayPal 余额 / 绑卡</span></div>
+              <div class="pay-status-sub" style="margin-top:2px">
+                Client ID <code v-if="payCfg.paypal.client_id">{{ payCfg.paypal.client_id.slice(0, 10) }}…</code><code v-else>未配置</code>
+                · 密钥 <code v-if="payCfg.paypal.secret_set">{{ payCfg.paypal.secret_masked }}</code><code v-else>未配置</code>
+                <template v-if="payCfg.paypal.source"> · 来源 {{ payCfg.paypal.source === 'db' ? '后台配置' : '环境变量' }}</template>
+              </div>
+            </div>
+          </div>
+          <span v-if="payCfg.paypal.client_id && payCfg.paypal.secret_set && ppMode === 'live'" class="tag tag-paid">live 生产凭据</span>
+          <span v-else-if="payCfg.paypal.client_id && payCfg.paypal.secret_set" class="tag tag-ship">sandbox 沙箱</span>
+          <span v-else class="tag tag-pending">未配置</span>
+        </div>
+
+        <div v-if="(payCfg.paypal.client_id || payCfg.paypal.secret_set) && !payCfg.package.httpx" class="pay-warn">
+          ⚠️ 已配置凭据，但服务端缺 <code>httpx</code> 包——PayPal 通道不可用（默认镜像已含，如缺失请检查依赖）。
+        </div>
+
+        <div class="pay-grid">
+          <div class="field s7" style="margin:0">
+            <label>Client ID</label>
+            <input v-model="payForm.paypal_client_id" class="input" :disabled="!isSuper" placeholder="PayPal Developer 应用的 Client ID">
+          </div>
+          <div class="field s5" style="margin:0">
+            <label>Secret <span v-if="payCfg.paypal.secret_set" class="pay-hint">（留空 = 沿用已保存）</span></label>
+            <div style="display:flex;gap:8px">
+              <input v-model="payForm.paypal_secret" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.paypal.secret_set ? payCfg.paypal.secret_masked : '应用 Secret'" autocomplete="new-password">
+              <button v-if="isSuper && payCfg.paypal.source === 'db' && payCfg.paypal.secret_set" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('paypal_secret', '清除 PayPal Secret', '确认清除后台保存的 PayPal Secret？清除后回落环境变量 GM_PAYPAL_SECRET（如有）。')">清除</button>
+            </div>
+          </div>
+          <div class="field s7" style="margin:0">
+            <label>API 环境</label>
+            <div class="pay-seg">
+              <button type="button" :class="{ on: ppMode === 'sandbox' }" :disabled="!isSuper" @click="payForm.paypal_base = PP_SANDBOX">🧪 沙箱 Sandbox</button>
+              <button type="button" :class="{ on: ppMode === 'live' }" :disabled="!isSuper" @click="payForm.paypal_base = PP_LIVE">🚀 生产 Live</button>
+            </div>
+            <p class="pay-note">当前 API 基址：<code>{{ payForm.paypal_base || PP_SANDBOX }}</code>{{ ppMode === 'custom' ? '（自定义）' : '' }}——先在沙箱联调，切生产改这里即可</p>
+          </div>
+          <div class="field s5" style="margin:0">
+            <label>Webhook ID <span class="pay-hint">（可选，非 dev 环境必配）</span></label>
+            <div style="display:flex;gap:8px">
+              <input v-model="payForm.paypal_webhook_id" class="input" type="password" style="flex:1" :disabled="!isSuper" :placeholder="payCfg.paypal.webhook_id_set ? payCfg.paypal.webhook_id_masked + '（留空沿用）' : '1XY…（Webhook 详情页 ID）'" autocomplete="new-password">
+              <button v-if="isSuper && payCfg.paypal.webhook_id_set && payCfg.paypal.source === 'db'" class="btn btn-ghost btn-sm" style="color:var(--error);flex:none" @click="openPayClear('paypal_webhook_id', '清除 PayPal Webhook ID', '确认清除？非 dev 环境下未配置 Webhook ID 时回调将被拒绝。')">清除</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pay-actions">
+          <button v-if="isSuper" class="btn btn-primary" :class="{ loading: paySaving === 'paypal' }" :disabled="paySaving !== ''" @click="savePay('paypal')">保存 PayPal 配置{{ paypalDirty ? ' *' : '' }}</button>
+          <button class="btn btn-secondary" :class="{ loading: payTesting === 'paypal' }" :disabled="payTesting !== ''" title="用已保存凭据真实获取一次 OAuth token，验证凭据可用性" @click="testPay('paypal')">⚡ 测试连接</button>
+        </div>
+        <div v-if="payTest.paypal.done" class="pay-test" :class="payTest.paypal.ok ? 'ok' : 'err'">
+          <span>{{ payTest.paypal.ok ? '✅' : '⚠️' }}</span><span style="flex:1">{{ payTest.paypal.msg }}</span>
+        </div>
+      </section>
+
+      <!-- ===== Mock 模拟收款（联调用；settings key=mock_pay，优先于 GM_MOCK_PAY） ===== -->
+      <section class="pay-sec">
+        <div class="pay-sec-head">
+          <div class="pay-brand">
+            <span class="pay-brand-tile" style="background:var(--gray)">M</span>
+            <div>
+              <div class="pay-brand-name">Mock 模拟收款 <span class="pay-brand-sub">联调 / 试运营</span></div>
+              <div class="pay-status-sub" style="margin-top:2px">下单即视为支付成功，不发生真实资金——接入真实通道后请保持关闭</div>
+            </div>
+          </div>
+          <span class="tag" :class="mockVal === 1 ? 'tag-paid' : mockVal === 0 ? 'tag-done' : 'tag-pending'">
+            {{ mockVal === 1 ? '已开启' : mockVal === 0 ? '已关闭' : '未设置 · 跟随环境' }}
+          </span>
+        </div>
+        <div class="pay-actions" style="margin-top:2px">
+          <template v-if="isSuper">
+            <button v-if="mockVal !== 1" class="btn btn-primary" :class="{ loading: payBusy }" :disabled="payBusy" @click="mockOnDlg = true">开启 Mock 支付</button>
+            <button v-else class="btn btn-secondary" :class="{ loading: payBusy }" :disabled="payBusy" @click="mockOffDlg = true">关闭 Mock 支付</button>
+            <button class="btn btn-ghost btn-sm" :disabled="payBusy" @click="loadPayStatus">刷新前台生效状态</button>
+          </template>
+          <span v-else class="pay-hint">🔒 仅超管可修改支付开关</span>
+          <span style="flex:1"></span>
+          <span class="pay-status-sub">前台视角可用：
+            <template v-if="payStatus && payStatus.providers.length">
+              <span v-for="p in payStatus.providers" :key="p.id" class="pay-chip">{{ p.name }}</span>
+            </template>
+            <span v-else-if="payStatus" class="pay-chip warn">无</span>
+            <span v-else>…</span>
+          </span>
+        </div>
+      </section>
+
+      <!-- 机制说明 -->
+      <section class="pay-sec pay-sec-foot pay-foot">
+        <div class="pay-hook-row">
+          <b>回调地址</b>
+          <span style="flex:1;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <code style="background:var(--gray-light);border-radius:5px;padding:2px 7px;font-size:11.5px;word-break:break-all">{{ payCfg.effective.webhook_url || '未配置站点地址（site_url），无法生成' }}</code>
+            <button v-if="payCfg.effective.webhook_url" class="btn btn-secondary btn-sm" @click="copyWebhookUrl">复制</button>
+          </span>
+        </div>
+        <div class="pay-foot-row"><b>优先级</b><span>本页配置（settings 表 payment_config）&gt; 服务器环境变量（GM_STRIPE_* / GM_PAYPAL_*），保存即时生效无需重启；清除字段 = 回落环境变量</span></div>
+        <div class="pay-foot-row"><b>选择链</b><span>Stripe &gt; PayPal &gt; Mock 逐级降级；Stripe 需镜像内安装 stripe 包，Klarna 需 Stripe 账户开通相应地区</span></div>
+        <div class="pay-foot-row"><b>验签门禁</b><span>非 dev 环境必须配置 Webhook 签名密钥（Stripe whsec_… / PayPal Webhook ID），否则回调一律 400 拒绝</span></div>
+        <div class="pay-foot-row"><b>安全</b><span>密钥仅存服务端 settings 表，界面掩码展示；修改/清除均记入管理日志；写操作仅超管可执行</span></div>
+      </section>
+    </template>
   </div>
 
   <!-- AI 客服大模型配置：状态带 + 分区表单（接入/风格/RAG）+ 操作区 + 说明区 -->
@@ -672,7 +1016,7 @@ onMounted(() => {
                 <div style="display:flex;gap:8px;flex-wrap:wrap">
                   <input v-model="editDraft.name" class="input" style="width:160px" placeholder="姓名">
                   <select v-model="editDraft.role" class="input" style="width:auto" :disabled="a.id === session.user?.id" :title="a.id === session.user?.id ? '不能修改自己的角色' : ''">
-                    <option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
+                    <option value="1">1 · 客服</option><option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
                   </select>
                 </div>
                 <div style="font-size:11.5px;color:var(--gray);margin-top:4px">{{ a.email }}<span v-if="a.id === session.user?.id"> · 当前登录账号</span></div>
@@ -706,7 +1050,7 @@ onMounted(() => {
         </tbody>
       </table>
     </div>
-    <EmptyState v-if="adminsLoaded && !adminsErr && !admins.length" icon="👤" title="暂无管理账号" sub="role≥2 的启用账号将显示在这里" />
+    <EmptyState v-if="adminsLoaded && !adminsErr && !admins.length" icon="👤" title="暂无管理账号" sub="客服/运营/仓库/超管的启用账号将显示在这里" />
 
     <!-- 新建表单（仅超管） -->
     <div v-if="isSuper" style="padding:16px 18px;border-top:1px solid var(--gray-light)">
@@ -716,11 +1060,11 @@ onMounted(() => {
         <input v-model="adminForm.name" class="input" style="width:120px" placeholder="姓名" @keydown.enter="createAdmin">
         <input v-model="adminForm.password" class="input" type="password" style="width:150px" placeholder="密码（≥8 位）" @keydown.enter="createAdmin">
         <select v-model="adminForm.role" class="input" style="width:auto">
-          <option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
+          <option value="1">1 · 客服</option><option value="2">2 · 运营</option><option value="3">3 · 仓库</option><option value="9">9 · 超管</option>
         </select>
         <button class="btn btn-primary" :class="{ loading: creating }" :disabled="creating" @click="createAdmin">创建</button>
       </div>
-      <p style="font-size:11.5px;color:var(--gray);margin-top:6px">角色权限：运营=全后台业务操作；仓库=订单/库存；超管=含管理员账号与系统设置。</p>
+      <p style="font-size:11.5px;color:var(--gray);margin-top:6px">角色权限：客服={{ ROLE_SCOPE_DESC[1] }}；运营={{ ROLE_SCOPE_DESC[2] }}；仓库={{ ROLE_SCOPE_DESC[3] }}；超管={{ ROLE_SCOPE_DESC[9] }}。</p>
     </div>
   </div>
 
@@ -777,8 +1121,8 @@ onMounted(() => {
           <td style="padding:10px"><b>{{ key }}</b></td>
           <td>
             <code>{{ JSON.stringify(v.value) }}</code>
-            <!-- llm_config 的 api_key 后端已掩码（api_key_set 标记真实存在性）：提示不可复制原 Key -->
-            <span v-if="key === 'llm_config'" class="tag tag-pending" style="margin-left:6px;font-size:10px" title="敏感字段（API Key）由服务端掩码存储，此处展示非原值">敏感项已脱敏</span>
+            <!-- llm_config / payment_config 的密钥字段后端已掩码（*_set 标记真实存在性）：提示不可复制原值 -->
+            <span v-if="key === 'llm_config' || key === 'payment_config'" class="tag tag-pending" style="margin-left:6px;font-size:10px" title="敏感字段（API Key / 支付密钥）由服务端掩码存储，此处展示非原值">敏感项已脱敏</span>
           </td>
           <td style="color:var(--gray)">{{ v.description || '—' }}</td>
           <td style="color:var(--gray);white-space:nowrap">{{ v.updated_by != null ? '#' + v.updated_by : '—' }} · {{ dt(v.updated_at) || '—' }}</td>
@@ -788,6 +1132,25 @@ onMounted(() => {
     <EmptyState v-if="loaded && !Object.keys(settings).length" icon="⚙️" title="暂无参数" sub="服务端暂无预置参数，保存后将写入并即时生效" />
     <EmptyState v-else-if="loaded && !rawRows.length" icon="🔍" title="没有匹配的参数" :sub="'没有匹配「' + rawFilter + '」的参数'" />
   </div>
+
+  <!-- Mock 支付开/关确认：开启走 danger（生产放行模拟收款）；关闭提示前台通道收敛 -->
+  <ConfirmDialog
+    :open="mockOnDlg" title="开启 Mock 支付" danger confirm-text="确认开启" :busy="payBusy"
+    body="确认开启 Mock 模拟支付？开启后前台可用模拟通道直接完成下单（生产环境同样生效），接入真实支付后请及时关闭。"
+    @confirm="mockOnDlg = false; setMockPay(1)" @close="mockOnDlg = false"
+  />
+  <ConfirmDialog
+    :open="mockOffDlg" title="关闭 Mock 支付" confirm-text="确认关闭" :busy="payBusy"
+    body="确认关闭 Mock 模拟支付？关闭后前台仅保留真实支付通道，无可用通道时结算按钮将置灰。"
+    @confirm="mockOffDlg = false; setMockPay(0)" @close="mockOffDlg = false"
+  />
+
+  <!-- 清除支付密钥确认（danger）：清除=该字段回落环境变量配置 -->
+  <ConfirmDialog
+    :open="payClearDlg.open" :title="payClearDlg.title" danger confirm-text="确认清除" :busy="paySaving !== ''"
+    :body="payClearDlg.body"
+    @confirm="payClearConfirm" @close="payClearDlg.open = false"
+  />
 
   <!-- 清除 API Key 确认（danger）：清除后回退规则引擎，前台客服不中断 -->
   <ConfirmDialog
@@ -870,4 +1233,56 @@ onMounted(() => {
 .ai-foot{padding-top:14px;padding-bottom:14px}
 .ai-foot-row{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11.5px;color:var(--gray);line-height:1.7;padding:2px 0}
 .ai-foot-row b{color:var(--plum);font-weight:600}
+/* ===== 支付通道 tab：状态带 + 通道卡（Stripe/PayPal/Mock）===== */
+.pay-status{display:flex;gap:14px;align-items:center;padding:16px 20px;border-bottom:1px solid var(--gray-light)}
+.pay-status-ico{width:42px;height:42px;border-radius:12px;background:var(--gray-light);display:flex;align-items:center;justify-content:center;font-size:21px;flex:none}
+.pay-status-ico.on{background:var(--rose-pale)}
+.pay-status-sub{font-size:12px;color:var(--gray);margin-top:3px;line-height:1.6}
+.pay-status-sub code{background:var(--gray-light);border-radius:5px;padding:1px 5px;font-size:11.5px}
+/* 前台可用通道小胶囊 */
+.pay-chip{display:inline-flex;align-items:center;background:var(--pale-success);color:#1E7A45;font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px;margin:0 3px}
+.pay-chip.warn{background:var(--pale-warn);color:var(--warn)}
+/* 分区 */
+.pay-sec{padding:18px 20px;border-top:1px solid var(--gray-light)}
+.pay-sec:first-of-type{border-top:none}
+.pay-sec-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+/* 品牌行：色块字母 + 名称/副标题 */
+.pay-brand{display:flex;gap:12px;align-items:center;min-width:0}
+.pay-brand-tile{width:42px;height:42px;border-radius:12px;color:#fff;font-size:19px;font-weight:800;font-style:italic;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 2px 6px rgba(0,0,0,.12)}
+.pay-brand-name{font-size:14.5px;font-weight:700}
+.pay-brand-sub{font-size:11.5px;color:var(--gray);font-weight:400;margin-left:4px}
+.pay-hint{font-size:11.5px;color:var(--gray);font-weight:400}
+.pay-note{font-size:11.5px;color:var(--gray);margin-top:5px;line-height:1.6}
+/* 缺包降级横幅 */
+.pay-warn{display:flex;gap:8px;align-items:flex-start;background:var(--pale-warn);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.6;margin-bottom:14px;color:#8A6D1B}
+.pay-warn code{background:rgba(0,0,0,.06);border-radius:5px;padding:1px 5px}
+/* 12 列栅格（同 ai-grid 口径） */
+.pay-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+.pay-grid .s5{grid-column:span 5}
+.pay-grid .s7{grid-column:span 7}
+.pay-grid .s12{grid-column:span 12}
+@media(max-width:768px){.pay-grid .s5,.pay-grid .s7{grid-column:span 12}}
+/* 操作行 + 测试结果条 */
+.pay-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
+.pay-test{display:flex;gap:8px;align-items:flex-start;margin-top:12px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.6;word-break:break-all}
+.pay-test.ok{background:var(--pale-success);color:#1E7A45}
+.pay-test.err{background:var(--pale-error);color:var(--error)}
+/* Klarna 开关：胶囊滑块（键盘可达 role=switch） */
+.pay-switch-row{display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;font-weight:600;padding:10px 12px;background:var(--bg-page);border-radius:10px}
+.pay-switch{width:40px;height:22px;border-radius:999px;background:var(--gray-light);position:relative;transition:background .2s;flex:none;border:none;padding:0}
+.pay-switch i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.25);transition:left .2s}
+.pay-switch.on{background:var(--plum)}
+.pay-switch.on i{left:21px}
+/* PayPal 环境分段选择 */
+.pay-seg{display:inline-flex;border:1.5px solid var(--gray-light);border-radius:10px;overflow:hidden;background:#fff}
+.pay-seg button{border:none;background:none;padding:8px 16px;font-size:12.5px;font-weight:600;color:var(--gray);cursor:pointer;transition:background .15s,color .15s}
+.pay-seg button+button{border-left:1.5px solid var(--gray-light)}
+.pay-seg button.on{background:var(--plum);color:#fff}
+.pay-seg button:disabled{cursor:not-allowed;opacity:.6}
+/* 底部说明区（含回调地址行） */
+.pay-sec-foot{background:var(--bg-page)}
+.pay-foot{padding-top:14px;padding-bottom:14px}
+.pay-hook-row{display:flex;gap:10px;align-items:flex-start;font-size:11.5px;color:var(--gray);line-height:1.7;padding:3px 0 8px;flex-wrap:wrap}
+.pay-hook-row b,.pay-foot-row b{color:var(--plum);font-weight:600}
+.pay-foot-row{display:grid;grid-template-columns:64px 1fr;gap:10px;font-size:11.5px;color:var(--gray);line-height:1.7;padding:2px 0}
 </style>

@@ -76,6 +76,8 @@ function onEsc(e) {
   open.value = false
 }
 watch(open, (v) => { ui.chatOpen = v })
+/* 外部唤起（ContactView 等设 ui.chatOpen = true）：同步打开面板 */
+watch(() => ui.chatOpen, (v) => { if (v && !open.value) open.value = true })
 
 function scrollBottom() {
   nextTick(() => {
@@ -87,7 +89,10 @@ function fmtTime(iso) {
   if (!iso) return ''
   const d = new Date(zulu(iso))
   if (isNaN(d)) return ''
-  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+  const p = (n) => String(n).padStart(2, '0')
+  const now = new Date()
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate()
+  return sameDay ? p(d.getHours()) + ':' + p(d.getMinutes()) : p(d.getMonth() + 1) + '-' + p(d.getDate())
 }
 function esc(s) {
   return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -95,6 +100,8 @@ function esc(s) {
 function md(s) {
   return esc(s)
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    /* 链接语法：http(s) 白名单内生成新窗 <a>，其余剥语法留纯文本 */
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
     .replace(/\r/g, '')
     .replace(/\n{2,}/g, '<br><br>')
@@ -145,6 +152,7 @@ async function loadQuicks() {
     }
   } catch (_) { /* 接口失败回退 i18n 默认 chips（模板里兜底渲染） */ }
 }
+watch(() => i18n.lang, () => loadQuicks())
 /* 兜底（接口失败/未配置）：默认三条提问 chip */
 const quickItems = () => quicks.value.length
   ? quicks.value
@@ -227,7 +235,9 @@ async function doEscalate() {
     wantHuman.value = false
     scrollBottom()
   } catch (e) {
-    contactErr.value = submitErrText(e)
+    contactErr.value = e && e.status === 409
+      ? tt('This conversation has ended — please restart.', '会话已结束，请重新开始')
+      : submitErrText(e)
   } finally { busy.value = false }
 }
 function cancelEscalate() { wantHuman.value = false; contactErr.value = '' }
@@ -275,7 +285,7 @@ function applyDetail(d) {
 
 async function pollActive() {
   const conv = curConv()
-  if (!conv || conv.channel === 0) return /* AI 即时应答无需轮询 */
+  if (!conv || conv.channel === 0 || conv.status === 1) return /* AI 即时应答无需轮询；已关闭会话无新消息 */
   try {
     const d = await req('GET', `/api/chat/conversations/${conv.conv_no}/messages?token=` + encodeURIComponent(ensureToken()))
     const oldMsgs = conv.messages || []
@@ -355,16 +365,16 @@ function sugClick(e) {
       <div class="chat-head-top">
         <div>
           <b>{{ i18n.t('chat.title') }}</b>
-          <div class="chat-status"><i></i>{{ i18n.t('chat.status') }}</div>
+          <div class="chat-status"><i></i>{{ tt('AI replies instantly · human within 4h', 'AI 秒回 · 人工 4 小时内') }}</div>
         </div>
         <button :aria-label="i18n.t('aria.chatClose')" style="color:#fff;font-size:20px;opacity:.8" @click="toggle()">×</button>
       </div>
       <div class="chat-tabs" role="tablist">
-        <button v-for="[k, key] in TABS" :key="k" role="tab" :aria-selected="tab === k" :class="{ on: tab === k }" @click="switchTab(k)">{{ i18n.t(key) }}</button>
+        <button v-for="[k, key] in TABS" :id="'chat-tab-' + k" :key="k" role="tab" :aria-selected="tab === k" :aria-controls="'chat-panel-' + k" :class="{ on: tab === k }" @click="switchTab(k)">{{ i18n.t(key) }}</button>
       </div>
     </div>
 
-    <div class="chat-body" id="chatMsgs" role="log" aria-live="polite">
+    <div class="chat-body" id="chatMsgs" role="tabpanel" :aria-labelledby="'chat-tab-' + tab" aria-live="polite">
       <!-- 合并客服 tab：AI 应答 ↔ 人工接管 状态条 -->
       <template v-if="tab === 'chat' && curConv()">
         <div v-if="curConv().channel === 1 && !curConv().agent_admin_id && curConv().status === 0" class="chat-notice">⏳ {{ i18n.t('chat.human.waiting') }}</div>
@@ -440,7 +450,11 @@ function sugClick(e) {
       </div>
     </div>
 
-    <div v-if="curConv()" class="chat-quicks">
+    <div v-if="curConv() && curConv().status === 1" class="chat-quicks" style="justify-content:center;gap:8px">
+      <span style="font-size:12.5px;color:var(--gray);align-self:center">{{ tt('Conversation ended', '会话已结束') }}</span>
+      <button class="chat-quick" :disabled="busy" @click="endChat">{{ tt('Restart', '重新开始') }}</button>
+    </div>
+    <div v-else-if="curConv()" class="chat-quicks">
       <!-- 合并客服：AI 态给后台配置的快捷问题+转人工；人工态给结束 -->
       <template v-if="tab === 'chat' && curConv().channel === 0">
         <button v-for="(q, i) in quickItems()" :key="i" class="chat-quick" :class="{ esc: q.action === 'human' }" @click="tapQuick(q)">
@@ -449,8 +463,8 @@ function sugClick(e) {
       </template>
       <button v-if="curConv().status === 0" class="chat-quick end" :disabled="busy" @click="endChat">✕ {{ i18n.t('chat.close') }}</button>
     </div>
-    <form v-if="curConv()" class="chat-input" @submit.prevent="send">
-      <input v-model="field" ref="inputEl" :placeholder="i18n.t('chat.placeholder')" :aria-label="i18n.t('chat.placeholder')" autocomplete="off">
+    <form v-if="curConv() && curConv().status !== 1" class="chat-input" @submit.prevent="send">
+      <input v-model="field" ref="inputEl" maxlength="2000" :placeholder="i18n.t('chat.placeholder')" :aria-label="i18n.t('chat.placeholder')" autocomplete="off">
       <button type="submit" :aria-label="i18n.t('chat.send')" :disabled="busy">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>

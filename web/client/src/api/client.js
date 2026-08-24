@@ -7,7 +7,10 @@ const API_BASE = window.GM_API_BASE || ''
 const DEFAULT_TIMEOUT = 15000
 
 /* 这些端点自身的 401 是业务结果（密码错/未登录可选接口），不广播会话过期 */
-const AUTH_401_SKIP = ['/api/account/login', '/api/account/register', '/api/account/password']
+const AUTH_401_SKIP = [
+  '/api/account/login', '/api/account/register', '/api/account/password',
+  '/api/account/password-reset/request', '/api/account/password-reset/confirm',
+]
 
 const state = {
   cartToken: localStorage.getItem('gm_cart_token') || '',
@@ -60,9 +63,11 @@ export function errMessage(e) {
 
 export async function req(method, path, body, opts) {
   const o = Object.assign(
-    { method, headers: authHeaders(), credentials: 'same-origin', timeout: DEFAULT_TIMEOUT },
+    { method, credentials: 'include', timeout: DEFAULT_TIMEOUT },
     opts || {},
   )
+  /* 自定义 headers 与默认头浅合并（Content-Type/X-Cart-Token 不被整体覆盖） */
+  o.headers = Object.assign(authHeaders(), (opts && opts.headers) || {})
   if (body !== undefined) o.body = JSON.stringify(body)
   const ctrl = new AbortController()
   o.signal = ctrl.signal
@@ -141,3 +146,5 @@ export function wishlistHas(pid) {
 export function wishlistRemove(pid) {
   return req('DELETE', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.delete(pid); return d })
 }
+/* 会话切换/登出时清空已收藏缓存，避免跨账号串扰 */
+export function wishlistReset() { _wlKnown.clear() }

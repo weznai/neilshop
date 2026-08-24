@@ -3,24 +3,16 @@ import { onMounted, ref } from 'vue'
 import { req } from '../api/client'
 import { i18n, tt } from '../i18n'
 
-/* 从 API 获取联名系列数据，失败回落硬编码 */
+/* GET /api/catalog/collections → {items: [{id,slug,title,banner_image}]}（全量，无 tag/size 过滤）：
+   前端取前 2 个作联名精选展示；无数据时诚实空态，不造虚构联名卡 */
 const picks = ref([])
-const stats = ref({ creators: 12, drops: 8, reach: '40k+' })
 const loaded = ref(false)
 
 onMounted(async () => {
   try {
-    const res = await req('GET', '/api/catalog/collections?tag=collab&size=2')
-    if (res && res.items && res.items.length) {
-      picks.value = res.items.map(c => ({
-        handle: c.handle || '@glowmag',
-        name: c.title,
-        desc_en: c.description || 'Editorial pick',
-        desc_zh: c.description_zh || '编辑部精选',
-        image: c.hero_image || c.image,
-      }))
-    }
-  } catch (_) { /* 回落 */ }
+    const res = await req('GET', '/api/catalog/collections')
+    picks.value = ((res && res.items) || []).slice(0, 2)
+  } catch (_) { picks.value = [] }
   loaded.value = true
 })
 
@@ -55,46 +47,24 @@ const REQS = [
         </div>
       </div>
 
-      <!-- 精选合辑卡：图上浮 handle pill + 底部渐层，hover 浮起 -->
+      <!-- 精选合辑卡：整卡可点进合集；无数据时诚实空态（不造虚构联名） -->
       <div class="grid grid-2 collab-grid">
-        <template v-if="picks.length">
-          <div v-for="c in picks" :key="c.name" class="card collab-card">
-            <div class="collab-img">
-              <img :src="c.image || 'https://placehold.co/400x500/DDD6E8/552338?text=Collab'" :alt="c.name" loading="lazy">
-              <span class="collab-handle">{{ c.handle }}</span>
-              <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
-            </div>
-            <div class="collab-body">
-              <b class="collab-name">{{ c.name }}</b>
-              <p class="collab-desc">{{ tt(c.desc_en, c.desc_zh) }}</p>
-              <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
-            </div>
+        <router-link v-for="c in picks" :key="c.slug" class="card collab-card" :to="'/collection/' + c.slug">
+          <div class="collab-img">
+            <img :src="c.banner_image || 'https://placehold.co/400x300/DDD6E8/552338?text=GLOWMAG'" :alt="c.title" loading="lazy">
+            <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
           </div>
-        </template>
-        <template v-else-if="loaded">
-          <div class="card collab-card">
-            <div class="collab-img">
-              <img src="https://placehold.co/400x500/DDD6E8/552338?text=NIA+x+GM" alt="Nia x GLOWMAG" loading="lazy">
-              <span class="collab-handle">@nailbedbynia</span>
-              <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
-            </div>
-            <div class="collab-body">
-              <b class="collab-name">Nia x GLOWMAG</b>
-              <p class="collab-desc">{{ tt('Editorial pick — her favorite chrome & glass looks', '编辑部精选——她最爱的铬玻璃质感造型') }}</p>
-              <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
-            </div>
+          <div class="collab-body">
+            <b class="collab-name">{{ c.title }}</b>
+            <span class="collab-go">{{ tt('Shop the collection →', '去逛这套合辑 →') }}</span>
           </div>
-          <div class="card collab-card">
-            <div class="collab-img">
-              <img src="https://placehold.co/400x500/FBEBD4/8A6D3B?text=Daily+Glam" alt="Daily Glam Capsule" loading="lazy">
-              <span class="collab-handle">@thedailyglam</span>
-              <span class="collab-flag">{{ tt('Editorial pick', '编辑精选') }}</span>
-            </div>
-            <div class="collab-body">
-              <b class="collab-name">Daily Glam Capsule</b>
-              <p class="collab-desc">{{ tt('Editorial pick — six everyday neutrals she swears by', '编辑部精选——她日常必戴的六款百搭色') }}</p>
-              <router-link to="/store?sort=new" class="btn btn-secondary btn-sm">{{ tt('Shop new arrivals →', '去逛最新上架 →') }}</router-link>
-            </div>
+        </router-link>
+        <template v-if="loaded && !picks.length">
+          <div class="card collab-card collab-empty">
+            <div class="collab-empty-ico">✨</div>
+            <b class="collab-name">{{ tt('Be our first collab creator', '成为第一个联名创作者') }}</b>
+            <p class="collab-desc">{{ tt('Your capsule could be featured here — apply today.', '你的联名系列将在这里展示——立即申请。') }}</p>
+            <router-link :to="{ path: '/contact', query: { subject: 'Collab application' } }" class="btn btn-primary btn-sm">{{ tt('Apply via Contact', '通过联系页申请') }}</router-link>
           </div>
         </template>
       </div>
@@ -197,25 +167,13 @@ const REQS = [
 .cs-item b { display: block; font-family: var(--font-title); font-size: 22px; color: var(--plum); line-height: 1.2; }
 .cs-item span { font-size: 11.5px; color: var(--gray); }
 
-/* 合辑卡：hover 整卡浮起 + 图缩放；图上浮 handle / 精选角标 */
+/* 合辑卡：hover 整卡浮起 + 图缩放；精选角标 */
 .collab-grid { margin-bottom: 34px; }
-.collab-card { padding: 0; overflow: hidden; transition: transform .2s ease-out, box-shadow .2s ease-out; }
+.collab-card { padding: 0; overflow: hidden; color: inherit; display: block; transition: transform .2s ease-out, box-shadow .2s ease-out; }
 .collab-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-pop); }
 .collab-img { position: relative; overflow: hidden; }
 .collab-img img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; transition: transform .35s ease-out; }
 .collab-card:hover .collab-img img { transform: scale(1.04); }
-.collab-handle {
-  position: absolute;
-  left: 12px; bottom: 12px;
-  background: rgba(255,255,255,.92);
-  backdrop-filter: blur(4px);
-  color: var(--plum);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 4px 12px;
-  border-radius: 999px;
-  box-shadow: 0 2px 8px rgba(31,27,30,.15);
-}
 .collab-flag {
   position: absolute;
   top: 12px; right: 12px;
@@ -229,7 +187,13 @@ const REQS = [
 }
 .collab-body { padding: 18px; }
 .collab-name { display: block; font-family: var(--font-title); font-size: 19px; margin-bottom: 4px; }
+.collab-go { display: inline-block; font-size: 13px; font-weight: 600; color: var(--plum); text-decoration: underline; }
+.collab-card:hover .collab-go { opacity: .8; }
 .collab-desc { font-size: 13px; color: var(--gray); margin: 0 0 14px; }
+/* 空态卡：居中 CTA（API 无联名合集时的诚实展示） */
+.collab-empty { padding: 34px 22px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.collab-empty-ico { font-size: 34px; line-height: 1; margin-bottom: 6px; }
+.collab-empty .collab-desc { margin-bottom: 12px; }
 
 /* 合作流程：三步卡（中步上移错位） */
 .collab-flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 34px; }

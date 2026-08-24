@@ -76,6 +76,7 @@ const ENT_ROUTE = {
   popup: () => ({ path: '/marketing' }),
   giftcard: () => ({ path: '/marketing', query: { tab: 'giftcards' } }),
   setting: () => ({ path: '/settings' }),
+  shipping_rate: () => ({ path: '/marketing', query: { tab: 'rates' } }),
   /* media 无独立管理页：保持纯文本展示（不入 ENT_ROUTE） */
 }
 const entLink = (l) => ENT_ROUTE[l.entity]?.(l.entity_id, l) || null
@@ -102,6 +103,7 @@ function buildUrl(p, size = SIZE) {
   return '/api/admin/ops/logs?' + params
 }
 
+let pageRetried = false   /* 页码回拉防递归：单次加载链最多回拉一次 */
 async function load(p = 1) {
   loadErr.value = false
   errMsg.value = ''
@@ -111,12 +113,13 @@ async function load(p = 1) {
     total.value = d.total ?? 0
     f.page = d.page || p
     /* page 越界钳制：URL 直链/筛选收窄后回退导致页码超出总页数 → 回最后一页重拉一次（空结果 pages=0 不钳制） */
-    if ((d.pages ?? 0) > 0 && f.page > d.pages) { load(d.pages); return }
+    if ((d.pages ?? 0) > 0 && f.page > d.pages && !pageRetried) { pageRetried = true; load(d.pages); return }
   } catch (e) {
     loadErr.value = true
     errMsg.value = e.message || ''
     toast('审计日志加载失败：' + (e.message || ''), 'error')
   }
+  pageRetried = false
   loaded.value = true
 }
 onMounted(() => load(f.page))
@@ -188,7 +191,7 @@ async function exportCsv() {
   exporting.value = true
   try {
     const { all, truncated } = await fetchAllPages((p) => req('GET', buildUrl(p, 100)), { pageSize: 100, maxPages: 20 })
-    if (truncated) toast('匹配结果过多，仅导出前 ' + all.length + ' 条')
+    if (truncated) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
     downloadCsv({
       filename: 'logs_' + new Date().toISOString().slice(0, 10).replace(/-/g, ''),
       headers: ['时间', '管理员', '实体', '动作', '对象ID', '变更内容'],

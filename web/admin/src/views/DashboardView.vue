@@ -39,17 +39,30 @@ const dayLabel = (dayStr) => dayStr || ''
 /* 柱高百分比（≥2% 保底可见） */
 const barH = (x) => Math.max(2, ((x.gmv_cents || 0) / dailyMax.value) * 100) + '%'
 
-/* KPI 环比：近 7 天 vs 前 7 天（daily 求和；AOV 用两段求和相除） */
-const weekDelta = computed(() => {
+/* KPI 环比：按所选时间窗取对照——today=今日 vs 昨日（daily 末两位）；last7=近 7 天 vs 前 7 天；
+ * last30 无前 30 天对照（daily 仅 14 天序列）→ 不可算，pct 置 null 徽标隐藏 */
+const rangeDelta = computed(() => {
   const arr = daily.value
-  if (arr.length < 8) return { gmv: null, orders: null, aov: null }
   const sum = (rows, k) => rows.reduce((s, x) => s + (x[k] || 0), 0)
-  const cur7 = arr.slice(-7), prev7 = arr.slice(-14, -7)
-  const g1 = sum(cur7, 'gmv_cents'), g0 = sum(prev7, 'gmv_cents')
-  const o1 = sum(cur7, 'orders'), o0 = sum(prev7, 'orders')
   const pct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 1000) / 10 : null)
-  return { gmv: pct(g1, g0), orders: pct(o1, o0), aov: pct(o1 ? g1 / o1 : 0, o0 ? g0 / o0 : 0) }
+  const empty = { gmv: null, orders: null, aov: null, label: '' }
+  if (st.range === 'today') {
+    if (arr.length < 2) return empty
+    const t = arr[arr.length - 1], y = arr[arr.length - 2]
+    return {
+      gmv: pct(t.gmv_cents || 0, y.gmv_cents || 0), orders: pct(t.orders || 0, y.orders || 0),
+      aov: pct(t.orders ? (t.gmv_cents || 0) / t.orders : 0, y.orders ? (y.gmv_cents || 0) / y.orders : 0), label: '较昨日',
+    }
+  }
+  if (st.range === 'last7' && arr.length >= 8) {
+    const cur7 = arr.slice(-7), prev7 = arr.slice(-14, -7)
+    const g1 = sum(cur7, 'gmv_cents'), g0 = sum(prev7, 'gmv_cents')
+    const o1 = sum(cur7, 'orders'), o0 = sum(prev7, 'orders')
+    return { gmv: pct(g1, g0), orders: pct(o1, o0), aov: pct(o1 ? g1 / o1 : 0, o0 ? g0 / o0 : 0), label: '近7天' }
+  }
+  return empty
 })
+const deltaLabel = computed(() => rangeDelta.value.label)
 
 /* KPI 卡迷你柱状图序列：gmv / orders / aov（待处理卡为运营即时值，无日序列） */
 const spark = computed(() => {
@@ -66,9 +79,9 @@ function sparkH(vals, i) {
 }
 
 const STATS = computed(() => [
-  { lb: '销售额', vl: money(cur.value?.gmv_cents), pct: weekDelta.value.gmv, series: 'gmv' },
-  { lb: '订单量', vl: String(cur.value?.orders ?? 0), pct: weekDelta.value.orders, series: 'orders' },
-  { lb: '客单价 AOV', vl: money(aov.value), pct: weekDelta.value.aov, series: 'aov', note: '已支付口径' },
+  { lb: '销售额', vl: money(cur.value?.gmv_cents), pct: rangeDelta.value.gmv, series: 'gmv', note: '已支付口径' },
+  { lb: '订单量', vl: String(cur.value?.orders ?? 0), pct: rangeDelta.value.orders, series: 'orders', note: '含未支付' },
+  { lb: '客单价 AOV', vl: money(aov.value), pct: rangeDelta.value.aov, series: 'aov', note: '已支付口径' },
   { lb: '待处理', vl: String(d.value?.pending_orders ?? 0), note: '待发货', series: null, hot: true },
 ])
 
@@ -130,8 +143,8 @@ const reconcile = computed(() => d.value?.reconcile)
       <div v-for="(s, i) in STATS" :key="s.lb" class="stat" :class="{ 'stat-dark': s.hot }" :style="{ animationDelay: i * 70 + 'ms' }">
         <div class="stat-top">
           <span class="lb">{{ s.lb }}{{ st.range !== 'today' ? `（${st.range === 'last7' ? '7天' : '30天'}）` : '' }}</span>
-          <span v-if="s.pct != null" class="delta" :class="s.pct >= 0 ? 'up' : 'down'" title="近 7 天环比（近 7 天 vs 前 7 天），与所选时间窗无关">
-            {{ s.pct >= 0 ? '▲' : '▼' }} {{ Math.abs(s.pct) }}%<i style="font-style:normal;font-weight:500;margin-left:3px">近7天</i>
+          <span v-if="s.pct != null" class="delta" :class="s.pct >= 0 ? 'up' : 'down'" :title="`环比口径：${deltaLabel}`">
+            {{ s.pct >= 0 ? '▲' : '▼' }} {{ Math.abs(s.pct) }}%<i style="font-style:normal;font-weight:500;margin-left:3px">{{ deltaLabel }}</i>
           </span>
           <span v-else-if="s.note" class="delta">{{ s.note }}</span>
         </div>

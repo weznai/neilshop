@@ -73,6 +73,8 @@ async function load(p = 1) {
     tickets.value = d.items || []
     total.value = d.total ?? 0
     st.page = p
+    /* 页码越界回拉：筛选/数据收缩后空页且 total>0 且不在第 1 页 → 回第 1 页重拉（防递归：第 1 页不再回拉） */
+    if (!tickets.value.length && total.value > 0 && st.page > 1) { load(1); return }
     /* 刷新后按 ticket_no 重绑 active 到新数组中的行（旧引用已与列表脱钩；被筛掉则清空） */
     if (active.value) active.value = tickets.value.find((t) => t.ticket_no === active.value.ticket_no) || null
   } catch (e) {
@@ -346,7 +348,7 @@ async function reopen() {
       <option value="">全部工单</option>
       <option value="1">我的工单</option>
     </select>
-    <input v-model="st.q" class="input" style="width:200px;height:38px" placeholder="邮箱 / 工单号 / 主题 / 订单号" @keydown.enter="search()">
+    <input v-model="st.q" class="input js-search" style="width:200px;height:38px" placeholder="邮箱 / 工单号 / 主题 / 订单号" @keydown.enter="search()">
     <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
   </div>
 

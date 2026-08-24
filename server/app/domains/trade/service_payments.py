@@ -21,7 +21,7 @@ from app.models import Order, Payment, User
 from app.services import points as points_svc
 from app.services.payment_provider import (
     InvalidSignatureError, MockProvider, ProviderUnavailable,
-    WebhookVerificationError, get_provider, normalize_event,
+    WebhookVerificationError, get_provider, mock_pay_enabled, normalize_event,
 )
 
 log = logging.getLogger("glowmag.payments")
@@ -200,9 +200,9 @@ def create_intent(
     ensure_order_owner(order, user, email)
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
-    provider = get_provider()
+    provider = get_provider(db)
     # 环境门禁：mock 开关未放行时禁止 mock intent（无真实凭据时宁可 409 也不静默降级 mock）
-    if provider.name == "mock" and not settings.mock_pay_enabled:
+    if provider.name == "mock" and not mock_pay_enabled(db):
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
     pending = repo.pending_payment_of_order(db, order.id, provider=provider.name)
@@ -219,7 +219,7 @@ def create_intent(
     try:
         intent = provider.create_intent(order, order.grand_total)
     except ProviderUnavailable:
-        if not settings.mock_pay_enabled:
+        if not mock_pay_enabled(db):
             raise HTTPException(status_code=409, detail="mock_provider_disabled")
         intent = MockProvider().create_intent(order, order.grand_total)
     payment = Payment(
@@ -243,10 +243,10 @@ def mock_pay(
     db: Session, order_no: str, succeed: bool, *,
     user: User | None = None, email: str | None = None,
 ) -> dict:
-    # 环境门禁：mock 支付仅在开关放行时开放（默认 dev；GM_MOCK_PAY=1 放行，测试套件不受影响）
-    if not settings.mock_pay_enabled:
+    # 环境门禁：mock 支付仅在开关放行时开放（后台 settings mock_pay / GM_MOCK_PAY，默认 dev）
+    if not mock_pay_enabled(db):
         raise HTTPException(status_code=404, detail="not_found")
-    provider = get_provider()
+    provider = get_provider(db)
     order = _get_order(db, order_no)
     ensure_order_owner(order, user, email)
     payment = _get_payment(db, order.id)
@@ -288,15 +288,11 @@ _UNRECOVERABLE_PREFIXES = (
 
 
 def handle_webhook(db: Session, payload: bytes, stripe_signature: str | None) -> dict:
-    provider = get_provider()
+    provider = get_provider(db)
     # 环境门禁：非 dev 必须配置对应 provider 的验签密钥，否则任何人可伪造回调
-    if settings.env != "dev":
-        secret = (
-            settings.stripe_webhook_secret if provider.name == "stripe"
-            else settings.paypal_webhook_id
-        )
-        if not secret:
-            raise HTTPException(status_code=400, detail="webhook_secret_not_configured")
+    # （密钥取自 provider 生效配置——settings 表 payment_config 或环境变量，二选一非空即通过）
+    if settings.env != "dev" and not provider.webhook_gate_secret():
+        raise HTTPException(status_code=400, detail="webhook_secret_not_configured")
     try:
         raw_event = provider.verify_webhook(payload, stripe_signature)
     except InvalidSignatureError:

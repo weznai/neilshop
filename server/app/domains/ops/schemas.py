@@ -17,8 +17,8 @@ REASON_TEXT = {
     12: "买家秀奖励",
 }
 
-# 管理账号可用角色：2运营 / 3仓库 / 9超管（1客服不进后台管理面）
-ADMIN_ROLES = {2, 3, 9}
+# 管理账号可用角色：1客服 / 2运营 / 3仓库 / 9超管（美甲师走 seed，不进账号管理面）
+from app.core.permissions import ADMIN_ACCOUNT_ROLES as ADMIN_ROLES  # noqa: E402
 
 
 class RiskIn(BaseModel):
@@ -53,7 +53,7 @@ class PointsAdjustIn(BaseModel):
 
 
 class AdminCreateIn(BaseModel):
-    """管理员建号入参（仅超管）：email 唯一 / 密码 ≥8 位 / role ∈ {2,3,9}"""
+    """管理员建号入参（仅超管）：email 唯一 / 密码 ≥8 位 / role ∈ {1,2,3,9}"""
     email: EmailStr
     name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=8, max_length=128)
@@ -63,7 +63,7 @@ class AdminCreateIn(BaseModel):
     @classmethod
     def _role_allowed(cls, v: int) -> int:
         if v not in ADMIN_ROLES:
-            raise ValueError("role must be one of 2,3,9")
+            raise ValueError("role must be one of 1,2,3,9")
         return v
 
 
@@ -78,7 +78,7 @@ class AdminUpdateIn(BaseModel):
     @classmethod
     def _role_allowed(cls, v: int | None) -> int | None:
         if v is not None and v not in ADMIN_ROLES:
-            raise ValueError("role must be one of 2,3,9")
+            raise ValueError("role must be one of 1,2,3,9")
         return v
 
     @field_validator("status")

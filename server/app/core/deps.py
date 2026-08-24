@@ -10,12 +10,14 @@
 import secrets
 from typing import Optional
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request, Response
+from fastapi import Cookie, Depends, Header, HTTPException, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.enums import UserRole
+from app.core.permissions import permissions_of, role_has_perms
 from app.core.security import decode_token
 from app.models import Cart, User
 
@@ -101,20 +103,27 @@ def get_current_user(user: Optional[User] = Depends(get_current_user_optional)) 
     return user
 
 
-def require_admin(request: Request, user: User = Depends(get_current_user)) -> User:
-    """后台接口守卫：role >= 2（运营/仓库/超管）；
-    美甲师(role=4)为受限后台账号，仅放行聊天域 /api/admin/chat/*（会话接管），
-    访问其余后台面（订单/会员/设置等）一律 403 artist scope"""
-    if user.role == 4 and not request.url.path.startswith("/api/admin/chat/"):
-        raise HTTPException(status_code=403, detail="artist scope")
-    if user.role < 2:
-        raise HTTPException(status_code=403, detail="Admin only")
-    return user
+def require_perm(*perms: str):
+    """后台细粒度权限守卫工厂（角色 → 权限见 core/permissions.py 矩阵）：
+    require_perm("trade:refund") —— 全部权限点命中才放行。
+    拒绝语义：顾客/未知角色 → 403 "Admin only"；
+    美甲师越面（非 chat）→ 403 "artist scope"；其余缺权限 → 403 "permission denied: <perms>"。"""
+    def _guard(user: User = Depends(get_current_user)) -> User:
+        if role_has_perms(user.role, perms):
+            return user
+        if user.role == int(UserRole.ARTIST):
+            raise HTTPException(status_code=403, detail="artist scope")
+        if not permissions_of(user.role):
+            raise HTTPException(status_code=403, detail="Admin only")
+        raise HTTPException(
+            status_code=403, detail="permission denied: " + ", ".join(perms)
+        )
+    return _guard
 
 
-def require_superadmin(user: User = Depends(require_admin)) -> User:
-    """超管专属守卫：role == 9（管理员账号管理等高危面），对齐 require_admin 写法"""
-    if user.role != 9:
+def require_superadmin(user: User = Depends(get_current_user)) -> User:
+    """超管专属守卫：role == 9（管理员账号/支付凭据等高危面）"""
+    if user.role != int(UserRole.SUPER):
         raise HTTPException(status_code=403, detail="superadmin required")
     return user
 

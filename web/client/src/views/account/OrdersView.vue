@@ -1,12 +1,14 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { req, intentNoChannel } from '../../api/client'
+import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { useOrderPay } from '../../composables/useOrderPay'
 import { fmtDateTime } from '../../composables/datetime'
-import { i18n, tt } from '../../i18n'
+import { money } from '../../composables/format'
+import { tt } from '../../i18n'
 
 const ui = useUiStore()
 const route = useRoute()
@@ -19,7 +21,6 @@ const failed = ref(false)
 const page = ref(1)
 const pages = ref(1)
 const total = ref(0)
-const payingNo = ref('')
 const cancelingNo = ref('')
 const confirmingNo = ref('')
 
@@ -46,23 +47,29 @@ function keyFromTab(sv) {
 }
 const tab = ref(null)
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const fmt = fmtDateTime
 
+/* 请求序列守卫：仅最新一次 load 的响应可落地（tab 快速切换/翻页竞态丢弃过期响应） */
+let _loadSeq = 0
 async function load() {
+  const seq = ++_loadSeq
   loading.value = true
   failed.value = false
   try {
     const q = '/api/orders?page=' + page.value + (tab.value === null ? '' : '&status=' + tab.value)
     const d = await req('GET', q)
+    if (seq !== _loadSeq) return
     orders.value = d.items || []
     pages.value = d.pages || 1
     total.value = d.total || 0
   } catch (_) {
+    if (seq !== _loadSeq) return
     failed.value = true
   } finally {
-    loaded.value = true
-    loading.value = false
+    if (seq === _loadSeq) {
+      loaded.value = true
+      loading.value = false
+    }
   }
 }
 
@@ -87,7 +94,16 @@ function applyQuery(q) {
 /* 初始状态来自 URL */
 tab.value = tabFromQuery(route.query.tab)
 page.value = Math.max(1, Number(route.query.page) || 1)
-onMounted(load)
+const tabsEl = ref(null)
+/* tab 条 active 项滚入视野（移动端横滑 tab 常态下选中项可能在屏外） */
+function scrollTabIntoView() {
+  const el = tabsEl.value && tabsEl.value.querySelector('.o-tab.on')
+  if (el && el.scrollIntoView) { try { el.scrollIntoView({ inline: 'center', block: 'nearest' }) } catch (_) { /* 旧浏览器 */ } }
+}
+onMounted(() => {
+  load()
+  nextTick(scrollTabIntoView)
+})
 /* 双发守卫：route.query 变化引发的 tab 赋值会再触发本 watcher → 用标志位跳过本次，避免回退时双请求 */
 let _byQuery = false
 watch(tab, () => {
@@ -97,11 +113,13 @@ watch(tab, () => {
 /* 浏览器回退/前进（同路由 query 变化）时恢复状态；
    _byQuery 仅在 query 驱动真的改了 tab 时置位，跳过随后触发的 tab watcher，避免双请求 */
 watch(() => route.query, (q) => {
+  if (route.name !== 'account-orders') return
   const prevTab = tab.value
   const changed = applyQuery(q)
   if (!changed) return
   _byQuery = tab.value !== prevTab
   load()
+  nextTick(scrollTabIntoView)
 })
 
 function go(p) {
@@ -111,33 +129,8 @@ function go(p) {
   load()
 }
 
-/* 待付订单支付：与 Checkout 同口径 —— hosted 通道（redirect_url）跳收银台，mock 通道直付 */
-async function pay(o) {
-  payingNo.value = o.order_no
-  try {
-    let provider = ''
-    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-    const ib = { order_no: o.order_no }
-    if (provider && provider !== 'mock') ib.provider = provider
-    const intent = await req('POST', '/api/payments/create-intent', ib)
-    if (intentNoChannel(intent)) {
-      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
-      return
-    }
-    if (provider !== 'mock' && intent && intent.redirect_url) {
-      window.location.href = intent.redirect_url
-      return
-    }
-    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })
-    ui.toast(d.order_status === 1 ? tt('Payment successful — points will be credited after confirmation', '支付成功，积分将在确认后发放') : tt('Payment processing', '支付处理中'), 'success')
-    await load()
-  } catch (e) {
-    const d = e && e.data && e.data.detail || ''
-    if (String(d).startsWith('order_not_pending')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); load() }
-    else if (d === 'already_paid') { ui.toast(tt('This order is already paid', '该订单已支付'), 'error'); load() }
-    else ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
-  } finally { payingNo.value = '' }
-}
+/* 待付订单支付：useOrderPay 统一封装（hosted 跳收银台 / mock 直付，already_paid 幂等） */
+const { payingNo, pay } = useOrderPay(load)
 
 /* 订单取消：待付（释放库存）/ 已付未发货（自助取消 + 后端自动全额原路退款）；两段式确认防误触 */
 async function cancel(o) {
@@ -174,7 +167,7 @@ async function confirmRecv(o) {
 
 <template>
   <div>
-    <div class="o-tabs" role="tablist">
+    <div ref="tabsEl" class="o-tabs" role="tablist">
       <button
         v-for="[k, label, sv] in TABS" :key="k" class="o-tab"
         :class="{ on: tab === sv }" role="tab" :aria-selected="tab === sv" @click="tab = sv"
@@ -202,10 +195,10 @@ async function confirmRecv(o) {
               <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
               <b style="color:var(--plum)">{{ money(o.grand_total) }}</b>
               <template v-if="o.status === 0">
-                <button class="btn btn-primary btn-sm" :class="{ loading: payingNo === o.order_no }" :disabled="payingNo === o.order_no || !!cancelingNo" @click="pay(o)">{{ tt('Pay now', '去支付') }}</button>
+                <button class="btn btn-primary btn-sm" :class="{ loading: payingNo === o.order_no }" :disabled="payingNo === o.order_no" @click="pay(o)">{{ tt('Pay now', '去支付') }}</button>
                 <button
                   class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is(o.order_no), loading: cancelingNo === o.order_no }"
-                  :disabled="cancelingNo === o.order_no || !!payingNo" @click="cancelArm.hit(o.order_no, () => cancel(o))"
+                  :disabled="cancelingNo === o.order_no" @click="cancelArm.hit(o.order_no, () => cancel(o))"
                 >{{ cancelArm.is(o.order_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel', '取消') }}</button>
               </template>
               <template v-else-if="o.status === 1 && (o.shipping_status || 0) === 0">
@@ -233,6 +226,7 @@ async function confirmRecv(o) {
       </div>
       <div v-else class="card" style="padding:30px;text-align:center;color:var(--gray)">
         {{ tt('No orders in this tab yet.', '该状态下暂无订单。') }}
+        <div style="margin-top:10px"><router-link class="btn btn-secondary btn-sm" to="/account/orders">{{ tt('View all orders', '查看全部订单') }}</router-link></div>
       </div>
     </template>
   </div>

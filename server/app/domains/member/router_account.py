@@ -48,7 +48,7 @@ def logout(response: Response, user: User = Depends(get_current_user_optional)):
 
 @router.post("/admin/login")
 def admin_login(body: LoginIn, response: Response, db: Session = Depends(get_db)):
-    """后台专用登录：role>=2 才放行，签发短时效 gm_admin_token（SameSite=Strict）。"""
+    """后台专用登录：后台角色（客服/运营/仓库/美甲师/超管）才放行，签发短时效 gm_admin_token（SameSite=Strict）。"""
     data = service_account.login(db, body, admin=True)
     set_auth_cookie(response, data["token"], admin=True)
     return data
@@ -56,8 +56,9 @@ def admin_login(body: LoginIn, response: Response, db: Session = Depends(get_db)
 
 @router.get("/admin/me")
 def admin_me(user: User = Depends(get_admin_session_user)):
-    """后台会话探测：严格只认 gm_admin_token（与前台 gm_token 隔离，双 Cookie 并存不串台）。"""
-    return service_account.profile(user)
+    """后台会话探测：严格只认 gm_admin_token（与前台 gm_token 隔离，双 Cookie 并存不串台）；
+    附实时权限集（前端路由/菜单/按钮权限判定）。"""
+    return service_account.admin_profile(user)
 
 
 @router.post("/admin/logout")

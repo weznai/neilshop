@@ -1,14 +1,14 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { req, intentNoChannel } from '../../api/client'
+import { req } from '../../api/client'
 import { useAuthStore } from '../../stores/auth'
-import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { fmtDateTime } from '../../composables/datetime'
-import { i18n, tt } from '../../i18n'
+import { useOrderPay } from '../../composables/useOrderPay'
+import { money } from '../../composables/format'
+import { tt } from '../../i18n'
 
 const auth = useAuthStore()
-const ui = useUiStore()
 const orders = ref([])
 const orderTotal = ref(0)
 const wlCount = ref(null)
@@ -16,7 +16,6 @@ const pts = ref(null)
 const expiringSum = ref(0)
 const loaded = ref(false)
 const failed = ref(false)
-const payingNo = ref('')
 
 /* 心愿单计数：读 localStorage gm_wl_count（WishlistView/ProductView 维护）+ 监听 gm:wl-changed，不再拉全量 */
 function syncWl() {
@@ -30,7 +29,6 @@ function onWlChanged() { syncWl() }
 const TIER = { 0: 'Glow', 1: 'Shimmer', 2: 'Diva' }
 const TIER_NEXT = { 0: 10000, 1: 30000 }
 
-const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 const fmt = fmtDateTime
 
 onMounted(async () => {
@@ -63,33 +61,15 @@ async function reload() {
   loaded.value = true
 }
 
-/* 待付订单支付：与 OrdersView/Checkout 同口径 —— hosted 通道（redirect_url）跳收银台，mock 直付 */
-async function pay(o) {
-  payingNo.value = o.order_no
-  try {
-    let provider = ''
-    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-    const ib = { order_no: o.order_no }
-    if (provider && provider !== 'mock') ib.provider = provider
-    const intent = await req('POST', '/api/payments/create-intent', ib)
-    if (intentNoChannel(intent)) {
-      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
-      return
-    }
-    if (provider !== 'mock' && intent && intent.redirect_url) {
-      window.location.href = intent.redirect_url
-      return
-    }
-    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })
-    ui.toast(d.order_status === 1 ? tt('Payment successful — points will be credited after confirmation', '支付成功，积分将在确认后发放') : tt('Payment processing', '支付处理中'), 'success')
-    await reload()
-  } catch (e) {
-    const d = e && e.data && e.data.detail || ''
-    if (String(d).startsWith('order_not_pending')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); reload() }
-    else if (d === 'already_paid') { ui.toast(tt('This order is already paid', '该订单已支付'), 'error'); reload() }
-    else ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
-  } finally { payingNo.value = '' }
-}
+/* 待付订单支付：useOrderPay 统一封装（hosted 跳收银台 / mock 直付）；
+   支付落地后并发刷新订单、积分卡与会员概要（等级/累计消费） */
+const { payingNo, pay } = useOrderPay(async () => {
+  await Promise.allSettled([
+    reload(),
+    req('GET', '/api/points').then((d) => { pts.value = d }),
+    auth.me().catch(() => {}),
+  ])
+})
 
 const u = computed(() => auth.user || {})
 const recent = computed(() => orders.value.slice(0, 3))

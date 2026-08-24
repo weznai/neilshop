@@ -1,11 +1,12 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { req, productDetail } from '../../api/client'
+import { req, productDetail, wishlistRemove } from '../../api/client'
 import { useCartStore } from '../../stores/cart'
 import { useUiStore } from '../../stores/ui'
 import { useAuthStore } from '../../stores/auth'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { money as fmtMoney } from '../../composables/format'
 import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
@@ -61,7 +62,7 @@ async function stockNotify(w) {
 }
 async function remove(pid) {
   try {
-    await req('DELETE', '/api/account/wishlist/' + pid)
+    await wishlistRemove(pid)
     items.value = items.value.filter((w) => w.id !== pid)
     localStorage.setItem('gm_wl_count', String(items.value.length))
     /* 广播角标即时刷新（Header 监听 gm:wl-changed） */
@@ -71,7 +72,7 @@ async function remove(pid) {
     ui.toast(e && e.status === 404 ? tt('This item is no longer in your wishlist', '该商品已不在心愿单') : tt('Remove failed — please retry later', '移除失败，请稍后再试'), 'error')
   }
 }
-function money(c) { return '$' + ((c || 0) / 100).toFixed(2) }
+function money(c) { return fmtMoney(c) }
 function priceRange(w) {
   if (w.price_max && w.price_min !== w.price_max) return `${money(w.price_min)} ~ ${money(w.price_max)}`
   return money(w.price_min)

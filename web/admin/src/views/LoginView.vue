@@ -2,6 +2,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
+import { firstAllowedPath } from '../constants/nav'
 import { toast } from '../composables/toast'
 
 const session = useSessionStore()
@@ -20,9 +21,9 @@ const formErr = ref('')
 /* 演示账号/密码提示仅 DEV 出现，生产构建不泄露种子账号 */
 const DEV = import.meta.env.DEV
 
-/* 已登录访问 /login：直接回后台首页，免去重复登录 */
+/* 已登录访问 /login：回第一个有权页面（客服/美甲师无看板权限，不再固定 '/'） */
 onMounted(() => {
-  if (session.user) { router.replace('/'); return }
+  if (session.user) { router.replace(firstAllowedPath(session.hasPerm)); return }
   nextTick(() => emailEl.value?.focus())
 })
 
@@ -42,7 +43,7 @@ function normEmail() {
 function srvMsg(e) {
   return e.status === 422 ? '邮箱格式无效——请用半角 @' + (DEV ? '（或直接填 ops / admin 快捷名）' : '')
     : e.status === 401 ? '邮箱或密码错误' + (DEV ? '（密码统一 glowmag123）' : '')
-      : e.status === 403 ? '该账号无后台权限（需管理员账号）'
+      : e.status === 403 ? '该账号无后台权限（需后台角色账号）'
         : e.status === 429 ? '尝试过于频繁，请稍后再试'
           : '登录失败：' + (e.message || '请稍后重试')
 }
@@ -56,19 +57,14 @@ async function submit() {
   if (!password.value) { passErr.value = DEV ? '请输入密码（演示密码统一 glowmag123）' : '请输入密码'; return }
   busy.value = true
   try {
-    /* 登录响应已含 user（role/id/email），无需再 verify() 探测 */
-    const u = await session.login(email.value, password.value)
-    if ((u.role | 0) < 2) {
-      formErr.value = '该账号无后台权限（需管理员账号）'
-      toast('该账号无后台权限（需管理员账号）', 'error')
-      await session.logout()
-      return
-    }
+    /* 登录响应已含 user + permissions（后台角色由后端闸门保证），无需再 verify() 探测 */
+    await session.login(email.value, password.value)
     toast('登录成功，进入管理控制台…', 'success')
     /* next 白名单校验：仅接受站内单斜杠路径（拒绝 //evil.com 协议相对与 \ ? # 起始），
-     * 含控制字符的输入一并拒绝 */
-    const n = String(route.query.next || '/')
-    router.push(/^\/[^/\\?#]/.test(n) && !/[\x00-\x1f\x7f]/.test(n) ? n : '/')
+     * 含控制字符的输入一并拒绝；默认落地 = 第一个有权菜单（客服→工单面等） */
+    const n = String(route.query.next || '')
+    router.push(/^\/[^/\\?#]/.test(n) && !/[\x00-\x1f\x7f]/.test(n)
+      ? n : firstAllowedPath(session.hasPerm))
   } catch (e) {
     console.error('[admin] 登录失败：', e)
     formErr.value = srvMsg(e)
@@ -108,7 +104,7 @@ async function submit() {
         🧪 种子账号：直接填 <b>ops</b> 或 <b>admin</b>（自动补全邮箱）· 密码 <b>glowmag123</b>
       </div>
       <div style="margin-top:14px;text-align:center;font-size:12px;color:var(--gray)">
-        HttpOnly Cookie 会话 · 后台专用短时效令牌（需 role ≥ 2）
+        HttpOnly Cookie 会话 · 后台专用短时效令牌（后台角色账号）
       </div>
       <div style="text-align:center;margin-top:16px">
         ← <a href="/" style="color:var(--plum)">返回店铺前台</a>

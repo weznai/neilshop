@@ -129,8 +129,8 @@ def main() -> int:
         r = client.get("/api/admin/ops/admins", headers=H_OPS)
         d = r.json()
         ids = [i["id"] for i in d["items"]]
-        check("admins 仅返回 role>=2 且 status=1（运营+超管，排除顾客/客服/禁用）",
-              r.status_code == 200 and set(ids) == {admin.id, super_admin.id},
+        check("admins 返回客服/运营/仓库/超管且 status=1（排除顾客/美甲师/禁用）",
+              r.status_code == 200 and set(ids) == {admin.id, cs_user.id, super_admin.id},
               ids)
         check("admins 行结构 {id,name,email,role} 且按 id 升序",
               all(set(i.keys()) == {"id", "name", "email", "role"} for i in d["items"])

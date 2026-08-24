@@ -3,6 +3,22 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.8] · 支付通道后台可视化管理：payment_config 热配置 + 连通性测试
+
+### Added（支付域，0 新表 · settings key=payment_config）
+- **支付配置 DB 化**：`resolve_pay_config()` 统一生效配置解析——后台 settings 表 `payment_config`（字段级覆盖）> `GM_STRIPE_*`/`GM_PAYPAL_*` 环境变量（优先链对齐 llm_config；表内空值回落 env）；StripeProvider/PayPalProvider 改 property 调用时取值（配置热生效），`get_provider(db)` 缓存带配置指纹（`_cfg_sig`）——DB 保存后自动重建无需重启/清缓存，多 worker 自愈；`reset_provider_cache()` 保存路径主动失效。
+- **后台支付通道 tab**（系统设置新 tab，3 新端点）：状态带（默认链/前台可用通道/环境）+ Stripe 卡（密钥/Webhook 签名密钥掩码读写 + live/test 模式徽章 + Klarna 开关 + 缺包降级横幅）+ PayPal 卡（Client ID/Secret/沙箱-生产分段切换/Webhook ID）+ Mock 卡（原 shipping tab 开关迁移至此）+ 回调地址展示一键复制 + 机制说明；写操作仅超管（require_superadmin），普通管理员只读视图。
+- **连通性测试**：`POST /api/admin/trade/payments/test` 真实外呼一次（Stripe `Balance.retrieve` 带 test/live 模式与可用余额 / PayPal OAuth token 带 sandbox/live），未配置/缺包给具体原因；前端 ⚡ 按钮一键验证。
+- **凭据安全**：GET 回显一律掩码（`sk_***wxyz` 对齐 llm.mask_key 规则）；通用 settings 列表同样脱敏（PAY_SECRET_FIELDS 四字段）；保存/清除（空串=回落 env）记管理日志；PUT 前缀校验（sk_/whsec_/http(s)）防粘贴错误。
+- **webhook 门禁改造**：非 dev 验签密钥检查改走 provider 生效配置（`webhook_gate_secret()`，DB/env 二选一非空即通过），不再直读环境变量。
+
+### Changed
+- `requirements.txt` 增 `stripe` 包（原可选拆包默认化——填密钥即用，缺包仍有明确降级提示）；`.env.example` 支付段注释更新（指向后台配置页）。
+- `/api/payments/methods` 的 klarna 标记改由 `available_providers` 名单推导（DB 配置热生效）。
+
+### 测试
+- 新增 `test_paycfg`（27 断言：resolve 三级回落/缓存指纹失效/掩码回显/source 标记/PUT 校验与权限/空串清除/test 双通道/webhook 门禁走生效配置/settings 列表脱敏/methods klarna）；相关回归 test_payments 75/75、test_xpay 24/24、test_e2e 62/62、test_cancel_paid 22/22；后台 SPA 构建通过。
+
 ## [0.3.7] · 在线客服聊天：AI 大模型 + 知识库 + 人工/美甲师三渠道
 
 ### Added（聊天域 chat，2 新表 + 16 端点）

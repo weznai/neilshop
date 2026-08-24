@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import utcnow
+from app.core.permissions import BACKEND_ROLES, permissions_of
 from app.core.security import create_token, hash_password, verify_password
 from app.models import (
     Cart, CookieConsent, DataRequest, EmailPreference, Order, OrderItem,
@@ -118,19 +119,30 @@ def register(db: Session, body: RegisterIn) -> dict:
 
 
 def login(db: Session, body: LoginIn, admin: bool = False) -> dict:
-    """登录（admin=True 为后台专用入口：仅 role>=2 可登录，签发短时效 token）。"""
+    """登录（admin=True 为后台专用入口：仅后台角色（客服/运营/仓库/美甲师/超管，
+    见 core/permissions.BACKEND_ROLES）可登录，签发短时效 token）。"""
     user = repo.get_user_by_email(db, body.email)
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="invalid credentials")
     if user.status != 1:
         raise HTTPException(status_code=401, detail="invalid credentials")
-    if admin and user.role < 2:
+    if admin and user.role not in BACKEND_ROLES:
         raise HTTPException(status_code=403, detail="admin only")
     user.last_login_at = utcnow()
     db.commit()
     token = create_token(user.id, user.role, hours=settings.admin_token_hours) if admin \
         else create_token(user.id, user.role)
-    return {"token": token, "user": _user_out(user)}
+    out = _user_out(user)
+    if admin:
+        out["permissions"] = sorted(permissions_of(user.role))
+    return {"token": token, "user": out}
+
+
+def admin_profile(user: User) -> dict:
+    """后台会话探测（/admin/me）：基本资料 + 实时权限集（前端路由/菜单/按钮权限判定）。"""
+    out = _user_out(user)
+    out["permissions"] = sorted(permissions_of(user.role))
+    return out
 
 
 def profile(user: User) -> dict:

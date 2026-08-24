@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useAuthStore } from '../stores/auth'
@@ -16,21 +16,32 @@ const router = useRouter()
 const isDev = !!import.meta.env.DEV
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const mode = ref('login') /* login | forgot | sent */
-const email = ref('')
+const email = ref(String(route.query.email || ''))
 const password = ref('')
 const showPw = ref(false)
 const busy = ref(false)
 const err = ref('')
+const emailInput = ref(null)
 
-/* 站内跳转白名单：仅接受以单个 / 开头且不以 // 开头的路径，非法回落 '/'；缺省回落 /account */
+/* 站内跳转白名单：仅接受以单个 / 开头且不以 // 开头的路径，非法回落 '/'；
+   认证页互跳（login/register/reset-password）回落 /account，避免重定向循环 */
 function nextRoute() {
   const n = route.query.next
   if (n === undefined || n === null) return '/account'
-  return typeof n === 'string' && /^\/(?!\/)/.test(n) ? n : '/'
+  if (typeof n !== 'string' || !/^\/(?!\/)/.test(n)) return '/'
+  if (n === '/login' || n === '/register' || n.startsWith('/reset-password')) return '/account'
+  return n
 }
 
 /* 已登录直接进账户 */
 if (auth.isLoggedIn) router.replace(nextRoute())
+
+/* 非触屏自动聚焦邮箱（触屏不弹键盘打扰） */
+onMounted(() => {
+  if (window.matchMedia && window.matchMedia('(pointer:fine)').matches) {
+    try { emailInput.value && emailInput.value.focus() } catch (_) { /* */ }
+  }
+})
 
 function fieldCheck() {
   if (!EMAIL_RE.test(email.value.trim())) return tt('Enter a valid email address', '请输入有效的邮箱地址')
@@ -50,7 +61,13 @@ async function submit() {
   } catch (e) {
     const d = e && e.data && e.data.detail
     if (e && e.status === 401 && d === 'invalid credentials') err.value = tt('Incorrect email or password', '邮箱或密码不正确')
-    else if (e && e.status === 422) err.value = tt('Enter a valid email address', '请输入有效的邮箱地址')
+    else if (e && e.status === 422) {
+      /* 422 校验：detail 含 password 字段 → 密码提示，否则按邮箱格式提示 */
+      const hitPw = Array.isArray(d)
+        ? d.some((x) => x && Array.isArray(x.loc) && x.loc.includes('password'))
+        : String(d || '').includes('password')
+      err.value = hitPw ? tt('Enter your password', '请输入密码') : tt('Enter a valid email address', '请输入有效的邮箱地址')
+    }
     else err.value = tt('Sign-in failed — please retry later', '登录失败，请稍后再试')
   } finally { busy.value = false }
 }
@@ -90,7 +107,7 @@ async function sendReset() {
           <form @submit.prevent="submit">
             <div class="field">
               <label>{{ tt('Email', '邮箱') }}</label>
-              <input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com">
+              <input ref="emailInput" v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com">
             </div>
             <div class="field">
               <div style="display:flex;justify-content:space-between;align-items:baseline">
@@ -104,7 +121,7 @@ async function sendReset() {
                 </button>
               </div>
             </div>
-            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
+            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ err }}</div>
             <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Sign In', '登录') }}</button>
           </form>
           <div style="text-align:center;margin-top:14px;font-size:13px;color:var(--gray)">
@@ -125,7 +142,7 @@ async function sendReset() {
               <label>{{ tt('Email', '邮箱') }}</label>
               <input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com">
             </div>
-            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px">{{ err }}</div>
+            <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ err }}</div>
             <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Send reset email', '发送重置邮件') }}</button>
           </form>
           <div style="text-align:center;margin-top:14px;font-size:13px">

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { i18n, tt } from '../i18n'
 import ProductCard from '../components/ProductCard.vue'
@@ -8,6 +8,7 @@ import ProductCard from '../components/ProductCard.vue'
 /* GET /api/catalog/collections/{slug} → {id, slug, title, banner_image, products: [卡片]}；404 = 合集不存在
    后端全量返回（物化合集）/规则合集上限 100：前端客户端分页（首屏 12 + Load more），大合集不一次性渲染 */
 const route = useRoute()
+const router = useRouter()
 const col = ref(null)
 const loaded = ref(false)
 const failed = ref(false)
@@ -18,7 +19,11 @@ const shownCount = ref(PAGE_SIZE)
 const allProducts = computed(() => (col.value && col.value.products) || [])
 const shown = computed(() => allProducts.value.slice(0, shownCount.value))
 const remaining = computed(() => Math.max(0, allProducts.value.length - shownCount.value))
-function loadMore() { shownCount.value += PAGE_SIZE }
+/* Load more 进度同步 URL（replace 不产生历史）：刷新/分享恢复展开位置 */
+function loadMore() {
+  shownCount.value += PAGE_SIZE
+  router.replace({ query: { ...route.query, shown: String(shownCount.value) } })
+}
 
 const IMG_FALLBACK = 'https://placehold.co/1200x400/E8B4B8/552338?text=GLOWMAG'
 function imgFallback(e) {
@@ -33,15 +38,24 @@ async function load() {
   failed.value = false
   notFound.value = false
   col.value = null
-  shownCount.value = PAGE_SIZE
+  const initShown = parseInt(route.query.shown, 10)
+  shownCount.value = Number.isFinite(initShown) && initShown > PAGE_SIZE ? initShown : PAGE_SIZE
   try {
     col.value = await req('GET', '/api/catalog/collections/' + encodeURIComponent(String(route.params.slug || '')))
-    /* 动态 SEO：合集标题/banner 覆盖路由兜底（gm:seo 事件通道，路由切换自动复位） */
+    /* 面包屑上报（StoreLayout gm:crumbs 覆盖默认推导；模板已前置 Home 链接，此处不重复 Home） */
+    window.dispatchEvent(new CustomEvent('gm:crumbs', { detail: [
+      { path: '/collections', title: tt('Collections', '合辑') },
+      { title: col.value.title },
+    ] }))
+    /* 动态 SEO：按语言生成描述并拼接前几个商品标题（gm:seo 事件通道，路由切换自动复位） */
     try {
+      const names = (col.value.products || []).slice(0, 3).map((x) => x.title).join(', ')
+      const desc = i18n.lang === 'zh'
+        ? `${col.value.title || ''} —— 精选穿戴甲与磁性睫毛合集，手工打造、沙龙级品质，满 $35 包邮。${names ? '包含 ' + names + '。' : ''}`
+        : `${col.value.title || ''} — curated press-on nail & magnetic lash sets. Handmade, salon-quality glam delivered free over $35.${names ? ' Includes ' + names + '.' : ''}`
       window.dispatchEvent(new CustomEvent('gm:seo', { detail: {
         title: (col.value.title || 'Collection') + ' · GLOWMAG',
-        description: (col.value.title ? col.value.title + ' — curated press-on nail & magnetic lash sets. ' : '') +
-          'Handmade, salon-quality glam delivered free over $35.',
+        description: desc.slice(0, 160),
         image: col.value.banner_image || undefined,
       } }))
     } catch (_) { /* SEO 失败不影响页面 */ }

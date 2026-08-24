@@ -95,7 +95,7 @@ async function act(sub, action, body) {
   } finally { busy.value = false }
 }
 function pause(sub) { act(sub, 'pause', {}) }
-function resume(sub) { act(sub, 'resume') }
+function resume(sub) { act(sub, 'resume', {}) }
 /* 取消订阅：两段式站内确认（替代 window.confirm，对齐 UnsubscribeView 模式）——首次点击进入 arm 态，5 秒未确认自动复位；
  * arm 态展示取消原因 chips（后端 cancel_reason 1-4），默认选 1，请求携带所选值 */
 const cancelArm = ref(0)
@@ -127,10 +127,10 @@ function cancelSub(sub) {
   act(sub, 'cancel', { cancel_reason: cancelReason.value })
 }
 function skipNext(sub) {
-  /* 跳过下一盒：skip_until = 下次账单日 + 一个周期 */
+  /* 跳过下一盒：skip_until = 下次账单日（naive UTC 补 Z 防本地解析漂移）+ 周数×7 天 */
   const p = planInfo(sub.plan)
-  const base = sub.next_billing_at ? new Date(sub.next_billing_at) : new Date()
-  base.setDate(base.getDate() + (p.weeks || 4))
+  const base = sub.next_billing_at ? new Date(zulu(sub.next_billing_at)) : new Date()
+  base.setDate(base.getDate() + (p.weeks || 4) * 7)
   act(sub, 'skip', { skip_until: base.toISOString().replace('Z', '') })
 }
 
@@ -142,7 +142,7 @@ const styleText = (m) => (m === 2 ? tt('Blind box', '盲盒惊喜') : tt('My cho
     <div class="container">
       <div style="text-align:center;margin-bottom:30px">
         <div style="font-size:46px">📦</div>
-        <h1 style="font-family:var(--font-title);font-size:34px;margin-bottom:8px">{{ tt('Nail Club Monthly Box', 'Nail Club 订阅月盒') }}</h1>
+        <h1 style="font-family:var(--font-title);font-size:34px;margin-bottom:8px">{{ tt('Nail Club Auto-Delivery', 'Nail Club 自动配送到家') }}</h1>
         <p style="color:var(--gray)">{{ tt('Fresh press-on nails auto-delivered · pause / skip / cancel anytime', '新款美甲自动到家 · 可暂停 / 跳过 / 随时取消') }}</p>
       </div>
 

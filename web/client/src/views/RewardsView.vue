@@ -12,7 +12,11 @@ async function load() {
   try { pts.value = await req('GET', '/api/points') } catch (_) { failed.value = true }
 }
 onMounted(() => {
-  if (auth.isLoggedIn) load()
+  if (auth.isLoggedIn) {
+    load()
+    /* 静默刷新用户概要（tier 以服务端为准，模板响应式跟随 auth.user 更新高亮） */
+    auth.me(true).catch(() => {})
+  }
 })
 
 /* User.tier：0普通(Glow) 1银(Shimmer, 累计$100+) 2金(Diva, 累计$300+)；[en, zh] 双语 */

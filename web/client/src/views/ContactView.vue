@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { req } from '../api/client'
+import { errMessage, req } from '../api/client'
 import { fmtDateTime } from '../composables/datetime'
+import { useArmConfirm } from '../composables/useArmConfirm'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { i18n, tt } from '../i18n'
@@ -25,8 +26,8 @@ const STATUS = {
   0: ['Open', '待处理', 'tag-pending'],
   1: ['Replied', '已回复', 'tag-paid'],
   2: ['Awaiting your reply', '等待你回复', 'tag-ship'],
-  3: ['Resolved', '已解决', 'tag-done'],
-  4: ['Closed', '已关闭', 'tag-error'],
+  3: ['Resolved', '已解决', 'tag-paid'],
+  4: ['Closed', '已关闭', 'tag-done'],
 }
 const mode = ref('new')
 const busy = ref(false)
@@ -60,16 +61,29 @@ function catLabel(c) {
 }
 const fmtTime = (s) => (s ? fmtDateTime(s, '') : '')
 
+/* 模板按类目内存缓存 + 序列守卫（快速切换类目时丢弃过期响应） */
+const tplCache = new Map()
+let tplSeq = 0
 async function loadTemplates(cat) {
+  if (tplCache.has(cat)) { templates.value = tplCache.get(cat); return }
+  const seq = ++tplSeq
   try {
-    templates.value = await req('GET', '/api/support/templates?category=' + cat) || []
-  } catch (_) { templates.value = [] }
+    const d = await req('GET', '/api/support/templates?category=' + cat) || []
+    if (seq !== tplSeq) return
+    tplCache.set(cat, d)
+    templates.value = d
+  } catch (_) { if (seq === tplSeq) templates.value = [] }
 }
 watch(() => form.value.category, (c) => loadTemplates(c), { immediate: true })
-function useTpl(t) {
-  if (form.value.content.trim() && !window.confirm(tt('Replace your drafted message with this template?', '用模板替换你已输入的内容？'))) return
+
+const tplArm = useArmConfirm()
+function applyTpl(t) {
   form.value.content = t.content
   if (!form.value.subject.trim()) form.value.subject = t.title
+}
+function useTpl(t) {
+  if (!form.value.content.trim()) { applyTpl(t); return }
+  tplArm.hit('tpl-' + t.id, () => applyTpl(t))
 }
 
 function validate() {
@@ -98,7 +112,7 @@ async function submit() {
     created.value = d
     ui.toast(tt('Ticket created', '工单已创建'), 'success')
   } catch (e) {
-    ui.toast(e.status === 422 ? tt('Please check the highlighted fields', '请检查标红项后重试') : tt('Submit failed — please retry', '提交失败，请稍后再试'), 'error')
+    ui.toast(e.status === 422 ? errMessage(e) : tt('Submit failed — please retry', '提交失败，请稍后再试'), 'error')
   } finally { busy.value = false }
 }
 
@@ -127,37 +141,33 @@ function goLookup() {
 }
 
 async function query() {
-  const l = lookup.value
+  let l = lookup.value
   lookupErr.value = ''
+  /* 登录态锁定账户邮箱查询（后端校验 email 须与账户一致，异邮箱恒 403） */
+  if (auth.isLoggedIn && auth.user) {
+    l.email = String(auth.user.email || '')
+    l.ticket_no = ''
+  }
   if (!l.email.trim()) {
     lookupErr.value = tt('Enter the email used on the ticket.', '请填写创建工单时使用的邮箱')
     return
   }
-  /* 登录态用非账户邮箱查询：后端要求 email+ticket_no 双因子 */
-  const foreignEmail = auth.isLoggedIn && !!auth.user
-    && l.email.trim().toLowerCase() !== String(auth.user.email || '').toLowerCase()
   if (!auth.isLoggedIn && !l.ticket_no.trim()) {
     lookupErr.value = tt('Ticket number (TK…) is needed — or sign in to see all your tickets.', '未登录需提供工单号（TK…），或登录后按账户邮箱查看全部工单')
-    return
-  }
-  if (foreignEmail && !l.ticket_no.trim()) {
-    lookupErr.value = tt('That email differs from your account — enter the ticket number (TK…) too.', '该邮箱与账户邮箱不一致，请同时填写工单号（TK…）')
     return
   }
   lookupBusy.value = true
   tickets.value = null
   activeNo.value = ''
   try {
-    /* 登录态且账户邮箱一致：仅凭 email 拉取全部工单（后端校验 email 须与账户一致） */
     let url = '/api/support/tickets?email=' + encodeURIComponent(l.email.trim())
-    if (!auth.isLoggedIn || foreignEmail) url += '&ticket_no=' + encodeURIComponent(l.ticket_no.trim())
+    if (!auth.isLoggedIn) url += '&ticket_no=' + encodeURIComponent(l.ticket_no.trim())
     const d = await req('GET', url)
     tickets.value = d.items || []
     if (!tickets.value.length) lookupErr.value = tt('No ticket found with that combination.', '未找到符合条件的工单')
   } catch (e) {
     const d = e && e.data && e.data.detail
-    if (e && e.status === 403 && d === 'not ticket owner') lookupErr.value = tt('Please use the email that created the ticket.', '请使用创建工单的邮箱查询')
-    else if (e && e.status === 404) lookupErr.value = tt('Ticket not found — check the number (TK…) and the email you used.', '未找到工单——请核对工单号（TK…）与创建邮箱')
+    if (e && e.status === 404) lookupErr.value = tt('Ticket not found — check the number (TK…) and the email you used.', '未找到工单——请核对工单号（TK…）与创建邮箱')
     else lookupErr.value = tt('Could not load the conversation — please retry.', '加载失败，请稍后再试')
   } finally { lookupBusy.value = false }
 }
@@ -202,6 +212,13 @@ onMounted(() => {
         <button class="trend-chip" :class="{ on: mode === 'check' }" :aria-pressed="mode === 'check'" @click="mode = 'check'">💬 {{ tt('Check my ticket', '查询我的工单') }}</button>
       </div>
 
+      <div class="card" style="padding:12px 16px;margin-bottom:18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--gray)">
+        <span>✉️ support@glowmag.com</span>
+        <span class="meta-dot" />
+        <span>{{ tt('Mon–Sat 9–18 ET', '周一至周六 9–18（美东）') }}</span>
+        <button class="btn btn-secondary btn-sm" style="margin-left:auto;height:30px;padding:0 12px" @click="ui.chatOpen = true">{{ tt('Chat online', '在线聊天') }}</button>
+      </div>
+
       <div v-if="mode === 'new'">
         <div v-if="created" class="card" style="padding:28px;text-align:center">
           <div style="width:56px;height:56px;border-radius:50%;background:var(--rose-pale);color:var(--plum);font-size:26px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:12px">✓</div>
@@ -244,13 +261,13 @@ onMounted(() => {
           <div v-if="templates.length" style="margin-bottom:14px">
             <div style="font-size:12px;font-weight:700;color:var(--gray);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px">{{ tt('Quick starters', '快捷模板') }}</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button v-for="t in templates" :key="t.id" class="trend-chip" @click="useTpl(t)">{{ t.title }}</button>
+              <button v-for="t in templates" :key="t.id" class="trend-chip" :class="{ arm: tplArm.is('tpl-' + t.id) }" @click="useTpl(t)">{{ tplArm.is('tpl-' + t.id) ? tt('Tap again to replace', '再点一次替换') : t.title }}</button>
             </div>
           </div>
           <div class="field" :class="{ error: errors.content }">
             <label>{{ tt('Message', '留言内容') }} *</label>
-            <textarea v-model="form.content" class="input" :class="{ error: errors.content }" rows="5" style="height:auto;padding-top:10px" :placeholder="tt('How can we help? Include sizes, order details or anything handy.', '我们能帮你什么？可附上尺码、订单信息等细节。')" @input="errors.content = ''"></textarea>
-            <div class="field-msg">{{ errors.content }}</div>
+            <textarea v-model="form.content" class="input" :class="{ error: errors.content }" rows="5" maxlength="2000" style="height:auto;padding-top:10px" :placeholder="tt('How can we help? Include sizes, order details or anything handy.', '我们能帮你什么？可附上尺码、订单信息等细节。')" @input="errors.content = ''"></textarea>
+            <div class="field-msg" style="display:flex;justify-content:flex-between"><span>{{ errors.content }}</span><span style="color:var(--gray)">{{ form.content.length }}/2000</span></div>
           </div>
           <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="submit">{{ tt('Send message', '发送留言') }}</button>
           <p style="font-size:12.5px;color:var(--gray);margin-top:12px">
@@ -261,11 +278,17 @@ onMounted(() => {
 
       <div v-else class="card" style="padding:24px">
         <div class="lk-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="lookup.email" class="input" type="email" autocomplete="email" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')"></div>
-          <div v-if="!auth.isLoggedIn" class="field"><label>{{ tt('Ticket number', '工单号') }}</label><input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX" autocomplete="off"></div>
+          <div class="field">
+            <label>{{ tt('Email', '邮箱') }}</label>
+            <input v-model="lookup.email" class="input" type="email" autocomplete="email" :disabled="auth.isLoggedIn || tickets !== null || lookupBusy" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')">
+          </div>
+          <div v-if="!auth.isLoggedIn" class="field">
+            <label>{{ tt('Ticket number', '工单号') }}</label>
+            <input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX" autocomplete="off" :disabled="tickets !== null || lookupBusy">
+          </div>
         </div>
         <p v-if="auth.isLoggedIn" style="font-size:12.5px;color:var(--gray);margin:6px 0 0">
-          {{ tt('Signed in — all tickets created with this account email are listed.', '已登录——将显示用该账户邮箱创建的全部工单，无需工单号。') }}
+          {{ tt('Signed in — this lookup covers tickets from your account email. To check tickets made with another email, please sign out first.', '登录状态下查询当前账户的工单；如需查询其他邮箱的工单请退出登录。') }}
         </p>
         <button class="btn btn-primary" :class="{ loading: lookupBusy }" :disabled="lookupBusy" style="margin-top:12px" @click="query">{{ tt('Find my ticket', '查询工单') }}</button>
         <div v-if="lookupErr" style="font-size:13px;color:var(--error);margin-top:10px">{{ lookupErr }}</div>

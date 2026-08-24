@@ -42,6 +42,7 @@ onMounted(() => {
       name: 'How to apply GLOWMAG press-on nails',
       description: 'Apply salon-quality press-on nails at home in about 5 minutes.',
       step: STEPS.map((s) => ({ '@type': 'HowToStep', name: dict.en[s[1]], text: dict.en[s[2]] })),
+      totalTime: 'PT5M',
     } } }))
   } catch (_) { /* SEO 失败不影响页面 */ }
 })
@@ -55,7 +56,7 @@ onMounted(() => {
         <p style="color:var(--gray)">{{ i18n.t('how.sub') }}</p>
       </div>
       <div class="grid grid-3 hiw-grid">
-        <div v-for="s in STEPS" :key="s[0]" ref="stepRefs" class="card hiw-step" style="padding:22px">
+        <div v-for="s in STEPS" :id="'step-' + s[0]" :key="s[0]" ref="stepRefs" class="card hiw-step" style="padding:22px">
           <div class="hiw-num">{{ s[0] }}</div>
           <b style="font-size:15px">{{ i18n.t(s[1]) }}</b>
           <p style="font-size:13.5px;color:var(--gray);margin-top:6px;line-height:1.7">{{ i18n.t(s[2]) }}</p>
@@ -82,7 +83,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 步骤编号：默认灰态，视口命中（.lit）点亮为品牌渐变 + popTick 脉冲（全局 keyframes；reduced-motion 全局禁用） */
+/* 步骤编号：默认灰态，视口命中（.lit）点亮为品牌渐变 + popTick 脉冲（全局 keyframes；reduced-motion 全局禁用）；
+ * 卡片 #step-N 锚点定位时避开吸顶头部 */
+.hiw-step { scroll-margin-top: 84px; }
 .hiw-num { width: 52px; height: 52px; border-radius: 50%; background: var(--gray-light); color: var(--gray); display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-title); font-size: 22px; font-weight: 700; margin-bottom: 12px; transition: background .3s ease-out, color .3s ease-out; }
 .hiw-step.lit .hiw-num { background: linear-gradient(135deg, var(--rose), var(--plum)); color: #fff; animation: popTick .3s ease-out; }
 /* 点亮卡片 rose-light 描边呼应编号圈 */

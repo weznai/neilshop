@@ -1,14 +1,13 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { req } from '../api/client'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 
 /* GET /api/catalog/collections → {items: [{id, slug, title, banner_image}]}（仅有效集合） */
 const items = ref([])
 const loaded = ref(false)
 const failed = ref(false)
 
-const zh = () => i18n.lang === 'zh'
 const IMG_FALLBACK = 'https://placehold.co/600x400/E8B4B8/552338?text=GLOWMAG'
 function imgFallback(e) {
   const img = e.target
@@ -26,6 +25,7 @@ async function load() {
   loaded.value = true
 }
 onMounted(load)
+watch(() => i18n.lang, load)
 </script>
 
 <template>
@@ -67,7 +67,7 @@ onMounted(load)
           </div>
           <div style="padding:16px 18px;display:flex;justify-content:space-between;align-items:center;gap:10px">
             <b style="font-family:var(--font-title);font-size:17px">{{ c.title }}</b>
-            <span style="color:var(--plum);font-weight:700">{{ zh() ? '去逛 →' : 'Shop →' }}</span>
+            <span style="color:var(--plum);font-weight:700">{{ tt('Shop →', '去逛 →') }}</span>
           </div>
         </router-link>
       </div>

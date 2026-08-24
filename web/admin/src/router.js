@@ -1,34 +1,39 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useSessionStore } from './stores/session'
+import { firstAllowedPath } from './constants/nav'
 
 const router = createRouter({
   history: createWebHistory('/admin/'),
-  scrollBehavior: (to, from, savedPosition) => savedPosition || { top: 0 },
+  scrollBehavior: (to, from, savedPosition) => {
+    if (to.path === from.path) return false
+    return savedPosition || { top: 0 }
+  },
   routes: [
     { path: '/login', name: 'login', component: () => import('./views/LoginView.vue'), meta: { public: true, title: '登录' } },
     {
       path: '/',
       component: () => import('./layouts/AdminLayout.vue'),
       children: [
-        { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { title: '数据看板' } },
-        { path: 'orders', name: 'orders', component: () => import('./views/OrdersView.vue'), meta: { title: '订单管理' } },
-        { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情', crumbs: ['订单管理', '订单详情'] } },
-        { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue'), meta: { title: '退换货' } },
-        { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue'), meta: { title: '工单' } },
-        { path: 'chat', name: 'chat', component: () => import('./views/ChatView.vue'), meta: { title: '在线客服' } },
-        { path: 'products', name: 'products', component: () => import('./views/ProductsView.vue'), meta: { title: '商品管理' } },
-        { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue'), meta: { title: '商品编辑', crumbs: ['商品管理', '商品编辑'] } },
-        { path: 'inventory', name: 'inventory', component: () => import('./views/InventoryView.vue'), meta: { title: '库存中心' } },
-        { path: 'marketing', name: 'marketing', component: () => import('./views/MarketingView.vue'), meta: { title: '营销工具' } },
-        { path: 'content', name: 'content', component: () => import('./views/ContentView.vue'), meta: { title: '内容管理' } },
-        { path: 'members', name: 'members', component: () => import('./views/MembersView.vue'), meta: { title: '会员' } },
-        { path: 'subscriptions', name: 'subscriptions', component: () => import('./views/SubscriptionsView.vue'), meta: { title: '订阅管理' } },
-        { path: 'queues', name: 'queues', component: () => import('./views/OpsQueuesView.vue'), meta: { title: '运营队列' } },
-        { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { title: '操作日志' } },
-        { path: 'settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '系统设置' } },
+        { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { title: '数据看板', perm: 'dashboard:read' } },
+        { path: 'orders', name: 'orders', component: () => import('./views/OrdersView.vue'), meta: { title: '订单管理', perm: 'trade:read' } },
+        { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情', crumbs: ['订单管理', '订单详情'], perm: 'trade:read' } },
+        { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue'), meta: { title: '退换货', perm: 'rma:read' } },
+        { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue'), meta: { title: '工单', perm: 'ticket:manage' } },
+        { path: 'chat', name: 'chat', component: () => import('./views/ChatView.vue'), meta: { title: '在线客服', perm: 'chat:manage' } },
+        { path: 'products', name: 'products', component: () => import('./views/ProductsView.vue'), meta: { title: '商品管理', perm: 'catalog:read' } },
+        { path: 'product-edit', name: 'product-edit', component: () => import('./views/ProductEditView.vue'), meta: { title: '商品编辑', crumbs: ['商品管理', '商品编辑'], perm: 'catalog:read' } },
+        { path: 'inventory', name: 'inventory', component: () => import('./views/InventoryView.vue'), meta: { title: '库存中心', perm: 'stock:read' } },
+        { path: 'marketing', name: 'marketing', component: () => import('./views/MarketingView.vue'), meta: { title: '营销工具', perm: 'promo:manage' } },
+        { path: 'content', name: 'content', component: () => import('./views/ContentView.vue'), meta: { title: '内容管理', perm: 'content:manage' } },
+        { path: 'members', name: 'members', component: () => import('./views/MembersView.vue'), meta: { title: '会员', perm: 'member:read' } },
+        { path: 'subscriptions', name: 'subscriptions', component: () => import('./views/SubscriptionsView.vue'), meta: { title: '订阅管理', perm: 'member:read' } },
+        { path: 'queues', name: 'queues', component: () => import('./views/OpsQueuesView.vue'), meta: { title: '运营队列', perm: 'ops:queue' } },
+        { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { title: '操作日志', perm: 'log:read' } },
+        { path: 'settings', name: 'settings', component: () => import('./views/SettingsView.vue'), meta: { title: '系统设置', perm: 'settings:manage' } },
+        { path: '403', name: 'forbidden', component: () => import('./views/ForbiddenView.vue'), meta: { title: '无权访问' } },
       ],
     },
-    { path: '/:pathMatch(.*)*', redirect: '/' },
+    { path: '/:pathMatch(.*)*', name: 'not-found', component: () => import('./views/NotFoundView.vue'), meta: { public: true, title: '页面不存在' } },
   ],
 })
 
@@ -57,10 +62,12 @@ router.beforeEach((to) => {
   if (!to.meta.public && !session.user) {
     return { path: '/login', query: { next: to.fullPath } }
   }
-  /* 美甲师（role=4）前端作用域：仅在线客服/登录页可达，其余路由重定向 /chat
-   * （后端已对非 chat 的 admin API 收口 403 "artist scope"，此处对齐防止直接输 URL 白屏） */
-  if (session.user && (session.user.role | 0) === 4 && to.path !== '/chat' && to.path !== '/login') {
-    return { path: '/chat' }
+  /* 声明式权限：meta.perm 未命中 → 无权面。目标为首页（登录默认落地）时
+   * 重定向到第一个有权限的菜单（客服→工单 / 美甲师→在线客服），
+   * 其余直输 URL 落 403 页说明（后端 require_perm 同规则兜底） */
+  if (to.meta.perm && session.user && !session.hasPerm(to.meta.perm)) {
+    if (to.path === '/') return { path: firstAllowedPath(session.hasPerm) }
+    return { path: '/403' }
   }
   return true
 })

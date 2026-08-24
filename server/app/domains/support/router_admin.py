@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import require_admin
+from app.core.deps import require_perm
 from app.domains.support import service
 from app.domains.support.schemas import AssignIn, CloseIn, ReplyIn, TemplateIn, TicketStatusIn
 from app.models import User
@@ -32,31 +32,31 @@ def admin_tickets(
     assignee: int | None = Query(None, description="按指派人 admin_id 过滤"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_perm("ticket:manage")),
     db: Session = Depends(get_db),
 ):
     return service.admin_tickets(db, _parse_statuses(status), category, q, page, size, assignee, priority)
 
 
 @router.post("/api/admin/ops/tickets/{ticket_no}/reply")
-def admin_reply(ticket_no: str, body: ReplyIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_reply(ticket_no: str, body: ReplyIn, admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db)):
     return service.admin_reply(db, admin, ticket_no, body)
 
 
 @router.post("/api/admin/ops/tickets/{ticket_no}/close")
-def admin_close(ticket_no: str, body: CloseIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_close(ticket_no: str, body: CloseIn, admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db)):
     return service.admin_close(db, admin, ticket_no, body)
 
 
 @router.post("/api/admin/ops/tickets/{ticket_no}/assign")
-def admin_assign(ticket_no: str, body: AssignIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def admin_assign(ticket_no: str, body: AssignIn, admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db)):
     return service.admin_assign(db, admin, ticket_no, body)
 
 
 @router.put("/api/admin/support/tickets/{ticket_no}/status")
 def admin_set_status(
     ticket_no: str, body: TicketStatusIn,
-    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+    admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db),
 ):
     return service.admin_set_status(db, admin, ticket_no, body)
 
@@ -67,7 +67,7 @@ def admin_set_status(
 @router.get("/api/admin/ops/templates")
 def admin_templates(
     category: int | None = Query(None),
-    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+    admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db),
 ):
     return service.admin_templates(db, category)
 
@@ -75,7 +75,7 @@ def admin_templates(
 @router.post("/api/admin/ops/templates")
 def admin_template_create(
     body: TemplateIn,
-    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+    admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db),
 ):
     return service.admin_template_save(db, admin, body, None)
 
@@ -83,7 +83,7 @@ def admin_template_create(
 @router.put("/api/admin/ops/templates/{tpl_id}")
 def admin_template_update(
     tpl_id: int, body: TemplateIn,
-    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+    admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db),
 ):
     return service.admin_template_save(db, admin, body, tpl_id)
 
@@ -91,6 +91,6 @@ def admin_template_update(
 @router.delete("/api/admin/ops/templates/{tpl_id}")
 def admin_template_delete(
     tpl_id: int,
-    admin: User = Depends(require_admin), db: Session = Depends(get_db),
+    admin: User = Depends(require_perm("ticket:manage")), db: Session = Depends(get_db),
 ):
     return service.admin_template_delete(db, admin, tpl_id)

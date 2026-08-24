@@ -21,6 +21,7 @@ from app.domains.promo.schemas import (
 )
 from app.services import promo_rules
 from app.services.llm import LLM_SETTING_KEY, mask_key
+from app.services.payment_provider import PAY_SECRET_FIELDS, PAY_SETTING_KEY
 
 _GIFT_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -537,6 +538,17 @@ def list_settings(db: Session) -> dict:
             if isinstance(key, str):
                 masked["api_key"] = mask_key(key)
             masked["api_key_set"] = bool(key)
+            value = masked
+        # payment_config 含 Stripe/PayPal 凭据：四个密钥字段掩码后返回
+        # （形状对齐 trade 域 GET /api/admin/trade/payments/config 的 *_masked 约定）
+        if s.key == PAY_SETTING_KEY and isinstance(value, dict):
+            from app.services.payment_provider import mask_secret
+
+            masked = dict(value)
+            for fk in PAY_SECRET_FIELDS:
+                fv = masked.get(fk)
+                if isinstance(fv, str) and fv:
+                    masked[fk] = mask_secret(fv)
             value = masked
         items.append({
             "key": s.key,

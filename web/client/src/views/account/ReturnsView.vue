@@ -1,9 +1,10 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { req } from '../../api/client'
+import { req, intentNoChannel } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
-import { zulu } from '../../composables/datetime'
+import { fmtDateTime } from '../../composables/datetime'
+import { money as fmtMoney } from '../../composables/format'
 import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
@@ -54,15 +55,15 @@ const RSTEPS = [
   ['In transit', '在途'], ['Received', '收货'], ['Refund', '退款'],
 ]
 const RSTEP_IDX = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
+/* 换货正向流程节点（5 为终态例外；2 为待差价支付节点；[en, zh]） */
+const XSTEPS = [
+  ['Requested', '申请'], ['Approved', '批准'], ['Diff paid', '差价'],
+  ['Shipped', '已发货'], ['Completed', '完成'],
+]
+const XSTEP_IDX = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4 }
 
-const money = (c) => (c === null || c === undefined) ? tt('TBD', '待定') : '$' + (c / 100).toFixed(2)
-function fmt(iso) {
-  if (!iso) return '—'
-  const d = new Date(zulu(iso))
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
+const money = (c) => fmtMoney(c, { nullTbd: true })
+const fmt = fmtDateTime
 
 async function load() {
   loaded.value = false
@@ -117,6 +118,10 @@ async function payDiff(x) {
   payingXNo.value = x.exchange_no
   try {
     const d = await req('POST', '/api/exchanges/' + encodeURIComponent(x.exchange_no) + '/pay-intent')
+    if (intentNoChannel(d)) {
+      ui.toast(i18n.t('pay.unsupported_channel'), 'error')
+      return
+    }
     if (d && d.redirect_url) {
       ui.toast(tt('Redirecting to payment…', '正在跳转支付…'), 'success')
       window.location.href = d.redirect_url
@@ -185,7 +190,7 @@ async function payDiff(x) {
             <button
               v-if="r.status === 0" class="btn btn-ghost btn-sm"
               :class="{ arm: arm.is(r.rma_no), loading: cancelingNo === r.rma_no }"
-              :disabled="!!cancelingNo" @click="arm.hit(r.rma_no, () => cancelRma(r))"
+              :disabled="cancelingNo === r.rma_no" @click="arm.hit(r.rma_no, () => cancelRma(r))"
             >{{ arm.is(r.rma_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Withdraw', '撤销申请') }}</button>
             <a v-if="r.label_url" class="btn btn-secondary btn-sm" :href="r.label_url" target="_blank" rel="noopener">🖨 {{ tt('Print return label', '打印退货标签') }}</a>
           </div>
@@ -197,7 +202,7 @@ async function payDiff(x) {
               <div style="font-size:11px;margin-top:4px" :style="{ color: i <= RSTEP_IDX[r.status] ? 'var(--ink)' : 'var(--gray)', fontWeight: i === RSTEP_IDX[r.status] ? '700' : '' }">{{ tt(s[0], s[1]) }}</div>
             </div>
           </div>
-          <div v-else-if="r.status === 7" style="font-size:12.5px;color:var(--warn);margin-top:8px">⚠️ {{ tt('Partial refund completed', '部分退款已完成') }}{{ r.refunded_at ? ' · ' + fmt(r.refunded_at) : '' }}</div>
+          <div v-else-if="r.status === 7" style="font-size:12.5px;color:var(--warn);margin-top:8px">⚠️ {{ tt('Partial refund completed', '部分退款已完成') }} · {{ money(r.refund_amount) }}{{ r.refunded_at ? ' · ' + fmt(r.refunded_at) : '' }}</div>
           <div v-else style="font-size:12.5px;color:var(--error);margin-top:8px">✖ {{ tt('This request was declined —', '申请已被拒绝，如有疑问请') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></div>
         </div>
       </div>
@@ -212,28 +217,37 @@ async function payDiff(x) {
               <div style="font-size:12px;color:var(--gray)">{{ tt('Order', '订单') }} {{ x.order_no }} · {{ fmt(x.created_at) }}</div>
             </div>
             <span class="tag" :class="xClass(x)">{{ xLabel(x) }}</span>
-            <span v-if="x.price_diff > 0" class="tag tag-pending">{{ tt(`Pay difference $${(x.price_diff / 100).toFixed(2)}`, `需补差价 $${(x.price_diff / 100).toFixed(2)}`) }}</span>
-            <span v-else-if="x.price_diff < 0" class="tag tag-paid">{{ tt(`Refund difference $${(-x.price_diff / 100).toFixed(2)}`, `退差价 $${(-x.price_diff / 100).toFixed(2)}`) }}</span>
+            <span v-if="x.price_diff > 0" class="tag tag-pending">{{ tt(`Pay difference ${money(x.price_diff)}`, `需补差价 ${money(x.price_diff)}`) }}{{ x.qty > 1 ? tt(` (${x.qty} items)`, `（含 ${x.qty} 件）`) : '' }}</span>
+            <span v-else-if="x.price_diff < 0" class="tag tag-paid">{{ tt(`Refund difference ${money(-x.price_diff)}`, `退差价 ${money(-x.price_diff)}`) }}{{ x.qty > 1 ? tt(` (${x.qty} items)`, `（含 ${x.qty} 件）`) : '' }}</span>
           </div>
           <div style="display:flex;gap:10px;align-items:center;margin-top:10px;padding-top:10px;border-top:1px dashed var(--gray-light);font-size:13px;flex-wrap:wrap">
-            <span v-if="x.old_variant" style="color:var(--gray)">{{ x.old_variant.title }}</span>
+            <span v-if="x.old_variant">{{ x.old_variant.title }} <span style="color:var(--gray)">× {{ x.qty }}</span></span>
             <span v-if="x.old_variant && x.new_variant">→</span>
-            <b v-if="x.new_variant">{{ x.new_variant.title }}</b>
-            <span v-if="x.new_variant" style="color:var(--gray)">（{{ '$' + (x.new_variant.price / 100).toFixed(2) }}）</span>
+            <b v-if="x.new_variant">{{ x.new_variant.title }} <span style="color:var(--gray);font-weight:400">× {{ x.qty }}</span></b>
+            <span v-if="x.new_variant" style="color:var(--gray)">（{{ money(x.new_variant.price) }}）</span>
           </div>
           <div v-if="x.status === 2" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
             <button
               class="btn btn-primary btn-sm" :class="{ loading: payingXNo === x.exchange_no }"
-              :disabled="payingXNo === x.exchange_no || !!cancelingNo" @click="payDiff(x)"
-            >💳 {{ tt(`Pay difference $${(x.price_diff / 100).toFixed(2)}`, `支付差价 $${(x.price_diff / 100).toFixed(2)}`) }}</button>
+              :disabled="payingXNo === x.exchange_no" @click="payDiff(x)"
+            >💳 {{ tt(`Pay difference ${money(x.price_diff)}`, `支付差价 ${money(x.price_diff)}`) }}</button>
             <span style="font-size:12.5px;color:var(--gray)">{{ tt('Prefer help?', '需要帮助？') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></span>
           </div>
           <div v-if="x.status === 0" style="margin-top:8px">
             <button
               class="btn btn-ghost btn-sm" :class="{ arm: arm.is(x.exchange_no), loading: cancelingNo === x.exchange_no }"
-              :disabled="!!cancelingNo || !!payingXNo" @click="arm.hit(x.exchange_no, () => cancelExchange(x))"
+              :disabled="cancelingNo === x.exchange_no" @click="arm.hit(x.exchange_no, () => cancelExchange(x))"
             >{{ arm.is(x.exchange_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Withdraw', '撤销申请') }}</button>
           </div>
+
+          <!-- 换货进度条（5 为终态例外，单独提示） -->
+          <div v-if="XSTEP_IDX[x.status] !== undefined" style="display:flex;gap:0;margin-top:8px">
+            <div v-for="(s, i) in XSTEPS" :key="s[1]" style="flex:1;text-align:center">
+              <div :style="{ background: i <= XSTEP_IDX[x.status] ? 'var(--plum)' : 'var(--gray-light)' }" style="height:5px;border-radius:3px;margin:0 3px"></div>
+              <div style="font-size:11px;margin-top:4px" :style="{ color: i <= XSTEP_IDX[x.status] ? 'var(--ink)' : 'var(--gray)', fontWeight: i === XSTEP_IDX[x.status] ? '700' : '' }">{{ tt(s[0], s[1]) }}</div>
+            </div>
+          </div>
+          <div v-else-if="x.status === 5" style="font-size:12.5px;color:var(--error);margin-top:8px">✖ {{ tt('This request was declined —', '申请已被拒绝，如有疑问请') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></div>
         </div>
       </div>
 

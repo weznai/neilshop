@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { req, intentNoChannel } from '../api/client'
 import { i18n } from '../i18n'
 import { useCartStore } from '../stores/cart'
@@ -10,6 +10,7 @@ import { statusLabel, statusTag } from '../composables/orderStatus'
 import { useArmConfirm } from '../composables/useArmConfirm'
 
 const route = useRoute()
+const router = useRouter()
 const cart = useCartStore()
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -26,6 +27,8 @@ const loaded = ref(false)
 const orderError = ref(false)
 const paying = ref(false)
 const copied = ref(false)
+const retryEmail = ref('')
+const noChannel = ref(false)
 
 async function fetchOrder() {
   if (!orderNo.value) return
@@ -35,6 +38,15 @@ async function fetchOrder() {
     order.value = await req('GET', '/api/orders/' + encodeURIComponent(orderNo.value) + q)
     orderError.value = false
   } catch (_) { order.value = null; orderError.value = true }
+}
+
+/* hosted 支付回跳可能不带 email：游客单查询失败时补 email 重查（写入 query 使支付/取消沿用） */
+async function retryLookup() {
+  const em = retryEmail.value.trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) { ui.toast(t('Enter a valid email address', '请输入有效的邮箱地址'), 'error'); return }
+  await router.replace({ query: { ...route.query, email: em } })
+  await fetchOrder()
+  if (order.value && order.value.status === 0) startPolling()
 }
 
 /* 待支付轮询：每 5s 拉一次订单，状态到 1（已支付）或满 12 次（1 分钟）即停；超时停后展示手动刷新按钮；卸载清理 */
@@ -74,6 +86,7 @@ async function payNow() {
     if (provider && provider !== 'mock') ib.provider = provider
     const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intentNoChannel(intent)) {
+      noChannel.value = true
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
       return
     }
@@ -131,6 +144,28 @@ async function copyNo() {
 
 const trackLink = computed(() => '/track?no=' + encodeURIComponent(orderNo.value) + (email.value ? '&email=' + encodeURIComponent(email.value) : ''))
 
+/* 圆环样式/图标随订单状态：0 待付(琥珀) 8 已取消(灰) 9 已退款(红) 其余成功(绿) */
+const ringStyle = computed(() => {
+  const st = order.value && order.value.status
+  const border = st === 8 ? '2px solid var(--gray)'
+    : st === 9 ? '2px solid var(--error)'
+    : st === 0 ? '2px solid rgba(234,170,50,.5)'
+    : '2px solid rgba(62,189,147,.4)'
+  const background = st === 8 ? 'var(--gray-light)'
+    : st === 9 ? 'var(--pale-error)'
+    : st === 0 ? 'var(--pale-warn)'
+    : 'rgba(62,189,147,.12)'
+  return {
+    width: '72px', height: '72px', borderRadius: '50%', margin: '0 auto 18px',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px',
+    background, border,
+  }
+})
+const ringIcon = computed(() => {
+  const st = order.value && order.value.status
+  return st === 0 ? '⏳' : st === 8 ? '✕' : st === 9 ? '↩' : '✓'
+})
+
 onMounted(async () => {
   cart.refresh().catch(() => {})   /* 下单后服务端车已清空，拉平本地 */
   try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
@@ -143,17 +178,14 @@ onMounted(async () => {
 <template>
   <section class="section">
     <div class="container" style="max-width:640px;text-align:center">
-      <div class="ok-ring" :style="{
-        width: '72px', height: '72px', borderRadius: '50%', margin: '0 auto 18px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px',
-        background: order && order.status === 0 ? 'var(--pale-warn)' : 'rgba(62,189,147,.12)',
-        border: order && order.status === 0 ? '2px solid rgba(234,170,50,.5)' : '2px solid rgba(62,189,147,.4)',
-      }">
-        <template v-if="order && order.status === 0">⏳</template><template v-else>✓</template>
+      <div class="ok-ring" :style="ringStyle">
+        {{ ringIcon }}
       </div>
       <h1 style="font-family:var(--font-title);font-size:32px;margin-bottom:8px">
         {{ order && order.status === 0
           ? t('Order placed — payment pending', '订单已提交 · 待支付')
+          : order && order.status === 8 ? t('Order canceled', '订单已取消')
+          : order && order.status === 9 ? t('Order refunded', '订单已退款')
           : orderError ? t('Order placed — confirming…', '订单已提交 · 确认中…')
           : t('Order confirmed!', '下单成功！') }}
       </h1>
@@ -166,11 +198,15 @@ onMounted(async () => {
         <p style="font-size:13.5px;color:var(--ink);margin-bottom:12px">
           {{ t(`Complete payment (${money(order.grand_total)}) to start packing your glam.`, `完成支付（${money(order.grand_total)}）后我们立即开始打包。`) }}
         </p>
+        <p v-if="pollTimedOut" style="font-size:12.5px;color:var(--gray);margin:-4px 0 10px">
+          {{ t('Payment is being confirmed — it usually takes 1–2 minutes. Feel free to refresh later.', '支付确认中，约需 1–2 分钟，可稍后手动刷新。') }}
+        </p>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" :class="{ loading: paying }" :disabled="paying" @click="payNow">
             {{ t(`Pay now · ${money(order.grand_total)}`, `立即支付 · ${money(order.grand_total)}`) }}
           </button>
           <button v-if="pollTimedOut" class="btn btn-secondary" @click="refreshStatus">⟳ {{ t('Refresh status', '刷新状态') }}</button>
+          <router-link v-if="noChannel" to="/contact" class="btn btn-secondary">💬 {{ t('Contact support', '联系客服') }}</router-link>
           <button
             class="btn btn-ghost btn-sm" :class="{ arm: armIs('cancel') }"
             style="margin-left:auto"
@@ -208,6 +244,13 @@ onMounted(async () => {
         <p style="font-size:13.5px;color:var(--gray);margin-bottom:14px">
           {{ t(`We couldn't load order ${orderNo}. Check it from your account orders, or contact support.`, `订单 ${orderNo} 查询失败。可到账户订单中查看，或联系客服处理。`) }}
         </p>
+        <div v-if="!auth.isLoggedIn" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+          <input
+            v-model="retryEmail" class="input" type="email" style="flex:1;min-width:200px"
+            :placeholder="t('Email used at checkout', '下单时使用的邮箱')" @keyup.enter="retryLookup"
+          >
+          <button class="btn btn-primary btn-sm" @click="retryLookup">⟳ {{ t('Look up again', '重新查询') }}</button>
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <router-link v-if="auth.isLoggedIn" to="/account/orders" class="btn btn-secondary btn-sm">📦 {{ t('View my orders', '我的订单') }}</router-link>
           <router-link to="/contact" class="btn btn-secondary btn-sm">💬 {{ t('Contact support', '联系客服') }}</router-link>
@@ -224,7 +267,7 @@ onMounted(async () => {
         <router-link v-else to="/store" class="btn btn-primary">{{ t('Keep shopping', '继续购物') }}</router-link>
         <router-link v-if="auth.isLoggedIn" to="/store" class="btn btn-secondary">{{ t('Keep shopping', '继续购物') }}</router-link>
       </div>
-      <p v-if="auth.isLoggedIn" style="font-size:12.5px;color:var(--gray);margin-top:22px">
+      <p v-if="auth.isLoggedIn && !(order && [8, 9].includes(order.status))" style="font-size:12.5px;color:var(--gray);margin-top:22px">
         🎁 {{ t('You earn Glow points on this order — redeem 100 pts for $1 off next time.', '本单将获得积分奖励——100 分可抵 $1。') }}
       </p>
     </div>

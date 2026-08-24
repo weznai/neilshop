@@ -1,6 +1,7 @@
 <script setup>
+import { computed } from 'vue'
 /* 线性 SVG 图标集（与旧 chrome.js ic() 一致） */
-defineProps({ name: { type: String, required: true }, size: { type: Number, default: 20 } })
+const props = defineProps({ name: { type: String, required: true }, size: { type: Number, default: 20 } })
 
 const PATHS = {
   menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
@@ -25,6 +26,12 @@ const PATHS = {
   'chevron-right': '<polyline points="9 18 15 12 9 6"/>',
   check: '<polyline points="20 6 9 17 4 12"/>',
 }
+
+const path = computed(() => {
+  const p = PATHS[props.name]
+  if (p === undefined && import.meta.env && import.meta.env.DEV) console.warn('[GmIcon] unknown icon name:', props.name)
+  return p || ''
+})
 </script>
 
 <template>
@@ -32,6 +39,6 @@ const PATHS = {
     :width="size" :height="size" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none"
     aria-hidden="true" focusable="false"
-    v-html="PATHS[name] || ''"
+    v-html="path"
   />
 </template>

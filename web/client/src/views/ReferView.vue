@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { req } from '../api/client'
-import { zulu } from '../composables/datetime'
+import { fmtDate } from '../composables/datetime'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { i18n, tt } from '../i18n'
@@ -36,13 +36,11 @@ function refStatus(r) {
   return row ? tt(row[0], row[1]) : (r.status_text || String(r.status))
 }
 
-function fmt(iso) {
-  if (!iso) return '—'
-  const d = new Date(zulu(iso))
-  if (isNaN(d)) return '—'
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())}`
-}
+/* 分享文案（原生 share / 渠道 chips 预设，均带推荐链接） */
+const shareText = computed(() => tt(
+  'Join me at GLOWMAG — sign up with my link and we both get $10 in points 💅',
+  '来 GLOWMAG 和我一起变美——用我的链接注册，双方各得 $10 积分 💅',
+))
 
 async function load() {
   failed.value = false
@@ -61,6 +59,25 @@ async function copyLink() {
   } catch (_) {
     ui.toast(tt('Copy failed — please copy manually: ', '复制失败，请手动复制：') + link.value, 'error')
   }
+}
+
+/* 原生分享（支持则唤起系统分享面板；取消/不支持回落复制链接） */
+async function shareLink() {
+  if (!link.value) return
+  if (navigator.share) {
+    try { await navigator.share({ title: 'GLOWMAG', text: shareText.value, url: link.value }); return } catch (_) { /* 取消/失败回落复制 */ }
+  }
+  copyLink()
+}
+
+/* 渠道 chips：预设文案 + 链接直接带入 */
+function shareTo(ch) {
+  if (!link.value) return
+  const txt = encodeURIComponent(`${shareText.value} ${link.value}`)
+  const u = ch === 'wa' ? 'https://wa.me/?text=' + txt
+    : ch === 'x' ? 'https://twitter.com/intent/tweet?text=' + txt
+    : 'mailto:?subject=' + encodeURIComponent('GLOWMAG') + '&body=' + txt
+  window.open(u, '_blank', 'noopener')
 }
 
 /* 模拟邀请（演示端点，仅 DEV 可见）：登记受邀邮箱 → 状态「已注册」 */
@@ -104,11 +121,17 @@ async function sendInvite() {
         <div v-else-if="!me" class="skeleton" style="height:120px;border-radius:14px" />
         <template v-else>
           <!-- 推荐码 + 链接 -->
-          <div class="card" style="padding:20px;display:flex;gap:10px;align-items:center;max-width:500px;margin:0 auto 18px;text-align:left">
-            <code style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <div class="card" style="padding:20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;max-width:500px;margin:0 auto 12px;text-align:left">
+            <code style="flex:1;min-width:160px;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
               {{ link || 'glowmag.com/r/…' }}
             </code>
             <button class="btn btn-primary btn-sm" @click="copyLink">{{ copyOk ? tt('Copied ✓', '已复制 ✓') : tt('Copy link', '复制链接') }}</button>
+            <button class="btn btn-secondary btn-sm" @click="shareLink">📤 {{ tt('Share', '分享') }}</button>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:18px">
+            <button class="btn btn-secondary btn-sm" @click="shareTo('wa')">💬 WhatsApp</button>
+            <button class="btn btn-secondary btn-sm" @click="shareTo('x')">𝕏 X</button>
+            <button class="btn btn-secondary btn-sm" @click="shareTo('mail')">✉️ Email</button>
           </div>
           <div style="font-size:12px;color:var(--gray);margin-bottom:18px">
             {{ tt('Referral code', '推荐码') }} <b>{{ me.code }}</b>{{ tt(' (carried in the link, applied at friend signup)', '（链接自动携带，好友注册时生效）') }}
@@ -137,7 +160,7 @@ async function sendInvite() {
           <div v-if="(me.invited || []).length" class="card" style="padding:18px;max-width:500px;margin:0 auto;text-align:left">
             <div style="font-size:13.5px;font-weight:700;margin-bottom:6px">{{ tt('My invites', '我的邀请') }}</div>
             <div v-for="(r, i) in me.invited" :key="i" style="display:flex;justify-content:space-between;align-items:center;font-size:13px;padding:9px 0;border-bottom:1px dashed var(--gray-light)">
-              <span>{{ r.email_masked }}<span style="color:var(--gray)"> · {{ fmt(r.created_at) }}</span></span>
+              <span>{{ r.email_masked }}<span style="color:var(--gray)"> · {{ fmtDate(r.created_at) }}</span></span>
               <span class="tag" :class="r.status === 3 ? 'tag-paid' : r.status === 4 ? 'tag-error' : 'tag-pending'">{{ refStatus(r) }}</span>
             </div>
           </div>

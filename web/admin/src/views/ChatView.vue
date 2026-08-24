@@ -1,7 +1,7 @@
 <script setup>
 /* 在线客服聊天工作台：三渠道会话列表 + 实时对话（4s 轮询）+ 快捷模板回复 + 接单/关闭
  * 渠道 0 AI / 1 人工 / 2 美甲师；美甲师账号（role=4）默认锁定「我的会话」 */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -23,10 +23,13 @@ const loadErr = ref(false)
 const errMsg = ref('')
 const pollFail = ref(false)      /* 轮询失败 → 顶栏「连接中断」横幅，恢复后自动清除 */
 
-/* 筛选 URL 同步：channel(all/0/1/2) / status(0 进行中 1 已关闭) / mine / q / page */
+/* 筛选 URL 同步：channel(all/0/1/2) / status(0 进行中 1 已关闭) / mine / q / page
+ * 美甲师（role=4）mine 默认 '1'（URL 无值/被清时回落我的会话，不可解除） */
 const st = reactive({ channel: 'all', status: '0', q: '', mine: '', page: 1 })
-useQuerySync(st, { nums: ['page'], defaults: { channel: 'all', status: '0', q: '', mine: '', page: 1 } })
-if (isArtist.value) st.mine = '1' /* 美甲师只看自己的会话（不可解除） */
+useQuerySync(st, { nums: ['page'], defaults: { channel: 'all', status: '0', q: '', mine: isArtist.value ? '1' : '', page: 1 } })
+if (isArtist.value && st.mine !== '1') st.mine = '1'
+/* watch 兜底：外部导航清掉 mine 键时回落默认，onPop 回填 '' 也会被强制拉回 '1' */
+watch(() => st.mine, () => { if (isArtist.value && st.mine !== '1') st.mine = '1' })
 
 const CHANNEL = { 0: 'AI', 1: '人工', 2: '美甲师' }
 const TABS = [
@@ -63,6 +66,8 @@ async function load(p = 1, quiet = false) {
     pendingTotal.value = d.pending_total
     st.page = p
     pollFail.value = false
+    /* 轮询/翻页后页码越界（会话被关闭致数据收缩）：空页且 total>0 且不在第 1 页 → 回第 1 页重拉（防递归：第 1 页不再回拉） */
+    if (!items.value.length && total.value > 0 && st.page > 1) { load(1, quiet); return }
   } catch (e) {
     if (quiet) {
       console.warn('会话列表轮询失败：', e.message || e)
@@ -197,12 +202,18 @@ async function saveTpl() {
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
   finally { tplBusy.value = false }
 }
-async function delTpl(t) {
-  if (tplBusy.value) return
+/* 删除模板：danger 确认（防误触；删除后下拉与 slash 菜单数据源同步刷新） */
+const delTplDlg = ref(false)
+const delTplTarget = ref(null)
+function askDelTpl(t) { delTplTarget.value = t; delTplDlg.value = true }
+async function delTpl() {
+  const t = delTplTarget.value
+  if (tplBusy.value || !t) return
   tplBusy.value = true
   try {
     await req('DELETE', '/api/admin/ops/templates/' + t.id)
     toast('模板已删除 ✓', 'success')
+    delTplDlg.value = false
     await reloadTplList()
     templatesLoaded.value = false
     slashAllLoaded.value = false /* slash 菜单数据源同步刷新 */
@@ -506,7 +517,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
       <option value="">全部会话</option>
       <option value="1">我的会话</option>
     </select>
-    <input v-model="st.q" class="input" style="width:200px;height:38px" placeholder="会话号 / 邮箱 / 姓名" @keydown.enter="search()">
+    <input v-model="st.q" class="input js-search" style="width:200px;height:38px" placeholder="会话号 / 邮箱 / 姓名" @keydown.enter="search()">
     <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
   </div>
 
@@ -531,7 +542,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
               <span class="cw-time">{{ dt(c.last_message_at) }}</span>
             </div>
             <div class="cw-preview">
-              <template v-if="c.last_message">{{ c.last_message.sender === 1 ? '' : '↩ ' }}{{ c.last_message.preview }}</template>
+              <template v-if="c.last_message">{{ [2, 4, 5].includes(c.last_message.sender) ? '↩ ' : '' }}{{ c.last_message.preview }}</template>
               <template v-else>（暂无消息）</template>
             </div>
             <div class="cw-meta">
@@ -641,7 +652,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
             <b>{{ t.title }}</b>
             <span v-if="!t.active" class="tag tag-pending">停用</span>
             <span style="flex:1"></span>
-            <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="tplBusy" @click.stop="delTpl(t)">删</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="tplBusy" @click.stop="askDelTpl(t)">删</button>
           </div>
           <div v-if="!tplList.length" class="empty-line" style="text-align:center;padding:16px 0">（暂无模板）</div>
         </div>
@@ -757,6 +768,18 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
     :busy="busy"
     @confirm="doTake"
     @close="takeDlg = false"
+  />
+
+  <!-- 删除快捷模板确认（danger） -->
+  <ConfirmDialog
+    :open="delTplDlg"
+    title="删除快捷模板"
+    :body="`删除模板「${delTplTarget?.title || ''}」？删除后不可恢复，回复下拉与 / 菜单将同步移除。`"
+    danger
+    confirm-text="删除"
+    :busy="tplBusy"
+    @confirm="delTpl"
+    @close="delTplDlg = false"
   />
 
   <!-- 未保存修改丢弃确认（模板编辑 / 快捷问题弹窗共用） -->
