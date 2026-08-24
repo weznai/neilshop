@@ -30,7 +30,7 @@ body{background:var(--bg-page);font-size:13.5px;line-height:1.55}
 .anav a.on{box-shadow:inset 3px 0 0 var(--plum);font-weight:600}
 .anav .sep{border-top:1px solid var(--gray-light);margin:7px 12px}
 /* 分组小节标题（交易/商品/运营/系统）：小号字距标签，折叠态隐藏 */
-.anav .group{font-size:10.5px;letter-spacing:2.5px;color:var(--gray);padding:20px 12px 3px;user-select:none;white-space:nowrap}
+.anav .group{font-size:10.5px;letter-spacing:2.5px;color:var(--gray);padding:9px 12px 3px;user-select:none;white-space:nowrap}
 .main{padding:24px 28px;min-width:0}
 /* 内容拉满主区宽度（工作台表格/双栏聊天利用全屏空间）；.modal（fixed 全屏遮罩）本就不受文档流影响，无需排除 */
 .panel{background:#fff;border-radius:12px;box-shadow:var(--shadow-card);padding:20px;margin-bottom:20px}
