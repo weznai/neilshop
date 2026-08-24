@@ -5,6 +5,7 @@ import { errMessage, intentNoChannel, req } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { fmtDate } from '../composables/datetime'
+import { createOrderIntent } from '../composables/useOrderPay'
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -53,6 +54,11 @@ onMounted(async () => {
         if (saved.email) purchaser.value = saved.email
         result.value = { code: saved.code || '', order_no: saved.order_no, amount_cents: saved.amount_cents, status: 0 }
         paid.value = false
+      } else if (o && o.status === 1) {
+        if (saved.email) purchaser.value = saved.email
+        result.value = { code: saved.code || '', order_no: saved.order_no, amount_cents: saved.amount_cents, status: 1 }
+        paid.value = true
+        clearGcDraft()
       } else {
         clearGcDraft()
       }
@@ -96,12 +102,8 @@ async function payAndActivate() {
   paying.value = true
   const em = purchaser.value.trim()
   try {
-    /* provider 沿用结算页选择（localStorage gm_pay_provider，与 SuccessView 同读取方式） */
-    let provider = ''
-    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-    const ib = { order_no: result.value.order_no, email: em }
-    if (provider && provider !== 'mock') ib.provider = provider
-    const intent = await req('POST', '/api/payments/create-intent', ib)
+    /* provider 沿用结算页选择（createOrderIntent 内读 gm_pay_provider 并与 methods 对账，下线自动回落默认） */
+    const intent = await createOrderIntent(result.value.order_no, em)
     if (intent && intent.redirect_url) {
       window.location.href = intent.redirect_url
       return
@@ -130,7 +132,16 @@ const balCode = ref('')
 const balBusy = ref(false)
 const balResult = ref(null)
 const balErr = ref('')
+const GC_ST = {
+  0: ['gc.st.0', 'tag-pending'],
+  1: ['gc.check.active', 'tag-paid'],
+  2: ['gc.st.2', 'tag-error'],
+  3: ['gc.st.3', 'tag-done'],
+  4: ['gc.st.4', 'tag-error'],
+}
+const balSt = computed(() => GC_ST[balResult.value && balResult.value.status] || ['', 'tag-pending'])
 async function checkBalance() {
+  if (balBusy.value) return
   const c = balCode.value.trim().toUpperCase()
   balErr.value = ''
   if (!c) { balErr.value = i18n.t('gc.check.enter'); return }
@@ -259,7 +270,9 @@ const mailto = computed(() => {
         <div v-if="balResult" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px;font-size:14px">
           <b>{{ balCode.trim().toUpperCase() }}</b>
           <span>· {{ i18n.t('gc.check.balance') }} <b style="color:var(--plum)">{{ money(balResult.balance_cents) }}</b></span>
-          <span>· {{ i18n.t('gc.check.status') }} <span class="tag tag-paid">{{ i18n.t('gc.check.active') }}</span></span>
+          <span>· {{ i18n.t('gc.check.status') }} <span class="tag" :class="balSt[1]">{{ balSt[0] || balResult.status }}</span>
+            <template v-if="balResult.status !== 1"> · <span style="color:var(--error)">{{ i18n.t('gc.st.nopay') }}</span></template>
+          </span>
           <span>· {{ balResult.expires_at ? i18n.t('gc.check.expires', fmtDate(balResult.expires_at, '')) : i18n.t('gc.check.noExpiry') }}</span>
         </div>
       </div>

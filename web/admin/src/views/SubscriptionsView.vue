@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -22,10 +23,14 @@ const loadErr = ref(false)
 const errMsg = ref('')        /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 const rowBusy = ref(0)        /* 按行隔离：正在操作的行 id（0=空闲），仅该行按钮 loading */
 
-/* 筛选/分页 URL 同步：status '' 全部 / 1 活跃 / 2 暂停 / 5 已取消 */
-const st = reactive({ status: '', q: '', page: 1 })
-useQuerySync(st, { nums: ['page'], defaults: { status: '', q: '', page: 1 } })
+/* 筛选/分页 URL 同步：status '' 全部 / 1 活跃 / 2 暂停 / 5 已取消；
+ * q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车时写回 URL（做法同 OrdersView） */
+const route = useRoute()
+const router = useRouter()
+const st = reactive({ status: '', page: 1 })
+useQuerySync(st, { nums: ['page'], defaults: { status: '', page: 1 }, onPop: () => load(st.page) })
 if (!['', '1', '2', '5'].includes(st.status)) st.status = ''
+const q = ref(typeof route.query.q === 'string' ? route.query.q : '')
 
 const TABS = [['', '全部'], ['1', '活跃'], ['2', '暂停'], ['5', '已取消']]
 /* 状态 tag 视觉：1 绿（生效）/ 2 黄（暂停）/ 5 红（取消），文案直显后端 status_text */
@@ -44,7 +49,7 @@ async function load(p = 1) {
   try {
     const params = new URLSearchParams({ page: p, size: SIZE })
     if (st.status !== '') params.set('status', st.status)
-    const s = st.q.trim()
+    const s = q.value.trim()
     if (s) params.set('q', s)   /* 后端已支持 q 服务端搜索（邮箱），无需本地兜底 */
     const d = await req('GET', '/api/admin/member/subscriptions?' + params)
     if (token !== reqSeq) return
@@ -63,9 +68,31 @@ async function load(p = 1) {
 onMounted(() => load(st.page))
 
 function setTab(v) { if (st.status !== v) { st.status = v; load(1) } }
-function search() { load(1) }
+/* 顶栏搜索：回车/按钮触发才写回 URL（一次性 replace 同批清掉 page 键，防 useQuerySync 的 deep watcher
+ * 基于旧 query 再发一次 replace 把刚写入的 q 覆盖丢失，做法同 ReturnsView）；页码键被清除时其
+ * query-watcher 已重置页码并经 onPop 重载，否则手动重载 */
+async function search() {
+  const kw = q.value.trim()
+  q.value = kw   /* 归一化输入与 URL/请求一致 */
+  const hadPageKey = route.query.page !== undefined
+  if ((route.query.q || '') !== kw || hadPageKey) {
+    await router.replace({ query: { ...route.query, q: kw || undefined, page: undefined } })
+  }
+  st.page = 1
+  if (!hadPageKey) load(1)
+}
+/* 浏览器回退/前进：q 变化只同步回本地 ref 并重载（不触发导航）；页码键由 useQuerySync 的
+ * query-watcher 先行回落默认（其 watch 创建早于本处，同批 flush 先执行） */
+watch(() => route.query.q, (v) => {
+  if (route.name !== 'subscriptions') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const s = typeof v === 'string' ? v : ''
+  if (s !== q.value) {
+    q.value = s
+    load(st.page)
+  }
+})
 /* 空态文案：任一筛选生效→未匹配，否则暂无 */
-const filtered = computed(() => st.q.trim() !== '' || st.status !== '')
+const filtered = computed(() => q.value.trim() !== '' || st.status !== '')
 
 /* ===== 代操作：暂停（可选恢复日期）/ 恢复 / 取消（可选原因枚举），409/404 toast 展示 detail 原串加中文前缀 ===== */
 const target = ref(null)      /* 当前操作的行 */
@@ -149,7 +176,7 @@ async function cancelConfirm() {
       <span class="page-sub">共 {{ total }} 条订阅</span>
     </div>
     <div class="filter-bar">
-      <input v-model="st.q" class="input js-search" style="width:220px" placeholder="搜订阅邮箱" @keydown.enter="search()">
+      <input v-model="q" class="input js-search" style="width:220px" placeholder="搜订阅邮箱" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
     </div>
   </div>

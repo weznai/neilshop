@@ -34,11 +34,12 @@ export const useUiStore = defineStore('ui', {
     },
     openModal(id) { this.openModalId = id },
     closeModal() { this.openModalId = null },
-    openCart() { this.cartDrawer = true },
+    /* 浮层互斥：开任一抽屉/搜索/移动导航前先关其余两个（状态字段结构不变） */
+    openCart() { this.mnavOpen = false; this.searchOpen = false; this.cartDrawer = true },
     closeCart() { this.cartDrawer = false },
-    openMnav() { this.mnavOpen = true },
+    openMnav() { this.cartDrawer = false; this.searchOpen = false; this.mnavOpen = true },
     closeMnav() { this.mnavOpen = false },
-    openSearch() { this.searchOpen = true },
+    openSearch() { this.cartDrawer = false; this.mnavOpen = false; this.searchOpen = true },
     closeSearch() { this.searchOpen = false },
     /* ESC 委托（App 根挂 keydown）：仅关抽屉/搜索/移动导航/模态；
        chatOpen/popupsOpen 由各组件自管（ESC 优先关上面的浮层，见 ChatWidget） */

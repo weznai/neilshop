@@ -19,9 +19,10 @@ const TABS = [
   ['lists', '营销名单'],
 ]
 
-/* tab/分页/lists 二级 sub 入 URL（单 page 共用，切换重置页码）；其余筛选为页内状态不污染 URL */
+/* tab/分页/lists 二级 sub 入 URL（单 page 共用，切换重置页码）；其余筛选为页内状态不污染 URL
+ * onPop：回退/前进时 useQuerySync 已按 query 回填 tab/sub/page，load 按 curKey 分发重拉当前槽 */
 const st = reactive({ tab: 'abandoned', page: 1, sub: 'nl' })
-useQuerySync(st, { nums: ['page'], defaults: { tab: 'abandoned', page: 1, sub: 'nl' } })
+useQuerySync(st, { nums: ['page'], defaults: { tab: 'abandoned', page: 1, sub: 'nl' }, onPop: () => load(st.page) })
 if (!TABS.some(([k]) => k === st.tab)) st.tab = 'abandoned'
 if (!['nl', 'sn'].includes(st.sub)) st.sub = 'nl'
 

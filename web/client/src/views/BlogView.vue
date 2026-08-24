@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { errMessage, req } from '../api/client'
 import { i18n, tt } from '../i18n'
@@ -90,6 +90,12 @@ function summary(p) {
   return s
 }
 onMounted(() => load(true))
+/* 页脚 Blog 等同 path 跳转仅 query 变化（组件不重挂载）：外部 tag 变化同步内部态并重载；
+ * pickTag 自身已 replace URL，此处值相等时为 no-op 不触发重复请求 */
+watch(() => route.query.tag, (v) => {
+  const t = String(v || '')
+  if (t !== tag.value) { tag.value = t; load(true) }
+})
 
 /* 空态订阅更新（复用页脚 newsletter 端点） */
 const subEmail = ref('')

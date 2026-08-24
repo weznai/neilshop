@@ -280,11 +280,11 @@ onMounted(() => {
         <div class="lk-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div class="field">
             <label>{{ tt('Email', '邮箱') }}</label>
-            <input v-model="lookup.email" class="input" type="email" autocomplete="email" :disabled="auth.isLoggedIn || tickets !== null || lookupBusy" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')">
+            <input v-model="lookup.email" class="input" type="email" autocomplete="email" :disabled="auth.isLoggedIn || lookupBusy" :placeholder="tt('Email used on the ticket', '创建工单时使用的邮箱')">
           </div>
           <div v-if="!auth.isLoggedIn" class="field">
             <label>{{ tt('Ticket number', '工单号') }}</label>
-            <input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX" autocomplete="off" :disabled="tickets !== null || lookupBusy">
+            <input v-model="lookup.ticket_no" class="input" placeholder="TK260728XXXX" autocomplete="off" :disabled="lookupBusy">
           </div>
         </div>
         <p v-if="auth.isLoggedIn" style="font-size:12.5px;color:var(--gray);margin:6px 0 0">

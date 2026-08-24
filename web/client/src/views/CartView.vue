@@ -162,7 +162,8 @@ const bundleHint = computed(() => i18n.t(pressQty.value >= 3
   ? 'cart.bundle.3'
   : pressQty.value === 2 ? 'cart.bundle.2' : pressQty.value === 1 ? 'cart.bundle.1' : 'cart.bundle.0'))
 
-const checkoutLink = computed(() => '/checkout' + (appliedCode.value ? `?code=${encodeURIComponent(appliedCode.value)}` : ''))
+/* 结算链接仅在当前 preview 判定码有效时携带 ?code=（无效码不带，避免 checkout 反复 409 提示） */
+const checkoutLink = computed(() => '/checkout' + (appliedCode.value && pv.value && pv.value.code_valid ? `?code=${encodeURIComponent(appliedCode.value)}` : ''))
 const hasOos = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0 || i.stockStatus === 'out'))
 const hasOver = computed(() => cart.items.some((i) => i.stock > 0 && i.qty > i.stock))
 const hasInactive = computed(() => cart.items.some((i) => i.inactive))

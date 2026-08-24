@@ -2,7 +2,6 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { i18n } from '../i18n'
-import { catalogById } from '../data/catalog'
 import { productDetail, wishlistAdd, wishlistHas, wishlistRemove } from '../api/client'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
@@ -21,9 +20,9 @@ const router = useRouter()
 const PLACEHOLDER = 'https://placehold.co/400x400/E8B4B8/552338?text=%E2%9C%A8'
 
 const href = computed(() => `/product?id=${props.p.id}`)
-const local = computed(() => catalogById(props.p.id))
 const zh = computed(() => i18n.lang === 'zh')
-const title = computed(() => (zh.value && local.value && local.value.titleZh) || props.p.title)
+/* 统一展示 p.title：zh 列表/详情由服务端 locale 返回翻译，不再按 id 耦合种子译名 */
+const title = computed(() => props.p.title)
 const minCents = computed(() => props.p.price_min ?? props.p.price ?? 0)
 const price = computed(() => (minCents.value / 100).toFixed(2))
 const hasRange = computed(() => (props.p.price_max ?? 0) > minCents.value)

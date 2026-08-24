@@ -79,9 +79,10 @@ def _detail(db: Session, order: Order) -> dict:
 
 def list_orders(
     db: Session, user: User, status: Optional[int], page: int,
+    q: Optional[str] = None,
 ) -> dict:
     orders, total = repo.paginate_orders(
-        db, user_id=user.id, status=status, page=page, per_page=PER_PAGE,
+        db, user_id=user.id, status=status, q=q, page=page, per_page=PER_PAGE,
     )
     return {
         "items": [_brief(o) for o in orders],

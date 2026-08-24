@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { i18n, tt } from '../i18n'
@@ -105,6 +105,23 @@ watch(q, () => {
   qTimer = setTimeout(syncUrl, 400)
 })
 watch(() => i18n.lang, () => { open.value = -1 })
+/* 外部 query 变化（页脚链接等，组件不重挂载）同步内部态；shown 为 computed 自动重算。
+ * 内部操作经 syncUrl 写 URL 后回读，值相等时 no-op */
+watch(() => route.query.cat, (v) => {
+  const n = parseInt(v, 10)
+  const c = Number.isFinite(n) && n >= 1 && n <= 6 ? n : 0
+  if (c !== cat.value) { cat.value = c; open.value = -1 }
+})
+watch(() => route.query.q, (v) => {
+  const t = String(v || '')
+  if (t !== q.value) q.value = t
+})
+
+/* 吸顶 chips 让位滚动收缩后的 56px 顶栏（与 header scrolled 阈值同步） */
+const catsNarrow = ref(false)
+function onCatsScroll() { catsNarrow.value = window.scrollY > 10 }
+onMounted(() => { onCatsScroll(); window.addEventListener('scroll', onCatsScroll, { passive: true }) })
+onUnmounted(() => window.removeEventListener('scroll', onCatsScroll))
 
 /* FAQPage 结构化数据（gm:seo 事件通道）：加载失败/空列表不注入（mainEntity 为空时跳过） */
 function stripMd(s) {
@@ -151,7 +168,7 @@ async function loadFaqs() {
         <button v-if="q" class="faq-clear" :aria-label="i18n.t('faq.clear')" @click="q = ''">✕</button>
       </div>
 
-      <div class="faq-cats">
+      <div class="faq-cats" :class="{ narrow: catsNarrow }">
         <button
           v-for="[c, key, icon] in CATS" :key="c"
           class="trend-chip" :class="{ on: cat === c }"
@@ -219,8 +236,10 @@ async function loadFaqs() {
 /* 结果计数 */
 .faq-count { font-size: 12.5px; color: var(--gray); margin: 0 0 14px; }
 
-/* 分类 chips 吸顶（top 起步 64px，transition 与 header 收缩 .25s ease-out 同步，cream 底防透） */
+/* 分类 chips 吸顶（top 起步 64px，transition 与 header 收缩 .25s ease-out 同步，cream 底防透）；
+   header 滚动收缩为 56px 时同步让位，防 8px 缝隙透出内容 */
 .faq-cats { position: sticky; top: 64px; z-index: 90; background: var(--cream); padding: 8px 0 10px; margin-bottom: 6px; display: flex; gap: 8px; flex-wrap: wrap; transition: top .25s ease-out; }
+.faq-cats.narrow { top: 56px; }
 
 /* 空态热门问题 chips（单条超长省略，点击填入搜索框） */
 .faq-hot { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin: 0 0 16px; }

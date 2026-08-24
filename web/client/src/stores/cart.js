@@ -1,4 +1,5 @@
-/* 购物车 store：服务端权威 —— add/setQty/remove 全部先写服务端再以视图刷新本地渲染缓存
+/* 购物车 store：服务端权威 —— add/remove 先写服务端再以视图刷新本地渲染缓存；
+ * setQty 乐观更新（立即改本地行再 PUT，失败回滚点击前值），响应后按服务端视图校准
  * （localStorage gm_cart 仅作渲染缓存快照，供下次进入前先画一帧） */
 import { defineStore } from 'pinia'
 import { productDetail, req } from '../api/client'
@@ -89,8 +90,11 @@ export const useCartStore = defineStore('cart', {
       try {
         const d = await productDetail(pid)
         const vs = d.variants || []
-        const v = vs.find((x) => (x.stock ?? 0) > 0 && x.stock_status !== 'out') || vs[0]
-        if (!v) throw new Error('no variant')
+        const v = vs.find((x) => (x.stock ?? 0) > 0 && x.stock_status !== 'out')
+        if (!v) {
+          if (ui) ui.toast(i18n.t('cart.soldOut'), 'error')
+          return false
+        }
         return this.add(v.id, qty || 1, ui)
       } catch (e) { this._err(e, ui); return false }
     },
@@ -111,10 +115,18 @@ export const useCartStore = defineStore('cart', {
           qty = max
           if (it && it.qty === qty) return
         }
-        const view = await req('PUT', '/api/cart/items/' + variantId, { qty })
-        if (seq !== _qtySeq) return /* 已有更新的改量在途，丢弃过期响应 */
-        this._apply(view)
-        this.removed = null
+        /* 乐观更新：立即把本地行改成目标数量再发 PUT（慢网连点不丢增量），失败回滚点击前值 */
+        const prev = it ? it.qty : 0
+        if (it) { it.qty = qty; writeCartCache(this.items) }
+        try {
+          const view = await req('PUT', '/api/cart/items/' + variantId, { qty })
+          if (seq !== _qtySeq) return /* 已有更新的改量在途，丢弃过期响应 */
+          this._apply(view)
+          this.removed = null
+        } catch (e2) {
+          if (seq === _qtySeq && it) { it.qty = prev; writeCartCache(this.items) }
+          throw e2
+        }
       } catch (e) {
         if (e && e.status === 404) { /* 行已被服务端剔除（如变体删除）→ 刷新对齐 */ }
         this._err(e, ui)

@@ -131,9 +131,20 @@ async function copyCode(code, popupId) {
   ui.toast((zh() ? '已复制 ' : 'Copied ') + code, 'success')
 }
 
+/* 浮层互斥：抽屉/搜索/移动导航任一开启时不弹营销弹窗 */
+function overlayBusy() { return ui.cartDrawer || ui.searchOpen || ui.mnavOpen }
+let welcomeRetried = false
 function fireWelcome(p) {
   if (seenToday(p) || showExit.value) return false
   if (readConsent().mar === false) return false
+  if (overlayBusy()) {
+    /* 欢迎弹窗顺延重试一次（10s 后），仍被占用则放弃本次 */
+    if (!welcomeRetried) {
+      welcomeRetried = true
+      setTimeout(() => { if (!showExit.value) fireWelcome(p) }, 10000)
+    }
+    return false
+  }
   welcome.value = p
   markSeen(p)
   showWelcome.value = true
@@ -159,6 +170,8 @@ function onExitOut(e) {
   if (readConsent().mar === false) return
   const p = exitPop.value
   if (!p || exitSeen() || showWelcome.value) return
+  /* 抽屉/搜索/移动导航打开时直接放弃本次退出挽留（不标记已看，下次退出仍可触发） */
+  if (overlayBusy()) return
   markExitSeen()
   showExit.value = true
   report('shown', p.id)

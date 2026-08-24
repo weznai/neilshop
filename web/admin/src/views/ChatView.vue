@@ -2,6 +2,7 @@
 /* 在线客服聊天工作台：三渠道会话列表 + 实时对话（4s 轮询）+ 快捷模板回复 + 接单/关闭
  * 渠道 0 AI / 1 人工 / 2 美甲师；美甲师账号（role=4）默认锁定「我的会话」 */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -23,14 +24,6 @@ const loadErr = ref(false)
 const errMsg = ref('')
 const pollFail = ref(false)      /* 轮询失败 → 顶栏「连接中断」横幅，恢复后自动清除 */
 
-/* 筛选 URL 同步：channel(all/0/1/2) / status(0 进行中 1 已关闭) / mine / q / page
- * 美甲师（role=4）mine 默认 '1'（URL 无值/被清时回落我的会话，不可解除） */
-const st = reactive({ channel: 'all', status: '0', q: '', mine: '', page: 1 })
-useQuerySync(st, { nums: ['page'], defaults: { channel: 'all', status: '0', q: '', mine: isArtist.value ? '1' : '', page: 1 } })
-if (isArtist.value && st.mine !== '1') st.mine = '1'
-/* watch 兜底：外部导航清掉 mine 键时回落默认，onPop 回填 '' 也会被强制拉回 '1' */
-watch(() => st.mine, () => { if (isArtist.value && st.mine !== '1') st.mine = '1' })
-
 const CHANNEL = { 0: 'AI', 1: '人工', 2: '美甲师' }
 const TABS = [
   ['all', '全部', null, '💬'],
@@ -38,6 +31,21 @@ const TABS = [
   ['2', '美甲师', 2, '💅'],
   ['0', 'AI', 0, '🤖'],
 ]
+
+/* 筛选 URL 同步：channel(all/0/1/2) / status(0 进行中 1 已关闭) / mine / page
+ * 美甲师（role=4）mine 默认 '1'（URL 无值/被清时回落我的会话，不可解除）；
+ * q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车时写回 URL（做法同 OrdersView） */
+const route = useRoute()
+const router = useRouter()
+const st = reactive({ channel: 'all', status: '0', mine: '', page: 1 })
+useQuerySync(st, { nums: ['page'], defaults: { channel: 'all', status: '0', mine: isArtist.value ? '1' : '', page: 1 }, onPop: () => load(st.page) })
+/* 脏 query 白名单清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
+if (!TABS.some(([k]) => k === st.channel)) st.channel = 'all'
+if (!['0', '1'].includes(st.status)) st.status = '0'
+if (isArtist.value && st.mine !== '1') st.mine = '1'
+/* watch 兜底：外部导航清掉 mine 键时回落默认，onPop 回填 '' 也会被强制拉回 '1' */
+watch(() => st.mine, () => { if (isArtist.value && st.mine !== '1') st.mine = '1' })
+const q = ref(typeof route.query.q === 'string' ? route.query.q : '')
 
 const active = ref(null) /* 会话详情（含 messages） */
 const reply = ref('')
@@ -51,7 +59,7 @@ function buildUrl(p) {
   if (ch !== null && ch !== undefined) params.set('channel', ch)
   if (st.status !== '') params.set('status', st.status)
   if (st.mine === '1' && session.user?.id) params.set('mine', 1)
-  const s = st.q.trim()
+  const s = q.value.trim()
   if (s) params.set('q', s)
   return '/api/admin/chat/conversations?' + params
 }
@@ -140,8 +148,31 @@ function scrollThread(follow) {
 
 function setTab(k) { if (st.channel !== k) { st.channel = k; load(1) } }
 function setStatus(v) { if (st.status !== v) { st.status = v; load(1) } }
-function search() { load(1) }
-const filtered = computed(() => st.channel !== 'all' || st.status !== '0' || st.mine !== '' || st.q.trim() !== '')
+/* 顶栏搜索：回车/按钮触发才写回 URL（一次性 replace 同批清掉 page 键，防 useQuerySync 的 deep watcher
+ * 基于旧 query 再发一次 replace 把刚写入的 q 覆盖丢失，做法同 ReturnsView）；页码键被清除时其
+ * query-watcher 已重置页码并经 onPop 重载，否则手动重载 */
+async function search() {
+  const kw = q.value.trim()
+  q.value = kw   /* 归一化输入与 URL/请求一致 */
+  const hadPageKey = route.query.page !== undefined
+  if ((route.query.q || '') !== kw || hadPageKey) {
+    await router.replace({ query: { ...route.query, q: kw || undefined, page: undefined } })
+  }
+  st.page = 1
+  if (!hadPageKey) load(1)
+}
+/* 浏览器回退/前进：q 变化只同步回本地 ref 并重载（不触发导航）；页码键由 useQuerySync 的
+ * query-watcher 先行回落默认（其 watch 创建早于本处，同批 flush 先执行）；
+ * 轮询每 tick 读 st 当前筛选/页码，pop 后自动跟随，无需重置轮询 */
+watch(() => route.query.q, (v) => {
+  if (route.name !== 'chat') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const s = typeof v === 'string' ? v : ''
+  if (s !== q.value) {
+    q.value = s
+    load(st.page)
+  }
+})
+const filtered = computed(() => st.channel !== 'all' || st.status !== '0' || st.mine !== '' || q.value.trim() !== '')
 
 /* ===== 快捷回复模板（下拉与 slash 菜单共用同一数据源：admin 端点过滤启用项） ===== */
 const templates = ref([])
@@ -488,7 +519,7 @@ const pendingN = computed(() => pendingTotal.value ?? items.value.filter((c) => 
 /* ===== 4s 轮询：列表红点 + 当前会话新消息（页面可见时） ===== */
 let timer = null
 onMounted(() => {
-  load(1)
+  load(st.page)
   timer = setInterval(() => {
     if (document.visibilityState === 'visible') { load(st.page, true); refreshActive(true) }
   }, 4000)
@@ -522,7 +553,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
       <option value="">全部会话</option>
       <option value="1">我的会话</option>
     </select>
-    <input v-model="st.q" class="input js-search" style="width:200px;height:38px" placeholder="会话号 / 邮箱 / 姓名" @keydown.enter="search()">
+    <input v-model="q" class="input js-search" style="width:200px;height:38px" placeholder="会话号 / 邮箱 / 姓名" @keydown.enter="search()">
     <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
   </div>
 

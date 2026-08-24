@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req, wishlistAdd, wishlistHas, wishlistRemove } from '../api/client'
 import { i18n, tt } from '../i18n'
@@ -115,12 +115,16 @@ function toggleRvStar(star) {
 
 let ldSeq = 0
 let lastKey = ''
-async function load() {
+/* keep=true 局部刷新（加购耗尽/409 回货）：保留选中变体/数量/图位，仅刷新数据 */
+async function load(keep) {
   const seq = ++ldSeq
   rvSeq++ /* 作废在途评价请求（切商品瞬间旧响应不得写入新状态） */
   const key = String(route.query.slug || route.query.id || '')
   if (lastKey && key && key !== lastKey) window.scrollTo({ top: 0 })
   lastKey = key
+  const prevVid = keep && variant.value ? variant.value.id : null
+  const prevQty = keep ? qty.value : 1
+  const prevGal = keep ? galIdx.value : 0
   vIdx.value = 0
   qty.value = 1
   galIdx.value = 0
@@ -139,8 +143,19 @@ async function load() {
       : await req('GET', '/api/catalog/products-by-id/' + id + (locale.value ? '?locale=' + locale.value : ''))
     if (seq !== ldSeq) return
     p.value = d
+    /* 保留态恢复：按变体 id 找回 vIdx（找不到归 0）；qty/图位在 nextTick 覆写
+       （先让 vIdx watcher 的 qty=1/图位同步先跑，保留值最终生效） */
+    if (keep) {
+      const vi = (d.variants || []).findIndex((v) => v.id === prevVid)
+      vIdx.value = vi >= 0 ? vi : 0
+      nextTick(() => {
+        if (seq !== ldSeq) return
+        qty.value = Math.min(prevQty, maxQty.value)
+        galIdx.value = Math.min(prevGal, Math.max(0, media.value.length - 1))
+      })
+    }
     pushRecent(p.value)
-    /* 心愿单初始态：登录时并发查是否已收藏（client.js 带 Set 缓存，命中不再发请求） */
+    /* 心愿单初始态：登录时并发查是否已收藏（client.js 带布尔结果缓存，命中不再发请求） */
     if (auth.isLoggedIn) {
       wishlistHas(p.value.id)
         .then((hit) => { if (hit && seq === ldSeq) wlDone.value = true })
@@ -182,7 +197,7 @@ async function load() {
   }
   loading.value = false
 }
-watch(() => [route.query.slug, route.query.id].join('|'), load)
+watch(() => [route.query.slug, route.query.id].join('|'), () => load())
 /* 站内切换语言：重拉详情（locale 翻译口径），标题/描述即时跟随 */
 watch(locale, () => { if (p.value || route.query.id || route.query.slug) load() })
 onMounted(load)
@@ -283,7 +298,7 @@ async function addToCart() {
   try {
     ok = await cart.add(variant.value.id, Math.min(qty.value, maxQty.value), ui)
   } catch (e) { console.debug('[ProductView] add to cart failed:', e) }
-  if (ok && variant.value.stock - qty.value <= 0) await load()
+  if (ok && variant.value.stock - qty.value <= 0) await load(true)
   adding.value = false
 }
 
@@ -306,7 +321,7 @@ async function bundleAdd() {
   } catch (e) { console.debug('[ProductView] bundle add failed:', e) }
   if (ok) {
     ui.toast(zh.value ? '已加 2 套 — 15% 折扣结算时自动生效 🎁' : '2 sets in cart — 15% off applied at checkout 🎁', 'success')
-    if (variant.value.stock - 2 <= 0) await load()
+    if (variant.value.stock - 2 <= 0) await load(true)
   }
   bundling.value = false
 }
@@ -376,7 +391,7 @@ async function notifyMe() {
   } catch (e) {
     notifyState.value = 0
     if (e.status === 400) ui.toast(zh.value ? '邮箱格式不正确' : 'Enter a valid email address', 'error')
-    else if (e.status === 409) { ui.toast(zh.value ? '该款刚回货啦，快下单！' : 'Just restocked — grab it now!', 'success'); load() }
+    else if (e.status === 409) { ui.toast(zh.value ? '该款刚回货啦，快下单！' : 'Just restocked — grab it now!', 'success'); load(true) }
     else ui.toast(zh.value ? '订阅失败，请稍后再试' : 'Subscribe failed, try again', 'error')
   }
 }
@@ -657,6 +672,7 @@ const gmEta = () => {
                   <img
                     v-for="im in rv.images.slice(0, 4)" :key="im" :src="im" loading="lazy"
                     :alt="zh ? '买家晒图' : 'Customer photo'" style="width:56px;height:56px;border-radius:8px;object-fit:cover;cursor:zoom-in;border:1px solid var(--gray-light)"
+                    @error="imgFallback"
                     @click="openLightbox(im, rv.user || rv.user_name || '')"
                   >
                 </div>

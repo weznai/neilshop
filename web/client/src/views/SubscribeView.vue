@@ -12,7 +12,7 @@ const subs = ref([])
 const plans = ref(null)
 const loaded = ref(false)
 const failed = ref(false)
-const busy = ref(false)
+const busyId = ref(0)
 
 /* 计划套餐（后端 /api/subscriptions/me.plans：1=每4周$12.99 2=每6周$13.99 3=每8周$14.99） */
 const FALLBACK_PLANS = [
@@ -62,7 +62,7 @@ onMounted(() => { if (auth.isLoggedIn) load(); else loaded.value = true })
 
 /* 创建订阅：POST /api/subscriptions {plan:1-3, style_mode:1-2} */
 async function subscribe() {
-  busy.value = true
+  busyId.value = -1
   try {
     await req('POST', '/api/subscriptions', { plan: picked.value, style_mode: styleMode.value })
     ui.toast(tt('Welcome to the Nail Club 💅', '欢迎加入 Nail Club 💅'), 'success')
@@ -74,11 +74,11 @@ async function subscribe() {
         : tt('Could not subscribe, please try again', '订阅失败，请稍后再试'),
       'error',
     )
-  } finally { busy.value = false }
+  } finally { busyId.value = 0 }
 }
 
 async function act(sub, action, body) {
-  busy.value = true
+  busyId.value = sub.id
   try {
     await req('POST', `/api/subscriptions/${sub.id}/${action}`, body || {})
     ui.toast(tt('Done', '操作成功'), 'success')
@@ -92,7 +92,7 @@ async function act(sub, action, body) {
         : tt('Action failed, please try again', '操作失败，请稍后再试'),
       'error',
     )
-  } finally { busy.value = false }
+  } finally { busyId.value = 0 }
 }
 function pause(sub) { act(sub, 'pause', {}) }
 function resume(sub) { act(sub, 'resume', {}) }
@@ -172,17 +172,17 @@ const styleText = (m) => (m === 2 ? tt('Blind box', '盲盒惊喜') : tt('My cho
               {{ planPrice(s.plan) }} {{ tt('/ box', '/ 盒') }} · {{ tt('next billing', '下次出账') }} {{ fmtDate(s.next_billing_at) }}
             </div>
             <div v-if="s.status === 1" style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-secondary btn-sm" :disabled="busy" @click="skipNext(s)">{{ tt('⏭ Skip next box', '⏭ 跳过下一盒') }}</button>
-              <button class="btn btn-secondary btn-sm" :disabled="busy" @click="pause(s)">{{ tt('⏸ Pause', '⏸ 暂停') }}</button>
+              <button class="btn btn-secondary btn-sm" :class="{ loading: busyId === s.id }" :disabled="busyId === s.id" @click="skipNext(s)">{{ tt('⏭ Skip next box', '⏭ 跳过下一盒') }}</button>
+              <button class="btn btn-secondary btn-sm" :class="{ loading: busyId === s.id }" :disabled="busyId === s.id" @click="pause(s)">{{ tt('⏸ Pause', '⏸ 暂停') }}</button>
               <button
-                class="btn btn-ghost btn-sm" :disabled="busy" @click="cancelSub(s)"
+                class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="cancelSub(s)"
                 :style="cancelArm === s.id ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
               >{{ cancelArm === s.id ? tt('Tap again to confirm', '再点一次确认取消') : tt('Cancel', '取消订阅') }}</button>
             </div>
             <div v-else-if="s.status === 2" style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn btn-primary btn-sm" :disabled="busy" @click="resume(s)">{{ tt('▶ Resume', '▶️ 恢复订阅') }}</button>
+              <button class="btn btn-primary btn-sm" :class="{ loading: busyId === s.id }" :disabled="busyId === s.id" @click="resume(s)">{{ tt('▶ Resume', '▶️ 恢复订阅') }}</button>
               <button
-                class="btn btn-ghost btn-sm" :disabled="busy" @click="cancelSub(s)"
+                class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="cancelSub(s)"
                 :style="cancelArm === s.id ? 'color:#fff;background:var(--error)' : 'color:var(--error)'"
               >{{ cancelArm === s.id ? tt('Tap again to confirm', '再点一次确认取消') : tt('Cancel', '取消订阅') }}</button>
             </div>
@@ -227,7 +227,7 @@ const styleText = (m) => (m === 2 ? tt('Blind box', '盲盒惊喜') : tt('My cho
           </div>
 
           <div style="text-align:center;margin-top:22px">
-            <button v-if="auth.isLoggedIn" class="btn btn-primary btn-lg" :class="{ loading: busy }" :disabled="busy" @click="subscribe">
+            <button v-if="auth.isLoggedIn" class="btn btn-primary btn-lg" :class="{ loading: busyId < 0 }" :disabled="busyId < 0" @click="subscribe">
               {{ tt(`Subscribe · every ${planInfo(picked).weeks} weeks ${money(planInfo(picked).price_cents)}`, `立即订阅 · 每 ${planInfo(picked).weeks} 周 ${money(planInfo(picked).price_cents)}`) }}
             </button>
             <router-link v-else class="btn btn-primary btn-lg" :to="{ path: '/login', query: { next: '/subscribe' } }">{{ tt('Log in to subscribe', '登录后订阅') }}</router-link>

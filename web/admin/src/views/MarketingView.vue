@@ -125,6 +125,17 @@ function setTab(k) {
   if (k === 'giftcards' && !gcLoaded.value) loadGiftcards()
 }
 
+/* 浏览器回退/前进：tab query 变化白名单校验后切换，并触发与 setTab 相同的懒加载逻辑
+ * （URL 已是目标态不再 replace；非法/缺失 tab 回落默认页） */
+watch(() => route.query.tab, (t) => {
+  if (route.name !== 'marketing') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const k = TAB_KEYS.includes(t) ? t : 'discounts'
+  if (k === tab.value) return
+  tab.value = k
+  if (k === 'collections' && !colLoaded.value) loadCollections()
+  if (k === 'giftcards' && !gcLoaded.value) loadGiftcards()
+})
+
 const TYPE_LABEL = { 1: (v) => `${v}% off`, 2: (v) => `${money(v)} off`, 3: () => '免邮' }
 /* ends_at/starts_at 为 naive UTC：补 'Z' 解析为完整时间戳后与当前时刻比较（秒级，避免天级比较在边界日误标） */
 const utcMs = (iso) => {
@@ -504,12 +515,13 @@ function editPopup(p) {
   popupCoupon0 = (p.coupon_code || '').trim().toUpperCase()
   popupDlg.value = true
 }
-/* 绑定券码精确校验：走接口按精确码搜索第一页（不再只查当前页 discounts）；
- * 接口异常时放行（后端保存仍有外键/存在性校验兜底） */
+/* 绑定券码精确校验：拉 size=100 按精确码比对（===code 命中即存在）；
+ * 未命中但满页（匹配过多可能截断）→ 无法确认，放行由后端保存最终校验兜底；接口异常同样放行 */
 async function codeExists(code) {
   try {
-    const d = await req('GET', '/api/admin/ops/discounts?' + new URLSearchParams({ page: 1, size: 20, q: code }))
-    return (d.items || []).some((c) => c.code === code)
+    const d = await req('GET', '/api/admin/ops/discounts?' + new URLSearchParams({ page: 1, size: 100, q: code }))
+    const items = d.items || []
+    return items.some((c) => c.code === code) || items.length >= 100
   } catch (_) { return true }
 }
 async function savePopup() {

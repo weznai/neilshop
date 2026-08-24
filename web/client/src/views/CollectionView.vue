@@ -67,6 +67,8 @@ async function load() {
 }
 onMounted(load)
 watch(() => route.params.slug, () => load())
+/* 站内切换语言：重拉合集（后端 locale 翻译口径，对齐 CollectionsView） */
+watch(() => i18n.lang, load)
 </script>
 
 <template>

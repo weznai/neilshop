@@ -32,13 +32,14 @@ onMounted(load)
 const bundles = computed(() => {
   const p = items.value
   if (!p.length) return []
-  const take = (start, n) => p.slice(start, start + n)
+  let cur = 0
+  const take = (n) => { const s = p.slice(cur, cur + n); cur += s.length; return s }
   const defs = [
-    { name: 'Date Night Duo', nameZh: '约会双人组', sets: take(0, 2), off: 15 },
-    { name: 'Everyday Trio', nameZh: '日常三件套', sets: take(2, 3), off: 20 },
-    { name: 'Full Glam Set', nameZh: '全妆礼盒', sets: take(5, 3), off: 20 },
+    { name: 'Date Night Duo', nameZh: '约会双人组', need: 2, sets: take(2), off: 15 },
+    { name: 'Everyday Trio', nameZh: '日常三件套', need: 3, sets: take(3), off: 20 },
+    { name: 'Full Glam Set', nameZh: '全妆礼盒', need: 3, sets: take(3), off: 20 },
   ]
-  return defs.filter((b) => b.sets.length === (b.off === 15 ? 2 : 3))
+  return defs.filter((b) => b.sets.length >= b.need)
     .map((b) => {
       const total = b.sets.reduce((n, s) => n + (s.price_min ?? 0), 0) / 100
       return {
@@ -59,6 +60,8 @@ function failToast(title) {
   ui.toast(zh() ? `「${title}」加购失败，请稍后再试` : `Could not add ${title} — try again later`, 'error')
 }
 
+const BATCH_FAIL = { variant_not_found: 'bund.fail.off', insufficient_stock: 'bund.fail.stock', qty_limit: 'bund.fail.limit' }
+
 async function addBundle(b) {
   if (b.soldOut || busy.value[b.name]) return
   busy.value = { ...busy.value, [b.name]: true }
@@ -71,22 +74,25 @@ async function addBundle(b) {
     if (v) picks.push({ title: b.sets[i].title, v })
     else failToast(b.sets[i].title)
   })
-  /* 加购并行（allSettled），单项失败单独提示 */
-  const adds = await Promise.allSettled(picks.map((x) => req('POST', '/api/cart/items', { variant_id: x.v.id, qty: 1 })))
   let ok = 0
-  adds.forEach((r, i) => {
-    if (r.status === 'fulfilled') ok++
-    else failToast(picks[i].title)
-  })
-  await cart.refresh().catch(() => {})
+  if (picks.length) {
+    try {
+      const d = await req('POST', '/api/cart/items-batch', { items: picks.map((x) => ({ variant_id: x.v.id, qty: 1 })) })
+      if (d && d.items) cart._apply(d)
+      else await cart.refresh().catch(() => {})
+      ok = ((d && d.added) || []).length
+      const failed = (d && d.failed) || []
+      failed.forEach((f) => {
+        const p = picks.find((x) => x.v.id === f.variant_id)
+        ui.toast(i18n.t('bund.failItem', p ? p.title : '#' + f.variant_id, BATCH_FAIL[f.reason] ? i18n.t(BATCH_FAIL[f.reason]) : f.reason), 'error')
+      })
+    } catch (_) {
+      picks.forEach((x) => failToast(x.title))
+    }
+  }
   busy.value = { ...busy.value, [b.name]: false }
   if (ok) {
-    ui.toast(
-      zh()
-        ? `已加 ${ok} 件 — 已自动选择首个有货规格，可在购物车调整；折扣自动生效 🎁`
-        : `Added ${ok} sets — first in-stock size auto-selected (adjust in cart), discount auto-applied 🎁`,
-      'success',
-    )
+    ui.toast(ok >= 2 ? i18n.t('bund.discountOk', ok) : i18n.t('bund.discountGap', ok, 2 - ok), 'success')
     ui.openCart()
   }
 }

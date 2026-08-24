@@ -77,7 +77,7 @@ function onEsc(e) {
 }
 watch(open, (v) => { ui.chatOpen = v })
 /* 外部唤起（ContactView 等设 ui.chatOpen = true）：同步打开面板 */
-watch(() => ui.chatOpen, (v) => { if (v && !open.value) open.value = true })
+watch(() => ui.chatOpen, (v) => { if (v && !open.value) showPanel() })
 
 function scrollBottom() {
   nextTick(() => {
@@ -183,13 +183,16 @@ async function refreshConvs() {
   }
 }
 
+/* 打开面板统一路径（FAB toggle 与外部唤起共用）：首开懒加载 init + 滚底 + 聚焦输入框 */
+async function showPanel() {
+  open.value = true
+  scrollBottom()
+  setTimeout(() => inputEl.value?.focus(), 250)
+  if (!inited.value) await init()
+}
 async function toggle() {
-  open.value = !open.value
-  if (open.value) {
-    scrollBottom()
-    setTimeout(() => inputEl.value?.focus(), 250)
-    if (!inited.value) await init()
-  }
+  if (open.value) { open.value = false; return }
+  await showPanel()
 }
 
 function switchTab(t) {
@@ -266,9 +269,17 @@ async function endChat() {
   try {
     await req('POST', `/api/chat/conversations/${conv.conv_no}/close`, { token: ensureToken() })
     convs[tab.value] = null
-    /* 客服 tab：结束后即开新 AI 会话（可继续问） */
-    if (tab.value === 'chat') convs.chat = await createConv(0)
-  } catch (_) { /* 服务端不可达时也可本地结束 */ 
+    /* 客服 tab：结束后即开新 AI 会话（可继续问）；开新失败置未初始化，下次打开重新 init */
+    if (tab.value === 'chat') {
+      try {
+        convs.chat = await createConv(0)
+      } catch (_) {
+        inited.value = false
+        open.value = false
+        ui.toast(i18n.t('chat.restartFail'), 'error')
+      }
+    }
+  } catch (_) { /* 服务端不可达时也可本地结束 */
     convs[tab.value] = null
   } finally { busy.value = false }
 }

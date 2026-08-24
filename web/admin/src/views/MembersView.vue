@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -23,11 +24,15 @@ const detailBusy = ref(0)      /* 按行隔离：存正在加载的行 id（0=�
 /* 筛选/分页/排序 URL 同步（risk：'' 全部 / 0 正常 / 1 关注 / 2 黑名单，见 models/user.py；
  * tier '' 全部等级；sort 白名单 points/-points/total_spent/-total_spent） */
 const SORTABLE = ['points', '-points', 'total_spent', '-total_spent']
-const st = reactive({ q: '', page: 1, risk: '', tier: '', sort: '' })
-useQuerySync(st, { nums: ['page'], defaults: { page: 1, risk: '', tier: '', sort: '' } })
+const st = reactive({ page: 1, risk: '', tier: '', sort: '' })
+useQuerySync(st, { nums: ['page'], defaults: { page: 1, risk: '', tier: '', sort: '' }, onPop: () => load(st.page) })
 /* 回填清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
 if (!SORTABLE.includes(st.sort)) st.sort = ''
 if (!['', '0', '1', '2'].includes(st.tier)) st.tier = ''
+/* q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车时写回 URL（做法同 OrdersView） */
+const route = useRoute()
+const router = useRouter()
+const q = ref(typeof route.query.q === 'string' ? route.query.q : '')
 
 /* 等级口径与后端一致：tier 0普通(Glow) / 1银卡(Silver) / 2金卡(Gold)，值域 0-2 */
 const TIER = ['Glow', 'Silver', 'Gold']
@@ -38,7 +43,7 @@ const pages = computed(() => Math.max(1, Math.ceil(total.value / SIZE)))
 /* 请求 URL 组装（列表与 CSV 导出共用）：q/tier/risk/sort 当前筛选 */
 function buildUrl(p, size = SIZE) {
   const params = new URLSearchParams({ page: p, size })
-  const s = st.q.trim()
+  const s = q.value.trim()
   if (s) params.set('q', s)
   if (st.tier !== '') params.set('tier', st.tier)
   if (st.risk !== '') params.set('risk', st.risk)
@@ -102,11 +107,33 @@ async function exportCsv() {
   exporting.value = false
 }
 
-function search() { load(1) }
+/* 顶栏搜索：回车/按钮触发才写回 URL（一次性 replace 同批清掉 page 键，防 useQuerySync 的 deep watcher
+ * 基于旧 query 再发一次 replace 把刚写入的 q 覆盖丢失，做法同 ReturnsView）；页码键被清除时其
+ * query-watcher 已重置页码并经 onPop 重载，否则手动重载 */
+async function search() {
+  const kw = q.value.trim()
+  q.value = kw   /* 归一化输入与 URL/请求一致 */
+  const hadPageKey = route.query.page !== undefined
+  if ((route.query.q || '') !== kw || hadPageKey) {
+    await router.replace({ query: { ...route.query, q: kw || undefined, page: undefined } })
+  }
+  st.page = 1
+  if (!hadPageKey) load(1)
+}
+/* 浏览器回退/前进：q 变化只同步回本地 ref 并重载（不触发导航）；页码键由 useQuerySync 的
+ * query-watcher 先行回落默认（其 watch 创建早于本处，同批 flush 先执行） */
+watch(() => route.query.q, (v) => {
+  if (route.name !== 'members') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const s = typeof v === 'string' ? v : ''
+  if (s !== q.value) {
+    q.value = s
+    load(st.page)
+  }
+})
 function setTier(v) { st.tier = v; load(1) }
 function setRiskFilter(v) { st.risk = v; load(1) }
 /* 表格空态文案：搜索/等级/风控任一筛选生效→未匹配，否则暂无 */
-const filtered = computed(() => st.q.trim() !== '' || st.tier !== '' || st.risk !== '')
+const filtered = computed(() => q.value.trim() !== '' || st.tier !== '' || st.risk !== '')
 
 /* 服务端排序（积分/累计消费）：三态循环（无 → 升 → 降 → 无），sort 传后端白名单；切换回第一页 */
 function sortBy(k) {
@@ -212,7 +239,7 @@ async function applyRisk(flag = 2) {
         <option value="1">关注</option>
         <option value="2">黑名单</option>
       </select>
-      <input v-model="st.q" class="input js-search" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
+      <input v-model="q" class="input js-search" style="width:220px" placeholder="搜邮箱 / 姓名" @keydown.enter="search()">
       <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
       <button class="btn btn-secondary btn-sm" style="height:38px" :disabled="exporting" @click="exportCsv">{{ exporting ? '导出中…' : '⬇ CSV' }}</button>
     </div>

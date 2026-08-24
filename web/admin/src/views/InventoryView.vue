@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
@@ -39,7 +39,7 @@ const ADJ_ERR = { variant_not_found: '变体不存在', zero_change: '调整量�
  * q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车时才写回 URL（做法同 OrdersView） ===== */
 const SORTABLE = ['sku', '-sku', 'stock', '-stock']
 const state = reactive({ page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 })
-useQuerySync(state, { nums: ['page', 'mv', 'mp'], defaults: { page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 } })
+useQuerySync(state, { nums: ['page', 'mv', 'mp'], defaults: { page: 1, mv: '', mt: 'all', mfrom: '', mto: '', mp: 1, sort: '', threshold: 8 }, onPop: () => load() })
 /* 回填清洗：非法值回落默认 */
 if (!['all', ...Object.keys(MTYPE)].includes(state.mt)) state.mt = 'all'
 if (!SORTABLE.includes(state.sort)) state.sort = ''
@@ -54,6 +54,16 @@ function syncQ() {
   const kw = q.value.trim()
   if ((route.query.q || '') !== kw) router.replace({ query: { ...route.query, q: kw || undefined } })
 }
+/* 浏览器回退/前进：q 变化只同步回本地 ref 并重载 SKU 列表（不触发导航）；页码键由 useQuerySync 的
+ * query-watcher 先行回落默认并经 onPop 重载（其 watch 创建早于本处，同批 flush 先执行） */
+watch(() => route.query.q, (v) => {
+  if (route.name !== 'inventory') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const s = typeof v === 'string' ? v : ''
+  if (s !== q.value) {
+    q.value = s
+    loadVariants()
+  }
+})
 const thrNum = Number(state.threshold)
 state.threshold = Number.isInteger(thrNum) && thrNum >= 0 && thrNum <= 9999 ? thrNum : 8
 /* 流水选中 SKU：URL 存 id，展示 sku 从已加载变体列表解析；未命中时用点击时带来的 skuHint（URL 直开暂以 #id 占位，列表载入后自动替换） */

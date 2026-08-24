@@ -136,6 +136,16 @@ router.beforeEach((to) => {
 router.afterEach((to) => {
   document.title = to.meta.title ? to.meta.title + ' · GLOWMAG' : BASE_TITLE
   applyRouteSeo(to)
+  /* UTM 归因捕获：任意路由 query 带 utm_*（非空）即写入 gm_utm（7 天有效，新值覆盖旧值）；
+     CheckoutView utmOf 优先读路由 query，为空回落此存储 */
+  const utm = {}
+  for (const k of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']) {
+    const v = to.query[k]
+    if (v) utm[k] = String(v)
+  }
+  if (Object.keys(utm).length) {
+    try { localStorage.setItem('gm_utm', JSON.stringify({ values: utm, ts: Date.now() })) } catch (_) { /* 隐私模式 */ }
+  }
 })
 
 export default router

@@ -6,6 +6,7 @@ import { i18n, tt } from '../i18n'
 import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
+import { createOrderIntent } from '../composables/useOrderPay'
 
 const cart = useCartStore()
 const ui = useUiStore()
@@ -18,6 +19,19 @@ const money = (c) => '$' + ((c || 0) / 100).toFixed(2)
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const US_STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY']
+/* 地址簿历史数据可能存州名全称：预填时映射为两位缩写（fillAddr），使表单可通过校验 */
+const US_STATE_ABBR = {
+  Alabama: 'AL', Alaska: 'AK', Arizona: 'AZ', Arkansas: 'AR', California: 'CA', Colorado: 'CO',
+  Connecticut: 'CT', Delaware: 'DE', Florida: 'FL', Georgia: 'GA', Hawaii: 'HI', Idaho: 'ID',
+  Illinois: 'IL', Indiana: 'IN', Iowa: 'IA', Kansas: 'KS', Kentucky: 'KY', Louisiana: 'LA',
+  Maine: 'ME', Maryland: 'MD', Massachusetts: 'MA', Michigan: 'MI', Minnesota: 'MN',
+  Mississippi: 'MS', Missouri: 'MO', Montana: 'MT', Nebraska: 'NE', Nevada: 'NV',
+  'New Hampshire': 'NH', 'New Jersey': 'NJ', 'New Mexico': 'NM', 'New York': 'NY',
+  'North Carolina': 'NC', 'North Dakota': 'ND', Ohio: 'OH', Oklahoma: 'OK', Oregon: 'OR',
+  Pennsylvania: 'PA', 'Rhode Island': 'RI', 'South Carolina': 'SC', 'South Dakota': 'SD',
+  Tennessee: 'TN', Texas: 'TX', Utah: 'UT', Vermont: 'VT', Virginia: 'VA', Washington: 'WA',
+  'West Virginia': 'WV', Wisconsin: 'WI', Wyoming: 'WY',
+}
 const COUNTRIES = ['US', 'CA', 'GB', 'AU', 'DE', 'FR']
 
 /* 折扣码失败原因走 i18n promo.*（对齐后端 promo REASON_TEXT：preview 返回裸 reason 码），
@@ -34,6 +48,9 @@ const errors = ref({})
 /* 地址簿（登录用户）：GET /api/account/addresses，默认地址预选回填；0 = 手填新地址 */
 const savedAddrs = ref([])
 const selAddr = ref(0)
+/* 选中地址簿地址但隐藏字段校验失败时，列出无效字段并引导切换新地址（字段无输入框可标红） */
+const addrErrFields = ref(null)
+const ADDR_FIELD_LABELS = { fname: 'co.fname', addr1: 'co.addr', city: 'co.city', state: 'co.state', zip: 'co.zip', country: 'co.country' }
 
 function fillAddr(a) {
   const f = form.value
@@ -44,7 +61,7 @@ function fillAddr(a) {
   f.addr1 = a.line1 || ''
   f.addr2 = a.line2 || ''
   f.city = a.city || ''
-  f.state = a.state || ''
+  f.state = (a.state && US_STATE_ABBR[a.state.trim()]) || a.state || ''
   f.zip = a.zip || ''
   f.phone = a.phone || ''
   const c = (a.country || 'US').toUpperCase()
@@ -56,6 +73,7 @@ function pickAddr(a) {
   selAddr.value = a.id
   fillAddr(a)
   errors.value = {}
+  addrErrFields.value = null
 }
 
 function pickNewAddr() {
@@ -63,6 +81,16 @@ function pickNewAddr() {
   const f = form.value
   f.fname = ''; f.lname = ''; f.addr1 = ''; f.addr2 = ''
   f.city = ''; f.state = ''; f.zip = ''; f.phone = ''
+  addrErrFields.value = null
+}
+
+/* 地址簿地址校验不过 → 切换新地址表单并用该地址数据预填，供用户直接修正 */
+function fixAddr() {
+  const a = savedAddrs.value.find((x) => x.id === selAddr.value)
+  selAddr.value = 0
+  if (a) fillAddr(a)
+  errors.value = {}
+  addrErrFields.value = null
 }
 
 async function loadAddrs() {
@@ -180,7 +208,14 @@ async function applyCode() {
     ui.toast(i18n.t('promo.verifyFail'), 'error')
   }
 }
-function removeCode() { appliedCode.value = null; code.value = ''; try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ } runPreview() }
+function removeCode() {
+  appliedCode.value = null
+  code.value = ''
+  try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
+  /* 同步移除 URL ?code=（保留其它 query），避免刷新/分享时旧码复活 */
+  if (route.query.code != null) router.replace({ query: { ...route.query, code: undefined } })
+  runPreview()
+}
 
 async function applyGiftCard() {
   const c = (gcInput.value || '').trim().toUpperCase()
@@ -193,6 +228,8 @@ async function applyGiftCard() {
     ui.toast(i18n.t('co.gcApplied', money(pv.value.gift_card.balance)), 'success')
   } else if (pv.value) {
     ui.toast(i18n.t('co.gcCheckFail'), 'error')
+  } else if (!pvError.value) {
+    ui.toast(i18n.t('promo.verifyFail'), 'error')
   }
 }
 function removeGiftCard() { appliedGc.value = null; gcInput.value = ''; runPreview() }
@@ -221,6 +258,8 @@ async function loadShipMethods() {
     shipMethod.value = shipMethods.value[0].method
   }
 }
+/* 支付方式加载失败：不再静默回落 mock（避免下单后支付死路），置 methodsErr 供 UI 重试 */
+const methodsErr = ref(false)
 async function loadPayMethods() {
   try {
     const d = await req('GET', '/api/payments/methods')
@@ -229,9 +268,10 @@ async function loadPayMethods() {
     if (!paySel.value || !payProviders.value.some((p) => p.id === paySel.value)) {
       paySel.value = payDefault.value
     }
+    methodsErr.value = false
   } catch (_) {
-    payProviders.value = [{ id: 'mock', name: 'Mock Pay (dev)', klarna: false }]
-    payDefault.value = 'mock'; paySel.value = 'mock'
+    payProviders.value = []
+    methodsErr.value = true
   }
 }
 
@@ -303,7 +343,16 @@ function utmOf() {
   for (const k of ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term']) {
     if (q[k]) out[k] = String(q[k])
   }
-  return Object.keys(out).length ? out : null
+  if (Object.keys(out).length) return out
+  /* 路由无 utm（用户中途落地丢失 query）→ 回落 gm_utm 存储（router afterEach 捕获，7 天有效） */
+  try {
+    const d = JSON.parse(localStorage.getItem('gm_utm') || 'null')
+    if (d && d.values) {
+      if (d.ts && Date.now() - d.ts < 7 * 86400000) return d.values
+      localStorage.removeItem('gm_utm')
+    }
+  } catch (_) { /* 隐私模式/存储损坏即弃 */ }
+  return null
 }
 
 async function saveAddrBook() {
@@ -359,7 +408,15 @@ async function place() {
     ui.toast(tt('Payment is temporarily unavailable — please try again later', '支付通道暂不可用，请稍后再试'), 'error')
     return
   }
-  if (!validate()) { ui.toast(i18n.t('co.incomplete'), 'error'); return }
+  if (!validate()) {
+    /* 地址簿地址选中时表单字段隐藏：校验失败改为内联错误列出无效字段（fixAddr 引导修正） */
+    const hidden = ['fname', 'addr1', 'city', 'state', 'zip', 'country']
+    const bad = selAddr.value > 0 ? hidden.filter((k) => errors.value[k]) : []
+    addrErrFields.value = bad.length ? bad : null
+    ui.toast(i18n.t('co.incomplete'), 'error')
+    return
+  }
+  addrErrFields.value = null
   /* 折扣码无效时拦截（后端 place 也会 409，前端先给中文原因） */
   if (appliedCode.value && pv.value && !pv.value.code_valid) {
     ui.toast(reasonText(pv.value.code_reason), 'error'); return
@@ -412,12 +469,11 @@ async function place() {
     if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) saveAddrBook()
     /* 记住支付方式选择：SuccessView 二次支付沿用同一 provider */
     try { localStorage.setItem('gm_pay_provider', paySel.value || '') } catch (_) { /* 隐私模式 */ }
-    /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock） */
+    /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock）；
+       createOrderIntent 内与 methods 对账并在 provider_unavailable 时去参重试 */
     const useMock = paySel.value === 'mock'
     try {
-      const ib = { order_no: d.order_no, email: f.email.trim() }
-      if (paySel.value && paySel.value !== 'mock' && paySel.value !== payDefault.value) ib.provider = paySel.value
-      const intent = await req('POST', '/api/payments/create-intent', ib)
+      const intent = await createOrderIntent(d.order_no, f.email.trim(), paySel.value)
       /* 真实通道仅返回 client_secret 而无 redirect_url：本页无法完成支付 →
          待支付订单转 /success 托管（有"立即支付"入口），不再滞留在已清空的购物车页 */
       if (intentNoChannel(intent)) {
@@ -483,8 +539,8 @@ const itemsView = computed(() => {
   }
   return cart.items.map((i) => ({ id: i.vid, img: i.img, qty: i.qty, stock: i.stock, inactive: !!i.inactive, title: i.title, variant: i.variant, lineC: (i.priceC || Math.round(i.price * 100)) * i.qty }))
 })
-/* 无可用支付通道（非 dev 且未配置真实 provider）：禁止下单，避免订单悬挂等超时关单 */
-const noPayChannel = computed(() => payDefault.value === 'none')
+/* 无可用支付通道（非 dev 且未配置真实 provider，或 methods 拉取失败且无选项）：禁止下单，避免订单悬挂等超时关单 */
+const noPayChannel = computed(() => payDefault.value === 'none' || (methodsErr.value && !payProviders.value.length))
 /* 一键移除失效（下架/删除）商品行：解除 preview/place 409 死锁 */
 async function removeInactive() {
   const dead = cart.items.filter((i) => i.inactive).map((i) => i.vid)
@@ -548,6 +604,10 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
                 <input v-model="selAddr" type="radio" :value="0" style="display:none" @change="pickNewAddr">
                 <b style="color:var(--plum)">＋ {{ i18n.t('co.addrNew') }}</b>
               </label>
+              <div v-if="addrErrFields" style="font-size:12.5px;color:var(--error);margin:6px 0 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span>{{ i18n.t('co.addrErr', addrErrFields.map((k) => i18n.t(ADDR_FIELD_LABELS[k] || k)).join(', ')) }}</span>
+                <button class="btn btn-secondary btn-sm" type="button" @click="fixAddr">{{ i18n.t('co.addrErrNew') }}</button>
+              </div>
             </template>
             <template v-if="selAddr === 0">
             <div class="co-2col">
@@ -610,6 +670,10 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               <span v-if="p.id === payDefault" class="tag tag-paid" style="margin-left:8px">{{ i18n.t('co.defaultTag') }}</span>
               <span v-if="p.klarna" class="pay-pill" style="margin-left:8px">KLARNA</span>
             </label>
+            <div v-if="methodsErr" style="font-size:12.5px;color:var(--error);margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span>{{ i18n.t('co.payLoadErr') }}</span>
+              <button class="btn btn-secondary btn-sm" type="button" @click="loadPayMethods">{{ i18n.t('co.payRetry') }}</button>
+            </div>
             <p v-if="noPayChannel" style="font-size:12.5px;color:var(--error);margin-top:8px">
               {{ tt('Online payment is temporarily unavailable. Your order can still be placed later — please try again soon.', '在线支付通道暂不可用，请稍后再来下单。') }}
             </p>

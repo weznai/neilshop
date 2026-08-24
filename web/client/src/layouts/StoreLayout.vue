@@ -1,18 +1,21 @@
 <script>
 /* 模块级：编辑精选卡商品详情内存缓存（布局重建不重复请求）；{ok:true,d}|{ok:false}，404 视为下架缓存命中 */
 import { req } from '../api/client'
+import { CAT_ALIAS } from '../data/catalog'
 const _picksCache = {}
-function pickDetail(slug) {
-  if (!_picksCache[slug]) {
-    _picksCache[slug] = req('GET', '/api/catalog/products/' + slug)
+function pickDetail(slug, locale) {
+  /* 缓存键含 locale：语言切换后重新 hydrate 不命中旧语言缓存 */
+  const key = slug + ':' + (locale || 'en')
+  if (!_picksCache[key]) {
+    _picksCache[key] = req('GET', '/api/catalog/products/' + slug + (locale ? '?locale=' + locale : ''))
       .then((d) => ({ ok: true, d }))
       .catch((e) => {
         if (e && e.status === 404) return { ok: true, d: null }
-        delete _picksCache[slug]
+        delete _picksCache[key]
         return { ok: false }
       })
   }
-  return _picksCache[slug]
+  return _picksCache[key]
 }
 </script>
 
@@ -58,10 +61,12 @@ function onAnnVis() {
   else startAnn()
 }
 
+/* 导航高亮分类归一化：站内短别名（nails/lashes）与真实 slug（StoreView CAT_ALIAS）等价识别 */
+const catSlug = (r) => CAT_ALIAS[r.query.cat] || r.query.cat
 const NAV = [
   { href: '/store?sort=new', key: 'nav.new', match: (r) => r.path === '/store' && r.query.sort === 'new' },
-  { href: '/store?cat=press-on-nails', key: 'nav.nails', match: (r) => r.path === '/store' && (r.query.cat === 'press-on-nails' || (!r.query.cat && r.query.sort !== 'new')) },
-  { href: '/store?cat=magnetic-lashes', key: 'nav.lashes', match: (r) => r.path === '/store' && r.query.cat === 'magnetic-lashes' },
+  { href: '/store?cat=press-on-nails', key: 'nav.nails', match: (r) => r.path === '/store' && (catSlug(r) === 'press-on-nails' || (!r.query.cat && r.query.sort !== 'new')) },
+  { href: '/store?cat=magnetic-lashes', key: 'nav.lashes', match: (r) => r.path === '/store' && catSlug(r) === 'magnetic-lashes' },
   { href: '/collabs', key: 'nav.collabs', match: (r) => r.path === '/collabs' },
   { href: '/bundles', key: 'nav.bundles', match: (r) => r.path === '/bundles' },
   { href: '/sale', key: 'nav.sale', match: (r) => r.path === '/sale' },
@@ -85,15 +90,19 @@ function pickFallback(e) {
   img.src = PICK_FALLBACK
 }
 async function hydratePicks() {
+  /* zh 用 locale=zh-CN 拉取并同步 titleZh，防中文态精选卡回落英文硬编码译名 */
+  const loc = i18n.lang === 'zh' ? 'zh-CN' : ''
   await Promise.all(MEGA_PICKS.value.map(async (p) => {
-    const r = await pickDetail(p.slug)
+    const r = await pickDetail(p.slug, loc)
     if (!r.ok) return
     if (!r.d || (r.d.status != null && r.d.status !== 1)) { p.show = false; return }
     p.title = r.d.title
+    if (loc === 'zh-CN') p.titleZh = r.d.title
     if (r.d.price_min != null) p.price = r.d.price_min / 100
     if (r.d.hero_image) p.img = r.d.hero_image
   }))
 }
+watch(() => i18n.lang, hydratePicks)
 
 /* 滚动驱动：顶栏收缩 + 返回顶部（单监听器） */
 const showBackTop = ref(false)
@@ -218,7 +227,7 @@ onUnmounted(() => {
                   <span><b>{{ zh ? p.titleZh : p.title }}</b><i>${{ p.price.toFixed(2) }}</i></span>
                 </router-link>
               </div>
-              <router-link class="mega-promo" to="/sale">{{ zh ? '季末特惠 · 低至 8 折 →' : 'END OF SEASON · Up to 20% off →' }}</router-link>
+              <router-link class="mega-promo" to="/sale">{{ i18n.t('nav.megaPromo') }}</router-link>
             </div>
           </span>
           <span v-else-if="item.key === 'nav.lashes'" class="nav-item">

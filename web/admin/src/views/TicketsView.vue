@@ -1,5 +1,6 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -19,10 +20,6 @@ const loaded = ref(false)
 const loadErr = ref(false)
 const errMsg = ref('')       /* 最近一次加载失败信息（空态 sub / 横幅文案） */
 
-/* 筛选 URL 同步：tab/q/priority/cat/mine/page 回填与写回（priority '0'=仅紧急；cat ''=全部分类；mine '1'=我的工单） */
-const st = reactive({ tab: 'all', q: '', priority: '', cat: '', mine: '', page: 1 })
-useQuerySync(st, { nums: ['page'], defaults: { tab: 'all', priority: '', cat: '', mine: '', page: 1 } })
-
 /* 状态映射统一走 constants/trade.js（TSTATUS）
  * 状态机：0 新工单 → 1 处理中（回复后）→ 2 等待客户 / 3 已解决 → 4 已关闭（带 close_reason） */
 /* TicketCategory 1-6（core/enums.py）；priority 0=紧急 1=普通（models/support.py，列表按紧急在前排序） */
@@ -34,6 +31,16 @@ const TABS = [
   ['wait', '等待客户', 2],
   ['closed', '已关', '3,4'],
 ]
+
+/* 筛选 URL 同步：tab/priority/cat/mine/page 回填与写回（priority '0'=仅紧急；cat ''=全部分类；mine '1'=我的工单）；
+ * q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车时写回 URL（做法同 OrdersView） */
+const route = useRoute()
+const router = useRouter()
+const st = reactive({ tab: 'all', priority: '', cat: '', mine: '', page: 1 })
+useQuerySync(st, { nums: ['page'], defaults: { tab: 'all', priority: '', cat: '', mine: '', page: 1 }, onPop: () => load(st.page) })
+/* tab 脏 query 白名单清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
+if (!TABS.some(([k]) => k === st.tab)) st.tab = 'all'
+const q = ref(typeof route.query.q === 'string' ? route.query.q : '')
 
 const active = ref(null)      /* 列表行 */
 const thread = ref(null)      /* {messages: [{sender, content, created_at}]} */
@@ -57,7 +64,7 @@ function buildUrl(status, p, size = SIZE) {
   if (st.cat !== '') params.set('category', st.cat)
   if (st.priority !== '') params.set('priority', st.priority)
   if (st.mine === '1' && session.user?.id) params.set('assignee', session.user.id)
-  const s = st.q.trim()
+  const s = q.value.trim()
   if (s) params.set('q', s)
   return '/api/admin/ops/tickets?' + params
 }
@@ -89,15 +96,37 @@ async function load(p = 1) {
   }
   loaded.value = true
 }
-onMounted(() => load(1))
+onMounted(() => load(st.page))
 
 function setTab(k) { if (st.tab !== k) { st.tab = k; load(1) } }
 function setCat(v) { st.cat = v; load(1) }
 function setMine(v) { st.mine = v; load(1) }
 function togglePriority() { st.priority = st.priority === '0' ? '' : '0'; load(1) }
-function search() { load(1) }
+/* 顶栏搜索：回车/按钮触发才写回 URL（一次性 replace 同批清掉 page 键，防 useQuerySync 的 deep watcher
+ * 基于旧 query 再发一次 replace 把刚写入的 q 覆盖丢失，做法同 ReturnsView）；页码键被清除时其
+ * query-watcher 已重置页码并经 onPop 重载，否则手动重载 */
+async function search() {
+  const kw = q.value.trim()
+  q.value = kw   /* 归一化输入与 URL/请求一致 */
+  const hadPageKey = route.query.page !== undefined
+  if ((route.query.q || '') !== kw || hadPageKey) {
+    await router.replace({ query: { ...route.query, q: kw || undefined, page: undefined } })
+  }
+  st.page = 1
+  if (!hadPageKey) load(1)
+}
+/* 浏览器回退/前进：q 变化只同步回本地 ref 并重载（不触发导航）；页码键由 useQuerySync 的
+ * query-watcher 先行回落默认（其 watch 创建早于本处，同批 flush 先执行） */
+watch(() => route.query.q, (v) => {
+  if (route.name !== 'tickets') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const s = typeof v === 'string' ? v : ''
+  if (s !== q.value) {
+    q.value = s
+    load(st.page)
+  }
+})
 /* 列表空态文案：任一筛选（tab/仅紧急/分类/我的/搜索）生效→未匹配，否则暂无 */
-const filtered = computed(() => st.tab !== 'all' || st.priority !== '' || st.cat !== '' || st.mine !== '' || st.q.trim() !== '')
+const filtered = computed(() => st.tab !== 'all' || st.priority !== '' || st.cat !== '' || st.mine !== '' || q.value.trim() !== '')
 
 /* 快捷回复模板：GET /api/support/templates（公开端点，支持 ?category= 过滤，返回 [{id,category,title,content}]） */
 const templates = ref([])          /* 全量模板（当前工单分类无匹配时兜底显示） */
@@ -241,7 +270,7 @@ async function exportCsv() {
       status: TABS.find((t) => t[0] === st.tab)?.[2],
       cat: st.cat, priority: st.priority,
       assignee: st.mine === '1' ? (session.user?.id || null) : null,
-      q: st.q.trim(),
+      q: q.value.trim(),
     }
     const pageUrl = (p) => {
       const params = new URLSearchParams({ page: p, size: EXPORT_SIZE })
@@ -353,7 +382,7 @@ async function reopen() {
       <option value="">全部工单</option>
       <option value="1">我的工单</option>
     </select>
-    <input v-model="st.q" class="input js-search" style="width:200px;height:38px" placeholder="邮箱 / 工单号 / 主题 / 订单号" @keydown.enter="search()">
+    <input v-model="q" class="input js-search" style="width:200px;height:38px" placeholder="邮箱 / 工单号 / 主题 / 订单号" @keydown.enter="search()">
     <button class="btn btn-secondary btn-sm" style="height:38px" @click="search()">搜索</button>
   </div>
 

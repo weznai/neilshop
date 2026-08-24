@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { req } from '../api/client'
 import { i18n } from '../i18n'
 import ProductCard from '../components/ProductCard.vue'
@@ -8,6 +8,16 @@ const items = ref([])
 const loaded = ref(false)
 const loadErr = ref(false)
 const zh = () => i18n.lang === 'zh'
+/* 全部请求完成门控：首页返回即撤骨架（loaded），但 items 等 Promise.all 汇总后才赋值，
+   空态须再加 anyPending 判断，避免"补货中"闪现 */
+const anyPending = ref(false)
+
+/* 客户端分页（对齐 CollectionView：首屏 12 + Load more），促销全量最多 500 卡不一次性渲染 */
+const PAGE_SIZE = 12
+const shownCount = ref(PAGE_SIZE)
+const shown = computed(() => items.value.slice(0, shownCount.value))
+const remaining = computed(() => Math.max(0, items.value.length - shownCount.value))
+function loadMore() { shownCount.value += PAGE_SIZE }
 
 /* 全量翻页拉取：单页上限 100（后端 size le=100），促销品超 100 件时不再静默截断；
    防御上限 5 页（500 件）+ 末页不满即止；首页返回即经 onFirst 撤骨架（后续页静默 append） */
@@ -30,6 +40,8 @@ async function fetchAll(query, onFirst) {
 async function load() {
   loaded.value = false
   loadErr.value = false
+  anyPending.value = true
+  shownCount.value = PAGE_SIZE
   const isDeal = (p) => p.compare_at_price && p.compare_at_price > (p.price_min ?? p.price ?? 0)
   const offPct = (p) => (isDeal(p) ? 1 - (p.price_min ?? p.price) / p.compare_at_price : 0)
   const locale = i18n.lang === 'zh' ? '&locale=zh-CN' : ''
@@ -49,9 +61,12 @@ async function load() {
     items.value = []
     loadErr.value = true
   }
+  anyPending.value = false
   loaded.value = true
 }
 onMounted(load)
+/* 站内切换语言：重拉带 locale 的促销列表 */
+watch(() => i18n.lang, load)
 
 /* 头图折扣宣称按真实数据计算：划线价 > 现价的最大折扣百分比（向下取整） */
 const maxOff = computed(() => {
@@ -88,14 +103,17 @@ const maxOff = computed(() => {
             <div class="sale-sk-line" style="width:40%"></div>
           </div>
         </template>
-        <ProductCard v-for="p in items" :key="p.id" :p="p" />
+        <ProductCard v-for="p in shown" :key="p.id" :p="p" />
+      </div>
+      <div v-if="loaded && remaining" style="text-align:center;margin-top:26px">
+        <button class="btn btn-secondary" @click="loadMore">{{ i18n.t('sale.more', remaining) }}</button>
       </div>
       <div v-if="loaded && loadErr" style="text-align:center;color:var(--gray);padding:40px 0">
         <div style="font-size:44px;margin-bottom:10px">⚠️</div>
         {{ zh() ? '促销商品加载失败，请稍后重试' : 'Failed to load sale items — please retry' }}
         <div style="margin-top:14px"><button class="btn btn-secondary" @click="load">⟳ {{ zh() ? '重试' : 'Retry' }}</button></div>
       </div>
-      <div v-else-if="loaded && !items.length" style="text-align:center;color:var(--gray);padding:40px 0">
+      <div v-else-if="loaded && !anyPending && !items.length" style="text-align:center;color:var(--gray);padding:40px 0">
         <div style="font-size:44px;margin-bottom:10px">💅</div>
         {{ zh() ? '促销补货中，先去逛逛新品' : 'Sale restocking — check back soon' }} ·
         <router-link to="/store?sort=new" style="color:var(--plum)">{{ zh() ? '新品专区' : 'New arrivals' }}</router-link>

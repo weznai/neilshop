@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { toast } from '../composables/toast'
@@ -203,6 +203,13 @@ function setTab(k) {
   tab.value = k
   router.replace({ query: { ...route.query, tab: k } })
 }
+/* 浏览器回退/前进：tab query 变化白名单校验后切换（四列表挂载即全量加载，无懒加载逻辑；
+ * URL 已是目标态不再 replace；非法/缺失 tab 回落默认页） */
+watch(() => route.query.tab, (t) => {
+  if (route.name !== 'content') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const k = TAB_KEYS.includes(t) ? t : 'reviews'
+  if (k !== tab.value) tab.value = k
+})
 onMounted(() => {
   if (TAB_KEYS.includes(route.query.tab)) tab.value = route.query.tab
   /* 深链 ?pending=1/0：评价待审直达（Dashboard 以 /content?tab=reviews&pending=1 链入）；缺省保持待审 */

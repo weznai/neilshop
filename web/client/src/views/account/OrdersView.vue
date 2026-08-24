@@ -8,7 +8,7 @@ import { useArmConfirm } from '../../composables/useArmConfirm'
 import { useOrderPay } from '../../composables/useOrderPay'
 import { fmtDateTime } from '../../composables/datetime'
 import { money } from '../../composables/format'
-import { tt } from '../../i18n'
+import { i18n, tt } from '../../i18n'
 
 const ui = useUiStore()
 const route = useRoute()
@@ -46,6 +46,7 @@ function keyFromTab(sv) {
   return row ? row[0] : 'all'
 }
 const tab = ref(null)
+const kw = ref(String(route.query.q || '').trim())
 
 const fmt = fmtDateTime
 
@@ -56,12 +57,14 @@ async function load() {
   loading.value = true
   failed.value = false
   try {
-    const q = '/api/orders?page=' + page.value + (tab.value === null ? '' : '&status=' + tab.value)
-    const d = await req('GET', q)
+    const path = '/api/orders?page=' + page.value + (tab.value === null ? '' : '&status=' + tab.value) + (kw.value.trim() ? '&q=' + encodeURIComponent(kw.value.trim()) : '')
+    const d = await req('GET', path)
     if (seq !== _loadSeq) return
     orders.value = d.items || []
     pages.value = d.pages || 1
     total.value = d.total || 0
+    /* URL 直达页码越界（?page=999）：回落第 1 页重拉，避免误导性空态 */
+    if (page.value > pages.value && pages.value > 0) { page.value = 1; syncQuery(); load(); return }
   } catch (_) {
     if (seq !== _loadSeq) return
     failed.value = true
@@ -73,7 +76,7 @@ async function load() {
   }
 }
 
-/* tab/page ↔ route.query（replace）：刷新/回退不丢状态 */
+/* tab/page/q ↔ route.query（replace）：刷新/回退不丢状态 */
 function syncQuery() {
   const query = Object.assign({}, route.query)
   const k = keyFromTab(tab.value)
@@ -81,14 +84,23 @@ function syncQuery() {
   else query.tab = k
   if (page.value > 1) query.page = String(page.value)
   else delete query.page
+  if (kw.value.trim()) query.q = kw.value.trim()
+  else delete query.q
   router.replace({ query })
 }
 function applyQuery(q) {
   const nt = tabFromQuery(q.tab)
   const np = Math.max(1, Number(q.page) || 1)
+  const nq = String(q.q || '').trim()
+  if (nq !== kw.value.trim()) { kw.value = nq; page.value = 1; return true }
   if (nt !== tab.value) { tab.value = nt; page.value = 1; return true }
   if (np !== page.value) { page.value = np; return true }
   return false
+}
+function search() {
+  page.value = 1
+  syncQuery()
+  load()
 }
 
 /* 初始状态来自 URL */
@@ -174,6 +186,12 @@ async function confirmRecv(o) {
       >{{ tt(label[0], label[1]) }}</button>
     </div>
 
+    <form class="o-search" @submit.prevent="search">
+      <input v-model="kw" class="input" :placeholder="i18n.t('orders.searchPh')" maxlength="20" autocomplete="off">
+      <button class="btn btn-secondary btn-sm" type="submit">{{ i18n.t('orders.search') }}</button>
+      <button v-if="kw" type="button" class="btn btn-ghost btn-sm" @click="kw = ''; search()">{{ i18n.t('orders.clear') }}</button>
+    </form>
+
     <div v-if="loading" style="display:grid;gap:12px">
       <div v-for="i in 3" :key="i" class="skeleton" style="height:76px;border-radius:14px" />
     </div>
@@ -225,8 +243,8 @@ async function confirmRecv(o) {
         </div>
       </div>
       <div v-else class="card" style="padding:30px;text-align:center;color:var(--gray)">
-        {{ tt('No orders in this tab yet.', '该状态下暂无订单。') }}
-        <div style="margin-top:10px"><router-link class="btn btn-secondary btn-sm" to="/account/orders">{{ tt('View all orders', '查看全部订单') }}</router-link></div>
+        {{ kw.trim() ? i18n.t('orders.searchNone', kw.trim()) : tt('No orders in this tab yet.', '该状态下暂无订单。') }}
+        <div v-if="!kw.trim()" style="margin-top:10px"><router-link class="btn btn-secondary btn-sm" to="/account/orders">{{ tt('View all orders', '查看全部订单') }}</router-link></div>
       </div>
     </template>
   </div>
@@ -239,4 +257,6 @@ async function confirmRecv(o) {
 .o-tab { flex: none; padding: 10px 12px; font-size: 13.5px; font-weight: 600; color: var(--gray); background: none; border: none; border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; transition: color .15s, border-color .15s; }
 .o-tab:hover { color: var(--plum); }
 .o-tab.on { color: var(--plum); border-bottom-color: var(--plum); }
+.o-search { display: flex; gap: 8px; margin-bottom: 16px; }
+.o-search .input { flex: 1; height: 38px; padding: 0 12px; }
 </style>

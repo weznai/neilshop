@@ -18,11 +18,12 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 @router.get("/")
 def list_orders(
     status: Optional[int] = None,
+    q: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return service_orders.list_orders(db, user, status, page)
+    return service_orders.list_orders(db, user, status, page, q)
 
 
 @router.get("/track")

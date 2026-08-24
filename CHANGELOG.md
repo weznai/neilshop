@@ -3,6 +3,43 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.11] · 双端前端全面审计修复：交易流程健壮性 + 营销页补全 + 后台 URL/分页口径统一
+
+### Fixed（web/client · 交易主流程）
+- **购物车数量连点竞态**：`setQty` 改乐观更新（立即写本地行 + 失败回滚），慢网络连点 `+/-` 不再丢失增量。
+- **UTM 归因链路修复**：路由 afterEach 捕获任意页 `utm_*` 持久化（7 天过期），下单时随 `/checkout/place` 上报——漏斗归因不再恒为空。
+- **地址簿选中地址校验死锁解除**：隐藏字段（州/邮编等）校验失败时地址区内联列出无效字段 +「改用新地址」预填修复；美国州全称自动转两位缩写。
+- **支付通道失效自愈**：`gm_pay_provider` 使用前与 `/api/payments/methods` 对账（不可用自动回落默认通道），`provider_unavailable` 自动去参重试一次——待付订单不再支付死锁。
+- **成功页支付轮询加固**：单次网络抖动不再翻转错误页（连续 3 次才停 + 保留待付卡）；登录用户错误态补重试按钮；删除 `already_paid` 死分支；首帧中性加载态不闪「下单成功」；积分提示与订单状态挂钩。
+- **methods 加载失败不再静默回落 mock**：显式错误行 + 重试 + 禁用下单，避免下单后支付死路。
+- 礼品卡「应用」网络失败补 toast；`removeCode` 同步清 URL `?code=`；无效折扣码不再随结算链接传递。
+
+### Fixed（web/client · 账户与售后）
+- **订单详情重试崩溃**：`load()` 重置 loading，失败重试回骨架屏（修复 TypeError）。
+- 评价奖励文案 +100→+10（对齐后端实际发分）；换货差价预估按实付折算（`grand_total/subtotal` 比例）并标注「预估」；退货窗口文案去硬编码天数。
+- **ChatWidget 外部唤起首次空白修复**（ContactView 入口补 init 链路）；endChat 重建失败可自恢复。
+- TrackView 登录用户 404 后可展开邮箱双因子查游客期订单；工单查询成功后输入框解锁；订单/积分列表页码越界回落第 1 页；换货进度条按 `price_diff` 动态省略「差价」节点；清理游客 email 死代码。
+- **订单号搜索**：后端 `GET /api/orders` 新增 `q`（订单号模糊，参数绑定防注入），前端订单列表 tab 旁补搜索框（URL 同步）。
+
+### Fixed（web/client · 浏览/搜索/内容/营销）
+- Blog tag、FAQ cat/q 筛选响应路由变化（页脚导航/前进后退不再 UI 与 URL 脱节）；Sale 页空态闪现修复 + Load more 客户端分页（不再一次渲染 500 卡）；Collection/Sale 切语言重拉数据。
+- **wishlistHas 负结果缓存**（Map 双向维护），列表页 N+1 请求风暴消除。
+- 导航高亮识别 `?cat=nails/lashes` 别名（CAT_ALIAS 提取共享）；FAQ 吸顶 chips 随 header 收缩贴合（56/64px 同步 transition）；StoreView 骨架屏数量对齐每页条数。
+- 营销弹窗与购物车抽屉/搜索/移动导航互斥（顺延或放弃）；浮层打开时互斥关闭其它浮层。
+- PDP 局部刷新保留变体/数量/图廊选中态；评价晒图 @error 兜底；博客 ###/#### 标题层级不再塌缩。
+- **Bundles 整组加购改 `items-batch` 批量端点**（消费 added/failed 明细，差 N 件享折扣如实提示）+ 动态成组（商品不足不再静默丢组）。
+- 礼品卡余额查询状态真实映射（未激活/有效/冻结/已用尽/作废）+「不可用于支付」提示；Enter 双发守卫；hosted 回跳已购卡渲染「已激活」结果卡。
+- 订阅卡 busy 按 id 键控（多订阅不再全局互锁）；CartDrawer 推荐位过滤售罄；ProductCard 中文标题与种子 id 解耦（统一服务端 locale）；Mega 促销条去硬编码折扣。
+
+### Fixed（web/admin · URL 同步与列表口径）
+- **RMA「待收货」tab 改 `status=2,3` CSV 单请求 + 服务端分页**（删除前端合并/切片，导出统一 fetchAllPages 全量口径）。
+- **7 个列表页 useQuerySync 补 `onPop`**（Tickets/Chat/Members/Subscriptions/Products/Inventory/OpsQueues）：浏览器回退/前进正确重载列表。
+- Marketing/Content tab 补 `route.query.tab` watcher（回退/前进 tab 跟随）；Tickets/Chat 初始页码改 `load(st.page)`（深链恢复）；tab/channel 脏 query 白名单清洗。
+- 5 个视图搜索词 q 拆本地 ref（回车才写 URL，不再每键触发 router.replace）；Marketing 弹窗绑定券码存在性校验改 size=100 精确比对。
+
+### 测试与构建
+- 后端 test_b（订单列表/详情/track）76/76 绿；双 SPA `npm run build` 零错误。
+
 ## [0.3.10] · 客户端（C 端）全面审计修复：支付安全 + 交易并发 + 前端 19 项体验完善
 
 ### Fixed（后端 · 支付与资金安全 P0/P1）

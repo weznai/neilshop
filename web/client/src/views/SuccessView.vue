@@ -8,6 +8,7 @@ import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 import { statusLabel, statusTag } from '../composables/orderStatus'
 import { useArmConfirm } from '../composables/useArmConfirm'
+import { createOrderIntent } from '../composables/useOrderPay'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +40,8 @@ const copied = ref(false)
 const retryEmail = ref('')
 const noChannel = ref(false)
 
+/* fetchOrder 连续失败计数：轮询瞬时失败保留已有 order 数据（不翻错误页），≥3 次才停 */
+let failCount = 0
 async function fetchOrder() {
   if (!orderNo.value) return
   try {
@@ -46,7 +49,12 @@ async function fetchOrder() {
     const q = email.value ? '?email=' + encodeURIComponent(email.value) : ''
     order.value = await req('GET', '/api/orders/' + encodeURIComponent(orderNo.value) + q)
     orderError.value = false
-  } catch (_) { order.value = null; orderError.value = true }
+    failCount = 0
+  } catch (_) {
+    failCount++
+    /* 仅在完全无数据且失败时才显示错误卡；已有 order 则继续展示旧数据 */
+    if (!order.value) orderError.value = true
+  }
 }
 
 /* hosted 支付回跳可能不带 email：游客单查询失败时补 email 重查（写入 query 使支付/取消沿用） */
@@ -68,11 +76,12 @@ function stopPolling() {
 function startPolling() {
   stopPolling()
   pollCount = 0
+  failCount = 0
   pollTimedOut.value = false
   pollTimer = setInterval(async () => {
     pollCount++
     await fetchOrder()
-    if (!order.value || order.value.status !== 0) stopPolling()
+    if (!order.value || order.value.status !== 0 || failCount >= 3) stopPolling()
     else if (pollCount >= 12) { pollTimedOut.value = true; stopPolling() }
   }, 5000)
 }
@@ -83,23 +92,19 @@ async function refreshStatus() {
 onUnmounted(stopPolling)
 
 /* 待支付订单：创建支付意向 + mock 支付（演示通道；真实 provider 走 webhook）；游客单带下单 email 过归属校验
-   provider 沿用结算页选择（localStorage gm_pay_provider，place 成功时写入）；hosted 通道跳转收银台 */
+    provider 沿用结算页选择（createOrderIntent 内读 gm_pay_provider 并与 methods 对账，下线自动回落默认）；hosted 通道跳转收银台 */
 async function payNow() {
   if (paying.value || !orderNo.value) return
   paying.value = true
   const em = email.value || undefined
   try {
-    let provider = ''
-    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-    const ib = { order_no: orderNo.value, email: em }
-    if (provider && provider !== 'mock') ib.provider = provider
-    const intent = await req('POST', '/api/payments/create-intent', ib)
+    const intent = await createOrderIntent(orderNo.value, em)
     if (intentNoChannel(intent)) {
       noChannel.value = true
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
       return
     }
-    if (provider !== 'mock' && intent && intent.redirect_url) {
+    if (intent && intent.redirect_url) {
       window.location.href = intent.redirect_url
       return
     }
@@ -107,8 +112,7 @@ async function payNow() {
       await req('POST', '/api/payments/mock-pay', { order_no: orderNo.value, email: em, succeed: true })
     } catch (e) {
       const m = (e.data && e.data.detail) || (e.message || '')
-      if (m === 'already_paid') ui.toast(t('Already paid', '已支付'), 'success')
-      else if (m === 'use_webhook') ui.toast(t('Please complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款'), 'error')
+      if (m === 'use_webhook') ui.toast(t('Please complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款'), 'error')
       else ui.toast(m || i18n.t('pay.failed'), 'error')
     }
     await fetchOrder()
@@ -153,15 +157,17 @@ async function copyNo() {
 
 const trackLink = computed(() => '/track?no=' + encodeURIComponent(orderNo.value) + (email.value ? '&email=' + encodeURIComponent(email.value) : ''))
 
-/* 圆环样式/图标随订单状态：0 待付(琥珀) 8 已取消(灰) 9 已退款(红) 查单失败(琥珀中性) 其余成功(绿) */
+/* 圆环样式/图标随订单状态：0 待付(琥珀) 8 已取消(灰) 9 已退款(红) 查单失败(琥珀中性) 首帧未加载(灰) 其余成功(绿) */
 const ringStyle = computed(() => {
   const st = order.value && order.value.status
-  const border = orderError.value ? '2px solid rgba(234,170,50,.5)'
+  const border = !loaded.value ? '2px solid var(--gray-light)'
+    : orderError.value ? '2px solid rgba(234,170,50,.5)'
     : st === 8 ? '2px solid var(--gray)'
     : st === 9 ? '2px solid var(--error)'
     : st === 0 ? '2px solid rgba(234,170,50,.5)'
     : '2px solid rgba(62,189,147,.4)'
-  const background = orderError.value ? 'var(--pale-warn)'
+  const background = !loaded.value ? 'var(--gray-light)'
+    : orderError.value ? 'var(--pale-warn)'
     : st === 8 ? 'var(--gray-light)'
     : st === 9 ? 'var(--pale-error)'
     : st === 0 ? 'var(--pale-warn)'
@@ -174,7 +180,7 @@ const ringStyle = computed(() => {
 })
 const ringIcon = computed(() => {
   const st = order.value && order.value.status
-  return orderError.value ? '⟳' : st === 0 ? '⏳' : st === 8 ? '✕' : st === 9 ? '↩' : '✓'
+  return !loaded.value ? '⟳' : orderError.value ? '⟳' : st === 0 ? '⏳' : st === 8 ? '✕' : st === 9 ? '↩' : '✓'
 })
 
 onMounted(async () => {
@@ -189,11 +195,13 @@ onMounted(async () => {
 <template>
   <section class="section">
     <div class="container" style="max-width:640px;text-align:center">
-      <div class="ok-ring" :class="{ 'ok-ring-wait': orderError }" :style="ringStyle">
+      <div class="ok-ring" :class="{ 'ok-ring-wait': !loaded || orderError }" :style="ringStyle">
         {{ ringIcon }}
       </div>
       <h1 style="font-family:var(--font-title);font-size:32px;margin-bottom:8px">
-        {{ order && order.status === 0
+        {{ !loaded
+          ? i18n.t('pay.orderLoading')
+          : order && order.status === 0
           ? t('Order placed — payment pending', '订单已提交 · 待支付')
           : order && order.status === 8 ? t('Order canceled', '订单已取消')
           : order && order.status === 9 ? t('Order refunded', '订单已退款')
@@ -201,7 +209,7 @@ onMounted(async () => {
           : t('Order confirmed!', '下单成功！') }}
       </h1>
       <p style="color:var(--gray);margin-bottom:8px">
-        {{ t('Thanks for your order', '感谢下单') }}<template v-if="!orderError && (order || email)">, {{ t('confirmation sent to', '确认邮件已发送至') }} <b>{{ (order && order.email) || email }}</b></template>.
+        {{ !loaded ? '' : t('Thanks for your order', '感谢下单') }}<template v-if="loaded && !orderError && (order || email)">, {{ t('confirmation sent to', '确认邮件已发送至') }} <b>{{ (order && order.email) || email }}</b></template>{{ loaded ? '.' : '' }}
       </p>
 
       <div v-if="order && order.status === 0" class="card" style="padding:18px;margin:20px 0;text-align:left;background:var(--pale-warn);border-color:rgba(234,170,50,.4)">
@@ -263,6 +271,7 @@ onMounted(async () => {
           <button class="btn btn-primary btn-sm" @click="retryLookup">⟳ {{ t('Look up again', '重新查询') }}</button>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button v-if="auth.isLoggedIn" class="btn btn-primary btn-sm" @click="refreshStatus">⟳ {{ i18n.t('pay.retry') }}</button>
           <router-link v-if="auth.isLoggedIn" to="/account/orders" class="btn btn-secondary btn-sm">📦 {{ t('View my orders', '我的订单') }}</router-link>
           <router-link to="/contact" class="btn btn-secondary btn-sm">💬 {{ t('Contact support', '联系客服') }}</router-link>
         </div>
@@ -278,7 +287,7 @@ onMounted(async () => {
         <router-link v-else to="/store" class="btn btn-primary">{{ t('Keep shopping', '继续购物') }}</router-link>
         <router-link v-if="auth.isLoggedIn" to="/store" class="btn btn-secondary">{{ t('Keep shopping', '继续购物') }}</router-link>
       </div>
-      <p v-if="auth.isLoggedIn && !(order && [8, 9].includes(order.status))" style="font-size:12.5px;color:var(--gray);margin-top:22px">
+      <p v-if="auth.isLoggedIn && order && order.status >= 1 && ![8, 9].includes(order.status)" style="font-size:12.5px;color:var(--gray);margin-top:22px">
         🎁 {{ t('You earn Glow points on this order — redeem 100 pts for $1 off next time.', '本单将获得积分奖励——100 分可抵 $1。') }}
       </p>
     </div>

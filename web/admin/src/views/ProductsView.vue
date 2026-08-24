@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
@@ -11,6 +11,7 @@ import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 
+const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const items = ref([])
@@ -27,16 +28,18 @@ const SMeta = { 0: ['草稿', 'tag-pending'], 1: ['在售', 'tag-paid'], 2: ['�
 const BULK_ERR = { 'slug already exists': 'slug 已存在', 'category not found': '分类不存在' }
 const failures = computed(() => (bulkResult.value?.results || []).filter((r) => !r.ok))
 
-/* ===== URL 同步：page/q/status（tab 映射，'all'=全部）+ 原有 category_id/sort 一并并入 useQuerySync ===== */
+/* ===== URL 同步：page/status（tab 映射，'all'=全部）+ 原有 category_id/sort/per_page 一并并入 useQuerySync
+ * q 拆出同步态为本地 ref：输入不逐字符 router.replace，仅搜索触发/回车/清空时写回 URL（做法同 OrdersView） ===== */
 const SORTABLE = ['title', '-title', 'price', '-price', 'created_at', '-created_at']
-const state = reactive({ page: 1, q: '', status: 'all', category_id: '', sort: '', per_page: 50 })
-useQuerySync(state, { nums: ['page', 'category_id', 'per_page'], defaults: { page: 1, q: '', status: 'all', category_id: '', sort: '', per_page: 50 } })
+const state = reactive({ page: 1, status: 'all', category_id: '', sort: '', per_page: 50 })
+useQuerySync(state, { nums: ['page', 'category_id', 'per_page'], defaults: { page: 1, status: 'all', category_id: '', sort: '', per_page: 50 }, onPop: () => load() })
 /* 回填清洗：非法值回落默认（顺带触发 watch 清掉 URL 脏键） */
 if (!SORTABLE.includes(state.sort)) state.sort = ''
 if (!['all', '0', '1', '2'].includes(state.status)) state.status = 'all'
 if (!(state.page >= 1)) state.page = 1
 if (!(state.category_id >= 1)) state.category_id = ''
 if (![20, 50, 100].includes(state.per_page)) state.per_page = 50
+const q = ref(typeof route.query.q === 'string' ? route.query.q : '')
 const status = computed(() => (state.status === 'all' ? null : Number(state.status)))
 
 /* 分类白名单：onMounted 拉分类列表，批量导入的 category_id 校验以此为准（动态） */
@@ -60,7 +63,7 @@ async function load() {
   selIds.value = []
   const token = ++reqSeq
   try {
-    const qs = { page: state.page, size: state.per_page, q: state.q.trim() }
+    const qs = { page: state.page, size: state.per_page, q: q.value.trim() }
     if (status.value !== null) qs.status = status.value
     if (state.category_id !== '') qs.category_id = state.category_id
     if (state.sort) qs.sort = state.sort
@@ -83,13 +86,45 @@ async function load() {
 onMounted(() => { loadCategories(); load() })
 function retryLoad() { loadErr.value = ''; loaded.value = false; load() }
 
-function search() { state.page = 1; load() }
-function clearSearch() { state.q = ''; state.page = 1; load() }
+/* 顶栏搜索：回车/按钮触发才写回 URL（一次性 replace 同批清掉 page 键，防 useQuerySync 的 deep watcher
+ * 基于旧 query 再发一次 replace 把刚写入的 q 覆盖丢失，做法同 ReturnsView）；页码键被清除时其
+ * query-watcher 已重置页码并经 onPop 重载，否则手动重载 */
+async function search() {
+  const kw = q.value.trim()
+  q.value = kw   /* 归一化输入与 URL/请求一致 */
+  const hadPageKey = route.query.page !== undefined
+  if ((route.query.q || '') !== kw || hadPageKey) {
+    await router.replace({ query: { ...route.query, q: kw || undefined, page: undefined } })
+  }
+  state.page = 1
+  if (!hadPageKey) load()
+}
+function clearSearch() { q.value = ''; search() }
 function tab(sv) { state.status = sv === null ? 'all' : String(sv); state.page = 1; load() }
 function filterCat() { state.page = 1; load() }
 /* 空态引导：有搜索/分类筛选时空态文案区分 + 一键清除 */
-const filtered = computed(() => !!(state.q.trim() || state.category_id !== ''))
-function clearFilters() { state.q = ''; state.category_id = ''; state.page = 1; load() }
+const filtered = computed(() => !!(q.value.trim() || state.category_id !== ''))
+/* 清除筛选：q 先 replace 落地再清 category_id（tracked 键突变交由 deep watcher 写回，防同批覆盖丢 q） */
+async function clearFilters() {
+  q.value = ''
+  const hadPageKey = route.query.page !== undefined
+  if (route.query.q !== undefined || hadPageKey) {
+    await router.replace({ query: { ...route.query, q: undefined, page: undefined } })
+  }
+  state.category_id = ''
+  state.page = 1
+  if (!hadPageKey) load()
+}
+/* 浏览器回退/前进：q 变化只同步回本地 ref 并重载（不触发导航）；页码键由 useQuerySync 的
+ * query-watcher 先行回落默认（其 watch 创建早于本处，同批 flush 先执行） */
+watch(() => route.query.q, (v) => {
+  if (route.name !== 'products') return   /* 已离开本页（卸载前最后一次 route 变更）：忽略 */
+  const s = typeof v === 'string' ? v : ''
+  if (s !== q.value) {
+    q.value = s
+    load()
+  }
+})
 
 /* 服务端排序：sort 直传后端（title/price/created_at，- 前缀降序），三态循环（无 → 升 → 降 → 无），切换重置页码 */
 function sortBy(k) {
@@ -154,7 +189,7 @@ async function exportCsv() {
     if (!categories.value.length) toast('分类列缺失（分类数据加载失败）', 'error')
     const { all, truncated } = await fetchAllPages((p) => req('GET', '/api/admin/catalog/products?' + new URLSearchParams({
       page: p, size: 100,
-      ...(state.q.trim() ? { q: state.q.trim() } : {}),
+      ...(q.value.trim() ? { q: q.value.trim() } : {}),
       ...(status.value !== null ? { status: status.value } : {}),
       ...(state.category_id !== '' ? { category_id: state.category_id } : {}),
       ...(state.sort ? { sort: state.sort } : {}),
@@ -352,8 +387,8 @@ async function doDelCat() {
         <option :value="100">100 条/页</option>
       </select>
       <div style="position:relative">
-        <input v-model="state.q" class="input js-search" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
-        <button v-if="state.q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
+        <input v-model="q" class="input js-search" style="width:220px;padding-right:30px" placeholder="搜标题 / slug" @keydown.enter="search">
+        <button v-if="q" type="button" class="q-clear" aria-label="清空搜索" @click="clearSearch">×</button>
       </div>
       <button class="btn btn-secondary" @click="search">搜索</button>
       <router-link v-if="session.hasPerm('catalog:manage')" to="/product-edit" class="btn btn-primary">＋ 新建商品</router-link>

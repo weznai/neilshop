@@ -36,7 +36,7 @@ watch(
       const inCart = new Set(cart.items.map((i) => i.pid || i.id))
       const seen = new Set()
       recs.value = (d.items || [])
-        .filter((p) => p && p.id != null && !inCart.has(p.id) && !seen.has(p.id) && seen.add(p.id))
+        .filter((p) => p && p.id != null && !inCart.has(p.id) && !(p.stock_summary && p.stock_summary.out) && !seen.has(p.id) && seen.add(p.id))
         .slice(0, 4)
     } catch (_) { recs.value = [] }
   },

@@ -21,6 +21,8 @@ const email = ref(String(route.query.email || ''))
 const result = ref(null)
 const err = ref('')
 const busy = ref(false)
+/* 登录态查游客期订单：展开邮箱输入（按邮箱查游客单），带 email 双因子重查 */
+const guestMode = ref(false)
 
 /* OrderStatus 0-5 / 8 / 9（共享 composable，无 6/7 下标） */
 const STEPS = [
@@ -75,8 +77,8 @@ async function cancelOrder() {
   if (cancelBusy.value || !result.value) return
   cancelBusy.value = true
   try {
-    /* 登录属主仅凭订单号；游客带 email 双因子（与后端 cancel 同口径） */
-    const q = auth.isLoggedIn ? '' : '?email=' + encodeURIComponent(email.value.trim())
+    /* 登录属主仅凭订单号；游客/登录态查游客单带 email 双因子（与后端 cancel 同口径） */
+    const q = (!auth.isLoggedIn || guestMode.value) && email.value.trim() ? '?email=' + encodeURIComponent(email.value.trim()) : ''
     await req('POST', '/api/orders/' + encodeURIComponent(result.value.order_no) + '/cancel' + q)
     ui.toast(tt('Order canceled', '订单已取消'), 'success')
     await track()
@@ -107,22 +109,31 @@ function carrierUrl(carrier, no) {
 }
 
 async function track() {
+  if (busy.value) return
   err.value = ''
   result.value = null
   if (!no.value.trim()) { err.value = tt('Enter your order number (NS…)', '请输入订单号（NS…）'); return }
-  /* 登录属主仅凭订单号查单；游客需订单号 + 下单邮箱双因子 */
-  if (!auth.isLoggedIn && !EMAIL_RE.test(email.value.trim())) { err.value = tt('Enter a valid email address', '请输入有效的邮箱地址'); return }
+  /* 登录属主仅凭订单号查单；游客（或登录态查游客单）需订单号 + 下单邮箱双因子 */
+  const useEmail = !auth.isLoggedIn || guestMode.value
+  if (useEmail && !EMAIL_RE.test(email.value.trim())) { err.value = tt('Enter a valid email address', '请输入有效的邮箱地址'); return }
   busy.value = true
   try {
-    result.value = await req('GET', '/api/orders/track?no=' + encodeURIComponent(no.value.trim()) + (auth.isLoggedIn ? '' : '&email=' + encodeURIComponent(email.value.trim())))
+    result.value = await req('GET', '/api/orders/track?no=' + encodeURIComponent(no.value.trim()) + (useEmail ? '&email=' + encodeURIComponent(email.value.trim()) : ''))
   } catch (e) {
-    if (e && e.status === 404) err.value = tt('Order not found — check the number & email (must match checkout email)', '未找到订单——请核对订单号与下单邮箱（须与结算邮箱一致）')
+    if (e && e.status === 404) {
+      /* 登录态首次 404：可能是游客期订单（无 user_id，会话查不到）→ 展开邮箱入口提示补 email */
+      if (auth.isLoggedIn && !guestMode.value && String((e.data && e.data.detail) || '').includes('not_found')) {
+        guestMode.value = true
+        err.value = i18n.t('track.guestHint')
+      } else err.value = tt('Order not found — check the number & email (must match checkout email)', '未找到订单——请核对订单号与下单邮箱（须与结算邮箱一致）')
+    }
     else if (e && (e.status === 0 || e.name === 'TypeError')) err.value = tt('Network unreachable — check your connection and retry', '网络连接失败，请检查网络后重试')
     else err.value = tt('Track failed — please try later', '查询失败，请稍后再试')
   } finally { busy.value = false }
 }
 
 onMounted(() => {
+  if (route.query.email) guestMode.value = true
   if (no.value && (email.value || auth.isLoggedIn)) track()
 })
 </script>
@@ -139,9 +150,13 @@ onMounted(() => {
         </p>
         <form @submit.prevent="track">
           <div class="field"><label>{{ tt('Order number', '订单号') }}</label><input v-model="no" class="input" placeholder="NS260728D4E5F6" autocomplete="off"></div>
-          <div v-if="!auth.isLoggedIn" class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com"></div>
+          <template v-if="!auth.isLoggedIn || guestMode">
+            <p v-if="auth.isLoggedIn" style="font-size:12.5px;color:var(--gray);margin:0 0 8px">{{ i18n.t('track.guestHint') }}</p>
+            <div class="field"><label>{{ tt('Email', '邮箱') }}</label><input v-model="email" class="input" type="email" autocomplete="email" placeholder="you@example.com"></div>
+          </template>
           <div v-if="err" class="field-msg" style="display:block;color:var(--error)">{{ err }}</div>
           <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy">{{ tt('Track', '查询') }}</button>
+          <button v-if="auth.isLoggedIn && !guestMode" type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" @click="guestMode = true">{{ i18n.t('track.guestToggle') }}</button>
         </form>
       </div>
 

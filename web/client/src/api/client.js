@@ -118,15 +118,15 @@ export function intentNoChannel(intent) {
    在途请求 at=Infinity 不判过期；rejected promise 不滞留缓存（重进可重试） */
 const _byId = {}
 const DETAIL_TTL = 60000
-export function productDetail(pid) {
-  /* locale 与列表/详情口径一致：中文环境消费后端多语言（内部读 gm_lang，调用方零改动） */
-  let locale = ''
-  try { if (localStorage.getItem('gm_lang') === 'zh') locale = 'zh-CN' } catch (_) { /* 隐私模式 */ }
-  const key = pid + ':' + locale
+export function productDetail(pid, locale) {
+  /* locale 与列表/详情口径一致：优先显式入参，缺省读 gm_lang（调用方零改动） */
+  let loc = locale || ''
+  if (!loc) { try { if (localStorage.getItem('gm_lang') === 'zh') loc = 'zh-CN' } catch (_) { /* 隐私模式 */ } }
+  const key = pid + ':' + loc
   const hit = _byId[key]
   if (hit && Date.now() - hit.at < DETAIL_TTL) return hit.promise
   const rec = { at: Infinity, promise: null }
-  rec.promise = req('GET', '/api/catalog/products-by-id/' + pid + (locale ? '?locale=' + locale : ''))
+  rec.promise = req('GET', '/api/catalog/products-by-id/' + pid + (loc ? '?locale=' + loc : ''))
     .then((d) => { rec.at = Date.now(); return d })
     .catch((e) => { if (_byId[key] === rec) delete _byId[key]; throw e })
   _byId[key] = rec
@@ -134,21 +134,24 @@ export function productDetail(pid) {
 }
 
 /* 心愿单：加入 / 查询是否已收藏 / 移除（端点形态对齐 WishlistView：POST|DELETE /api/account/wishlist/{pid}）
-   _wlKnown 会话内缓存已确认收藏的 id，避免 PDP 重复发 has 请求 */
+    _wlKnown/_wlAbsent 会话内缓存已确认收藏/未收藏的 id，避免 PDP 重复发 has 请求 */
 const _wlKnown = new Set()
+const _wlAbsent = new Set()
 export function wishlistAdd(pid) {
-  return req('POST', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.add(pid); return d })
+  return req('POST', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.add(pid); _wlAbsent.delete(pid); return d })
 }
 export function wishlistHas(pid) {
   if (_wlKnown.has(pid)) return Promise.resolve(true)
+  if (_wlAbsent.has(pid)) return Promise.resolve(false)
   return req('GET', '/api/account/wishlist/has?product_id=' + pid).then((d) => {
     const hit = !!(d && d.in_wishlist)
     if (hit) _wlKnown.add(pid)
+    else _wlAbsent.add(pid)
     return hit
   })
 }
 export function wishlistRemove(pid) {
-  return req('DELETE', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.delete(pid); return d })
+  return req('DELETE', '/api/account/wishlist/' + pid).then((d) => { _wlKnown.delete(pid); _wlAbsent.add(pid); return d })
 }
-/* 会话切换/登出时清空已收藏缓存，避免跨账号串扰 */
-export function wishlistReset() { _wlKnown.clear() }
+/* 会话切换/登出时清空收藏缓存（含负缓存），避免跨账号串扰 */
+export function wishlistReset() { _wlKnown.clear(); _wlAbsent.clear() }

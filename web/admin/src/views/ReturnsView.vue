@@ -5,7 +5,7 @@ import { req } from '../api/client'
 import { useSessionStore } from '../stores/session'
 import { toast } from '../composables/toast'
 import { money, dt } from '../composables/format'
-import { downloadCsv } from '../composables/exportCsv'
+import { downloadCsv, fetchAllPages } from '../composables/exportCsv'
 import { useQuerySync } from '../composables/useQuerySync'
 import EmptyState from '../components/EmptyState.vue'
 import Pagination from '../components/Pagination.vue'
@@ -40,14 +40,13 @@ const loadCnt = ref(0)
 const refreshing = computed(() => loadCnt.value > 0)
 
 /* RMA 状态筛选 + 服务端分页（page/per_page=20，响应含 total/pages）
- * 后端 status 仅支持单值（router_admin list_rmas 为 Optional[int]，已核对不支持逗号）：
- * 「待收货」= 标签已发(2)+在途(3) 拆两次请求各拉前 100 合并，前端分页；>100 截断时 toast 提示 */
+ * 后端 status 支持 CSV 多值：「待收货」组合 tab 走 status=2,3 单请求（做法同 OrdersView 待发货 1,2） */
 const RMA_PER_PAGE = 20
 const rmaPages = ref(1)
 const rmaTotal = ref(0)
 const RTABS = [
-  ['all', '全部', null], ['s0', '待审核', [0]], ['s23', '待收货', [2, 3]],
-  ['s4', '已收货', [4]], ['s7', '部分退款', [7]], ['s5', '已退款', [5]], ['s6', '已拒绝', [6]],
+  ['all', '全部', null], ['s0', '待审核', 0], ['s23', '待收货', '2,3'],
+  ['s4', '已收货', 4], ['s7', '部分退款', 7], ['s5', '已退款', 5], ['s6', '已拒绝', 6],
 ]
 /* 高亮按 key 字符串比较（修数组引用比较 R9），筛选值由 key 派生避免双份状态 */
 const rmaFilter = computed(() => RTABS.find(([k]) => k === state.rs)?.[2] ?? null)
@@ -58,35 +57,15 @@ async function loadRmas() {
   loadCnt.value++
   const token = ++rmaSeq
   const fin = () => { loadCnt.value-- }
-  const f = rmaFilter.value
+  const params = { page: state.rp, per_page: RMA_PER_PAGE }
+  if (rmaFilter.value != null) params.status = rmaFilter.value
+  if (q.value.trim()) params.q = q.value.trim()
   try {
-    if (!f || f.length === 1) {
-      const params = { page: state.rp, per_page: RMA_PER_PAGE }
-      if (f) params.status = f[0]
-      if (q.value.trim()) params.q = q.value.trim()
-      const d = await req('GET', '/api/admin/trade/rmas?' + new URLSearchParams(params))
-      if (token !== rmaSeq) { fin(); return }
-      rmas.value = d.items || []
-      rmaTotal.value = d.total ?? 0
-      rmaPages.value = d.pages ?? 1
-    } else {
-      const qp = { per_page: 100 }
-      if (q.value.trim()) qp.q = q.value.trim()
-      const res = await Promise.all(
-        f.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))),
-      )
-      if (token !== rmaSeq) { fin(); return }
-      const all = res
-        .flatMap((d) => d.items || [])
-        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-      /* 任意一状态超过 100 条被截断 → 提示改用单状态筛选 */
-      if (res.some((d) => (d.total ?? 0) > (d.items || []).length)) {
-        toast('「待收货」某状态超过 100 条，仅显示最近 100 条；建议按状态细分筛选查看', 'error')
-      }
-      rmaTotal.value = all.length
-      rmaPages.value = Math.max(1, Math.ceil(all.length / RMA_PER_PAGE))
-      rmas.value = all.slice((state.rp - 1) * RMA_PER_PAGE, state.rp * RMA_PER_PAGE)
-    }
+    const d = await req('GET', '/api/admin/trade/rmas?' + new URLSearchParams(params))
+    if (token !== rmaSeq) { fin(); return }
+    rmas.value = d.items || []
+    rmaTotal.value = d.total ?? 0
+    rmaPages.value = d.pages ?? 1
     rmaErr.value = ''
     /* 页码越界钳制：筛选/数据收缩后当前页超出 → 回第 1 页重拉一次 */
     if (state.rp > rmaPages.value && rmaPages.value >= 1) {
@@ -180,19 +159,7 @@ const filtered = computed(() => q.value.trim() !== '' || (tab.value === 'rma' ? 
 /* CSV 导出：仅导出当前 tab 当前筛选（状态+关键词）下全部页 */
 const exporting = ref(false)
 const EXPORT_MAX_PAGES = 20
-/* 循环翻页拉全量：按首页 total 重算页数；size 为该接口单页条数（rma per_page=100 / exch size=100，后端上限 100） */
-async function fetchAll(url, params, size) {
-  const first = await req('GET', url + '?' + new URLSearchParams(params))
-  const all = [...(first.items || [])]
-  const totalMatch = first.total ?? all.length
-  const maxPage = Math.min(Math.ceil(totalMatch / size) || 1, EXPORT_MAX_PAGES)
-  for (let p = 2; p <= maxPage; p++) {
-    params.page = p
-    const d = await req('GET', url + '?' + new URLSearchParams(params))
-    all.push(...(d.items || []))
-  }
-  return { all, overflow: Math.ceil(totalMatch / size) > EXPORT_MAX_PAGES }
-}
+/* 共享 fetchAllPages 翻页拉全量（按首页 total 重算页数；单页 100 为后端上限，rma 用 per_page / exch 用 size） */
 async function exportCsv() {
   if (exporting.value) return
   exporting.value = true
@@ -206,26 +173,18 @@ async function exportCsv() {
     const kw = q.value.trim()
     let all = [], overflow = false
     if (curTab === 'rma') {
-      if (rf && rf.length > 1) {
-        /* 「待收货」组合筛选：两状态各拉前 100 合并（与列表口径一致，超 100 截断提示） */
-        const qp = { per_page: 100 }
-        if (kw) qp.q = kw
-        const res = await Promise.all(rf.map((s) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...qp, status: s }))))
-        all = res.flatMap((d) => d.items || []).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-        overflow = res.some((d) => (d.total ?? 0) > (d.items || []).length)
-      } else {
-        const params = { page: 1, per_page: 100 }
-        if (rf) params.status = rf[0]
-        if (kw) params.q = kw
-        const r = await fetchAll('/api/admin/trade/rmas', params, 100)
-        all = r.all; overflow = r.overflow
-      }
+      /* 全部筛选统一服务端分页口径：「待收货」组合状态走 status=2,3 单请求拉全量 */
+      const base = { per_page: 100 }
+      if (rf != null) base.status = rf
+      if (kw) base.q = kw
+      const r = await fetchAllPages((p) => req('GET', '/api/admin/trade/rmas?' + new URLSearchParams({ ...base, page: p })), { pageSize: 100, maxPages: EXPORT_MAX_PAGES })
+      all = r.all; overflow = r.truncated
     } else {
-      const params = { page: 1, size: 100 }
-      if (ef != null) params.status = ef
-      if (kw) params.q = kw
-      const r = await fetchAll('/api/admin/trade/exchanges', params, 100)
-      all = r.all; overflow = r.overflow
+      const base = { size: 100 }
+      if (ef != null) base.status = ef
+      if (kw) base.q = kw
+      const r = await fetchAllPages((p) => req('GET', '/api/admin/trade/exchanges?' + new URLSearchParams({ ...base, page: p })), { pageSize: 100, maxPages: EXPORT_MAX_PAGES })
+      all = r.all; overflow = r.truncated
     }
     if (overflow) toast('匹配结果过多，仅导出前 ' + all.length + ' 条', 'error')
     const label = (curTab === 'rma' ? RTABS.find(([k]) => k === curRs)?.[1] : ETABS.find(([k]) => k === curEs)?.[1]) || '全部'

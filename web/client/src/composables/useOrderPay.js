@@ -6,6 +6,43 @@ import { req, intentNoChannel } from '../api/client'
 import { useUiStore } from '../stores/ui'
 import { i18n, tt } from '../i18n'
 
+/* create-intent 统一入口（Checkout/Success/GiftCards/订单支付共用）：
+ * provider 优先取调用方显式选择（结算页 paySel），否则读 gm_pay_provider；
+ * 发起前先与 /api/payments/methods 对账——通道已下线则弃参回落后端默认并清除存储；
+ * 响应 detail 含 provider_unavailable 时同样清存储并去参重试一次 */
+export async function createOrderIntent(orderNo, email, providerSel) {
+  const ui = useUiStore()
+  let provider = providerSel != null ? String(providerSel).trim() : ''
+  if (!provider) {
+    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
+  }
+  if (provider && provider !== 'mock') {
+    try {
+      const d = await req('GET', '/api/payments/methods')
+      const ids = (d.providers || []).map((p) => p.id)
+      if (ids.length && !ids.includes(provider)) {
+        provider = ''
+        try { localStorage.removeItem('gm_pay_provider') } catch (_) { /* 隐私模式 */ }
+      }
+    } catch (_) { /* methods 拉取失败不拦截支付 */ }
+  }
+  const base = { order_no: orderNo }
+  if (email) base.email = email
+  const ib = { ...base }
+  if (provider && provider !== 'mock') ib.provider = provider
+  try {
+    return await req('POST', '/api/payments/create-intent', ib)
+  } catch (e) {
+    const m = String((e.data && e.data.detail) || e.message || '')
+    if (ib.provider && m.includes('provider_unavailable')) {
+      try { localStorage.removeItem('gm_pay_provider') } catch (_) { /* 隐私模式 */ }
+      ui.toast(i18n.t('pay.providerGone'), 'error')
+      return await req('POST', '/api/payments/create-intent', base)
+    }
+    throw e
+  }
+}
+
 export function useOrderPay(onPaid) {
   const ui = useUiStore()
   const payingNo = ref('')
@@ -13,16 +50,12 @@ export function useOrderPay(onPaid) {
   async function pay(o) {
     payingNo.value = o.order_no
     try {
-      let provider = ''
-      try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-      const ib = { order_no: o.order_no }
-      if (provider && provider !== 'mock') ib.provider = provider
-      const intent = await req('POST', '/api/payments/create-intent', ib)
+      const intent = await createOrderIntent(o.order_no)
       if (intentNoChannel(intent)) {
         ui.toast(i18n.t('pay.unsupported_channel'), 'error')
         return
       }
-      if (provider !== 'mock' && intent && intent.redirect_url) {
+      if (intent && intent.redirect_url) {
         window.location.href = intent.redirect_url
         return
       }

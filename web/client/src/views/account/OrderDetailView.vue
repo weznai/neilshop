@@ -90,6 +90,7 @@ async function load() {
   /* 每次进入先清残留错误态：切换订单/支付后刷新可正常渲染（修复失败一次后永久错误卡） */
   err.value = ''
   o.value = null
+  loading.value = true
   if (!no) { err.value = tt('Missing order number', '缺少订单号'); loading.value = false; return }
   try {
     o.value = await req('GET', '/api/orders/' + encodeURIComponent(no))
@@ -132,15 +133,13 @@ const canBuyAgain = computed(() => !!o.value && ![0, 8, 9].includes(o.value.stat
 /* 已送达待确认：可自助确认收货（4→5 已完成） */
 const canConfirmRecv = computed(() => !!o.value && o.value.status === 4)
 
-/* 待付订单：支付（create-intent → mock-pay）/ 取消；游客双因子 ?email= 透传过归属校验 */
-const guestEmail = computed(() => String(route.query.email || '').trim())
+/* 待付订单：支付（create-intent → mock-pay）/ 取消 */
 async function payNow() {
   busy.value = true
-  const em = guestEmail.value || undefined
   try {
     let provider = ''
     try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-    const ib = { order_no: o.value.order_no, email: em }
+    const ib = { order_no: o.value.order_no }
     if (provider && provider !== 'mock') ib.provider = provider
     const intent = await req('POST', '/api/payments/create-intent', ib)
     if (intentNoChannel(intent)) {
@@ -152,7 +151,7 @@ async function payNow() {
       window.location.href = intent.redirect_url
       return
     }
-    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, email: em, succeed: true })
+    const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, succeed: true })
     ui.toast(d.order_status === 1 ? tt('Payment successful 🎉', '支付成功 🎉') : tt('Payment processing', '支付处理中'), 'success')
     await load()
   } catch (e) {
@@ -311,7 +310,7 @@ async function submitRma() {
   } catch (e) {
     const d = (e && e.data && e.data.detail) || ''
     if (String(d).startsWith('not_returnable')) ui.toast(tt('This order is not returnable in its current status', '该订单当前状态不可退货'), 'error')
-    else if (d === 'return_window_closed') ui.toast(tt('Return window closed (30 days after payment)', '退货窗口已关闭（下单后 30 天内可退）'), 'error')
+    else if (d === 'return_window_closed') ui.toast(tt('Return window closed (only within the valid return period)', '退货窗口已关闭（仅退货有效期内可退）'), 'error')
     else if (String(d).startsWith('qty_exceeds_available')) ui.toast(tt('Return quantity exceeds available quantity', '退货数量超出可退数量'), 'error')
     else ui.toast(tt('Return request failed — please retry later', '退货申请失败，请稍后再试'), 'error')
   } finally { rma.busy = false }
@@ -356,10 +355,13 @@ function exStockText(v) {
 }
 function exSelectable(v) { return (v.stock || 0) > 0 && v.stock_status !== 'out' }
 function exDiff(v) {
-  /* 差价 = 单件差 × 换货数量（后端 price_diff 口径），避免 qty>1 时提示金额与实际扣款不符 */
-  const diff = ((v.price || 0) - (ex.item?.unit_price || 0)) * (ex.qty || 1)
-  if (diff > 0) return tt(`Pay difference ${money(diff)}`, `需补差价 ${money(diff)}`)
-  if (diff < 0) return tt(`Refund difference ${money(-diff)}`, `退差价 ${money(-diff)}`)
+  /* 差价 = 单件差 × 换货数量，单件按实付折算（对齐后端 paid_unit = unit_price × grand_total / subtotal） */
+  const ov = o.value
+  const ratio = ov && ov.subtotal > 0 ? ov.grand_total / ov.subtotal : 1
+  const paidUnit = Math.round((ex.item?.unit_price || 0) * ratio)
+  const diff = ((v.price || 0) - paidUnit) * (ex.qty || 1)
+  if (diff > 0) return tt(`Pay difference ${money(diff)}`, `需补差价 ${money(diff)}`) + i18n.t('ord.diffEst')
+  if (diff < 0) return tt(`Refund difference ${money(-diff)}`, `退差价 ${money(-diff)}`) + i18n.t('ord.diffEst')
   return tt('Even swap', '同价换货')
 }
 async function submitExchange() {
@@ -465,7 +467,7 @@ async function submitReview(it) {
     await req('POST', '/api/content/reviews', body)
     reviewed.value[it.id] = true
     rv.openId = null
-    ui.toast(tt('Review submitted — it will appear after moderation (+100 points)', '评价已提交，审核后展示（+100 积分）'), 'success')
+    ui.toast(tt('Review submitted — it will appear after moderation (+10 points)', '评价已提交，审核后展示（+10 积分）'), 'success')
   } catch (e) {
     const d = e && e.data && e.data.detail || ''
     if (e && e.status === 401) {
@@ -565,7 +567,7 @@ async function submitReview(it) {
                   <button class="btn btn-ghost btn-sm" @click="openRma(it)">↩️ {{ tt('Request return', '申请退货') }}（{{ tt('max', '可退') }} {{ avail(it) }}）</button>
                   <button class="btn btn-ghost btn-sm" @click="openExchange(it)">🔁 {{ tt('Request exchange', '申请换货') }}</button>
                 </template>
-                <span v-else-if="statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (30 days after payment)', '已超退货窗口（支付后 30 天）') }}</span>
+                <span v-else-if="statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (valid return period only)', '已超退货窗口（退货有效期内可退）') }}</span>
                 <!-- 评价入口：已发货（3/4/5）展示；提交后置灰 -->
                 <button v-if="reviewableStatus" class="btn btn-ghost btn-sm" :class="{ 'rv-done': reviewDone(it) }" :disabled="reviewDone(it)" @click="!reviewDone(it) && toggleReview(it)">
                   {{ reviewDone(it) ? tt('Submitted · pending review', '已提交·审核后展示') : '✍️ ' + tt('Write a review', '写评价') }}
@@ -677,7 +679,7 @@ async function submitReview(it) {
           </div>
 
           <div class="card" style="padding:20px;font-size:12.5px;color:var(--gray);line-height:1.8">
-            💡 {{ tt('Returns & exchanges must be requested within 30 days of payment. Exchanges are always free; return labels are sent after support review.', '退货/换货需在支付后 30 天内发起；换货永久免费，退货标签由客服审核后发送。') }}
+            💡 {{ tt('Returns & exchanges must be requested within the valid return period after payment. Exchanges are always free; return labels are sent after support review.', '退货/换货需在退货有效期内发起；换货永久免费，退货标签由客服审核后发送。') }}
           </div>
         </div>
       </div>

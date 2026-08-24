@@ -36,8 +36,10 @@ const VALUES = [
 ]
 
 function seedCards() {
+  /* seed 兜底卡（API 失败时）：zh 直接以 titleZh 充当 title，ProductCard 已只读 p.title */
+  const zh = i18n.lang === 'zh'
   return GM_CATALOG.map((c) => ({
-    id: c.id, slug: '', title: c.title,
+    id: c.id, slug: '', title: zh ? c.titleZh : c.title,
     price_min: Math.round(c.price * 100), price_max: Math.round(c.price * 100),
     compare_at_price: null, hero_image: c.img, tags: [],
     is_new: false, is_best_seller: false, sold_count: 0, rating_count: 0, rating: 0,

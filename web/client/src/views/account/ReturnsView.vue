@@ -55,12 +55,18 @@ const RSTEPS = [
   ['In transit', '在途'], ['Received', '收货'], ['Refund', '退款'],
 ]
 const RSTEP_IDX = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 }
-/* 换货正向流程节点（5 为终态例外；2 为待差价支付节点；[en, zh]） */
+/* 换货正向流程节点（5 为终态例外；2 为待差价支付节点；无差价换货后端直达批准，不显示差价节点；[en, zh]） */
 const XSTEPS = [
   ['Requested', '申请'], ['Approved', '批准'], ['Diff paid', '差价'],
   ['Shipped', '已发货'], ['Completed', '完成'],
 ]
 const XSTEP_IDX = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4 }
+function xSteps(x) { return (x.price_diff || 0) > 0 ? XSTEPS : XSTEPS.filter((_, i) => i !== 2) }
+function xStepIdx(x) {
+  const i = XSTEP_IDX[x.status]
+  if (i === undefined || (x.price_diff || 0) > 0 || i < 2) return i
+  return i - 1
+}
 
 const money = (c) => fmtMoney(c, { nullTbd: true })
 const fmt = fmtDateTime
@@ -240,11 +246,11 @@ async function payDiff(x) {
             >{{ arm.is(x.exchange_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Withdraw', '撤销申请') }}</button>
           </div>
 
-          <!-- 换货进度条（5 为终态例外，单独提示） -->
-          <div v-if="XSTEP_IDX[x.status] !== undefined" style="display:flex;gap:0;margin-top:8px">
-            <div v-for="(s, i) in XSTEPS" :key="s[1]" style="flex:1;text-align:center">
-              <div :style="{ background: i <= XSTEP_IDX[x.status] ? 'var(--plum)' : 'var(--gray-light)' }" style="height:5px;border-radius:3px;margin:0 3px"></div>
-              <div style="font-size:11px;margin-top:4px" :style="{ color: i <= XSTEP_IDX[x.status] ? 'var(--ink)' : 'var(--gray)', fontWeight: i === XSTEP_IDX[x.status] ? '700' : '' }">{{ tt(s[0], s[1]) }}</div>
+          <!-- 换货进度条（5 为终态例外，单独提示；无差价单不含"差价"节点） -->
+          <div v-if="xStepIdx(x) !== undefined" style="display:flex;gap:0;margin-top:8px">
+            <div v-for="(s, i) in xSteps(x)" :key="s[1]" style="flex:1;text-align:center">
+              <div :style="{ background: i <= xStepIdx(x) ? 'var(--plum)' : 'var(--gray-light)' }" style="height:5px;border-radius:3px;margin:0 3px"></div>
+              <div style="font-size:11px;margin-top:4px" :style="{ color: i <= xStepIdx(x) ? 'var(--ink)' : 'var(--gray)', fontWeight: i === xStepIdx(x) ? '700' : '' }">{{ tt(s[0], s[1]) }}</div>
             </div>
           </div>
           <div v-else-if="x.status === 5" style="font-size:12.5px;color:var(--error);margin-top:8px">✖ {{ tt('This request was declined —', '申请已被拒绝，如有疑问请') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></div>

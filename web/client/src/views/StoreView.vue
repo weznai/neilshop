@@ -3,6 +3,7 @@ import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { i18n, tt } from '../i18n'
+import { CAT_ALIAS } from '../data/catalog'
 import ProductCard from '../components/ProductCard.vue'
 
 const route = useRoute()
@@ -15,8 +16,8 @@ const loadError = ref(false)
 const pendingScroll = ref(false)
 const gridEl = ref(null)
 
-/* 导航/旧链接使用短别名（nails/lashes），后端真实 slug 为 press-on-nails / magnetic-lashes */
-const CAT_ALIAS = { nails: 'press-on-nails', lashes: 'magnetic-lashes' }
+/* 导航/旧链接使用短别名（nails/lashes），后端真实 slug 为 press-on-nails / magnetic-lashes
+   （CAT_ALIAS 与 StoreLayout 导航高亮共享，见 data/catalog.js） */
 const FALLBACK_CATS = [
   { slug: 'press-on-nails', name: 'Press-on Nails' },
   { slug: 'magnetic-lashes', name: 'Magnetic Lashes' },
@@ -276,7 +277,7 @@ const HOT_LINKS = [
 
       <div ref="gridEl" class="grid grid-4" :style="loaded && busy ? 'opacity:.55;pointer-events:none' : ''">
         <template v-if="!loaded">
-          <div v-for="i in 8" :key="'sk' + i" class="sk-card">
+          <div v-for="i in state.size" :key="'sk' + i" class="sk-card">
             <div class="sk-img sk-shimmer"></div>
             <div class="sk-line sk-shimmer" style="width:70%;height:14px;margin-top:10px"></div>
             <div class="sk-line sk-shimmer" style="width:40%;height:14px;margin-top:8px"></div>

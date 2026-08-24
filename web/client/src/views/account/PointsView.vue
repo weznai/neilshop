@@ -55,6 +55,7 @@ async function load() {
   if (l.status === 'fulfilled') {
     ledger.value = l.value.items || []
     total.value = l.value.total || 0
+    if (page.value > pages.value && pages.value > 0) { page.value = 1; syncQuery(); load(); return }
   }
   if (e.status === 'fulfilled') expiring.value = (e.value.items || []).filter((r) => (r.change || 0) > 0)
   ptsFailed.value = s.status === 'rejected'
@@ -83,10 +84,10 @@ watch(() => route.query, (q) => {
   if (np !== page.value) { page.value = np; load() }
 })
 
-/* 规则口径与后端一致：$1=10 分（下单冻结）；100 分=$1；评价 +100；推荐 +1000 */
+/* 规则口径与后端一致：$1=10 分（下单冻结）；100 分=$1；评价 +10；推荐 +1000 */
 const RULES = [
   [['Order spend', '下单消费'], ['+10 pts per $1 (unfreezes after delivery)', '每 $1 +10 分（确认收货后解冻）']],
-  [['Write a review', '写商品评价'], ['+100 pts', '+100 分']],
+  [['Write a review', '写商品评价'], ['+10 pts', '+10 分']],
   [['Refer a friend who orders', '推荐好友注册并下单'], ['+1000 pts', '+1000 分']],
   [['Birthday month', '生日月福利'], ['points gift', '积分小礼物']],
 ]

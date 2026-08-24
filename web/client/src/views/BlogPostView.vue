@@ -48,7 +48,8 @@ function mdHtml(md) {
       out.push('<hr>')
     } else if ((m = l.match(/^(#{1,4})\s+(.*)$/))) {
       closeList(); closeQuote()
-      const h = Math.min(m[1].length + 1, 4)
+      /* #→h2 ##→h3 ###→h4 ####→h5：四级标题不再与三级塌缩为同一级 */
+      const h = m[1].length + 1
       out.push(`<h${h}>${inline(m[2])}</h${h}>`)
     } else if ((m = l.match(/^&gt;\s?(.*)$/))) {
       closeList()
@@ -251,6 +252,7 @@ function shareFb() {
 .prose :deep(h2) { font-family: var(--font-title); font-size: 22px; margin: 30px 0 12px; color: var(--ink); }
 .prose :deep(h3) { font-family: var(--font-title); font-size: 19px; margin: 26px 0 10px; color: var(--ink); }
 .prose :deep(h4) { font-family: var(--font-title); font-size: 16px; margin: 20px 0 8px; color: var(--ink); }
+.prose :deep(h5) { font-family: var(--font-title); font-size: 14.5px; margin: 16px 0 6px; color: var(--ink); }
 .prose :deep(a) { color: var(--plum); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--rose); }
 .prose :deep(a:hover) { text-decoration-color: var(--plum); }
 .prose :deep(img) { border-radius: 12px; margin: 16px 0; }

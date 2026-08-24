@@ -20,6 +20,9 @@ export const GM_CATALOG = [
   { id: 16, title: 'Magic Glue', titleZh: '魔力胶水', price: 13.99, stock: 50, cat: 'tools', img: 'https://placehold.co/200x200/DDD6E8/552338?text=Magic+Glue' },
 ]
 
+/* 分类短别名 → 后端真实 slug（导航/旧链接 ?cat=nails|lashes；StoreView 与 StoreLayout 共用） */
+export const CAT_ALIAS = { nails: 'press-on-nails', lashes: 'magnetic-lashes' }
+
 export function catalogById(id) {
   return GM_CATALOG.find((p) => p.id === id) || null
 }

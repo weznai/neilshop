@@ -139,7 +139,12 @@ let manualAt = 0
 watch(q, (v) => {
   clearTimeout(timer)
   const term = v.trim()
-  if (!term) { items.value = []; total.value = 0; return }
+  /* 清空搜索词：同步清残留分页并从 URL 移除 q/page（replace 不产生历史） */
+  if (!term) {
+    items.value = []; total.value = 0; pages.value = 1
+    if (route.query.q || route.query.page) router.replace({ query: { ...route.query, q: undefined, page: undefined } })
+    return
+  }
   timer = setTimeout(() => {
     if (Date.now() - manualAt < 450) return
     page.value = 1
