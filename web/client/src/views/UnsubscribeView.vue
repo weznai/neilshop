@@ -22,6 +22,15 @@ const saving = ref(false)
 const saved = ref(false)
 
 const hasToken = computed(() => !!email.value && !!token.value)
+
+function normPrefs(d) {
+  return d && {
+    ...d,
+    sub_promo: !!d.sub_promo,
+    sub_new_arrival: !!d.sub_new_arrival,
+    sub_cart_abandon: !!d.sub_cart_abandon,
+  }
+}
 const prefLabels = computed(() => [
   ['sub_promo', tt('🎁 Promos & offers', '🎁 促销与优惠活动')],
   ['sub_new_arrival', tt('✨ New-arrival alerts', '✨ 新品上架通知')],
@@ -36,14 +45,14 @@ async function load() {
     ? '?email=' + encodeURIComponent(email.value) + '&token=' + encodeURIComponent(token.value)
     : ''
   try {
-    prefs.value = await req('GET', '/api/account/email-preferences' + qs)
+    prefs.value = normPrefs(await req('GET', '/api/account/email-preferences' + qs))
   } catch (e) {
     /* 带 token 请求 400（token 失效）且已登录：清参数回退会话读取自身偏好 */
     let fallbackFailed = false
     if (e && e.status === 400 && qs && auth.isLoggedIn) {
       token.value = ''
       email.value = ''
-      try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { fallbackFailed = true }
+      try { prefs.value = normPrefs(await req('GET', '/api/account/email-preferences')) } catch (_) { fallbackFailed = true }
     }
     if (!prefs.value) {
       err.value = e && (e.status === 400 || e.status === 401)
@@ -69,7 +78,7 @@ async function save() {
     sub_cart_abandon: !!prefs.value.sub_cart_abandon,
   }
   try {
-    prefs.value = await req('PUT', '/api/account/email-preferences' + qs, body)
+    prefs.value = normPrefs(await req('PUT', '/api/account/email-preferences' + qs, body))
     saved.value = true
     ui.toast(tt('Preferences saved', '偏好已保存'), 'success')
   } catch (e) {

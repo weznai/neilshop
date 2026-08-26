@@ -28,6 +28,15 @@ const prefs = ref(null)
 const prefsBusy = ref(false)
 const prefsErr = ref(false)
 
+function normPrefs(d) {
+  return d && {
+    ...d,
+    sub_promo: !!d.sub_promo,
+    sub_new_arrival: !!d.sub_new_arrival,
+    sub_cart_abandon: !!d.sub_cart_abandon,
+  }
+}
+
 /* 删除请求：POST → {request_id, effective_at}；DELETE 撤销 */
 const deletePending = ref(null) /* { effective_at } */
 /* 注销冷静期回显消费 Shell 已有会话（/me 含 delete_request），不重复拉取 */
@@ -47,7 +56,7 @@ onMounted(() => {
 
 async function loadPrefs() {
   prefsErr.value = false
-  try { prefs.value = await req('GET', '/api/account/email-preferences') }
+  try { prefs.value = normPrefs(await req('GET', '/api/account/email-preferences')) }
   catch (_) { prefsErr.value = true }
 }
 
@@ -66,11 +75,11 @@ async function save() {
 async function togglePref(key) {
   prefsBusy.value = true
   try {
-    prefs.value = await req('PUT', '/api/account/email-preferences', { [key]: !!prefs.value[key] })
+    prefs.value = normPrefs(await req('PUT', '/api/account/email-preferences', { [key]: !!prefs.value[key] }))
     ui.toast(tt('Email preferences saved', '邮件偏好已保存'), 'success')
   } catch (_) {
     ui.toast(tt('Save failed — please retry later', '保存失败，请稍后再试'), 'error')
-    try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { /* */ }
+    try { prefs.value = normPrefs(await req('GET', '/api/account/email-preferences')) } catch (_) { /* */ }
   } finally { prefsBusy.value = false }
 }
 
