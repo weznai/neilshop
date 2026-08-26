@@ -224,6 +224,9 @@ class StripeProvider(PaymentProvider):
             cancel_url=f"{base}/checkout?canceled=1",
             client_reference_id=order_no,
             metadata={"order_no": order_no},
+            # 元数据显式传播：session metadata 不会自动带到 PI，而 webhook 推的
+            # payment_intent.succeeded 载荷是 PI —— 不传则验签门禁 order_no_missing 400
+            payment_intent_data={"metadata": {"order_no": order_no}},
             line_items=[{
                 "quantity": 1,
                 "price_data": {
