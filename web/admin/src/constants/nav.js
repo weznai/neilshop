@@ -5,6 +5,7 @@ export const MENU = [
   ['dash', '数据看板', '/', 'dashboard:read'],
   '交易',
   ['orders', '订单管理', '/orders', 'trade:read'],
+  ['payments', '支付流水', '/payments', 'trade:read'],
   ['returns', '退货审核', '/returns', 'rma:read'],
   ['tickets', '客服工单', '/tickets', 'ticket:manage'],
   ['chat', '在线客服', '/chat', 'chat:manage'],

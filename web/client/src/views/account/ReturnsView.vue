@@ -191,9 +191,20 @@ async function payDiff(x) {
 
 <template>
   <div>
-    <div class="card" style="padding:18px;margin-bottom:16px;font-size:13.5px;color:var(--gray);line-height:1.7">
-      ↩️ <b>{{ tt('30-day free returns', '30 天免费退货') }}</b> · <b>{{ tt('Exchanges always free', '换货永久免费') }}</b>{{ tt(' (we reship instantly, you keep the original).', '（新款立即补发，旧款无需寄回）。') }}
-      {{ tt('Start from:', '入口：') }}<router-link to="/account/orders" style="color:var(--plum)">{{ tt('Orders', '订单') }}</router-link> → {{ tt('Details → “Return / Exchange”', '详情 → 商品行「申请退货 / 换货」') }}。
+    <!-- 售后页头：服务化定位（退货/换货/退款记录统一在此），弱化"退货"字样的首屏曝光 -->
+    <div class="card" style="padding:18px 20px;margin-bottom:16px">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span class="as-ico">🎧</span>
+        <div style="flex:1;min-width:200px">
+          <b style="font-size:15.5px">{{ tt('After-sales Service', '售后服务') }}</b>
+          <div style="font-size:12.5px;color:var(--gray);margin-top:2px">{{ tt('Your returns, exchanges & refund records all live here.', '退货、换货与退款进度统一在这里查看。') }}</div>
+        </div>
+        <router-link class="btn btn-secondary btn-sm" to="/contact">💬 {{ tt('Contact support', '联系客服') }}</router-link>
+      </div>
+      <div class="as-note">
+        ✨ {{ tt('30-day free returns · exchanges always free (we reship instantly, you keep the original).', '30 天退货 · 换货永久免费（新款立即补发，旧款无需寄回）。') }}
+        {{ tt('To start one: Orders → Details → Order support.', '发起入口：订单 → 详情 → 订单帮助。') }}
+      </div>
     </div>
 
     <div v-if="!loaded" style="display:grid;gap:12px">
@@ -301,8 +312,14 @@ async function payDiff(x) {
       </div>
 
       <div v-if="!returns.length && !exchanges.length" class="card" style="padding:30px;text-align:center;color:var(--gray)">
-        {{ tt('No returns or exchanges yet 💅', '暂无退换货记录 💅') }}
+        {{ tt('No after-sales records yet 💅', '暂无售后记录 💅') }}
       </div>
     </template>
   </div>
 </template>
+
+<style scoped>
+/* 售后页头：渐变 icon 气泡（对齐 newsletter news-ico）+ 虚线分隔的服务承诺行 */
+.as-ico { width: 42px; height: 42px; border-radius: 50%; flex: none; background: linear-gradient(135deg, var(--rose), var(--plum)); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 19px; box-shadow: 0 6px 16px rgba(232,180,184,.5); }
+.as-note { font-size: 12.5px; color: var(--gray); line-height: 1.7; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--gray-light); }
+</style>

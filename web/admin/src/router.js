@@ -16,6 +16,7 @@ const router = createRouter({
       children: [
         { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { title: '数据看板', perm: 'dashboard:read' } },
         { path: 'orders', name: 'orders', component: () => import('./views/OrdersView.vue'), meta: { title: '订单管理', perm: 'trade:read' } },
+        { path: 'payments', name: 'payments', component: () => import('./views/PaymentsView.vue'), meta: { title: '支付流水', perm: 'trade:read' } },
         { path: 'order-detail', name: 'order-detail', component: () => import('./views/OrderDetailView.vue'), meta: { title: '订单详情', crumbs: ['订单管理', '订单详情'], perm: 'trade:read' } },
         { path: 'returns', name: 'returns', component: () => import('./views/ReturnsView.vue'), meta: { title: '退换货', perm: 'rma:read' } },
         { path: 'tickets', name: 'tickets', component: () => import('./views/TicketsView.vue'), meta: { title: '工单', perm: 'ticket:manage' } },

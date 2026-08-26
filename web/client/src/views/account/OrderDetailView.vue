@@ -112,6 +112,8 @@ async function load() {
   if (!no) { err.value = tt('Missing order number', '缺少订单号'); loading.value = false; return }
   try {
     o.value = await req('GET', '/api/orders/' + encodeURIComponent(no) + guestQ())
+    /* ?help=support：自动展开退换货入口（CancelFlowView 换货分流跳转） */
+    if (route.query.help === 'support') supportMode.value = true
     /* reviewed 持久化：order detail items 新增 reviewed 字段（无字段时回落会话内行为） */
     for (const it of (o.value.items || [])) if (it.reviewed) reviewed.value[it.id] = true
   } catch (e) {
@@ -182,8 +184,11 @@ async function payNow() {
   } finally { busy.value = false }
 }
 /* 两段式确认（useArmConfirm：5s 复位；按钮 arm 态红字 + 二段文案） */
-const cancelArm = useArmConfirm()
 const recvArm = useArmConfirm()
+
+/* 退换货入口收起态：默认隐藏商品行的「申请退货/换货」按钮，从底部「订单帮助」卡展开；
+   ?help=support 直达展开（CancelFlowView 换货分流跳转用） */
+const supportMode = ref(false)
 
 /* 确认收货（仅 status=4 已送达）：CAS 4→5 已完成 */
 async function confirmReceived() {
@@ -199,35 +204,12 @@ async function confirmReceived() {
   } finally { busy.value = false }
 }
 
-/* 待付取消（仅释放库存，无退款） */
-async function cancelOrder() {
-  busy.value = true
-  try {
-    await req('POST', '/api/orders/' + encodeURIComponent(o.value.order_no) + '/cancel', { reason: 'user' })
-    ui.toast(tt('Order cancelled', '订单已取消'), 'success')
-    await load()
-  } catch (e) {
-    const d = e && e.data && e.data.detail || ''
-    ui.toast(String(d).startsWith('not_cancellable') ? tt('This order cannot be cancelled in its current status', '该订单当前状态不可取消') : tt('Cancel failed — please retry later', '取消失败，请稍后再试'), 'error')
-  } finally { busy.value = false }
+/* 待付/已付未发货取消：入口下沉至三步挽留向导 /account/orders/cancel（本页不再直达） */
+function goCancel() {
+  router.push({ path: '/account/orders/cancel', query: { no: o.value.order_no } })
 }
-/* 已支付未发货：自助取消并全额原路退款（POST cancel 扩展；409 no_refundable_payment 需转人工） */
-async function cancelPaidOrder() {
-  busy.value = true
-  try {
-    const d = await req('POST', '/api/orders/' + encodeURIComponent(o.value.order_no) + '/cancel', { reason: 'user' })
-    const ref = d && d.refund
-    ui.toast(ref && ref.amount
-      ? tt(`Order cancelled — ${money(ref.amount)} refund on its way back to your payment method`, `订单已取消，退款 ${money(ref.amount)} 将原路退回`)
-      : tt('Order cancelled — refund on its way back to your payment method', '订单已取消，退款将原路退回'), 'success')
-    await load()
-  } catch (e) {
-    const d = e && e.data && e.data.detail || ''
-    if (String(d).startsWith('no_refundable_payment')) ui.toast(tt('Auto refund unavailable — please contact support', '无法自动退款，请联系客服'), 'error')
-    else if (String(d).startsWith('not_cancellable')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); await load() }
-    else ui.toast(tt('Cancel failed — please retry later', '取消失败，请稍后再试'), 'error')
-  } finally { busy.value = false }
-}
+/* 可取消口径（与向导页一致）：待付(0) / 已付未发货(1 且未发货) */
+const cancellable = computed(() => !!o.value && (o.value.status === 0 || canSelfCancel.value))
 
 /* ---------- 再次购买：POST /api/cart/items-batch（按 qty-refunded-exchanged 计算，≤20 项） ---------- */
 const rebuying = ref(false)
@@ -651,20 +633,12 @@ async function submitReview(it) {
             <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
             <template v-if="o.status === 0">
               <button class="btn btn-primary btn-sm" :class="{ loading: busy }" :disabled="busy" @click="payNow">{{ tt('Pay', '去支付') }} {{ money(o.grand_total) }}</button>
-              <button
-                class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is('pending'), loading: busy }"
-                :disabled="busy" @click="cancelArm.hit('pending', cancelOrder)"
-              >{{ cancelArm.is('pending') ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel order', '取消订单') }}</button>
             </template>
             <template v-else>
               <button
                 v-if="canConfirmRecv" class="btn btn-primary btn-sm" :class="{ arm: recvArm.is('recv'), loading: busy }"
                 :disabled="busy || rebuying" @click="recvArm.hit('recv', confirmReceived)"
               >{{ recvArm.is('recv') ? tt('Tap again to confirm', '再点一次确认') : tt('✓ Confirm delivery', '确认收货') }}</button>
-              <button
-                v-if="canSelfCancel" class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is('paid'), loading: busy }"
-                :disabled="busy || rebuying" @click="cancelArm.hit('paid', cancelPaidOrder)"
-              >{{ cancelArm.is('paid') ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel & refund', '取消并退款') }}</button>
               <button v-if="canBuyAgain" class="btn btn-secondary btn-sm" :class="{ loading: rebuying }" :disabled="rebuying || busy" @click="buyAgain">🛒 {{ tt('Buy again', '再次购买') }}</button>
             </template>
           </div>
@@ -700,12 +674,12 @@ async function submitReview(it) {
                 </div>
                 <b style="font-size:13.5px">{{ money(it.subtotal) }}</b>
               </div>
-              <div v-if="(statusReturnable && avail(it) > 0) || reviewableStatus" class="item-actions">
-                <template v-if="statusReturnable && avail(it) > 0 && inReturnWindow">
+              <div v-if="(supportMode && statusReturnable && avail(it) > 0) || reviewableStatus" class="item-actions">
+                <template v-if="supportMode && statusReturnable && avail(it) > 0 && inReturnWindow">
                   <button class="btn btn-ghost btn-sm" @click="openRma(it)">↩️ {{ tt('Request return', '申请退货') }}（{{ tt('max', '可退') }} {{ avail(it) }}）</button>
                   <button class="btn btn-ghost btn-sm" @click="openExchange(it)">🔁 {{ tt('Request exchange', '申请换货') }}</button>
                 </template>
-                <span v-else-if="statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (valid return period only)', '已超退货窗口（退货有效期内可退）') }}</span>
+                <span v-else-if="supportMode && statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (valid return period only)', '已超退货窗口（退货有效期内可退）') }}</span>
                 <!-- 评价入口：已发货（3/4/5）展示；提交后置灰 -->
                 <button v-if="reviewableStatus" class="btn btn-ghost btn-sm" :class="{ 'rv-done': reviewDone(it) }" :disabled="reviewDone(it)" @click="!reviewDone(it) && toggleReview(it)">
                   {{ reviewDone(it) ? tt('Submitted · pending review', '已提交·审核后展示') : '✍️ ' + tt('Write a review', '写评价') }}
@@ -824,8 +798,28 @@ async function submitReview(it) {
             </div>
           </div>
 
-          <div class="card" style="padding:20px;font-size:12.5px;color:var(--gray);line-height:1.8">
-            💡 {{ tt('Returns & exchanges must be requested within the valid return period after payment. Exchanges are always free; return labels are sent after support review.', '退货/换货需在退货有效期内发起；换货永久免费，退货标签由客服审核后发送。') }}
+          <!-- 订单帮助：问题优先引导解决；取消入口为底部弱化文字链（跳三步挽留向导） -->
+          <div class="card" style="padding:20px">
+            <h3 style="font-size:15px;margin-bottom:6px">{{ tt('Order support', '订单帮助') }}</h3>
+            <p style="font-size:12.5px;color:var(--gray);margin-bottom:12px">{{ tt('Something off? Most issues solve faster than a refund:', '遇到问题？大部分问题都能比退款更快解决：') }}</p>
+            <div style="display:grid;gap:8px">
+              <button v-if="addrEditable" type="button" class="od-help" @click="openAddr">✏️ {{ tt('Edit shipping address', '修改收货地址') }}</button>
+              <button v-if="statusReturnable" type="button" class="od-help" @click="supportMode = !supportMode">
+                {{ supportMode ? '▾' : '▸' }} ↩️ {{ tt('Return or exchange an item', '退换某件商品') }}
+              </button>
+              <router-link class="od-help" to="/contact">💬 {{ tt('Contact support (replies ~2 min)', '联系客服（约 2 分钟回复）') }}</router-link>
+            </div>
+            <div v-if="supportMode && statusReturnable" style="font-size:12px;color:var(--plum);background:var(--rose-pale);border-radius:8px;padding:8px 12px;margin-top:10px">
+              {{ tt('Pick “Request return / exchange” on the item above ⤴', '请在上方商品行选择「申请退货 / 申请换货」⤴') }}
+            </div>
+            <div class="od-help-quiet">
+              <span style="font-size:12.5px;color:var(--gray)">
+                {{ tt('Returns & exchanges within the valid period; exchanges always free.', '退换货需在退货有效期内发起；换货永久免费。') }}
+              </span>
+              <button v-if="cancellable" type="button" class="od-cancel-link" @click="goCancel">
+                {{ tt('Still want to cancel this order? →', '仍要取消订单/申请退款？→') }}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1017,4 +1011,11 @@ async function submitReview(it) {
 .ex-opt.picked { border: 2px solid var(--plum); background: var(--rose-pale); box-shadow: 0 2px 10px rgba(138,74,99, .12); padding: 9.5px 11.5px; }
 .ex-stock { font-size: 11px; color: var(--gray); background: var(--gray-light); border-radius: 999px; padding: 1px 8px; flex: none; }
 .ex-stock.out { color: var(--error); background: var(--pale-error); }
+
+/* 订单帮助卡：引导解决为主，取消入口刻意弱化（灰色小字链，沉到卡底部） */
+.od-help { display: flex; gap: 10px; align-items: center; padding: 11px 14px; border: 1.5px solid var(--gray-light); border-radius: 10px; font-size: 13.5px; font-weight: 500; color: var(--ink); background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; text-decoration: none; font-family: inherit; }
+.od-help:hover { border-color: var(--rose); background: var(--rose-pale); transform: translateY(-1px); }
+.od-help-quiet { border-top: 1px solid var(--gray-light); margin-top: 14px; padding-top: 12px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.od-cancel-link { background: none; border: none; cursor: pointer; font-size: 12px; color: var(--gray); text-decoration: underline; text-underline-offset: 3px; padding: 4px 2px; font-family: inherit; }
+.od-cancel-link:hover { color: var(--plum); }
 </style>

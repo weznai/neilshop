@@ -273,6 +273,47 @@ def delete_shipping_rate(
     return service_admin.delete_shipping_rate(db, admin, rate_id)
 
 
+# ---------- 支付流水 / 回调记录（后台支付对账查询） ----------
+
+@router.get("/payments")
+def list_payments(
+    status: Optional[str] = None,
+    provider: Optional[str] = None,
+    q: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = Query(default=1, ge=1),
+    per_page: Optional[int] = Query(default=None, ge=1),
+    admin: User = Depends(require_perm("trade:read")),
+    db: Session = Depends(get_db),
+):
+    """支付流水分页（跨订单全局）：status 支持 CSV（如 1,4），provider=stripe|paypal|mock，
+    q 匹配订单号/邮箱/PI 单号；与 /payments/config 同前缀不冲突（精确路径匹配）"""
+    return service_admin.list_payments(
+        db, status, provider, q, page, per_page, date_from, date_to,
+    )
+
+
+@router.get("/webhook-events")
+def list_webhook_events(
+    status: Optional[int] = None,
+    source: Optional[str] = None,
+    type: Optional[str] = None,
+    q: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = Query(default=1, ge=1),
+    per_page: Optional[int] = Query(default=None, ge=1),
+    admin: User = Depends(require_perm("trade:read")),
+    db: Session = Depends(get_db),
+):
+    """支付回调事件分页（webhook_events 全量原文）：status 0待处理/1成功/2不可恢复跳过，
+    source=stripe|paypal|mock，type 精确匹配（如 payment_intent.succeeded）"""
+    return service_admin.list_webhook_events(
+        db, status, source, type, q, page, per_page, date_from, date_to,
+    )
+
+
 # ---------- 支付通道配置（settings key=payment_config，覆盖 GM_STRIPE_*/GM_PAYPAL_* 环境变量） ----------
 
 def _pay_row(db: Session) -> Setting | None:

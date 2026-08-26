@@ -21,11 +21,9 @@ const failed = ref(false)
 const page = ref(1)
 const pages = ref(1)
 const total = ref(0)
-const cancelingNo = ref('')
 const confirmingNo = ref('')
 
 /* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
-const cancelArm = useArmConfirm()
 const recvArm = useArmConfirm()
 
 const SHIP = { 0: '', 1: [' · partially shipped', ' · 部分发货'], 2: [' · all shipped', ' · 全部发货'] }
@@ -144,23 +142,8 @@ function go(p) {
 /* 待付订单支付：useOrderPay 统一封装（hosted 跳收银台 / mock 直付，already_paid 幂等） */
 const { payingNo, pay } = useOrderPay(load)
 
-/* 订单取消：待付（释放库存）/ 已付未发货（自助取消 + 后端自动全额原路退款）；两段式确认防误触 */
-async function cancel(o) {
-  const paid = o.status === 1 && (o.shipping_status || 0) === 0
-  cancelingNo.value = o.order_no
-  try {
-    const d = await req('POST', '/api/orders/' + encodeURIComponent(o.order_no) + '/cancel', { reason: 'user' })
-    const ref = d && d.refund
-    if (paid && ref && ref.amount) ui.toast(tt(`Order cancelled — ${money(ref.amount)} refund on its way back`, `订单已取消，退款 ${money(ref.amount)} 将原路退回`), 'success')
-    else ui.toast(tt('Order cancelled', '订单已取消'), 'success')
-    await load()
-  } catch (e) {
-    const d = e && e.data && e.data.detail || ''
-    if (String(d).startsWith('no_refundable_payment')) ui.toast(tt('Auto refund unavailable — please contact support', '无法自动退款，请联系客服'), 'error')
-    else if (String(d).startsWith('not_cancellable')) { ui.toast(tt('Order status changed — refreshed', '订单状态已变化，已刷新'), 'error'); load() }
-    else ui.toast(tt('Cancel failed — please retry later', '取消失败，请稍后再试'), 'error')
-  } finally { cancelingNo.value = '' }
-}
+/* 订单取消入口已下沉：列表不再提供取消按钮，统一走订单详情 → 订单帮助 →
+   /account/orders/cancel 三步挽留向导（reason=user_wizard:* 归因） */
 
 /* 确认收货（仅 status=4 已送达）：CAS 4→5 已完成；两段式确认防误触 */
 async function confirmRecv(o) {
@@ -214,16 +197,6 @@ async function confirmRecv(o) {
               <b style="color:var(--plum)">{{ money(o.grand_total) }}</b>
               <template v-if="o.status === 0">
                 <button class="btn btn-primary btn-sm" :class="{ loading: payingNo === o.order_no }" :disabled="payingNo === o.order_no" @click="pay(o)">{{ tt('Pay now', '去支付') }}</button>
-                <button
-                  class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is(o.order_no), loading: cancelingNo === o.order_no }"
-                  :disabled="cancelingNo === o.order_no" @click="cancelArm.hit(o.order_no, () => cancel(o))"
-                >{{ cancelArm.is(o.order_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel', '取消') }}</button>
-              </template>
-              <template v-else-if="o.status === 1 && (o.shipping_status || 0) === 0">
-                <button
-                  class="btn btn-ghost btn-sm" :class="{ arm: cancelArm.is(o.order_no), loading: cancelingNo === o.order_no }"
-                  :disabled="cancelingNo === o.order_no" @click="cancelArm.hit(o.order_no, () => cancel(o))"
-                >{{ cancelArm.is(o.order_no) ? tt('Tap again to confirm', '再点一次确认') : tt('Cancel & refund', '取消并退款') }}</button>
               </template>
               <template v-else-if="o.status === 4">
                 <button

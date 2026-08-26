@@ -12,11 +12,12 @@ const ui = useUiStore()
 const route = useRoute()
 const router = useRouter()
 const ready = ref(false)
-/* [href, [en, zh], icon]（订阅/推荐入口由页脚承载，不占侧栏） */
+/* [href, [en, zh], icon]（订阅/推荐入口由页脚承载，不占侧栏）
+   退换货并入「售后」入口（软化退货曝光：退货/换货/退款记录统一在售后页查看） */
 const NAV = [
   ['/account', ['Overview', '总览'], '👤'],
   ['/account/orders', ['Orders', '订单'], '📦'],
-  ['/account/returns', ['Returns & Exchanges', '退换货'], '↩️'],
+  ['/account/returns', ['After-sales', '售后'], '🎧'],
   ['/account/points', ['Glow Points', '积分'], '⭐'],
   ['/account/coupons', ['My Coupons', '我的优惠券'], '🎟️'],
   ['/account/address', ['Address Book', '地址簿'], '📍'],

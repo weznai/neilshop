@@ -171,7 +171,7 @@ cd server
 |---|---|---|---|---|
 | `PUT` | `/api/admin/support/tickets/{ticket_no}/status` | 🔒 admin | admin-ops | 更新status |
 
-## /api/admin/trade · 后台 · 交易/履约（28 个端点）
+## /api/admin/trade · 后台 · 交易/履约（30 个端点）
 
 | 方法 | 路径 | 鉴权 | tags | 说明 |
 |---|---|---|---|---|
@@ -191,6 +191,8 @@ cd server
 | `POST` | `/api/admin/trade/orders/{order_no}/prepare` | 🔒 admin | admin-trade | 创建prepare |
 | `POST` | `/api/admin/trade/orders/{order_no}/refund` | 🔒 admin | admin-trade | 订单退款 |
 | `POST` | `/api/admin/trade/orders/{order_no}/ship` | 🔒 admin | admin-trade | 订单发货（回填运单号） |
+| `GET` | `/api/admin/trade/payments` | 🔒 admin | admin-trade | 支付流水分页（跨订单：状态/通道/单号邮箱搜索/日期） |
+| `GET` | `/api/admin/trade/webhook-events` | 🔒 admin | admin-trade | 支付回调事件分页（webhook_events 原文：来源/类型/状态） |
 | `GET` | `/api/admin/trade/rmas` | 🔒 admin | admin-trade | RMA列表 |
 | `POST` | `/api/admin/trade/rmas/{rma_no}/approve` | 🔒 admin | admin-trade | 批准RMA |
 | `POST` | `/api/admin/trade/rmas/{rma_no}/receive` | 🔒 admin | admin-trade | RMA 收货（回补库存） |

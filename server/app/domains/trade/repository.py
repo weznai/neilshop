@@ -659,6 +659,113 @@ def exchange_linked_to_payment(db: Session, payment_id: int) -> Optional[Exchang
     )
 
 
+# ---------- 支付流水/回调记录（后台支付对账查询） ----------
+# provider → PI id 前缀（展示标签与列表筛选用）：payments 无独立 provider 列
+_PROVIDER_PREFIXES = (
+    ("stripe", ("pi_", "cs_")),
+    ("mock", ("PI_",)),   # 含 PI_FREE 免单核销行
+)
+
+
+def provider_of_intent(payment_intent: Optional[str]) -> str:
+    """支付行通道判定（按 PI id 前缀）：pi_/cs_=stripe、PI_=mock、其余非空
+    单号=paypal（PayPal order id 为无固定前缀的字母数字串，排除法兜底）。"""
+    pi = payment_intent or ""
+    for name, prefixes in _PROVIDER_PREFIXES:
+        if pi.startswith(prefixes):
+            return name
+    return "paypal" if pi else ""
+
+
+def _prefix_cs(db: Session, col, prefix: str) -> object:
+    r"""通道前缀大小写敏感匹配（跨方言）：SQLite 与 MySQL 默认 LIKE 对 ASCII 均不
+    区分大小写（'pi_%' 会命中 PI_ 前缀的 mock 单号），故 SQLite 用 GLOB（_ 为字面量、
+    * 为通配）、MySQL 用 LIKE BINARY（\_ 转义下划线字面量）。"""
+    if db.bind is not None and db.bind.dialect.name == "mysql":
+        esc = prefix.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+        return col.op("LIKE BINARY")(esc + "%")
+    return col.op("GLOB")(prefix + "*")
+
+
+def paginate_payments(
+    db: Session, *, status: Optional[int] = None, status_in: Optional[list[int]] = None,
+    provider: Optional[str] = None, q: Optional[str] = None,
+    date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+    page: int = 1, per_page: int = 20,
+) -> tuple[list[tuple[Payment, Order]], int]:
+    """后台支付流水分页（join orders 带出 order_no/email 供搜索与跳转）；
+    provider 过滤与 provider_of_intent 同口径、大小写敏感（paypal 为排除法）。"""
+    query = db.query(Payment, Order).join(Order, Payment.order_id == Order.id)
+    if status is not None:
+        query = query.filter(Payment.status == status)
+    if status_in is not None:
+        query = query.filter(Payment.status.in_(status_in))
+    if provider:
+        pi_col = Payment.stripe_payment_intent
+        if provider == "stripe":
+            query = query.filter(or_(
+                _prefix_cs(db, pi_col, "pi_"),
+                _prefix_cs(db, pi_col, "cs_"),
+            ))
+        elif provider == "mock":
+            query = query.filter(_prefix_cs(db, pi_col, "PI_"))
+        elif provider == "paypal":
+            query = query.filter(
+                pi_col.isnot(None), pi_col != "",
+                ~_prefix_cs(db, pi_col, "pi_"),
+                ~_prefix_cs(db, pi_col, "cs_"),
+                ~_prefix_cs(db, pi_col, "PI_"),
+            )
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.filter(or_(
+            Order.order_no.like(like), Order.email.like(like),
+            Payment.stripe_payment_intent.like(like),
+        ))
+    if date_from is not None:
+        query = query.filter(Payment.created_at >= date_from)
+    if date_to is not None:
+        query = query.filter(Payment.created_at <= date_to)
+    total = query.count()
+    rows = (
+        query.order_by(Payment.id.desc())
+        .offset((page - 1) * per_page).limit(per_page).all()
+    )
+    return rows, total
+
+
+def paginate_webhook_events(
+    db: Session, *, status: Optional[int] = None, source: Optional[str] = None,
+    etype: Optional[str] = None, q: Optional[str] = None,
+    date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
+    page: int = 1, per_page: int = 20,
+) -> tuple[list[WebhookEvent], int]:
+    """回调事件分页（webhook_events 归一化后全量落库）：source=stripe/paypal/mock、
+    type 精确匹配、q 模糊匹配 event_id/type。"""
+    query = db.query(WebhookEvent)
+    if status is not None:
+        query = query.filter(WebhookEvent.status == status)
+    if source:
+        query = query.filter(WebhookEvent.source == source)
+    if etype and etype.strip():
+        query = query.filter(WebhookEvent.type == etype.strip())
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.filter(or_(
+            WebhookEvent.event_id.like(like), WebhookEvent.type.like(like),
+        ))
+    if date_from is not None:
+        query = query.filter(WebhookEvent.created_at >= date_from)
+    if date_to is not None:
+        query = query.filter(WebhookEvent.created_at <= date_to)
+    total = query.count()
+    rows = (
+        query.order_by(WebhookEvent.created_at.desc(), WebhookEvent.event_id)
+        .offset((page - 1) * per_page).limit(per_page).all()
+    )
+    return rows, total
+
+
 # ---------- RMA ----------
 def rma_inflight_qty(db: Session, order_item_id: int) -> int:
     """该条目未终态 RMA 在途占量（0-3；4 已收货在 receive 原子计入 refunded_qty 不重复计）"""

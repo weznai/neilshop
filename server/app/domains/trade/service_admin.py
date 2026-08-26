@@ -303,6 +303,95 @@ def order_detail(db: Session, order_no: str) -> dict:
     }
 
 
+PER_PAGE_PAYMENTS = 20
+PER_PAGE_WEBHOOKS = 20
+
+
+def _parse_status_csv(raw: Optional[str]) -> tuple[Optional[int], Optional[list[int]]]:
+    """状态 CSV 解析（支付流水列表用，与订单 _parse_order_status 同语义）：
+    "1" → int 单值；"1,4" → 列表；非法段 422 invalid_status；空 → 不过滤。"""
+    if raw is None or raw.strip() == "":
+        return None, None
+    if "," in raw:
+        try:
+            return None, [int(x) for x in raw.split(",")]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="invalid status")
+    try:
+        return int(raw), None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid status")
+
+
+def list_payments(
+    db: Session, status: Optional[str], provider: Optional[str], q: Optional[str],
+    page: int, per_page: Optional[int] = None,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+) -> dict:
+    """后台支付流水列表（跨订单全局口径）：status 支持 CSV 多选（与订单列表同解析），
+    provider 按通道前缀过滤，q 搜索单号/邮箱/PI；行带 provider 标签与订单跳转信息。"""
+    pp = PER_PAGE_PAYMENTS if per_page is None else min(max(per_page, 10), 100)
+    status_eq, status_in = _parse_status_csv(status)
+    start = _parse_date(date_from, "date_from") if date_from else None
+    end = None
+    if date_to:
+        end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
+    rows, total = repo.paginate_payments(
+        db, status=status_eq, status_in=status_in, provider=provider, q=q,
+        page=page, per_page=pp, date_from=start, date_to=end,
+    )
+    return {
+        "items": [{
+            "id": p.id,
+            "order_id": p.order_id,
+            "order_no": o.order_no,
+            "email": o.email,
+            "order_status": o.status,
+            "provider": repo.provider_of_intent(p.stripe_payment_intent),
+            "payment_intent": p.stripe_payment_intent,
+            "amount": p.amount,
+            "status": p.status,
+            "refunded_amount": p.refunded_amount,
+            "failure_reason": p.failure_reason,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        } for p, o in rows],
+        "page": page, "per_page": pp, "total": total,
+        "pages": (total + pp - 1) // pp,
+    }
+
+
+def list_webhook_events(
+    db: Session, status: Optional[int], source: Optional[str], etype: Optional[str],
+    q: Optional[str], page: int, per_page: Optional[int] = None,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+) -> dict:
+    """后台回调事件列表（webhook_events 归一化原文）：payload 已是归一化小结构
+    （{id,type,data:{payment_intent,amount,metadata.order_no}}）可直接随行返回，
+    前端据此展示关联订单与金额。"""
+    pp = PER_PAGE_WEBHOOKS if per_page is None else min(max(per_page, 10), 100)
+    start = _parse_date(date_from, "date_from") if date_from else None
+    end = None
+    if date_to:
+        end = _parse_date(date_to, "date_to").replace(hour=23, minute=59, second=59)
+    rows, total = repo.paginate_webhook_events(
+        db, status=status, source=source, etype=etype, q=q,
+        page=page, per_page=pp, date_from=start, date_to=end,
+    )
+    return {
+        "items": [{
+            "event_id": w.event_id,
+            "source": w.source,
+            "type": w.type,
+            "payload": w.payload,
+            "status": w.status,
+            "processed_at": w.processed_at.isoformat() if w.processed_at else None,
+            "created_at": w.created_at.isoformat() if w.created_at else None,
+        } for w in rows],
+        "page": page, "per_page": pp, "total": total,
+        "pages": (total + pp - 1) // pp,
+    }
+
+
 def _new_shipment_no(db: Session) -> str:
     """SP 单号：SP+yymmdd+8hex（列宽 16 顶格）；查重循环防极小概率撞唯一索引 500"""
     for _ in range(3):
