@@ -34,6 +34,17 @@ export const useAuthStore = defineStore('auth', {
       this.syncWishlist().catch(() => {})
       return d.user
     },
+    /* OAuth 登录收口（LoginView 回跳落地 / dev-login 直登共用）：
+     * 会话仍由 HttpOnly Cookie 承载（与 login/register 同构），token 仅作回跳凭据不落地存储；
+     * user 缺省（回跳场景，callback 导航已写 Cookie）时调 /me 拉取并按 _cache 结构缓存 */
+    async oauthLogin(token, user) {
+      wishlistReset()
+      if (user) this._cache(user)
+      else this._cache(await req('GET', '/api/account/me', undefined, { silent401: true }))
+      await this.fetchPoints().catch(() => {})
+      this.syncWishlist().catch(() => {})
+      return this.user
+    },
     async register(email, password, name, refCode) {
       const body = { email: email.trim().toLowerCase(), password, name }
       /* 推荐码：后端同步支持 ref_code 字段，多余字段会被忽略（安全） */

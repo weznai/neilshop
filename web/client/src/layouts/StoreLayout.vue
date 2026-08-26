@@ -351,6 +351,7 @@ onUnmounted(() => {
               <router-link to="/store?sort=new">{{ i18n.t('footer.new') }}</router-link>
               <router-link to="/sale">{{ i18n.t('footer.sale') }}</router-link>
               <router-link to="/gift-cards">{{ i18n.t('footer.gift') }}</router-link>
+              <router-link to="/coupons">{{ i18n.t('footer.coupons') }}</router-link>
             </div>
           </div>
           <div>
@@ -419,6 +420,7 @@ onUnmounted(() => {
       <router-link to="/how-it-works" @click="ui.closeMnav()">💅 {{ i18n.t('footer.howto') }}</router-link>
       <router-link to="/track" @click="ui.closeMnav()">🚚 {{ i18n.t('footer.track') }}</router-link>
       <router-link to="/refer" @click="ui.closeMnav()">🎁 {{ i18n.t('footer.refer') }}</router-link>
+      <router-link to="/coupons" @click="ui.closeMnav()">🎟️ {{ i18n.t('footer.coupons') }}</router-link>
       <div class="sep"></div>
       <router-link to="/account/wishlist" @click="ui.closeMnav()">💜 {{ i18n.t('tab.wishlist') }}</router-link>
       <router-link to="/account" @click="ui.closeMnav()">👤 {{ i18n.t('tab.account') }}</router-link>

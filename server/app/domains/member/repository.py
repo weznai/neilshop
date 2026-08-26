@@ -14,6 +14,7 @@ from app.models import (
     OrderTimeline, PointsLedger, Product, Referral, Subscription, User,
     UserAddress, Variant, WishlistItem,
 )
+from app.models.user import EmailChangeRequest
 
 
 # ---------- 用户 ----------
@@ -26,10 +27,55 @@ def get_user_by_email(db: Session, email: str) -> User | None:
     return db.query(User).filter(func.lower(User.email) == email.strip().lower()).first()
 
 
-def add_user(db: Session, *, email: str, password_hash: str, name: str) -> User:
-    user = User(email=email, password_hash=password_hash, name=name)
+def add_user(
+    db: Session, *, email: str, password_hash: str, name: str,
+    oauth_provider: str | None = None, oauth_subject: str | None = None,
+    email_verified_at=None,
+) -> User:
+    user = User(
+        email=email, password_hash=password_hash, name=name,
+        oauth_provider=oauth_provider, oauth_subject=oauth_subject,
+        email_verified_at=email_verified_at,
+    )
     db.add(user)
     return user
+
+
+def get_user_by_oauth(db: Session, provider: str, subject: str) -> User | None:
+    return (
+        db.query(User)
+        .filter(User.oauth_provider == provider, User.oauth_subject == subject)
+        .first()
+    )
+
+
+# ---------- 邮箱修改（双步验证） ----------
+
+def replace_email_change_request(
+    db: Session, *, user_id: int, new_email: str, code: str, expires_at,
+) -> EmailChangeRequest:
+    """落新验证码并作废同用户旧码（直接删旧行：未消费即被新请求取代）"""
+    db.query(EmailChangeRequest).filter(
+        EmailChangeRequest.user_id == user_id,
+        EmailChangeRequest.used_at.is_(None),
+    ).delete(synchronize_session=False)
+    row = EmailChangeRequest(
+        user_id=user_id, new_email=new_email, code=code, expires_at=expires_at,
+    )
+    db.add(row)
+    return row
+
+
+def latest_active_email_change_request(
+    db: Session, user_id: int,
+) -> EmailChangeRequest | None:
+    return (
+        db.query(EmailChangeRequest)
+        .filter(EmailChangeRequest.user_id == user_id,
+                EmailChangeRequest.used_at.is_(None))
+        .order_by(EmailChangeRequest.id.desc())
+        .first()
+    )
 
 
 # ---------- 地址簿 ----------
@@ -260,7 +306,8 @@ def add_subscription(db: Session, sub: Subscription) -> None:
 
 
 __all__ = [
-    "user_email_taken", "get_user_by_email", "add_user",
+    "user_email_taken", "get_user_by_email", "add_user", "get_user_by_oauth",
+    "replace_email_change_request", "latest_active_email_change_request",
     "list_addresses", "get_address", "clear_other_default_addresses",
     "has_other_default_address",
     "get_product", "wishlist_products", "active_variants_by_product",

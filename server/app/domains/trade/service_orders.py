@@ -268,3 +268,48 @@ def confirm_received(db: Session, order_no: str, user: User) -> dict:
     })
     db.commit()
     return {"order_no": order.order_no, "status": order.status}
+
+
+# 可改址状态机：待付(0)/已付(1)/备货中(2) 且未发货（shipping_status=0）
+_ADDRESS_EDITABLE_STATUSES = (0, 1, 2)
+
+
+def update_order_address(
+    db: Session, order_no: str, body, user: Optional[User],
+    email: Optional[str] = None,
+) -> dict:
+    """用户侧修改未发货订单收货地址：归属判定与 order_detail 同口径
+    （登录属主 或 游客 email 双因子，否则 404）；可改条件 status∈(0,1,2) 且
+    shipping_status==0，否则 409 not_editable。地址 JSON 整对象按 body 重建
+    （保留原键结构），timeline 记 address_updated（仅存 city/country/zip 摘要，
+    不落完整地址）。"""
+    order = _get_order(db, order_no.strip().upper())
+    is_owner = user is not None and order.user_id == user.id
+    is_email = email is not None and email.strip().lower() == order.email.lower()
+    if not (is_owner or is_email):
+        raise HTTPException(status_code=404, detail="order_not_found")
+    if order.status not in _ADDRESS_EDITABLE_STATUSES or order.shipping_status != 0:
+        raise HTTPException(status_code=409, detail="not_editable")
+    old = order.shipping_address if isinstance(order.shipping_address, dict) else {}
+    fields = {
+        "full_name": body.full_name,
+        "line1": body.line1,
+        "line2": body.line2,
+        "city": body.city,
+        "state": body.state,
+        "zip": body.zip,
+        "country": body.country,
+        "phone": body.phone,
+    }
+    # 保留原键结构：原地址含哪些键就重建哪些键；空对象（异常存量）回落全字段集
+    new_addr = (
+        {k: fields.get(k, v) for k, v in old.items()} if old else dict(fields)
+    )
+    order.shipping_address = new_addr
+    summary_keys = ("city", "country", "zip")
+    repo.add_timeline(db, order.id, "address_updated", actor="user", detail={
+        "old": {k: old.get(k) for k in summary_keys},
+        "new": {k: new_addr.get(k) for k in summary_keys},
+    })
+    db.commit()
+    return {"ok": True}

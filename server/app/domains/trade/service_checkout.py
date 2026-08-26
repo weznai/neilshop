@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
+from app.domains.promo import service as promo_service
 from app.domains.trade import repository as repo
 from app.domains.trade import service_payments
 from app.domains.trade.schemas import PlaceRequest, PreviewRequest
@@ -220,6 +221,14 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
         repo.add_giftcard_ledger(
             db, gift_card_id=gc.id, order_id=order.id, change_type=3,
             amount=pricing["giftcard_discount"], balance_after=gc.balance,
+        )
+
+    # 券包核销 hook（营销域）：登录用户用码成功下单，券包内该码存在未用记录则
+    # CAS(status=0) 原子置已用挂本单——幂等（90 秒防重回走 dedup 不会到这，
+    # status=0 守卫兜底），无券用户 rowcount=0 不影响既有流程
+    if user is not None and pricing["code_id"]:
+        promo_service.redeem_user_coupon(
+            db, user_id=user.id, code_id=pricing["code_id"], order_id=order.id,
         )
 
     cart.items = []

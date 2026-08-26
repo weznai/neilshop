@@ -37,6 +37,10 @@ RATE_RULES: list[tuple[str, int]] = [
     ("/api/account/login", 60),
     ("/api/account/register", 30),
     ("/api/account/password-reset", 20),
+    # OAuth 登录链低频（authorize/dev-login 更具体前缀在前，callback 走宽前缀兜底）
+    ("/api/account/oauth/authorize", 20),
+    ("/api/account/oauth/dev-login", 10),
+    ("/api/account/oauth/", 20),
     ("/api/account/newsletter", 30),
     ("/api/account/consent", 10),
     # GDPR 导出全量扫描订单/工单/流水，重操作低频 → 3/min

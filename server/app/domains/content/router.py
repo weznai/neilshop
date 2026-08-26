@@ -1,6 +1,6 @@
 """内容域用户侧路由 —— /api/content/*（HTTP 编排，业务在 service）"""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -10,6 +10,21 @@ from app.domains.content.schemas import ReviewIn, UgcIn
 from app.models import User
 
 router = APIRouter(prefix="/api/content", tags=["content"])
+
+
+@router.post("/reviews/upload")
+async def upload_review_image(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+):
+    """评价图片上传（登录，multipart）：png/jpeg/webp/gif ≤5MB，
+    返回 {url}（/static/uploads/reviews/{yyyymm}/{uuid}.{ext}，静态挂载公开可访问）。
+    多读 1 字节判定超限，不把超大文件整载内存。"""
+    data = await file.read(service.REVIEW_UPLOAD_MAX_BYTES + 1)
+    return service.save_review_upload(
+        user, filename=file.filename,
+        content_type=file.content_type, data=data,
+    )
 
 
 @router.get("/faqs")

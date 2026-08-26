@@ -36,8 +36,28 @@ function nextRoute() {
 /* 已登录直接进账户 */
 if (auth.isLoggedIn) router.replace(nextRoute())
 
-/* 非触屏自动聚焦邮箱（触屏不弹键盘打扰） */
-onMounted(() => {
+/* 非触屏自动聚焦邮箱（触屏不弹键盘打扰）；OAuth 回跳落地优先处理 */
+onMounted(async () => {
+  const q = route.query
+  if (q.oauth_token) {
+    /* 回跳完成登录：callback 导航已写会话 Cookie → auth.oauthLogin(token) 调 /me 补缓存 */
+    oauthBusy.value = true
+    try {
+      await auth.oauthLogin(String(q.oauth_token))
+      await cart.mergeAfterLogin()
+      ui.toast(tt('Welcome back 💜', '欢迎回来 💜'), 'success')
+      router.replace(nextRoute())
+    } catch (_) {
+      ui.toast(tt('Sign-in failed — please retry', '登录失败，请稍后重试'), 'error')
+      router.replace({ path: '/login', query: oauthCleanQuery() })
+    } finally { oauthBusy.value = false }
+    return
+  }
+  if (q.oauth_error) {
+    ui.toast(oauthErrText(String(q.oauth_error)), 'error')
+    router.replace({ path: '/login', query: oauthCleanQuery() })
+    return
+  }
   if (window.matchMedia && window.matchMedia('(pointer:fine)').matches) {
     try { emailInput.value && emailInput.value.focus() } catch (_) { /* */ }
   }
@@ -85,6 +105,44 @@ async function sendReset() {
     err.value = e && e.status === 422 ? tt('Enter a valid email address', '请输入有效的邮箱地址') : tt('Could not send — please retry later', '发送失败，请稍后再试')
   } finally { busy.value = false }
 }
+
+/* ---------- 第三方登录（OAuth）：GET authorize → 跳转 / dev_mock 直登；回跳 ?oauth_token=|?oauth_error= ---------- */
+const oauthBusy = ref(false)
+function oauthErrText(k) {
+  if (k === 'not_configured') return tt('This sign-in method is not configured yet', '该登录方式暂未配置')
+  if (k === 'denied' || k === 'access_denied') return tt('Authorization was cancelled', '已取消授权')
+  if (k === 'state_mismatch') return tt('Sign-in session expired — please retry', '登录会话已失效，请重试')
+  return tt('Third-party sign-in failed — please retry', '第三方登录失败，请重试')
+}
+async function oauthStart(provider) {
+  oauthBusy.value = true
+  try {
+    const d = await req('GET', '/api/account/oauth/' + provider + '/authorize')
+    if (d && d.url) { window.location.href = d.url; return }
+    if (d && d.dev_mock) {
+      /* dev 未配置真实 OAuth：dev-login 直接换演示账号会话（与 login 同构 {token,user}） */
+      const r = await req('POST', '/api/account/oauth/dev-login', { provider })
+      await auth.oauthLogin(r.token, r.user)
+      await cart.mergeAfterLogin()
+      ui.toast(tt('Welcome back 💜', '欢迎回来 💜'), 'success')
+      router.push(nextRoute())
+      return
+    }
+    ui.toast(tt('Third-party sign-in is unavailable — please retry later', '第三方登录暂不可用，请稍后再试'), 'error')
+  } catch (e) {
+    const d = e && e.data && e.data.detail
+    if (e && e.status === 409 && d === 'not_configured') ui.toast(tt('This sign-in method is not configured yet', '该登录方式暂未配置'), 'error')
+    else ui.toast(tt('Could not start sign-in — please retry later', '第三方登录发起失败，请稍后再试'), 'error')
+  } finally { oauthBusy.value = false }
+}
+/* 清掉 oauth 回跳参数，保留 next / email 便于继续表单流程 */
+function oauthCleanQuery() {
+  const q = {}
+  if (route.query.next) q.next = String(route.query.next)
+  const em = String(route.query.email || '').trim()
+  if (em) q.email = em
+  return Object.keys(q).length ? q : undefined
+}
 </script>
 
 <template>
@@ -124,6 +182,16 @@ async function sendReset() {
             <div v-if="err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ err }}</div>
             <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Sign In', '登录') }}</button>
           </form>
+          <!-- 第三方登录：分割线「或」+ Google/Apple（无图标库，用字符简洁呈现） -->
+          <div class="oauth-sep" aria-hidden="true"><span>{{ tt('or', '或') }}</span></div>
+          <div style="display:grid;gap:10px">
+            <button type="button" class="btn btn-secondary btn-block oauth-btn" :class="{ loading: oauthBusy }" :disabled="oauthBusy || busy" @click="oauthStart('google')">
+              <span class="oauth-ic og" aria-hidden="true">G</span>{{ tt('Continue with Google', '通过 Google 继续') }}
+            </button>
+            <button type="button" class="btn btn-secondary btn-block oauth-btn" :class="{ loading: oauthBusy }" :disabled="oauthBusy || busy" @click="oauthStart('apple')">
+              <span class="oauth-ic oa" aria-hidden="true"></span>{{ tt('Continue with Apple', '通过 Apple 继续') }}
+            </button>
+          </div>
           <div style="text-align:center;margin-top:14px;font-size:13px;color:var(--gray)">
             {{ tt('New here?', '还不是会员？') }}
             <router-link :to="{ path: '/register', query: route.query.next ? { next: String(route.query.next) } : undefined }" style="color:var(--plum);font-weight:600">{{ tt('Create account', '注册账号') }}</router-link>
@@ -173,6 +241,13 @@ async function sendReset() {
 .auth-trust { list-style: none; display: grid; gap: 10px; margin: 10px 0 0; padding: 0; }
 .auth-trust li { display: flex; gap: 10px; align-items: center; font-size: 13px; font-weight: 600; background: rgba(255,255,255,.14); border-radius: 10px; padding: 10px 14px; }
 .auth-card { border: none; box-shadow: none; padding: 34px 30px; }
+/* 第三方登录：分割线 + 图标字符徽标（对齐现有 btn-secondary 风格） */
+.oauth-sep { display: flex; align-items: center; gap: 12px; margin: 16px 0 12px; color: var(--gray); font-size: 12.5px; }
+.oauth-sep::before, .oauth-sep::after { content: ""; flex: 1; height: 1px; background: var(--gray-light); }
+.oauth-btn { display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; }
+.oauth-ic { width: 20px; height: 20px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; flex: none; }
+.oauth-ic.og { background: #fff; border: 1px solid #dadce0; color: #1a73e8; font-family: Arial, sans-serif; }
+.oauth-ic.oa { background: #000; color: #fff; font-size: 14px; }
 @media (max-width: 768px) {
   .auth-wrap { grid-template-columns: 1fr; }
   .auth-brand { min-height: 140px; padding: 24px 22px; }

@@ -2,8 +2,10 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req, intentNoChannel } from '../../api/client'
+import { useAuthStore } from '../../stores/auth'
 import { useCartStore } from '../../stores/cart'
 import { useUiStore } from '../../stores/ui'
+import { COUNTRIES, PHONE_RE } from '../../data/countries'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { createOrderIntent } from '../../composables/useOrderPay'
@@ -15,10 +17,17 @@ const route = useRoute()
 const router = useRouter()
 const ui = useUiStore()
 const cart = useCartStore()
+const auth = useAuthStore()
 const o = ref(null)
 const err = ref('')
 const loading = ref(true)
 const busy = ref(false)
+
+/* 游客查单双因子：?email= 透传（复用 SuccessView/GiftCardsView 的 ?email= 模式；登录态走 Cookie 忽略） */
+const guestEmail = computed(() => String(route.query.email || '').trim())
+function guestQ() {
+  return (!auth.isLoggedIn && guestEmail.value) ? '?email=' + encodeURIComponent(guestEmail.value) : ''
+}
 
 /* 订单商品图兜底：回落 placehold + dataset 守卫防循环（对齐 ProductCard imgFallback） */
 const IMG_FALLBACK = 'https://placehold.co/200x200/E8B4B8/552338?text=%E2%9C%A8'
@@ -102,7 +111,7 @@ async function load() {
   loading.value = true
   if (!no) { err.value = tt('Missing order number', '缺少订单号'); loading.value = false; return }
   try {
-    o.value = await req('GET', '/api/orders/' + encodeURIComponent(no))
+    o.value = await req('GET', '/api/orders/' + encodeURIComponent(no) + guestQ())
     /* reviewed 持久化：order detail items 新增 reviewed 字段（无字段时回落会话内行为） */
     for (const it of (o.value.items || [])) if (it.reviewed) reviewed.value[it.id] = true
   } catch (e) {
@@ -290,7 +299,7 @@ function closeModal() { ui.closeModal() }
 function onEscKey(e) {
   /* App 根 ESC 委托已处理 ui.openModalId；此处仅兜底（如焦点在 iframe 内时根监听收不到） */
   if (e.key !== 'Escape') return
-  if (rmaOpen.value || exOpen.value) ui.closeModal()
+  if (rmaOpen.value || exOpen.value || addrOpen.value) ui.closeModal()
 }
 function restoreFocus(el) {
   if (el && el !== document.body && document.contains(el)) {
@@ -426,12 +435,77 @@ watch(exOpen, async (v) => {
     exFrom = null
   }
 })
+
+/* ---------- 修改收货地址（PUT /api/orders/{no}/address；status∈{0,1,2} 且 shipping_status===0 可改；游客 ?email=） ---------- */
+const addrEditable = computed(() => !!o.value && [0, 1, 2].includes(o.value.status) && (o.value.shipping_status || 0) === 0)
+const addrOpen = computed(() => ui.openModalId === 'addr')
+const addrBox = ref(null)
+let addrFrom = null
+const ad = reactive({ full_name: '', line1: '', line2: '', city: '', state: '', zip: '', country: 'US', phone: '', busy: false, err: '' })
+function openAddr() {
+  /* 预填当前地址；country 不在 COUNTRIES 列表时回落 US（select 匹配不到会显示空） */
+  const a = o.value?.shipping_address || {}
+  Object.assign(ad, {
+    full_name: a.full_name || '', line1: a.line1 || '', line2: a.line2 || '',
+    city: a.city || '', state: a.state || '', zip: a.zip || '',
+    country: COUNTRIES.some((c) => c[0] === a.country) ? a.country : 'US',
+    phone: a.phone || '', busy: false, err: '',
+  })
+  ui.openModal('addr')
+}
+function adCheck() {
+  if (!ad.full_name.trim()) return tt('Recipient name is required', '请填写收件人姓名')
+  if (!ad.line1.trim()) return tt('Street address is required', '请填写街道地址')
+  if (!ad.city.trim()) return tt('City is required', '请填写城市')
+  if (!ad.zip.trim()) return tt('ZIP / postal code is required', '请填写邮编')
+  if (!ad.country) return tt('Select a country', '请选择国家')
+  if (!PHONE_RE.test(ad.phone.trim())) return tt('Enter a valid phone number', '请输入有效的电话号码')
+  return ''
+}
+async function saveAddr() {
+  ad.err = adCheck()
+  if (ad.err) return
+  ad.busy = true
+  try {
+    await req('PUT', '/api/orders/' + encodeURIComponent(o.value.order_no) + '/address' + guestQ(), {
+      full_name: ad.full_name.trim(),
+      line1: ad.line1.trim(),
+      line2: ad.line2.trim(),
+      city: ad.city.trim(),
+      state: ad.state.trim(),
+      zip: ad.zip.trim(),
+      country: ad.country,
+      phone: ad.phone.trim(),
+    })
+    ui.closeModal()
+    ui.toast(tt('Shipping address updated', '收货地址已更新'), 'success')
+    await load()
+  } catch (e) {
+    const d = e && e.data && e.data.detail || ''
+    if (String(d) === 'not_editable') {
+      ui.closeModal()
+      ui.toast(tt('This order can no longer edit its address — refreshed', '该订单当前状态不可修改地址，已刷新'), 'error')
+      await load()
+    } else ui.toast(tt('Could not save — please retry later', '保存失败，请稍后再试'), 'error')
+  } finally { ad.busy = false }
+}
+watch(addrOpen, async (v) => {
+  if (v) {
+    addrFrom = document.activeElement
+    await nextTick()
+    const f = dialogFocusables(addrBox.value)
+    if (f.length) f[0].focus({ preventScroll: true })
+  } else {
+    restoreFocus(addrFrom)
+    addrFrom = null
+  }
+})
 onMounted(() => document.addEventListener('keydown', onEscKey))
 onUnmounted(() => {
   document.removeEventListener('keydown', onEscKey)
   clearTimeout(rvPvTimer)
   /* 组件卸载时弹层仍开着 → 释放全局模态位，避免 anyOverlay 卡死锁滚动 */
-  if (rmaOpen.value || exOpen.value) ui.closeModal()
+  if (rmaOpen.value || exOpen.value || addrOpen.value) ui.closeModal()
 })
 
 /* ---------- 商品评价（status≥3 已发货/送达/完成可评；成功后按钮置灰） ---------- */
@@ -458,6 +532,52 @@ watch(() => (rv.images[0] || '').trim(), (u) => {
 })
 function rvPvLoad() { if (rvPv.state === 'loading') rvPv.state = 'ok' }
 function rvPvError() { if (rvPv.state === 'loading') rvPv.state = 'bad' }
+
+/* ---------- 评价传图（POST /api/content/reviews/upload multipart）：req 恒设 json 头 + JSON.stringify body，
+   FormData 必须原生 fetch（不设 Content-Type 让浏览器自动带 multipart boundary），不改 client.js ---------- */
+const rvFile = ref(null)
+const rvUploading = ref(false)
+const RV_IMG_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+async function rvUpload(e) {
+  const f = e.target.files && e.target.files[0]
+  e.target.value = '' /* 复位以便同名文件可重复触发 */
+  if (!f || rvUploading.value) return
+  if (!RV_IMG_TYPES.includes(f.type)) { ui.toast(tt('Only PNG / JPG / WebP / GIF images are allowed', '仅支持 PNG / JPG / WebP / GIF 图片'), 'error'); return }
+  if (f.size > 5 * 1024 * 1024) { ui.toast(tt('Image must be 5 MB or smaller', '图片不能超过 5MB'), 'error'); return }
+  if (rv.images.filter((s) => s.trim()).length >= 6) { ui.toast(tt('Up to 6 images per review', '每条评价最多 6 张图片'), 'error'); return }
+  rvUploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', f)
+    const r = await fetch((window.GM_API_BASE || '') + '/api/content/reviews/upload', {
+      method: 'POST',
+      body: fd,
+      credentials: 'include',
+    })
+    let d = null
+    try { d = await r.json() } catch (_) { /* 非 JSON 响应 */ }
+    if (!r.ok) {
+      const det = d && d.detail
+      if (r.status === 401) {
+        /* 原生 fetch 不走 req 的 401 广播：对齐 submitReview 的未登录处理 */
+        ui.toast(tt('Please sign in to review', '请登录后再评价'), 'error')
+        router.push({ path: '/login', query: { next: route.fullPath } })
+      } else if (det === 'invalid_type') ui.toast(tt('Only PNG / JPG / WebP / GIF images are allowed', '仅支持 PNG / JPG / WebP / GIF 图片'), 'error')
+      else if (det === 'too_large') ui.toast(tt('Image must be 5 MB or smaller', '图片不能超过 5MB'), 'error')
+      else ui.toast(tt('Upload failed — please retry later', '上传失败，请稍后再试'), 'error')
+      return
+    }
+    const url = d && d.url
+    if (!url) { ui.toast(tt('Upload failed — please retry later', '上传失败，请稍后再试'), 'error'); return }
+    /* 追加进现有图片链接列表：优先填首个空位，否则新起一行（复用现有增删/预览逻辑） */
+    const i = rv.images.findIndex((s) => !s.trim())
+    if (i !== -1) rv.images[i] = url
+    else rv.images.push(url)
+    ui.toast(tt('Image uploaded', '图片已上传'), 'success')
+  } catch (_) {
+    ui.toast(tt('Upload failed — please retry later', '上传失败，请稍后再试'), 'error')
+  } finally { rvUploading.value = false }
+}
 function rvCheck() {
   const imgs = rvImages()
   if (imgs.length > 6) return tt('Up to 6 image links', '图片链接最多 6 条')
@@ -621,6 +741,11 @@ async function submitReview(it) {
                   </div>
                   <button v-if="rv.images.length < 6" type="button" class="btn btn-ghost btn-sm" @click="rv.images.push('')">＋ {{ tt('Add image link', '添加图片链接') }}</button>
                   <button v-if="rv.images.length > 1" type="button" class="btn btn-ghost btn-sm" @click="rv.images.pop()">－ {{ tt('Remove last', '删除最后一条') }}</button>
+                  <!-- 上传图片：multipart 上传（原生 fetch），成功把 url 填进上方链接列表 -->
+                  <button type="button" class="btn btn-secondary btn-sm" :class="{ loading: rvUploading }" :disabled="rvUploading" @click="rvFile && rvFile.click()">
+                    ⬆ {{ rvUploading ? tt('Uploading…', '上传中…') : tt('Upload image (≤5MB)', '上传图片（≤5MB）') }}
+                  </button>
+                  <input ref="rvFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none" @change="rvUpload">
                 </div>
                 <div v-if="rv.err" class="field-msg" style="display:block;color:var(--error)" role="alert">{{ rv.err }}</div>
                 <div style="display:flex;gap:10px;justify-content:flex-end">
@@ -663,9 +788,12 @@ async function submitReview(it) {
         </div>
 
         <div style="display:grid;gap:16px;align-content:start">
-          <!-- 收货地址 -->
+          <!-- 收货地址（待付/已付/备货 且 未发货 shipping_status===0 可改址） -->
           <div class="card" style="padding:20px">
-            <h3 style="font-size:15px;margin-bottom:10px">{{ tt('Shipping info', '收货信息') }}</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
+              <h3 style="font-size:15px">{{ tt('Shipping info', '收货信息') }}</h3>
+              <button v-if="addrEditable" class="btn btn-secondary btn-sm" @click="openAddr">✏️ {{ tt('Edit address', '修改地址') }}</button>
+            </div>
             <div style="font-size:13.5px;line-height:1.7">
               {{ addr.full_name }}<br>
               {{ addr.line1 }} {{ addr.line2 || '' }}<br>
@@ -777,6 +905,52 @@ async function submitReview(it) {
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
           <button class="btn btn-ghost" @click="closeModal">{{ tt('Cancel', '取消') }}</button>
           <button class="btn btn-primary" :class="{ loading: ex.busy }" :disabled="ex.busy || !ex.picked" @click="submitExchange">{{ tt('Submit exchange request', '提交换货申请') }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 修改地址弹层（开闭走 ui.openModalId：anyOverlay 统一锁滚动，App 根 ESC 委托关闭） -->
+    <div v-if="addrOpen" class="gm-modal-mask" @click.self="closeModal">
+      <div
+        ref="addrBox" class="card gm-modal" style="padding:22px;max-width:460px"
+        role="dialog" aria-modal="true" :aria-label="tt('Edit shipping address', '修改收货地址')"
+        @keydown="trapKeydown($event, addrBox)"
+      >
+        <h3 style="font-size:16px;margin-bottom:14px">{{ tt('Edit shipping address', '修改收货地址') }}</h3>
+        <div class="field"><label>{{ tt('Recipient name', '收件人姓名') }}</label>
+          <input v-model="ad.full_name" class="input" maxlength="100" autocomplete="name">
+        </div>
+        <div class="field"><label>{{ tt('Street address', '街道地址') }}</label>
+          <input v-model="ad.line1" class="input" maxlength="200" autocomplete="address-line1">
+        </div>
+        <div class="field"><label>{{ tt('Apartment, suite, etc. (optional)', '公寓 / 门牌等（可选）') }}</label>
+          <input v-model="ad.line2" class="input" maxlength="200" autocomplete="address-line2">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field"><label>{{ tt('City', '城市') }}</label>
+            <input v-model="ad.city" class="input" maxlength="100" autocomplete="address-level2">
+          </div>
+          <div class="field"><label>{{ tt('State / region (optional)', '州 / 省份（可选）') }}</label>
+            <input v-model="ad.state" class="input" maxlength="100" autocomplete="address-level1">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="field"><label>{{ tt('ZIP code', '邮编') }}</label>
+            <input v-model="ad.zip" class="input" maxlength="20" autocomplete="postal-code">
+          </div>
+          <div class="field"><label>{{ tt('Country', '国家') }}</label>
+            <select v-model="ad.country" class="input" autocomplete="country">
+              <option v-for="c in COUNTRIES" :key="c[0]" :value="c[0]">{{ c[1] }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="field"><label>{{ tt('Phone', '电话') }}</label>
+          <input v-model="ad.phone" class="input" maxlength="20" autocomplete="tel" placeholder="+1 555 000 1234">
+        </div>
+        <div v-if="ad.err" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ ad.err }}</div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn btn-ghost" @click="closeModal">{{ tt('Cancel', '取消') }}</button>
+          <button class="btn btn-primary" :class="{ loading: ad.busy }" :disabled="ad.busy" @click="saveAddr">{{ tt('Save address', '保存地址') }}</button>
         </div>
       </div>
     </div>

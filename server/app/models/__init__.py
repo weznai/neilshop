@@ -9,7 +9,7 @@ from app.models.trade import Cart, Order, OrderItem, PaymentMethod, Payment, Web
 from app.models.fulfill import Shipment, Rma, Exchange, OrderTimeline, ShippingRate
 from app.models.promo import (
     DiscountCode, DiscountRedemption, Bundle, GiftCard, GiftCardLedger,
-    Referral, Subscription, PopupConfig,
+    Referral, Subscription, PopupConfig, UserCoupon,
 )
 from app.models.content import Review, Article, Faq, UgcSubmission
 from app.models.support import (

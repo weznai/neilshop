@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import get_current_user_optional
+from app.core.deps import get_current_user, get_current_user_optional
 from app.domains.promo import service
 from app.domains.promo.schemas import GiftcardIn, GiftcardPurchaseIn, ValidateIn
 from app.models import User
@@ -52,3 +52,30 @@ def purchase_giftcard(
 ):
     # 登录用户购卡：user_id 关联订单（账户订单列表可见）+ 黑名单风控
     return service.purchase_giftcard(db, body, user)
+
+
+# ===== 券包（领取制优惠券） =====
+
+
+@router.get("/coupons")
+def list_coupons(
+    user: Optional[User] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    """领券中心（公开）：可领券列表；登录时回填 claimed 标记"""
+    return service.list_coupons(db, user)
+
+
+@router.get("/coupons/mine")
+def my_coupons(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """我的券包：三态（0可用 1已用 2已过期惰性判定），领取时间倒序"""
+    return service.my_coupons(db, user)
+
+
+@router.post("/coupons/{coupon_id}/claim")
+def claim_coupon(
+    coupon_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return service.claim_coupon(db, user, coupon_id)

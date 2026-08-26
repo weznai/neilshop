@@ -1,12 +1,18 @@
-"""用户域（5 表）—— 金额美分；枚举见 core.enums"""
+"""用户域（6 表）—— 金额美分；枚举见 core.enums"""
 
-from sqlalchemy import BigInteger, Column, Date, DateTime, Integer, SmallInteger, String
+from sqlalchemy import (
+    BigInteger, Column, Date, DateTime, Index, Integer, SmallInteger, String,
+)
 
 from app.core.db import Base, utcnow
 
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        # 第三方登录定位：provider+subject 命中即免密登录（google/apple）
+        Index("idx_user_oauth", "oauth_provider", "oauth_subject"),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     email = Column(String(191), nullable=False, unique=True, index=True)
@@ -26,6 +32,9 @@ class User(Base):
     status = Column(SmallInteger, nullable=False, default=1)     # 1正常 0禁用 -1注销
     email_verified_at = Column(DateTime)
     last_login_at = Column(DateTime)
+    # 第三方登录绑定（NULL=纯密码账号；email 命中且 email_verified 也可后绑）
+    oauth_provider = Column(String(20))   # google/apple
+    oauth_subject = Column(String(191))   # IdP 侧唯一 sub
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
@@ -81,4 +90,19 @@ class DataRequest(Base):
     type = Column(SmallInteger, nullable=False)      # 1导出 2删除
     status = Column(SmallInteger, nullable=False, default=0)  # 0受理 1完成
     fulfilled_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class EmailChangeRequest(Base):
+    """邮箱修改验证码（双步验证第 1 步落库）：6 位数字码发往新邮箱，
+    10 分钟有效；同用户新请求使旧码作废（service 层删旧行）。"""
+    __tablename__ = "email_change_requests"
+    __table_args__ = (Index("idx_ecr_user_created", "user_id", "created_at"),)
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    new_email = Column(String(191), nullable=False)
+    code = Column(String(10), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime)                       # 置位 = 已消费（改邮箱成功）
     created_at = Column(DateTime, nullable=False, default=utcnow)

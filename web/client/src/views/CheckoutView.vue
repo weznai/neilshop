@@ -7,6 +7,7 @@ import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
 import { createOrderIntent } from '../composables/useOrderPay'
+import { fmtDate } from '../composables/datetime'
 import { COUNTRIES, PHONE_RE } from '../data/countries'
 
 const cart = useCartStore()
@@ -245,6 +246,41 @@ async function applyGiftCard() {
   }
 }
 function removeGiftCard() { appliedGc.value = null; gcInput.value = ''; runPreview() }
+
+/* 我的优惠券（登录用户）：懒加载 /api/promo/coupons/mine，面板只列 status=0 可用券；
+   点选 → 券码回填 code 输入并走既有 applyCode（appliedCode 整体替换即“先清旧码再应用”） */
+const cpOpen = ref(false)
+const cpLoaded = ref(false)
+const cpLoading = ref(false)
+const cpFailed = ref(false)
+const cpItems = ref([])
+const usableCps = computed(() => cpItems.value.filter((c) => c && c.status === 0 && c.code))
+async function loadMyCoupons() {
+  if (cpLoading.value) return
+  cpLoading.value = true
+  cpFailed.value = false
+  try {
+    const d = await req('GET', '/api/promo/coupons/mine')
+    cpItems.value = (d && d.items) || []
+    cpLoaded.value = true
+  } catch (_) { cpFailed.value = true }
+  finally { cpLoading.value = false }
+}
+function toggleCp() {
+  cpOpen.value = !cpOpen.value
+  if (cpOpen.value && !cpLoaded.value) loadMyCoupons()
+}
+const cpBenefit = (c) => (c.type === 1 ? c.value + '% OFF' : c.type === 2 ? money(c.value) + ' OFF' : tt('Free shipping', '免邮'))
+const cpMin = (c) => (c.min_subtotal
+  ? tt('Min. spend ', '满 ') + money(c.min_subtotal) + tt(' usable', ' 可用')
+  : tt('No min. spend', '无门槛'))
+async function pickCoupon(c) {
+  if (pvBusy.value) return
+  if (appliedCode.value === c.code) { cpOpen.value = false; return } /* 已应用同一券：仅收起面板 */
+  code.value = c.code /* 覆写输入框旧码；applyCode 内 appliedCode 整体替换 */
+  cpOpen.value = false
+  await applyCode()
+}
 
 function useMaxPoints() {
   /* 后端口径：积分上限 = subtotal - discount_total（积分先于礼品卡抵扣，不预减 GC） */
@@ -808,9 +844,36 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               </div>
             </div>
           </div>
-          <div style="display:flex;gap:8px;margin:16px 0">
+          <div style="display:flex;gap:8px;margin:16px 0 10px">
             <input v-model="code" class="input" :placeholder="i18n.t('promo.codePh')" style="text-transform:uppercase" @keyup.enter="applyCode">
             <button class="btn btn-secondary" :disabled="pvBusy" @click="applyCode">{{ pvBusy ? '…' : i18n.t('promo.apply') }}</button>
+          </div>
+          <!-- 我的优惠券（登录用户）：轻量面板点选回填 code，复用 applyCode/preview 流程 -->
+          <div v-if="auth.isLoggedIn" style="margin:0 0 10px">
+            <button class="cp-toggle" type="button" :aria-expanded="cpOpen" @click="toggleCp">
+              🎟️ {{ tt('My coupons', '我的优惠券') }}<span v-if="cpLoaded && usableCps.length" class="cp-cnt">{{ usableCps.length }}</span>
+              <i class="cp-caret" :class="{ open: cpOpen }">▾</i>
+            </button>
+            <div v-if="cpOpen" class="cp-panel">
+              <div v-if="cpLoading" class="skeleton" style="height:52px;border-radius:10px" />
+              <div v-else-if="cpFailed" style="font-size:12.5px;color:var(--gray);padding:4px 0">
+                {{ tt('Coupons failed to load —', '优惠券加载失败，') }}<a href="javascript:void(0)" style="color:var(--plum)" @click="loadMyCoupons">{{ tt('retry', '重试') }}</a>
+              </div>
+              <template v-else-if="usableCps.length">
+                <button v-for="c in usableCps" :key="c.id" type="button" class="cp-item" :class="{ on: appliedCode === c.code }" @click="pickCoupon(c)">
+                  <b class="cp-item-val">{{ cpBenefit(c) }}</b>
+                  <span class="cp-item-info">
+                    <b>{{ c.name }}<span v-if="c.first_order_only" class="cp-first">{{ tt(' · first order', ' · 首单') }}</span></b>
+                    <span>{{ cpMin(c) }} · {{ tt('exp.', '有效至') }} {{ fmtDate(c.expires_at) }}</span>
+                  </span>
+                  <span v-if="appliedCode === c.code" class="tag tag-paid">✓</span>
+                </button>
+              </template>
+              <div v-else style="font-size:12.5px;color:var(--gray);padding:4px 0;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                {{ tt('No usable coupons yet', '暂无可用的优惠券') }}
+                <router-link to="/coupons" style="color:var(--plum);font-weight:600">{{ tt('Go claim some →', '去领券中心 →') }}</router-link>
+              </div>
+            </div>
           </div>
           <div v-if="appliedCode && pv" style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;margin:-8px 0 12px"
                :style="{ color: pv.code_valid ? 'var(--success)' : 'var(--error)' }">
@@ -888,4 +951,19 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
 .srow.ok { color: var(--success); }
 .gc-x { border: none; background: var(--gray-light); color: var(--gray); width: 24px; height: 24px; border-radius: 50%; font-size: 14px; line-height: 1; cursor: pointer; flex: none; }
 .gc-x:hover { background: var(--error); color: #fff; }
+/* 我的优惠券：摘要卡内轻量展开面板（入口小字按钮 + 内联券列表） */
+.cp-toggle { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 0; font-size: 12.5px; font-weight: 600; color: var(--plum); cursor: pointer; }
+.cp-toggle:hover { text-decoration: underline; }
+.cp-cnt { background: var(--rose-pale); color: var(--plum); font-size: 10.5px; font-weight: 700; border-radius: 999px; padding: 0 7px; line-height: 16px; }
+.cp-caret { font-style: normal; font-size: 10px; transition: transform .15s; }
+.cp-caret.open { transform: rotate(180deg); }
+.cp-panel { display: grid; gap: 6px; margin-top: 8px; padding: 10px; border: 1.5px solid var(--gray-light); border-radius: 12px; background: #fff; }
+.cp-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1.5px solid var(--gray-light); border-radius: 10px; padding: 8px 10px; background: none; cursor: pointer; font-family: inherit; transition: border-color .15s, background .15s; }
+.cp-item:hover { border-color: var(--rose); }
+.cp-item.on { border-color: var(--plum); background: var(--rose-pale); box-shadow: inset 3px 0 0 var(--plum); }
+.cp-item-val { flex: none; min-width: 74px; font-family: var(--font-title); font-size: 13.5px; color: var(--plum); }
+.cp-item-info { flex: 1; min-width: 0; display: grid; gap: 1px; font-size: 12px; }
+.cp-item-info b { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-item-info > span { color: var(--gray); }
+.cp-first { color: var(--coral); font-weight: 700; }
 </style>

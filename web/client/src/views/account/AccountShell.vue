@@ -18,6 +18,7 @@ const NAV = [
   ['/account/orders', ['Orders', '订单'], '📦'],
   ['/account/returns', ['Returns & Exchanges', '退换货'], '↩️'],
   ['/account/points', ['Glow Points', '积分'], '⭐'],
+  ['/account/coupons', ['My Coupons', '我的优惠券'], '🎟️'],
   ['/account/address', ['Address Book', '地址簿'], '📍'],
   ['/account/wishlist', ['Wishlist', '心愿单'], '💜'],
   ['/account/settings', ['Settings', '设置'], '⚙️'],

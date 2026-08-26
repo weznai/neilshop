@@ -1,12 +1,13 @@
 """营销域仓储 —— 纯查询/分页，不掺业务规则"""
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Query, Session
 
 from app.models import (
     DiscountCode, DiscountRedemption, GiftCard, GiftCardLedger, Order,
     PopupConfig, Setting,
 )
+from app.models.promo import UserCoupon
 
 
 def page(q: Query, page: int, size: int):
@@ -130,3 +131,72 @@ def discount_redemption_exists(db: Session, code_id: int) -> bool:
 
 def settings_by_key(db: Session) -> list[Setting]:
     return db.query(Setting).order_by(Setting.key).all()
+
+
+# ===== 券包（user_coupons） =====
+
+
+def claimable_coupons(db: Session, now) -> list[DiscountCode]:
+    """领券中心可见集：可领 + 启用 + 窗口内 + 未领完（用量领完即下架），新券在前"""
+    return (
+        db.query(DiscountCode)
+        .filter(
+            DiscountCode.is_claimable == 1,
+            DiscountCode.is_active == 1,
+            DiscountCode.starts_at <= now,
+            or_(DiscountCode.ends_at.is_(None), DiscountCode.ends_at > now),
+            or_(
+                DiscountCode.usage_limit.is_(None),
+                DiscountCode.used_count < DiscountCode.usage_limit,
+            ),
+        )
+        .order_by(DiscountCode.id.desc())
+        .all()
+    )
+
+
+def claimed_code_ids(db: Session, user_id: int, code_ids: list[int]) -> list[int]:
+    if not code_ids:
+        return []
+    rows = db.query(UserCoupon.code_id).filter(
+        UserCoupon.user_id == user_id,
+        UserCoupon.code_id.in_(code_ids),
+    ).all()
+    return [int(r[0]) for r in rows]
+
+
+def user_coupon_exists(db: Session, user_id: int, code_id: int) -> bool:
+    return (
+        db.query(UserCoupon.id)
+        .filter(UserCoupon.user_id == user_id, UserCoupon.code_id == code_id)
+        .first()
+        is not None
+    )
+
+
+def my_coupons(db: Session, user_id: int) -> list[tuple]:
+    """我的券包：join 折扣码（面额/窗口）+ 订单号（核销关联，未用为 null），领取时间倒序"""
+    return (
+        db.query(UserCoupon, DiscountCode, Order.order_no)
+        .join(DiscountCode, DiscountCode.id == UserCoupon.code_id)
+        .outerjoin(Order, Order.id == UserCoupon.order_id)
+        .filter(UserCoupon.user_id == user_id)
+        .order_by(UserCoupon.claimed_at.desc(), UserCoupon.id.desc())
+        .all()
+    )
+
+
+# 券包核销：status=0 守卫进 WHERE 的 CAS 原子更新——幂等（重复调用/防重回返回只核销一次），
+# 无未用券 rowcount=0 不影响无券流程
+_REDEEM_COUPON_SQL = text(
+    "UPDATE user_coupons SET status = 1, used_at = :now, order_id = :order_id "
+    "WHERE user_id = :user_id AND code_id = :code_id AND status = 0"
+)
+
+
+def redeem_user_coupon(
+    db: Session, *, user_id: int, code_id: int, order_id: int, now,
+) -> bool:
+    return db.execute(_REDEEM_COUPON_SQL, {
+        "user_id": user_id, "code_id": code_id, "order_id": order_id, "now": now,
+    }).rowcount > 0

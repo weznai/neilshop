@@ -1,23 +1,28 @@
-"""账户路由（薄层）：注册/登录/资料/地址簿/心愿单/订阅/隐私/退订/改密。
+"""账户路由（薄层）：注册/登录/资料/地址簿/心愿单/订阅/隐私/退订/改密/
+邮箱修改（双步验证）/Google·Apple 第三方登录。
 
 鉴权双通道：响应体保留 token（API 客户端/测试），同时写 HttpOnly Cookie（浏览器）。
 后台专用 /admin/login 签发独立 gm_admin_token Cookie（短时效 + SameSite=Strict），
 为前后台拆独立域名铺路 —— 拆分后 admin 站点只携带 gm_admin_token。
 """
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.deps import (
     clear_auth_cookie, get_admin_session_user, get_current_user,
     get_current_user_optional, set_auth_cookie,
 )
+from app.core.security import create_token
 from app.models import User
 
-from app.domains.member import service_account
+from app.domains.member import service_account, service_oauth
 from app.domains.member.schemas import (
-    AddressIn, ConsentIn, EmailPreferencesUpdateIn, LoginIn, NewsletterIn,
+    AddressIn, ConsentIn, EmailChangeConfirmIn, EmailChangeIn,
+    EmailPreferencesUpdateIn, LoginIn, NewsletterIn, OAuthDevLoginIn,
     PasswordChangeIn, PasswordResetConfirmIn, PasswordResetRequestIn,
     ProfileUpdateIn, RegisterIn, UnsubscribeIn,
 )
@@ -198,6 +203,77 @@ def change_password(
     db: Session = Depends(get_db),
 ):
     return service_account.change_password(db, user, body)
+
+
+# ---------- 邮箱修改（双步验证） ----------
+
+@router.post("/email-change")
+def email_change_request(
+    body: EmailChangeIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """第 1 步：密码验证 + 6 位数字码发往新邮箱（dev 环境响应附 dev_code）。"""
+    return service_account.email_change_request(db, user, body)
+
+
+@router.post("/email-change/confirm")
+def email_change_confirm(
+    body: EmailChangeConfirmIn,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """第 2 步：验证码确认 → 更新邮箱；token 基于 user id 签发，无需重签，
+    但回写 Cookie 让浏览器会话同步为最新用户资料快照。"""
+    data = service_account.email_change_confirm(db, user, body)
+    set_auth_cookie(response, create_token(user.id, user.role))
+    return data
+
+
+# ---------- Google / Apple 第三方登录 ----------
+
+@router.get("/oauth/{provider}/authorize")
+def oauth_authorize(provider: str, db: Session = Depends(get_db)):
+    """构造授权跳转 URL；dev（GM_ENV=dev）不跳真实 IdP，返回 {url:"", dev_mock:true}
+    （前端走 /oauth/dev-login 演示流）。未配置凭据 → 409 not_configured。"""
+    if provider not in service_oauth.OAUTH_PROVIDERS:
+        raise HTTPException(status_code=404, detail="provider not found")
+    if settings.env == "dev":
+        return {"url": "", "dev_mock": True}
+    return {"url": service_oauth.authorize_url(db, provider)}
+
+
+@router.get("/oauth/google/callback")
+def oauth_google_callback(
+    code: str = "", state: str = "", db: Session = Depends(get_db),
+):
+    """Google 回调（query）：换 token + 校验 id_token → 匹配/建号 → 302 前端登录页
+    （成功带 oauth_token+email，失败带 oauth_error）。"""
+    return RedirectResponse(
+        service_oauth.handle_callback(db, "google", code, state), status_code=302,
+    )
+
+
+@router.post("/oauth/apple/callback")
+def oauth_apple_callback(
+    code: str = Form(""), state: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """Apple 回调（response_mode=form_post）：ES256 client_secret 换 token +
+    JWKS 验 id_token → 匹配/建号 → 302 前端登录页。"""
+    return RedirectResponse(
+        service_oauth.handle_callback(db, "apple", code, state), status_code=302,
+    )
+
+
+@router.post("/oauth/dev-login")
+def oauth_dev_login(body: OAuthDevLoginIn, db: Session = Depends(get_db)):
+    """dev 演示登录（GM_ENV=dev 限定，其余环境 404）：查找/创建演示账号，
+    返回与 /login 相同的 {token, user}。"""
+    if settings.env != "dev":
+        raise HTTPException(status_code=404, detail="Not Found")
+    return service_oauth.dev_login(db, body.provider, body.email, body.name)
 
 
 @router.get("/export")

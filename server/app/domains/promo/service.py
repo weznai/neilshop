@@ -7,6 +7,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -15,6 +16,7 @@ from app.models import (
     AdminLog, DiscountCode, DiscountRedemption, GiftCard, GiftCardLedger,
     Order, OrderItem, OrderTimeline, PopupConfig, Setting, User,
 )
+from app.models.promo import UserCoupon
 from app.domains.promo import repository as repo
 from app.domains.promo.schemas import (
     DiscountCreateIn, DiscountUpdateIn, GiftcardAdminCreateIn, GiftcardIn,
@@ -175,6 +177,98 @@ def purchase_giftcard(db: Session, body: GiftcardPurchaseIn, user: Optional[User
         "code": card.code, "order_no": order.order_no,
         "amount_cents": body.amount_cents, "status": card.status,
     }
+
+
+# ===== 用户侧：券包（领取制优惠券） =====
+
+
+def list_coupons(db: Session, user: Optional[User]) -> dict:
+    """领券中心（公开）：仅展示可领+启用+窗口内+未领完的券；claimed 按当前登录用户判定"""
+    rows = repo.claimable_coupons(db, utcnow())
+    claimed: set[int] = set()
+    if user is not None and rows:
+        claimed = set(repo.claimed_code_ids(db, user.id, [d.id for d in rows]))
+    return {"items": [
+        {
+            "id": d.id,
+            "name": d.name,
+            "type": d.type,
+            "value": d.value,
+            "min_subtotal": d.min_subtotal,
+            "max_discount": d.max_discount,
+            "starts_at": d.starts_at,
+            "ends_at": d.ends_at,
+            "first_order_only": d.first_order_only,
+            "remaining": (
+                None if d.usage_limit is None
+                else max(0, int(d.usage_limit) - int(d.used_count))
+            ),
+            "claimed": d.id in claimed,
+        }
+        for d in rows
+    ]}
+
+
+def claim_coupon(db: Session, user: User, coupon_id: int) -> dict:
+    dc = db.get(DiscountCode, coupon_id)
+    if dc is None:
+        raise HTTPException(status_code=404, detail="coupon_not_found")
+    if repo.user_coupon_exists(db, user.id, dc.id):
+        raise HTTPException(status_code=409, detail="already_claimed")
+    now = utcnow()
+    if (
+        not dc.is_claimable or not dc.is_active
+        or (dc.starts_at and now < dc.starts_at)
+        or (dc.ends_at and now > dc.ends_at)
+    ):
+        raise HTTPException(status_code=409, detail="coupon_ended")
+    if dc.usage_limit is not None and dc.used_count >= dc.usage_limit:
+        raise HTTPException(status_code=409, detail="coupon_exhausted")
+    # 领取只记持有关系，不动 used_count（核销时才与码用量同步，与现有 code 逻辑一致）
+    db.add(UserCoupon(user_id=user.id, code_id=dc.id))
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发重复领取：唯一约束 (user_id, code_id) 兜底
+        db.rollback()
+        raise HTTPException(status_code=409, detail="already_claimed")
+    return {"ok": True, "code": dc.code}
+
+
+def my_coupons(db: Session, user: User) -> dict:
+    """我的券包：status 惰性判定（0可用 1已用 2已过期按 ends_at 现算，不回写）"""
+    now = utcnow()
+    items = []
+    for uc, dc, order_no in repo.my_coupons(db, user.id):
+        if uc.status == 1:
+            status = 1
+        elif dc.ends_at is not None and dc.ends_at < now:
+            status = 2
+        else:
+            status = 0
+        items.append({
+            "id": uc.id,
+            "code": dc.code,
+            "name": dc.name,
+            "type": dc.type,
+            "value": dc.value,
+            "min_subtotal": dc.min_subtotal,
+            "max_discount": dc.max_discount,
+            "first_order_only": dc.first_order_only,
+            "expires_at": dc.ends_at,
+            "status": status,
+            "used_at": uc.used_at,
+            "order_no": order_no,
+        })
+    return {"items": items}
+
+
+def redeem_user_coupon(db: Session, *, user_id: int, code_id: int, order_id: int) -> bool:
+    """下单核销 hook（trade.service_checkout 调用）：CAS(status=0) 原子置已用并挂订单；
+    rowcount=0 = 该用户无此码未用券（无券历史流程零影响）"""
+    return repo.redeem_user_coupon(
+        db, user_id=user_id, code_id=code_id, order_id=order_id, now=utcnow(),
+    )
 
 
 # ===== 后台：折扣码 =====

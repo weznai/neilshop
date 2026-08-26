@@ -85,6 +85,24 @@ class PasswordChangeIn(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class EmailChangeIn(BaseModel):
+    """邮箱修改第 1 步：密码二次验证 + 目标新邮箱（验证码发往新邮箱）"""
+    password: str
+    new_email: EmailStr
+
+
+class EmailChangeConfirmIn(BaseModel):
+    """邮箱修改第 2 步：新邮箱收到的 6 位数字验证码"""
+    code: str = Field(min_length=4, max_length=10)
+
+
+class OAuthDevLoginIn(BaseModel):
+    """dev 环境演示登录（GM_ENV=dev 限定）：按 provider 查找/创建演示账号"""
+    provider: str = Field(pattern="^(google|apple)$")
+    email: EmailStr | None = None
+    name: str | None = Field(default=None, max_length=100)
+
+
 # ---------- 推荐 ----------
 
 class SimulateInviteIn(BaseModel):

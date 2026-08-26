@@ -3,6 +3,28 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.13] · 遗留功能补全：券包中心 + 邮箱修改验证 + 用户改址 + 评价传图 + Google/Apple 登录
+
+### Added（后端）
+- **优惠券领取/券包**：`discount_codes` 增 `is_claimable`，新表 `user_coupons`（`UniqueConstraint(user_id, code_id)` 防重复领）；`GET /api/promo/coupons`（公开领券中心，含 remaining/claimed）、`POST /api/promo/coupons/{id}/claim`（IntegrityError 兜底 `already_claimed`）、`GET /api/promo/coupons/mine`（可用/已用/已过期三态）；下单 `place` 成功路径按 `code_id` CAS(`status=0`) 核销挂单号（90 秒防重回路径不重复核销）。
+- **邮箱修改（双步验证）**：`POST /api/account/email-change`（密码校验 + 新邮箱查重 + 6 位码经邮件服务下发，旧码作废，dev 回 `dev_code`）/ `confirm`（10 分钟有效，confirm 时复查抢注 `email_taken`）。
+- **用户侧修改未发货订单地址**：`PUT /api/orders/{no}/address`（`status∈{0,1,2} && shipping_status=0` 否则 409 `not_editable`；游客 `?email=` 双因子；timeline `address_updated` 存新旧 city/country/zip 脱敏）。
+- **评价图片上传**：`POST /api/content/reviews/upload`（登录 multipart，png/jpeg/webp/gif ≤5MB，content-type+扩展名双校验，落 `static/uploads/reviews/{yyyymm}/{uuid}.{ext}`）；评价 `images` 放行 `/static/uploads/` 相对路径。
+- **Google/Apple 第三方登录**：`users` 增 `oauth_provider/oauth_subject`；`GET /api/account/oauth/{provider}/authorize`（HMAC state 600s 自校验防伪造，未配置 409 `not_configured`，dev 回 `dev_mock`）；回调（Google token 端点 TLS 直取 + aud/exp 校验；Apple PyJWKClient ES256 在线验签）→ 按 subject 命中 / `email_verified` 绑定 / 建号（复用注册欢迎券钩子）→ 302 `/login?oauth_token=`；`POST /api/account/oauth/dev-login`（仅 dev，演示账号直登）。authorize/callback/dev-login 入限流矩阵。
+
+### Added（web/client）
+- **领券中心 `/coupons`**（票券卡：百分比/固定/免邮权益渲染、门槛、有效期、剩余量、首单标；未登录领取引导 `next` 回跳）+ **我的券包 `/account/coupons`**（三态 tab、券码点击复制、已用券跳关联订单）+ 账户侧栏/页脚/移动端入口。
+- **结算页选券**：折扣码区新增「我的优惠券」面板（仅可用券，点选回填 `code` 走既有 `applyCode`/preview 联动，手输码与礼品卡逻辑不变）。
+- **设置页邮箱修改**：两步式（密码+新邮箱×2 前端校验 → 验证码确认，`dev_code` 按重置密码页模式提示）。
+- **订单详情**：未发货订单「修改地址」弹层（COUNTRIES/PHONE_RE 共享校验，游客 email 透传）+ 评价表单「上传图片」（原生 fetch multipart，类型/≤5MB/≤6 张预检，URL 复用现有图片列表 UI）。
+- **登录/注册页 Google/Apple 按钮**：authorize 跳转 / `dev_mock` 演示直登 / `not_configured` 明确提示；`?oauth_token=` 回跳经 `auth.oauthLogin()`（me 拉取 + 积分/心愿单同步）完成登录，`?oauth_error=` 分支文案。
+
+### Migration
+- `d9e4f2a7c5b1`（券包）+ `c7e9d2b4a6f8`（OAuth/邮箱修改）双分支 → `f2a4c6d8e0b1` 合并（全新库 `upgrade head` 全链验证通过）。
+
+### 回归断言
+- 新增 `test_coupons`（39）+ `test_member_ext2`（52）；回归 `test_payments` 84 / `test_trade_fix` 33 / `test_a` 24 / `test_e2e` 62 全过；client+admin 双端构建通过。
+
 ## [0.3.12] · 双端前端深度审计修复：Stripe 支付通道打通 + 4 模块 40+ 项流程/体验完善
 
 ### Fixed（后端 · P0 支付死胡同）

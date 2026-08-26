@@ -1,6 +1,8 @@
-"""内容域服务 —— FAQ/博客/评价/UGC 业务（含后台审核与积分奖励）"""
+"""内容域服务 —— FAQ/博客/评价/UGC 业务（含后台审核与积分奖励、评价图片上传）"""
 
+import uuid
 from collections import Counter
+from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
@@ -44,12 +46,65 @@ MAX_REVIEW_IMAGES = 6
 
 
 def _check_image_url(url: str) -> None:
-    """UGC/评价图片链接校验：仅 http/https 绝对地址且长度受限（防 javascript: 注入与超长垃圾）"""
+    """UGC/评价图片链接校验：本站上传媒体（/static/uploads/ 相对路径，同源静态服务）
+    直接放行；其余须 http/https 绝对地址且长度受限（防 javascript: 注入与超长垃圾）"""
     if not url or len(url) > MAX_IMAGE_URL_LEN:
         raise HTTPException(status_code=400, detail="invalid image_url")
+    if url.startswith("/static/uploads/"):
+        return
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise HTTPException(status_code=400, detail="invalid image_url")
+
+
+# ===== 用户侧：评价图片上传 =====
+
+# 评价图上传根目录：与 media 域共用 server/static/uploads（main.py 已挂 /static 静态服务，
+# admin 媒体 URL 生成方式一致 —— /static/uploads/... 前端可直接公开访问）
+_REVIEW_UPLOAD_ROOT = Path(__file__).resolve().parents[3] / "static" / "uploads" / "reviews"
+
+# 白名单：content-type → 落盘扩展名（双校验：content-type 须在表内且与原始扩展一致）
+_REVIEW_CONTENT_TYPES = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+REVIEW_UPLOAD_MAX_BYTES = 5 * 1024 * 1024  # 5MB 上限（超出 400 too_large）
+
+
+def save_review_upload(
+    user: User, *, filename: str | None, content_type: str | None, data: bytes,
+) -> dict:
+    """评价图片上传：仅 png/jpeg/webp/gif、≤5MB；落盘
+    static/uploads/reviews/{YYYYMM}/{uuid4hex}.{ext}（文件名服务端随机生成，
+    不含任何用户输入 → 无穿越面；纵深防御再校验解析路径在 reviews 根内）。
+    返回 {url}（/static/uploads/reviews/...，main.py /static 挂载公开可访问）。"""
+    ctype = (content_type or "").split(";")[0].strip().lower()
+    if ctype not in _REVIEW_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="invalid_type")
+    ext = _REVIEW_CONTENT_TYPES[ctype]
+    orig_ext = (filename or "").rsplit(".", 1)[-1].strip().lower() \
+        if filename and "." in filename else ""
+    # 双校验：原始扩展与 content-type 语义须一致（jpg/jpeg 同义），杜绝只改头伪装
+    if orig_ext and orig_ext != ext and not (
+        ctype == "image/jpeg" and orig_ext == "jpeg"
+    ):
+        raise HTTPException(status_code=400, detail="invalid_type")
+    if len(data) > REVIEW_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="too_large")
+    if not data:
+        raise HTTPException(status_code=400, detail="invalid_type")
+    month_dir = _REVIEW_UPLOAD_ROOT / utcnow().strftime("%Y%m")
+    month_dir.mkdir(parents=True, exist_ok=True)
+    target = month_dir / f"{uuid.uuid4().hex}.{ext}"
+    try:
+        target.resolve().relative_to(_REVIEW_UPLOAD_ROOT.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    target.write_bytes(data)
+    url = f"/static/uploads/reviews/{month_dir.name}/{target.name}"
+    return {"url": url}
 
 
 # ===== 用户侧：FAQ =====

@@ -7,6 +7,7 @@
 import hashlib
 import hmac
 import os
+import secrets
 import time
 from datetime import timedelta
 from urllib.parse import quote
@@ -30,9 +31,10 @@ from app.services.emails import deliver, render
 from app.domains.member import repository as repo
 from app.domains.member import service_referrals
 from app.domains.member.schemas import (
-    AddressIn, ConsentIn, EmailPreferencesUpdateIn, LoginIn, NewsletterIn,
-    PasswordChangeIn, PasswordResetConfirmIn, PasswordResetRequestIn,
-    ProfileUpdateIn, RegisterIn, UnsubscribeIn,
+    AddressIn, ConsentIn, EmailChangeIn, EmailChangeConfirmIn,
+    EmailPreferencesUpdateIn, LoginIn, NewsletterIn, PasswordChangeIn,
+    PasswordResetConfirmIn, PasswordResetRequestIn, ProfileUpdateIn,
+    RegisterIn, UnsubscribeIn,
 )
 
 def _user_out(u: User) -> dict:
@@ -415,6 +417,79 @@ def change_password(db: Session, user: User, body: PasswordChangeIn) -> dict:
     user.password_hash = hash_password(body.new_password)
     db.commit()
     return {"ok": True}
+
+
+# ---------- 邮箱修改（双步验证） ----------
+
+# 验证码有效期（分钟）与 dev 判定（与全站 dev 口径一致：GM_ENV=dev，见 core/config）
+EMAIL_CHANGE_CODE_MINUTES = 10
+
+
+def _is_dev() -> bool:
+    return settings.env == "dev"
+
+
+def email_change_request(db: Session, user: User, body: EmailChangeIn) -> dict:
+    """第 1 步：密码二次验证 → 6 位数字码落库（旧码作废）并发往新邮箱。
+    dev 环境（GM_ENV=dev）响应附 dev_code 便于联调（邮件投递为日志 MVP）。"""
+    if user.password_hash is None or not verify_password(
+        body.password, user.password_hash
+    ):
+        raise HTTPException(status_code=401, detail="invalid_password")
+    new_email = body.new_email.strip().lower()
+    if new_email == user.email.strip().lower():
+        raise HTTPException(status_code=400, detail="same_email")
+    if repo.user_email_taken(db, new_email):
+        raise HTTPException(status_code=409, detail="email_taken")
+    code = f"{secrets.randbelow(1000000):06d}"
+    repo.replace_email_change_request(
+        db, user_id=user.id, new_email=new_email, code=code,
+        expires_at=utcnow() + timedelta(minutes=EMAIL_CHANGE_CODE_MINUTES),
+    )
+    deliver(
+        new_email, "Your GLOWMAG email change code",
+        "<div style=\"font-family:Arial,Helvetica,sans-serif;max-width:560px;"
+        "margin:0 auto\"><h2 style=\"letter-spacing:3px\">GLOWMAG</h2>"
+        f"<p>Hi {user.email},</p>"
+        "<p>You asked to change your GLOWMAG account email to this address. "
+        "Enter this code to confirm (valid for "
+        f"{EMAIL_CHANGE_CODE_MINUTES} minutes):</p>"
+        "<p style=\"font-size:24px;letter-spacing:4px;font-weight:bold;"
+        "background:#f7f7f7;padding:14px;text-align:center\">"
+        f"{code}</p>"
+        "<p>Didn't ask for this? Just ignore this email &mdash; your email "
+        "stays unchanged.</p>"
+        "<p>Stay glowing,<br>The GLOWMAG Team</p></div>",
+    )
+    db.commit()
+    out = {"ok": True}
+    if _is_dev():
+        out["dev_code"] = code
+    return out
+
+
+def email_change_confirm(db: Session, user: User, body: EmailChangeConfirmIn) -> dict:
+    """第 2 步：校验验证码（错/过期/已用 409）→ 更新 user.email（strip+lower）。
+    会话 token 基于 user id 签发（deps 只取 sub），邮箱变更无需重签 token。"""
+    row = repo.latest_active_email_change_request(db, user.id)
+    if row is None or not secrets.compare_digest(row.code, body.code.strip()):
+        raise HTTPException(status_code=409, detail="invalid_code")
+    if row.expires_at <= utcnow():
+        raise HTTPException(status_code=409, detail="expired")
+    new_email = row.new_email.strip().lower()
+    # 请求与确认窗口之间新邮箱可能被他人注册：占位复查（含自身已改完的重放）
+    other = repo.get_user_by_email(db, new_email)
+    if other is not None and other.id != user.id:
+        raise HTTPException(status_code=409, detail="email_taken")
+    user.email = new_email
+    row.used_at = utcnow()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="email_taken")
+    db.refresh(user)
+    return {"ok": True, "user": profile_with_delete_request(db, user)}
 
 
 # ---------- GDPR：数据导出 / 删除请求 ----------

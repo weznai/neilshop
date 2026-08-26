@@ -1,6 +1,6 @@
 """营销域（8 表）"""
 
-from sqlalchemy import JSON, BigInteger, Column, DateTime, Index, Integer, SmallInteger, String, Text
+from sqlalchemy import JSON, BigInteger, Column, DateTime, Index, Integer, SmallInteger, String, Text, UniqueConstraint
 
 from app.core.db import Base, utcnow
 
@@ -25,6 +25,22 @@ class DiscountCode(Base):
     starts_at = Column(DateTime, nullable=False, default=utcnow)
     ends_at = Column(DateTime)
     is_active = Column(SmallInteger, nullable=False, default=1)
+    is_claimable = Column(SmallInteger, nullable=False, default=0)  # 1=可领取（券包展示）
+
+
+class UserCoupon(Base):
+    """用户券包（领取制优惠券）：领取只记持有关系（不动 used_count，核销时才与
+    码用量同步）；下单用码时按 CAS(status=0) 原子核销挂订单"""
+    __tablename__ = "user_coupons"
+    __table_args__ = (UniqueConstraint("user_id", "code_id", name="uq_user_coupons_user_code"),)
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    code_id = Column(BigInteger, nullable=False, index=True)
+    status = Column(SmallInteger, nullable=False, default=0)  # 0未用 1已用
+    claimed_at = Column(DateTime, nullable=False, default=utcnow)
+    used_at = Column(DateTime)
+    order_id = Column(BigInteger)
 
 
 class DiscountRedemption(Base):

@@ -114,6 +114,71 @@ async function changePassword() {
   } finally { pwBusy.value = false }
 }
 
+/* 邮箱修改（两步式）：POST /api/account/email-change {password,new_email} → {ok,dev_code?}（dev 才有 dev_code）；
+   POST /api/account/email-change/confirm {code} → {ok,user}；错误 invalid_password/same_email/email_taken、invalid_code/expired */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const em = reactive({
+  open: false, step: 1, password: '', new_email: '', confirm_email: '',
+  code: '', devCode: '', busy: false, busy2: false, err: '',
+})
+function emReset() {
+  Object.assign(em, {
+    open: false, step: 1, password: '', new_email: '', confirm_email: '',
+    code: '', devCode: '', busy: false, busy2: false, err: '',
+  })
+}
+function emToggle() { em.open ? emReset() : (emReset(), em.open = true) }
+function emCheck1() {
+  if (!em.password) return tt('Enter your current password', '请输入当前密码')
+  const ne = em.new_email.trim().toLowerCase()
+  if (!EMAIL_RE.test(ne)) return tt('Enter a valid new email address', '请输入有效的新邮箱地址')
+  if (ne !== em.confirm_email.trim().toLowerCase()) return tt('The two email addresses do not match', '两次输入的新邮箱不一致')
+  if (auth.user && ne === String(auth.user.email || '').toLowerCase()) return tt('The new email must be different from your current email', '新邮箱不能与当前邮箱相同')
+  return ''
+}
+async function emSubmit1() {
+  em.err = em.step === 1 ? emCheck1() : ''
+  if (em.err) return
+  em.busy = true
+  try {
+    const d = await req('POST', '/api/account/email-change', {
+      password: em.password,
+      new_email: em.new_email.trim().toLowerCase(),
+    })
+    em.step = 2
+    em.code = ''
+    em.devCode = (d && d.dev_code) || ''
+    em.err = ''
+    ui.toast(tt('Verification code sent to your new email', '验证码已发送至新邮箱'), 'success')
+  } catch (e) {
+    const d = e && e.data && e.data.detail
+    if (d === 'invalid_password') em.err = tt('Current password is incorrect', '当前密码不正确')
+    else if (d === 'same_email') em.err = tt('The new email must be different from your current email', '新邮箱不能与当前邮箱相同')
+    else if (d === 'email_taken') em.err = tt('That email is already used by another account', '该邮箱已被其它账号使用')
+    else em.err = tt('Could not send — please retry later', '发送失败，请稍后再试')
+  } finally { em.busy = false }
+}
+async function emSubmit2() {
+  if (!/^\d{6}$/.test(em.code.trim())) {
+    em.err = tt('Enter the 6-digit code from the email', '请输入邮件中的 6 位验证码')
+    return
+  }
+  em.busy2 = true
+  try {
+    const d = await req('POST', '/api/account/email-change/confirm', { code: em.code.trim() })
+    /* confirm 返回 {ok,user}：优先直接写 store 缓存，缺失时回落 /me 刷新（与保存资料同模式） */
+    if (d && d.user) auth._cache(d.user)
+    else await auth.me().catch(() => {})
+    emReset()
+    ui.toast(tt('Email updated', '邮箱已更新'), 'success')
+  } catch (e) {
+    const d = e && e.data && e.data.detail
+    if (d === 'invalid_code') em.err = tt('That code is incorrect — check and retry', '验证码不正确，请检查后重试')
+    else if (d === 'expired') em.err = tt('That code has expired — resend a new one', '验证码已过期，请重新发送')
+    else em.err = tt('Could not confirm — please retry later', '确认失败，请稍后再试')
+  } finally { em.busy2 = false }
+}
+
 /* 无直接改密端点时的兜底仍保留：走邮件重置流（POST /password-reset/request，恒 200 防枚举）；两段式确认 */
 async function sendReset() {
   sendingReset.value = true
@@ -171,7 +236,51 @@ async function cancelDelete() {
       <h3 style="font-size:15px;margin-bottom:14px">{{ tt('Profile', '个人资料') }}</h3>
       <div class="field"><label>{{ tt('Name', '昵称') }}</label><input v-model="form.name" class="input" maxlength="100" autocomplete="name"></div>
       <div class="field"><label>{{ tt('Birthday (birthday-month points gift)', '生日（生日月有积分礼）') }}</label><input v-model="form.birthday" class="input" type="date" autocomplete="bday"></div>
-      <div class="field"><label>{{ tt('Email (registered, self-service change not supported yet)', '邮箱（注册邮箱，暂不支持自助修改）') }}</label><input :value="auth.user?.email" class="input" disabled style="background:var(--rose-pale)"></div>
+      <div class="field"><label>{{ tt('Email (registered)', '邮箱（注册邮箱）') }}</label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input :value="auth.user?.email" class="input" disabled style="background:var(--rose-pale);flex:1;min-width:0">
+          <button type="button" class="btn btn-secondary btn-sm" style="flex:none" @click="emToggle">{{ em.open ? tt('Close', '收起') : tt('Change', '修改') }}</button>
+        </div>
+      </div>
+      <!-- 邮箱修改两步式面板：步骤1 密码+新邮箱 → 步骤2 验证码确认 -->
+      <div v-if="em.open" style="margin-bottom:14px;padding:14px;border:1.5px dashed var(--rose);border-radius:12px;background:var(--rose-pale);display:grid;gap:10px">
+        <template v-if="em.step === 1">
+          <b style="font-size:13.5px">{{ tt('Change email', '修改邮箱') }}</b>
+          <div class="field" style="margin:0"><label>{{ tt('Current password', '当前密码') }}</label>
+            <input v-model="em.password" class="input" type="password" autocomplete="current-password" placeholder="••••••••">
+          </div>
+          <div class="field" style="margin:0"><label>{{ tt('New email', '新邮箱') }}</label>
+            <input v-model="em.new_email" class="input" type="email" autocomplete="off" placeholder="you@example.com">
+          </div>
+          <div class="field" style="margin:0"><label>{{ tt('Confirm new email', '确认新邮箱') }}</label>
+            <input v-model="em.confirm_email" class="input" type="email" autocomplete="off" placeholder="you@example.com">
+          </div>
+          <div v-if="em.err" class="field-msg" style="display:block" role="alert">{{ em.err }}</div>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button type="button" class="btn btn-ghost btn-sm" @click="emReset">{{ tt('Cancel', '取消') }}</button>
+            <button type="button" class="btn btn-primary btn-sm" :class="{ loading: em.busy }" :disabled="em.busy" @click="emSubmit1">{{ tt('Send code', '发送验证码') }}</button>
+          </div>
+        </template>
+        <template v-else>
+          <b style="font-size:13.5px">{{ tt('Verify your new email', '验证新邮箱') }}</b>
+          <p style="font-size:12.5px;color:var(--gray);margin:0">
+            {{ tt(`A 6-digit code was sent to ${em.new_email.trim()} — enter it below to finish the change.`, `验证码已发送至新邮箱 ${em.new_email.trim()}，请输入 6 位验证码完成修改。`) }}
+          </p>
+          <!-- dev 提示：后端仅 dev 环境返回 dev_code（对齐 ResetPasswordView/LoginView 演示提示模式） -->
+          <div v-if="em.devCode" style="padding:10px 12px;background:#fff;border-radius:10px;font-size:12.5px;color:var(--plum);font-weight:600">
+            🧪 {{ tt('Dev verification code', '开发环境验证码') }}: <b>{{ em.devCode }}</b>{{ tt(' (demo only, shown automatically in dev)', '（仅演示环境返回并展示）') }}
+          </div>
+          <div class="field" style="margin:0"><label>{{ tt('Verification code (6 digits)', '验证码（6 位数字）') }}</label>
+            <input v-model="em.code" class="input" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456">
+          </div>
+          <div v-if="em.err" class="field-msg" style="display:block" role="alert">{{ em.err }}</div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap">
+            <button type="button" class="btn btn-ghost btn-sm" @click="emReset">{{ tt('Cancel', '取消') }}</button>
+            <button type="button" class="btn btn-secondary btn-sm" :class="{ loading: em.busy }" :disabled="em.busy" @click="emSubmit1">{{ tt('Resend code', '重发验证码') }}</button>
+            <button type="button" class="btn btn-primary btn-sm" :class="{ loading: em.busy2 }" :disabled="em.busy2" @click="emSubmit2">{{ tt('Confirm change', '确认修改') }}</button>
+          </div>
+        </template>
+      </div>
       <button class="btn btn-primary" :class="{ loading: saving }" :disabled="saving" @click="save">{{ tt('Save profile', '保存资料') }}</button>
     </div>
 
