@@ -98,7 +98,8 @@ class Payment(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     order_id = Column(BigInteger, nullable=False, index=True)
-    stripe_payment_intent = Column(String(64), index=True)
+    # Stripe PI(pi_ 27)/checkout session(cs_ 可达 100+)；hosted 流程两列同存 session id
+    stripe_payment_intent = Column(String(191), index=True)
     stripe_checkout_session = Column(String(255))            # checkout session URL / PI secret 快照
     amount = Column(Integer, nullable=False)
     status = Column(SmallInteger, nullable=False, default=0)  # 0待 1成功 2失败 3已退款 4部分退款
