@@ -175,23 +175,23 @@ async function confirmRecv(o) {
       <button v-if="kw" type="button" class="btn btn-ghost btn-sm" @click="kw = ''; search()">{{ i18n.t('orders.clear') }}</button>
     </form>
 
-    <div v-if="loading" style="display:grid;gap:10px">
-      <div v-for="i in 3" :key="i" class="skeleton" style="height:56px;border-radius:12px" />
+    <div v-if="loading" style="display:grid;gap:8px">
+      <div v-for="i in 5" :key="i" class="skeleton" style="height:46px;border-radius:12px" />
     </div>
 
     <template v-else>
       <div v-if="failed" class="card" style="padding:30px;text-align:center;color:var(--gray)">
         {{ tt('Could not load your orders —', '订单加载失败，') }}<a href="javascript:void(0)" style="color:var(--plum)" @click="load">{{ tt('retry', '重试') }}</a>
       </div>
-      <div v-else-if="orders.length" style="display:grid;gap:10px">
+      <div v-else-if="orders.length" style="display:grid;gap:8px">
         <div v-for="o in orders" :key="o.order_no" class="card ocard" :data-no="o.order_no">
           <div class="ocard-row">
-            <div class="ocard-info">
+            <router-link class="ocard-info" :to="{ path: '/account/orders/detail', query: { no: o.order_no } }">
               <span class="ocard-no">{{ o.order_no }}</span>
               <span class="ocard-sub">
                 {{ fmt(o.placed_at) }}<span v-if="[3, 4, 5].includes(o.status) && SHIP[o.shipping_status]">{{ tt(SHIP[o.shipping_status][0], SHIP[o.shipping_status][1]) }}</span>
               </span>
-            </div>
+            </router-link>
             <div class="ocard-side">
               <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
               <b class="ocard-amt">{{ money(o.grand_total) }}</b>
@@ -224,25 +224,28 @@ async function confirmRecv(o) {
 </template>
 
 <style scoped>
-/* 状态筛选：单行横滑 + 选中态下划线指示（plum 2px） */
-.o-tabs { display: flex; gap: 4px; margin-bottom: 16px; overflow-x: auto; scrollbar-width: none; -ms-overflow-style: none; }
+/* 状态筛选：分段式胶囊（白底轨道 + rose-pale 选中药丸），单行横滑 */
+.o-tabs { display: flex; gap: 4px; margin-bottom: 14px; padding: 4px; background: #fff; border: 1px solid var(--gray-light); border-radius: 12px; overflow-x: auto; scrollbar-width: none; -ms-overflow-style: none; box-shadow: 0 1px 2px rgba(31,27,30,.04); }
 .o-tabs::-webkit-scrollbar { display: none; }
-.o-tab { flex: none; padding: 10px 12px; font-size: 13.5px; font-weight: 600; color: var(--gray); background: none; border: none; border-bottom: 2px solid transparent; white-space: nowrap; cursor: pointer; transition: color .15s, border-color .15s; }
+.o-tab { flex: none; padding: 7px 14px; font-size: 13px; font-weight: 600; color: var(--gray); background: none; border-radius: 999px; white-space: nowrap; cursor: pointer; transition: color .15s, background .15s; }
 .o-tab:hover { color: var(--plum); }
-.o-tab.on { color: var(--plum); border-bottom-color: var(--plum); }
-.o-search { display: flex; gap: 8px; margin-bottom: 16px; }
+.o-tab.on { color: var(--plum); background: var(--rose-pale); box-shadow: inset 0 0 0 1px var(--rose-light); }
+.o-search { display: flex; gap: 8px; margin-bottom: 14px; }
 .o-search .input { flex: 1; height: 38px; padding: 0 12px; }
 
-/* 订单卡：紧凑行距（13px 单号 / 11.5px 时间），hover 描边提示可交互 */
-.ocard { padding: 12px 16px; transition: border-color .15s, box-shadow .2s ease-out; }
-.ocard:hover { border-color: var(--rose); box-shadow: 0 4px 14px rgba(31,27,30,.07); }
-.ocard-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
-.ocard-info { display: grid; gap: 1px; min-width: 0; }
-.ocard-no { font-size: 13px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
-.ocard-sub { font-size: 11.5px; color: var(--gray); line-height: 1.4; }
-.ocard-side { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.ocard-amt { font-size: 13.5px; color: var(--plum); font-variant-numeric: tabular-nums; }
+/* 订单卡：单行横排（单号 · 时间 … 状态/金额/操作），左侧品牌渐变饰条 + hover 微浮起 */
+.ocard { position: relative; overflow: hidden; padding: 10px 16px 10px 18px; transition: border-color .15s, box-shadow .2s ease-out, transform .15s ease-out; }
+.ocard::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: linear-gradient(180deg, var(--rose), var(--plum)); opacity: .7; }
+.ocard:hover { border-color: var(--rose); box-shadow: 0 6px 18px rgba(31,27,30,.08); transform: translateY(-1px); }
+.ocard-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: nowrap; align-items: center; white-space: nowrap; }
+.ocard-info { display: flex; align-items: baseline; gap: 10px; min-width: 0; overflow: hidden; }
+.ocard-info:hover .ocard-no { color: var(--plum); text-decoration: underline; text-underline-offset: 3px; }
+.ocard-no { flex: none; font-size: 13px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; transition: color .15s; }
+.ocard-sub { font-size: 11.5px; color: var(--gray); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; }
+.ocard-side { display: flex; gap: 8px; align-items: center; flex-wrap: nowrap; flex: none; }
+.ocard-amt { font-size: 13.5px; font-weight: 800; color: var(--plum); font-variant-numeric: tabular-nums; }
 @media (max-width: 640px) {
-  .ocard { padding: 11px 13px; }
+  .ocard { padding: 8px 12px 8px 15px; }
+  .ocard-side .btn-sm { height: 30px; padding: 0 12px; font-size: 12px; }
 }
 </style>

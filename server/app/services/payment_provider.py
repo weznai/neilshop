@@ -255,6 +255,31 @@ class StripeProvider(PaymentProvider):
             return
         stripe.PaymentIntent.cancel(payment_intent)
 
+    def resolve_refund_target(self, payment_intent: str) -> str:
+        """退款目标 PI：cs_ 托管会话先展开 payment_intent（真实退款只能对 PI 发起）；
+        pi_/其余直接原样返回。查不到 PI 抛 ProviderUnavailable。"""
+        pid = str(payment_intent or "")
+        if not pid.startswith("cs_"):
+            return pid
+        stripe = self._sdk()
+        session = stripe.checkout.Session.retrieve(pid)
+        pi = getattr(session, "payment_intent", None)
+        if not pi:
+            raise ProviderUnavailable(f"checkout session {pid} has no payment_intent")
+        return str(pi)
+
+    def create_refund(self, payment_intent: str, amount_cents: int, reason: str | None = None) -> dict:
+        """对 PI 发起真实退款（stripe.Refund.create）：金额为本次退款额（非累计）；
+        reason 映射 Stripe 枚举（duplicate/fraudulent/requested_by_customer）。
+        返回 {"refund_id", "status"}；抛 ProviderUnavailable 由调用方回滚本地账。"""
+        stripe = self._sdk()
+        pi = self.resolve_refund_target(payment_intent)
+        kwargs = {"payment_intent": pi, "amount": int(amount_cents)}
+        if reason in ("duplicate", "fraudulent", "requested_by_customer"):
+            kwargs["reason"] = reason
+        refund = stripe.Refund.create(**kwargs)
+        return {"refund_id": refund.id, "status": getattr(refund, "status", "")}
+
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("stripe payments are driven by webhook events")
 
@@ -379,6 +404,30 @@ class PayPalProvider(PaymentProvider):
                 headers={"Authorization": f"Bearer {token}"},
             )
             resp.raise_for_status()
+
+    def resolve_refund_target(self, payment_intent: str) -> str:
+        # PayPal capture id 即退款目标（无 cs_ 会话展开环节），原样返回
+        return str(payment_intent or "")
+
+    def create_refund(self, payment_intent: str, amount_cents: int, reason: str | None = None) -> dict:
+        """对 capture id 发起真实退款（/v2/payments/captures/{id}/refund）：
+        amount 缺省=剩余全额（PayPal 语义），这里显式带 value 保持与 Stripe 一致。"""
+        try:
+            with self._client() as client:
+                token = self._token(client)
+                resp = client.post(
+                    f"{self.base}/v2/payments/captures/{payment_intent}/refund",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"amount": {
+                        "value": f"{amount_cents // 100}.{amount_cents % 100:02d}",
+                        "currency_code": "USD",
+                    }},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:
+            raise ProviderUnavailable(f"paypal refund failed: {exc}") from exc
+        return {"refund_id": data.get("id") or "", "status": data.get("status") or ""}
 
     def verify_webhook(
         self, payload: bytes, sig_header: str | None, headers: dict | None = None,

@@ -621,10 +621,10 @@ async function submitReview(it) {
     <div v-else style="display:grid;gap:16px">
       <!-- 返回订单列表入口（移动端同样可见） -->
       <div>
-        <router-link to="/account/orders" style="font-size:13px;font-weight:600;color:var(--plum)">← {{ tt('Back to orders', '返回订单列表') }}</router-link>
+        <router-link to="/account/orders" class="od-back">← {{ tt('Back to orders', '返回订单列表') }}</router-link>
       </div>
       <!-- 头部 + 进度 -->
-      <div class="card od-card">
+      <div class="card od-card od-head">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
           <div>
             <h2 style="font-family:var(--font-title);font-size:18px;letter-spacing:.2px;font-variant-numeric:tabular-nums">{{ o.order_no }}</h2>
@@ -645,7 +645,7 @@ async function submitReview(it) {
           </div>
         </div>
         <div v-if="steps.length" class="od-steps">
-          <div v-for="(s, i) in steps" :key="i" class="od-step" :class="{ 'is-done': s.done }">
+          <div v-for="(s, i) in steps" :key="i" class="od-step" :class="{ 'is-done': s.done, 'is-now': s.now }">
             <div class="od-dot" :style="{ background: s.done ? 'var(--success)' : 'var(--gray-light)' }">
               {{ s.done ? '✓' : i + 1 }}
             </div>
@@ -661,10 +661,10 @@ async function submitReview(it) {
         <div style="display:grid;gap:16px">
           <!-- 商品 -->
           <div class="card od-card">
-            <h3 style="font-size:14px;margin-bottom:10px">{{ tt('Items', '商品') }}</h3>
-            <div v-for="it in o.items || []" :key="it.id" style="padding:10px 0;border-bottom:1px solid var(--gray-light)">
+            <h3 class="od-h">{{ tt('Items', '商品') }}</h3>
+            <div v-for="it in o.items || []" :key="it.id" class="od-item">
               <div style="display:flex;gap:12px;align-items:center">
-                <img :src="it.image" :alt="it.title" style="width:52px;height:52px;border-radius:10px;object-fit:cover" @error="imgFallback">
+                <img :src="it.image" :alt="it.title" class="od-item-img" @error="imgFallback">
                 <div style="flex:1;font-size:13px;min-width:0">
                   <b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ it.title }}</b>
                   <div style="color:var(--gray);font-size:11.5px">
@@ -730,31 +730,31 @@ async function submitReview(it) {
               </div>
             </div>
 
-            <!-- 金额汇总 -->
+            <!-- 金额汇总：点线引导（label ··· value） -->
             <div class="od-sum">
-              <div style="display:flex;justify-content:space-between"><span>{{ tt('Subtotal', '小计') }}</span><span>{{ money(o.subtotal) }}</span></div>
-              <div v-if="o.discount_total" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ tt('Discount', '折扣优惠') }}</span><span>-{{ money(o.discount_total) }}</span></div>
-              <div v-if="o.points_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ tt('Points off', '积分抵扣') }}（{{ o.points_used }}）</span><span>-{{ money(o.points_discount) }}</span></div>
-              <div v-if="o.giftcard_discount" style="display:flex;justify-content:space-between;color:var(--success)"><span>{{ tt('Gift card', '礼品卡抵扣') }}</span><span>-{{ money(o.giftcard_discount) }}</span></div>
-              <div style="display:flex;justify-content:space-between"><span>{{ tt('Shipping', '运费') }}{{ o.shipping_method === 'express' ? tt(' (express)', '（快递）') : '' }}</span><span>{{ o.shipping_fee ? money(o.shipping_fee) : tt('Free', '包邮') }}</span></div>
-              <div style="display:flex;justify-content:space-between"><span>{{ tt('Tax', '税费') }}</span><span>{{ money(o.tax) }}</span></div>
+              <div class="od-sum-row"><span>{{ tt('Subtotal', '小计') }}</span><i></i><b>{{ money(o.subtotal) }}</b></div>
+              <div v-if="o.discount_total" class="od-sum-row is-off"><span>{{ tt('Discount', '折扣优惠') }}</span><i></i><b>-{{ money(o.discount_total) }}</b></div>
+              <div v-if="o.points_discount" class="od-sum-row is-off"><span>{{ tt('Points off', '积分抵扣') }}（{{ o.points_used }}）</span><i></i><b>-{{ money(o.points_discount) }}</b></div>
+              <div v-if="o.giftcard_discount" class="od-sum-row is-off"><span>{{ tt('Gift card', '礼品卡抵扣') }}</span><i></i><b>-{{ money(o.giftcard_discount) }}</b></div>
+              <div class="od-sum-row"><span>{{ tt('Shipping', '运费') }}{{ o.shipping_method === 'express' ? tt(' (express)', '（快递）') : '' }}</span><i></i><b>{{ o.shipping_fee ? money(o.shipping_fee) : tt('Free', '包邮') }}</b></div>
+              <div class="od-sum-row"><span>{{ tt('Tax', '税费') }}</span><i></i><b>{{ money(o.tax) }}</b></div>
               <div class="od-total">
                 <span>{{ tt('Total paid', '实付总额') }}</span><span>{{ money(o.grand_total) }}</span>
               </div>
-              <div v-if="o.points_earned" style="font-size:12.5px;color:var(--gray)">{{ tt('You earned', '本单获得') }} {{ o.points_earned }} {{ tt('points (unfrozen after delivery)', '积分（确认收货后解冻）') }}</div>
+              <div v-if="o.points_earned" style="font-size:12px;color:var(--gray)">{{ tt('You earned', '本单获得') }} {{ o.points_earned }} {{ tt('points (unfrozen after delivery)', '积分（确认收货后解冻）') }}</div>
             </div>
           </div>
 
           <!-- 时间线 -->
           <div class="card od-card">
-            <h3 style="font-size:14px;margin-bottom:10px">{{ tt('Order activity', '订单动态') }}</h3>
+            <h3 class="od-h">{{ tt('Order activity', '订单动态') }}</h3>
             <div v-if="rmaSubmitted || exSubmitted" style="margin:-4px 0 10px;font-size:12.5px">
               <router-link to="/account/returns" style="color:var(--plum);font-weight:600">{{ tt('View return / exchange progress →', '查看退换货进度 →') }}</router-link>
             </div>
             <div class="tl-list">
               <div v-for="(t, i) in o.timeline || []" :key="i" class="tl-row">
                 <span class="tl-time">{{ fmt(t.created_at) }}</span>
-                <span class="tl-dot" :class="{ now: i === 0 }" :style="{ background: i === 0 ? 'var(--rose)' : 'var(--gray-light)' }"></span>
+                <span class="tl-dot" :class="{ now: i === 0 }"></span>
                 <span><b>{{ eventLabel(t) }}</b><span v-if="detailText(t)" style="color:var(--gray)"> · {{ detailText(t) }}</span></span>
               </div>
               <div v-if="!(o.timeline || []).length" style="color:var(--gray);font-size:12.5px">{{ tt('No activity yet', '暂无动态') }}</div>
@@ -766,7 +766,7 @@ async function submitReview(it) {
           <!-- 收货地址（待付/已付/备货 且 未发货 shipping_status===0 可改址） -->
           <div class="card od-card">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px">
-              <h3 style="font-size:14px">{{ tt('Shipping info', '收货信息') }}</h3>
+              <h3 class="od-h">{{ tt('Shipping info', '收货信息') }}</h3>
               <button v-if="addrEditable" class="btn btn-secondary btn-sm" @click="openAddr">✏️ {{ tt('Edit address', '修改地址') }}</button>
             </div>
             <div style="font-size:13px;line-height:1.65">
@@ -779,7 +779,7 @@ async function submitReview(it) {
 
           <!-- 物流 -->
           <div v-if="(o.shipments || []).length || o.tracking_no" class="card od-card">
-            <h3 style="font-size:14px;margin-bottom:8px">{{ tt('Shipment', '物流') }}</h3>
+            <h3 class="od-h">{{ tt('Shipment', '物流') }}</h3>
             <template v-if="(o.shipments || []).length">
               <div v-for="s in o.shipments" :key="s.shipment_no" style="font-size:13px;line-height:1.8;padding-bottom:6px;border-bottom:1px dashed var(--gray-light);margin-bottom:6px">
                 <b>{{ s.carrier ? s.carrier.toUpperCase() : '—' }}</b> · {{ s.shipment_no }}<br>
@@ -792,16 +792,16 @@ async function submitReview(it) {
 
           <!-- 支付记录 -->
           <div v-if="(o.payments || []).length" class="card od-card">
-            <h3 style="font-size:14px;margin-bottom:8px">{{ tt('Payments', '支付记录') }}</h3>
+            <h3 class="od-h">{{ tt('Payments', '支付记录') }}</h3>
             <div v-for="p in o.payments" :key="p.id" style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-variant-numeric:tabular-nums;padding:5px 0">
               <span>{{ money(p.amount) }}<span v-if="p.refunded_amount" style="color:var(--gray)">（{{ tt('refunded', '已退') }} {{ money(p.refunded_amount) }}）</span></span>
               <span class="tag" :class="PAY_ST[p.status]?.[2]">{{ PAY_ST[p.status] ? tt(PAY_ST[p.status][0], PAY_ST[p.status][1]) : p.status }}</span>
             </div>
           </div>
 
-          <!-- 订单帮助：问题优先引导解决；取消入口为底部弱化文字链（跳三步挽留向导） -->
+          <!-- 售后：问题优先引导解决；取消/退款入口为整行红描边按钮（跳三步挽留向导） -->
           <div class="card od-card">
-            <h3 style="font-size:14px;margin-bottom:6px">{{ tt('Order support', '订单帮助') }}</h3>
+            <h3 class="od-h">{{ tt('After-sales', '售后') }}</h3>
             <p style="font-size:12px;color:var(--gray);margin-bottom:10px">{{ tt('Something off? Most issues solve faster than a refund:', '遇到问题？大部分问题都能比退款更快解决：') }}</p>
             <div style="display:grid;gap:8px">
               <button v-if="addrEditable" type="button" class="od-help" @click="openAddr">✏️ {{ tt('Edit shipping address', '修改收货地址') }}</button>
@@ -957,31 +957,62 @@ async function submitReview(it) {
   .od-card { padding: 14px 16px; }
 }
 
+/* 返回链：小胶囊按钮 */
+.od-back { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--plum); padding: 6px 14px 6px 10px; border-radius: 999px; background: #fff; border: 1px solid var(--gray-light); transition: border-color .15s, background .15s, transform .15s; }
+.od-back:hover { border-color: var(--rose); background: var(--rose-pale); transform: translateX(-2px); }
+
+/* 头部卡：奶油渐变底 + 品牌饰条 */
+.od-head { position: relative; overflow: hidden; background: linear-gradient(135deg, var(--rose-pale) 0%, #fff 55%); }
+.od-head::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: linear-gradient(180deg, var(--rose), var(--plum)); }
+
+/* 卡片小节标题：小字号加粗 + rose 短划装饰 */
+.od-h { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; margin-bottom: 10px; }
+.od-h::before { content: ""; flex: none; width: 14px; height: 3px; border-radius: 2px; background: linear-gradient(90deg, var(--rose), var(--plum)); }
+
+/* 商品行：hover 淡玫瑰底；图带描边圆角 */
+.od-item { padding: 10px 8px; margin: 0 -8px; border-bottom: 1px solid var(--gray-light); border-radius: 10px; transition: background .15s; }
+.od-item:hover { background: var(--rose-pale); }
+.od-item-img { width: 52px; height: 52px; border-radius: 10px; object-fit: cover; border: 1px solid var(--gray-light); }
+
 .item-actions { display: flex; gap: 8px; margin-top: 8px; padding-left: 64px; flex-wrap: wrap; align-items: center; }
 @media (max-width: 640px) {
   .item-actions { padding-left: 0; }
 }
 
-/* 状态圆点向导：圆点间连接线，已过段 --success */
-.od-steps { display: flex; gap: 0; margin: 14px 0 4px; }
+/* 状态圆点向导：圆点间连接线（已过段 success 渐隐），当前节点 plum 呼吸光环 */
+.od-steps { display: flex; gap: 0; margin: 16px 0 4px; }
 .od-step { flex: 1; text-align: center; position: relative; }
 .od-dot { width: 24px; height: 24px; border-radius: 50%; margin: 0 auto 5px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11.5px; position: relative; z-index: 1; }
 .od-step.is-done .od-dot { animation: odDotIn .3s ease-out both; }
+.od-step.is-now .od-dot { box-shadow: 0 0 0 0 rgba(138,74,99,.35); animation: odNowPulse 2s ease-out infinite; }
 @keyframes odDotIn {
   0% { transform: scale(.4); opacity: 0; }
   60% { transform: scale(1.12); }
   100% { transform: scale(1); opacity: 1; }
 }
+@keyframes odNowPulse {
+  0% { box-shadow: 0 0 0 0 rgba(138,74,99,.35); }
+  70% { box-shadow: 0 0 0 7px rgba(138,74,99,0); }
+  100% { box-shadow: 0 0 0 0 rgba(138,74,99,0); }
+}
 .od-step:not(:last-child)::after { content: ""; position: absolute; top: 12px; left: calc(50% + 15px); width: calc(100% - 30px); height: 2px; background: var(--gray-light); }
-.od-step.is-done:not(:last-child)::after { background: var(--success); }
+.od-step.is-done:not(:last-child)::after { background: linear-gradient(90deg, var(--success), var(--success-light, #B7E8D6)); }
 .od-step-label { font-size: 11px; }
 
-/* 时间线：列表顶部渐隐 mask + 当前节点光环 */
+/* 时间线：竖向连接线穿过节点 + 顶部渐隐 mask + 当前节点光环 */
 .tl-list { display: grid; gap: 0; max-height: 280px; overflow-y: auto; -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 16px); mask-image: linear-gradient(180deg, transparent 0, #000 16px); }
 .tl-row { display: flex; gap: 10px; font-size: 12.5px; padding: 6px 0; font-variant-numeric: tabular-nums; }
 .tl-time { color: var(--gray); flex: none; width: 92px; font-size: 11.5px; padding-top: 1px; }
-.tl-dot { flex: none; width: 4px; height: 4px; border-radius: 50%; margin-top: 6px; }
-.tl-dot.now { box-shadow: 0 0 0 4px var(--rose-pale); }
+.tl-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; margin-top: 6px; background: #fff; box-shadow: 0 0 0 2px var(--gray-light); z-index: 1; }
+.tl-dot.now { box-shadow: 0 0 0 3px var(--rose-pale), 0 0 0 5px var(--rose-light); background: var(--rose); }
+
+/* 金额汇总：点线引导行（label ··· value），优惠行 success 色 */
+.od-sum { display: grid; gap: 6px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--gray-light); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.od-sum-row { display: flex; align-items: baseline; gap: 8px; }
+.od-sum-row span { color: var(--gray); flex: none; }
+.od-sum-row i { flex: 1; border-bottom: 1.5px dotted var(--gray-light); transform: translateY(-3px); }
+.od-sum-row b { flex: none; font-weight: 600; }
+.od-sum-row.is-off span, .od-sum-row.is-off b { color: var(--success); }
 
 /* 金额汇总：hairline 分隔 + 灰标签 + 等宽数字，实付总额强调行 */
 .od-sum { display: grid; gap: 5px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--gray-light); font-size: 12.5px; font-variant-numeric: tabular-nums; }
@@ -1020,7 +1051,7 @@ async function submitReview(it) {
 .ex-stock { font-size: 11px; color: var(--gray); background: var(--gray-light); border-radius: 999px; padding: 1px 8px; flex: none; }
 .ex-stock.out { color: var(--error); background: var(--pale-error); }
 
-/* 订单帮助卡：引导解决为主，取消入口刻意弱化（灰色小字链，沉到卡底部） */
+/* 售后卡：引导解决为主，取消/退款为整行可见按钮 */
 .od-help { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1.5px solid var(--gray-light); border-radius: 10px; font-size: 13px; font-weight: 500; color: var(--ink); background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; text-decoration: none; font-family: inherit; }
 .od-help:hover { border-color: var(--rose); background: var(--rose-pale); transform: translateY(-1px); }
 .od-help-quiet { border-top: 1px solid var(--gray-light); margin-top: 12px; padding-top: 10px; }

@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -17,6 +19,8 @@ from app.domains.trade.schemas import (
 )
 from app.models import Exchange, Order, Payment, Rma, Shipment, ShippingRate, User
 from app.services import points as points_svc
+
+log = logging.getLogger(__name__)
 
 PER_PAGE_ORDERS = 10
 PER_PAGE_MOVEMENTS = 20
@@ -206,6 +210,26 @@ def apply_refund(
         _admin_log(db, admin, "refund", "order", order.id, {
             "amount": refund_amount, "reason": reason, "full": full,
         })
+
+    # 真实通道外呼退款：本地账已 CAS 记账（claim_payment_refund），Stripe/PayPal
+    # 侧失败则整体回滚（含时间线/outbox），账面与渠道保持一致；
+    # webhook charge.refunded 回调按累计口径幂等对账（delta<=0 跳过，不重复入账）
+    if actor != "system" and payment.stripe_payment_intent:
+        from app.services import payment_provider as pp
+
+        provider_name = repo.provider_of_intent(payment.stripe_payment_intent)
+        if provider_name in ("stripe", "paypal"):
+            cls = pp.StripeProvider if provider_name == "stripe" else pp.PayPalProvider
+            try:
+                provider = cls(pp.resolve_pay_config(db))
+                provider.create_refund(payment.stripe_payment_intent, refund_amount, reason)
+            except Exception as exc:
+                db.rollback()
+                log.error("provider refund failed for order=%s amount=%s: %s",
+                          order.order_no, refund_amount, exc)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"provider_refund_failed:{str(exc)[:120]}")
     return {"amount": refund_amount, "full": full, "payment_status": payment.status}
 
 
