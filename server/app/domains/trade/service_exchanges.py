@@ -84,15 +84,19 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
     item = repo.get_order_item(db, body.order_item_id)
     if not item or item.order_id != order.id:
         raise HTTPException(status_code=404, detail="order_item_not_found")
-    available = item.qty - item.refunded_qty - item.exchanged_qty
-    if body.qty > available:
-        raise HTTPException(status_code=409, detail=f"qty_exceeds_available:{available}")
 
     new_v = repo.get_variant(db, body.new_variant_id)
     if not new_v or not new_v.is_active:
         raise HTTPException(status_code=404, detail="variant_not_found")
     if new_v.stock < body.qty:
         raise HTTPException(status_code=409, detail="variant_out_of_stock")
+    # CAS 抢占未决占用（可换量含 pending 守卫进 WHERE）：并发重复申请/超量申请 rowcount=0 → 409
+    if repo.claim_item_exchange(db, item.id, body.qty) == 0:
+        db.rollback()
+        db.expire(item)
+        available = max(0, item.qty - item.refunded_qty - item.exchanged_qty
+                        - item.rma_pending_qty - item.ex_pending_qty)
+        raise HTTPException(status_code=409, detail=f"qty_exceeds_available:{available}")
 
     # 差价按订单实付比例折算实际支付单价（折扣/积分/礼品卡抵扣摊入，对齐 refund_rma 口径）；
     # subtotal=0（纯抵扣单）防护回退原价；int(x+0.5) 取整到分与现有金额口径一致
@@ -122,14 +126,27 @@ def create_exchange(db: Session, user: Optional[User], body: ExchangeCreateReque
     return _rows_payload(db, [(ex, item, order)])[0]
 
 
-def list_exchanges(db: Session, user: Optional[User], email: Optional[str]) -> dict:
+def list_exchanges(
+    db: Session, user: Optional[User], email: Optional[str],
+    *, page: Optional[int] = None, size: Optional[int] = None,
+) -> dict:
     if user is not None:
         rows = repo.list_user_exchanges(db, user.id)
     elif email:
         rows = repo.list_exchanges_by_email(db, email)
     else:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"items": _rows_payload(db, rows)}
+    items = _rows_payload(db, rows)
+    # 分页可选：不传 page 保持全量旧结构（向后兼容）；传了才返回分页四件套
+    if page is None:
+        return {"items": items}
+    size = size or PER_PAGE
+    total = len(items)
+    return {
+        "items": items[(page - 1) * size: page * size],
+        "page": page, "size": size, "total": total,
+        "pages": (total + size - 1) // size,
+    }
 
 
 def exchange_detail(
@@ -153,18 +170,24 @@ def _get_exchange(db: Session, exchange_no: str) -> Exchange:
     return ex
 
 
-def _owned_exchange(db: Session, user: User, exchange_no: str) -> Exchange:
-    """用户侧归属校验：非本人换货一律 404（不泄露存在性）。"""
+def _owned_exchange(
+    db: Session, user: Optional[User], exchange_no: str, email: Optional[str] = None,
+) -> Exchange:
+    """用户侧归属校验（与订单域 ensure_order_owner 同口径）：登录属主 或 email 双因子，
+    非本人换货一律 404（不泄露存在性）。"""
     ex = _get_exchange(db, exchange_no)
     order = repo.get_order(db, ex.order_id)
-    if not order or order.user_id != user.id:
+    is_owner = user is not None and order is not None and order.user_id == user.id
+    if not (is_owner or (order is not None and _email_match(email, order))):
         raise HTTPException(status_code=404, detail="exchange_not_found")
     return ex
 
 
-def cancel_exchange(db: Session, user: User, exchange_no: str) -> dict:
+def cancel_exchange(
+    db: Session, user: Optional[User], exchange_no: str, email: Optional[str] = None,
+) -> dict:
     """误建换货撤销：仅 status=0（申请中）可 CAS 删除，删后可重新申请；非申请中 409。"""
-    ex = _owned_exchange(db, user, exchange_no)
+    ex = _owned_exchange(db, user, exchange_no, email)
     deleted = (
         db.query(Exchange)
         .filter(Exchange.id == ex.id, Exchange.status == 0)
@@ -174,6 +197,8 @@ def cancel_exchange(db: Session, user: User, exchange_no: str) -> dict:
         db.rollback()
         db.expire(ex)
         raise HTTPException(status_code=409, detail=f"exchange_not_cancellable:{ex.status}")
+    # 释放未决占用（守卫防负数，rowcount=0 为无害空操作），撤销后可重新申请
+    repo.release_item_exchange(db, ex.order_item_id, ex.qty)
     repo.add_timeline(db, ex.order_id, "exchange_withdrawn", actor="user", detail={
         "exchange_no": ex.exchange_no,
     })
@@ -196,11 +221,13 @@ def settle_diff_paid(db: Session, ex: Exchange, payment: Payment, *, actor: str)
     return True
 
 
-def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
+def create_diff_intent(
+    db: Session, user: Optional[User], exchange_no: str, email: Optional[str] = None,
+) -> dict:
     """换货差价支付 intent：status=2 专属；Payment 行挂在原订单（amount=price_diff），
     diff_payment_id 双向关联 —— webhook 据此路由到换货核销而非订单 mark_paid。
     mock provider 开关未放行时 409（与订单 create-intent 同门禁）。"""
-    ex = _owned_exchange(db, user, exchange_no)
+    ex = _owned_exchange(db, user, exchange_no, email)
     if ex.price_diff <= 0:
         raise HTTPException(status_code=409, detail="no_diff_to_pay")
     if ex.status != 2:
@@ -248,14 +275,17 @@ def create_diff_intent(db: Session, user: User, exchange_no: str) -> dict:
     }
 
 
-def mock_pay_diff(db: Session, user: User, exchange_no: str, succeed: bool) -> dict:
+def mock_pay_diff(
+    db: Session, user: Optional[User], exchange_no: str, succeed: bool,
+    email: Optional[str] = None,
+) -> dict:
     """换货差价 mock 支付（仅开关放行时开放）：镜像订单 mock-pay 门禁与失败语义。"""
     if not mock_pay_enabled(db):
         raise HTTPException(status_code=404, detail="not_found")
     provider = get_provider(db)
     if provider.name != "mock":
         raise HTTPException(status_code=409, detail="use_webhook")
-    ex = _owned_exchange(db, user, exchange_no)
+    ex = _owned_exchange(db, user, exchange_no, email)
     if ex.status == 1:
         raise HTTPException(status_code=409, detail="diff_already_paid")
     if ex.status != 2:
@@ -335,6 +365,8 @@ def reject_exchange(db: Session, admin: User, exchange_no: str, reason: Optional
         db.expire(ex)
         raise HTTPException(status_code=409, detail=f"exchange_not_rejectable:{ex.status}")
     db.expire(ex)
+    # 拒绝释放未决占用（守卫防负数），可换量回补
+    repo.release_item_exchange(db, ex.order_item_id, ex.qty)
     repo.add_timeline(db, ex.order_id, "exchange_rejected", actor="admin", detail={
         "exchange_no": ex.exchange_no, "reason": reason,
     })
@@ -480,7 +512,10 @@ def complete_exchange(db: Session, admin: User, exchange_no: str) -> dict:
         raise HTTPException(status_code=409, detail=f"exchange_not_completable:{ex.status}")
     db.expire(ex)
     item = repo.get_order_item(db, ex.order_item_id)
-    item.exchanged_qty += ex.qty
+    # 占用结转 exchanged_qty：单语句原子累计（防并发丢失更新），CASE 防负数；
+    # 原生 UPDATE 不经过身份映射，expire 后重读保证 timeline/响应取新值
+    repo.convert_item_ex_exchanged(db, item.id, ex.qty)
+    db.expire(item)
     repo.release_stock(db, ex.old_variant_id, ex.qty)
     repo.add_stock_movement(
         db, variant_id=ex.old_variant_id, change=ex.qty,

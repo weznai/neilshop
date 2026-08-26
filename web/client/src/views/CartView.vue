@@ -110,9 +110,10 @@ onMounted(() => {
   req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
     if (d && d.free_shipping_threshold) FREE_SHIP_C.value = Number(d.free_shipping_threshold) || 3500
   }).catch(() => {})
-  /* 跨页恢复已应用的折扣码（抽屉/checkout 同一 localStorage 键，保持三入口一致）；显式跑一次试算确保码参与计价 */
+  /* 跨页恢复已应用的折扣码（抽屉/checkout 同一 localStorage 键，保持三入口一致）；
+     试算由 items watcher（immediate）覆盖，不重复手动跑 */
   const saved = (localStorage.getItem('gm_applied_code') || '').trim().toUpperCase()
-  if (saved && !appliedCode.value) { code.value = saved; appliedCode.value = saved; runPreview() }
+  if (saved && !appliedCode.value) { code.value = saved; appliedCode.value = saved }
 })
 watch(
   () => cart.items.map((i) => i.vid + ':' + i.qty).join('|'),

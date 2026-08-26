@@ -480,6 +480,8 @@ def reject_rma(db: Session, admin: User, rma_no: str, reason: str | None = None)
         raise HTTPException(status_code=409, detail=f"rma_not_rejectable:{rma.status}")
     db.expire(rma)
     rma.handled_by = admin.id
+    # 拒绝释放未决占用（守卫防负数），可退量回补
+    repo.release_item_rma(db, rma.order_item_id, rma.qty)
     _timeline(db, rma.order_id, "rma_rejected", actor="admin", detail={
         "rma_no": rma.rma_no, "reason": reason or "",
     })
@@ -565,7 +567,10 @@ def refund_rma(
         amount = cap
     partial = amount < full_amount
 
-    item.refunded_qty += rma.qty
+    # 占用结转 refunded_qty：单语句原子累计（防并发丢失更新），CASE 防负数；
+    # 原生 UPDATE 不经过身份映射，expire 后 apply_refund 全额回补路径读到新值
+    repo.convert_item_rma_refunded(db, item.id, rma.qty)
+    db.expire(item)
     try:
         result = apply_refund(
             db, order, amount, reason=f"rma:{rma.rma_no}", actor="admin", admin=admin,

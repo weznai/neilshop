@@ -118,7 +118,7 @@ async function changePassword() {
 async function sendReset() {
   sendingReset.value = true
   try {
-    await req('POST', '/api/account/password-reset/request', { email: auth.user.email })
+    await req('POST', '/api/account/password-reset/request', { email: auth.user.email.trim().toLowerCase() })
     ui.toast(tt('Reset email sent (valid for 15 minutes)', '重置邮件已发送（15 分钟内有效）'), 'success')
   } catch (_) { ui.toast(tt('Could not send — please retry later', '发送失败，请稍后再试'), 'error') }
   finally { sendingReset.value = false }
@@ -201,33 +201,35 @@ async function cancelDelete() {
     <div class="card" style="padding:20px">
       <h3 style="font-size:15px;margin-bottom:8px">{{ tt('Account security', '账号安全') }}</h3>
       <!-- 站内改密（PUT /api/account/password） -->
-      <div class="field"><label>{{ tt('Current password', '当前密码') }}</label>
-        <div class="pw-wrap">
-          <input v-model="pwForm.old_password" class="input" :type="showOldPw ? 'text' : 'password'" autocomplete="current-password" placeholder="••••••••">
-          <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showOldPw = !showOldPw">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
-          </button>
+      <form @submit.prevent="changePassword">
+        <div class="field"><label>{{ tt('Current password', '当前密码') }}</label>
+          <div class="pw-wrap">
+            <input v-model="pwForm.old_password" class="input" :type="showOldPw ? 'text' : 'password'" autocomplete="current-password" placeholder="••••••••">
+            <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showOldPw = !showOldPw">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+            </button>
+          </div>
         </div>
-      </div>
-      <div class="field"><label>{{ tt('New password (8-128 chars)', '新密码（8-128 位）') }}</label>
-        <div class="pw-wrap">
-          <input v-model="pwForm.new_password" class="input" :type="showNewPw ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
-          <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showNewPw = !showNewPw">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
-          </button>
+        <div class="field"><label>{{ tt('New password (8-128 chars)', '新密码（8-128 位）') }}</label>
+          <div class="pw-wrap">
+            <input v-model="pwForm.new_password" class="input" :type="showNewPw ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
+            <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showNewPw = !showNewPw">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+            </button>
+          </div>
         </div>
-      </div>
-      <div class="field"><label>{{ tt('Confirm new password', '确认新密码') }}</label>
-        <div class="pw-wrap">
-          <input v-model="pwForm.confirm" class="input" :type="showConfirmPw ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
-          <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showConfirmPw = !showConfirmPw">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
-          </button>
+        <div class="field"><label>{{ tt('Confirm new password', '确认新密码') }}</label>
+          <div class="pw-wrap">
+            <input v-model="pwForm.confirm" class="input" :type="showConfirmPw ? 'text' : 'password'" autocomplete="new-password" placeholder="••••••••">
+            <button type="button" class="pw-eye" :aria-label="tt('Toggle password visibility', '切换密码可见')" @click="showConfirmPw = !showConfirmPw">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></svg>
+            </button>
+          </div>
         </div>
-      </div>
-      <div v-if="pwErr" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ pwErr }}</div>
-      <div v-if="pwDone" class="field-msg" style="display:block;margin-bottom:10px;color:var(--success)">✓ {{ tt('Password updated', '密码已更新') }}</div>
-      <button class="btn btn-primary btn-sm" :class="{ loading: pwBusy }" :disabled="pwBusy" @click="changePassword">{{ tt('Change password', '修改密码') }}</button>
+        <div v-if="pwErr" class="field-msg" style="display:block;margin-bottom:10px" role="alert">{{ pwErr }}</div>
+        <div v-if="pwDone" class="field-msg" style="display:block;margin-bottom:10px;color:var(--success)">✓ {{ tt('Password updated', '密码已更新') }}</div>
+        <button type="submit" class="btn btn-primary btn-sm" :class="{ loading: pwBusy }" :disabled="pwBusy">{{ tt('Change password', '修改密码') }}</button>
+      </form>
       <p style="font-size:12.5px;color:var(--gray);margin:16px 0 12px">{{ tt('Prefer email? Send yourself a reset link (valid for 15 minutes).', '也可以通过注册邮箱重置（重置链接 15 分钟内有效）。') }}</p>
       <button
         class="btn btn-secondary btn-sm" :class="{ arm: arm.is('reset'), loading: sendingReset }"
@@ -239,7 +241,7 @@ async function cancelDelete() {
       <h3 style="font-size:15px;margin-bottom:8px">{{ tt('Privacy (GDPR / CCPA)', '隐私（GDPR / CCPA）') }}</h3>
       <p style="font-size:13px;color:var(--gray);margin-bottom:12px">{{ tt('Download all the data we store about you, or request account deletion (anonymized after the cooling-off period).', '下载我们存储的你的全部数据，或申请注销（冷静期后匿名化）。') }}</p>
       <div v-if="deletePending" style="margin-bottom:12px;padding:12px 14px;border-radius:10px;background:var(--pale-error);font-size:13px;color:var(--error)">
-        <b>{{ tt('Deletion request pending', '注销申请处理中') }}</b><span v-if="deletePending.effective_at"> · {{ tt('effective from', '将于') }} {{ fmtDate(deletePending.effective_at) }} {{ tt('生效', 'takes effect') }}</span>
+        <b>{{ tt('Deletion request pending', '注销申请处理中') }}</b><span v-if="deletePending.effective_at"> · {{ tt(`effective ${fmtDate(deletePending.effective_at)}`, `将于 ${fmtDate(deletePending.effective_at)} 生效`) }}</span>
         <div style="margin-top:8px">
           <button class="btn btn-secondary btn-sm" :class="{ loading: deleting }" :disabled="deleting" @click="cancelDelete">{{ tt('Cancel deletion request', '撤销注销申请') }}</button>
         </div>

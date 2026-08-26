@@ -22,7 +22,7 @@ function pickDetail(slug, locale) {
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { i18n } from '../i18n'
+import { i18n, tt } from '../i18n'
 import { useUiStore } from '../stores/ui'
 import { useCartStore } from '../stores/cart'
 import { useAuthStore } from '../stores/auth'
@@ -71,6 +71,19 @@ const NAV = [
   { href: '/bundles', key: 'nav.bundles', match: (r) => r.path === '/bundles' },
   { href: '/sale', key: 'nav.sale', match: (r) => r.path === '/sale' },
 ]
+/* 触屏 mega 展开：hover:none 设备无法 hover——首 tap 仅展开（capture 阶段 preventDefault 拦截导航），
+   再 tap 顶层链接正常跳转；点选 mega 内链接/点击别处/路由切换收起 */
+const megaOpen = ref(null)
+const touchOnly = () => window.matchMedia('(hover: none)').matches
+function onMegaTap(e, key) {
+  if (!touchOnly() || megaOpen.value === key) return
+  if (e.target.tagName !== 'A' || e.target.closest('.mega')) return
+  e.preventDefault()
+  megaOpen.value = key
+}
+function onDocMega(e) { if (megaOpen.value && !e.target.closest('.nav-item')) megaOpen.value = null }
+watch(() => route.fullPath, () => { megaOpen.value = null })
+
 const zh = computed(() => i18n.lang === 'zh')
 const MEGA_SHAPE = [['almond', 'Short Almond', '短杏仁'], ['square', 'Square', '方形'], ['stiletto', 'Stiletto', '尖头'], ['coffin', 'Coffin', '棺形']]
 const MEGA_STYLE = [['french', 'French', '法式'], ['glitter', 'Glitter', '亮片'], ['solid', 'Solid', '纯色'], ['art', 'Nail Art', '美甲艺术']]
@@ -163,10 +176,14 @@ const tabSearch = computed(() => route.path === '/search')
 const tabWish = computed(() => route.path === '/account/wishlist')
 const tabMe = computed(() => route.path.startsWith('/account') && route.path !== '/account/wishlist')
 
-/* 购物车角标一次性脉冲：仅 cart.count 数值变化时触发（瞬时类，对齐 CartView freePop）；静止有货不加持续动画 */
+/* 购物车角标一次性脉冲：仅 cart.count 数值变化时触发（瞬时类，对齐 CartView freePop）；静止有货不加持续动画；
+   挂载后 800ms 为购物车 hydrate（0→N）窗口，抑制首屏脉冲 */
 const tabPulse = ref(false)
 let tabPulseT = null
+let tabPulseArm = false
+setTimeout(() => { tabPulseArm = true }, 800)
 watch(() => cart.count, () => {
+  if (!tabPulseArm) return
   clearTimeout(tabPulseT)
   tabPulse.value = false
   tabPulseT = setTimeout(() => {
@@ -182,6 +199,7 @@ onMounted(() => {
   window.addEventListener('gm:wl-changed', onWlChanged)
   window.addEventListener('gm:crumbs', onCrumbs)
   document.addEventListener('visibilitychange', onAnnVis)
+  document.addEventListener('click', onDocMega)
   window.addEventListener('scroll', onScroll, { passive: true })
 })
 onUnmounted(() => {
@@ -190,6 +208,7 @@ onUnmounted(() => {
   window.removeEventListener('gm:wl-changed', onWlChanged)
   window.removeEventListener('gm:crumbs', onCrumbs)
   document.removeEventListener('visibilitychange', onAnnVis)
+  document.removeEventListener('click', onDocMega)
   window.removeEventListener('scroll', onScroll)
 })
 </script>
@@ -209,7 +228,7 @@ onUnmounted(() => {
       <router-link class="logo" to="/">GLOW<span>MAG</span></router-link>
       <nav class="nav">
         <template v-for="item in NAV" :key="item.key">
-          <span v-if="item.key === 'nav.nails'" class="nav-item">
+          <span v-if="item.key === 'nav.nails'" class="nav-item" :class="{ 'mega-open': megaOpen === 'nav.nails' }" @click.capture="onMegaTap($event, 'nav.nails')">
             <router-link :to="item.href" :class="{ on: item.match(route) }" :aria-current="item.match(route) ? 'page' : null">{{ i18n.t(item.key) }}</router-link>
             <div class="mega">
               <div class="mega-col">
@@ -230,7 +249,7 @@ onUnmounted(() => {
               <router-link class="mega-promo" to="/sale">{{ i18n.t('nav.megaPromo') }}</router-link>
             </div>
           </span>
-          <span v-else-if="item.key === 'nav.lashes'" class="nav-item">
+          <span v-else-if="item.key === 'nav.lashes'" class="nav-item" :class="{ 'mega-open': megaOpen === 'nav.lashes' }" @click.capture="onMegaTap($event, 'nav.lashes')">
             <router-link :to="item.href" :class="{ on: item.match(route) }" :aria-current="item.match(route) ? 'page' : null">{{ i18n.t(item.key) }}</router-link>
             <div class="mega mega-2">
               <div class="mega-col">
@@ -294,7 +313,7 @@ onUnmounted(() => {
         </div>
       </div>
       <form class="news-form" @submit.prevent="subscribeNews">
-        <input v-model="newsEmail" type="email" :placeholder="i18n.t('welcome.ph')" aria-label="Email">
+        <input v-model="newsEmail" type="email" :placeholder="i18n.t('welcome.ph')" :aria-label="tt('Email', '邮箱')">
         <button class="btn btn-sm news-btn" type="submit" :disabled="newsBusy">{{ i18n.t('welcome.btn') }}</button>
       </form>
     </div>
@@ -317,7 +336,7 @@ onUnmounted(() => {
             <button
               v-for="s in ['tiktok', 'instagram', 'youtube', 'pinterest']" :key="s"
               type="button" class="social-btn" :aria-label="i18n.t('aria.' + s)"
-              @click="ui.toast('Social link (demo) 💅')"
+              @click="ui.toast(tt('Social link (demo) 💅', '社交媒体链接（演示）💅'))"
             >
               <GmIcon :name="s" :size="18" />
             </button>

@@ -143,10 +143,18 @@ function goLookup() {
 async function query() {
   let l = lookup.value
   lookupErr.value = ''
-  /* 登录态锁定账户邮箱查询（后端校验 email 须与账户一致，异邮箱恒 403） */
+  /* 登录态（后端校验 email 须与账户一致，异邮箱恒 403）：刚创建的工单优先用工单邮箱+工单号查询
+     （工单可能以异邮箱创建）；其余仅在邮箱为空/等于账户邮箱（未手输异值）时回填账户邮箱 */
   if (auth.isLoggedIn && auth.user) {
-    l.email = String(auth.user.email || '')
-    l.ticket_no = ''
+    const acc = String(auth.user.email || '')
+    const unedited = !l.email.trim() || l.email.trim().toLowerCase() === acc.toLowerCase()
+    const justCreated = !!(created.value && created.value.ticket_no)
+    if (justCreated) {
+      if (unedited) l.email = form.value.email.trim() || acc
+    } else {
+      if (unedited) l.email = acc
+      l.ticket_no = ''
+    }
   }
   if (!l.email.trim()) {
     lookupErr.value = tt('Enter the email used on the ticket.', '请填写创建工单时使用的邮箱')
@@ -166,8 +174,8 @@ async function query() {
     tickets.value = d.items || []
     if (!tickets.value.length) lookupErr.value = tt('No ticket found with that combination.', '未找到符合条件的工单')
   } catch (e) {
-    const d = e && e.data && e.data.detail
     if (e && e.status === 404) lookupErr.value = tt('Ticket not found — check the number (TK…) and the email you used.', '未找到工单——请核对工单号（TK…）与创建邮箱')
+    else if (e && e.status === 403) lookupErr.value = tt('Signed in, lookups only cover your account email — sign out to check tickets made with another email.', '登录状态下仅能查询当前账户邮箱的工单——查询其他邮箱的工单请先退出登录')
     else lookupErr.value = tt('Could not load the conversation — please retry.', '加载失败，请稍后再试')
   } finally { lookupBusy.value = false }
 }

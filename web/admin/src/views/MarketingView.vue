@@ -148,12 +148,16 @@ const isNotStarted = (c) => { const t = utcMs(c.starts_at); return !isNaN(t) && 
 /* 弹窗 tab 到期判定：end_at 转本地日期后与本地今天比较（仍为天级粒度） */
 const todayStr = () => dDate(new Date().toISOString())
 
+const toggling = reactive(new Set())
 async function toggleCode(c) {
+  if (toggling.has('code:' + c.id)) return
+  toggling.add('code:' + c.id)
   try {
     await req('POST', `/api/admin/ops/discounts/${c.id}/toggle`)
     c.is_active = c.is_active ? 0 : 1
     toast(c.is_active ? '已启用 ✓' : '已停用 ✓', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { toggling.delete('code:' + c.id) }
 }
 async function addCode() {
   if (!newCode.code) { toast('折扣码必填', 'error'); return }
@@ -551,11 +555,14 @@ async function savePopup() {
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
 async function togglePopup(p) {
+  if (toggling.has('pop:' + p.id)) return
+  toggling.add('pop:' + p.id)
   try {
     await req('POST', `/api/admin/ops/popups/${p.id}/toggle`)
     p.active = p.active ? 0 : 1
     toast(p.active ? '已启用 ✓' : '已停用 ✓', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { toggling.delete('pop:' + p.id) }
 }
 
 /* 删除弹窗配置：危险确认；DELETE /ops/popups/{id} → 重拉列表 */
@@ -588,11 +595,14 @@ async function saveBundle(key) {
 
 /* ===== 运费模板管理（后端：GET/POST + PUT 全字段可编辑，局部 {active} 更新仍兼容；409 rate_conflict 组合冲突） ===== */
 async function toggleRate(r) {
+  if (toggling.has('rate:' + r.id)) return
+  toggling.add('rate:' + r.id)
   try {
     await req('PUT', `/api/admin/trade/shipping-rates/${r.id}`, { active: !r.active })
     r.active = !r.active
     toast(r.active ? '已启用 ✓' : '已停用 ✓', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { toggling.delete('rate:' + r.id) }
 }
 
 const rateDlg = ref(false)
@@ -819,11 +829,14 @@ async function doSavePick() {
 
 /* 启停（PUT /collections/{id} CollectionUpdateIn.is_active） */
 async function toggleCollection(c) {
+  if (toggling.has('col:' + c.id)) return
+  toggling.add('col:' + c.id)
   try {
     await req('PUT', `/api/admin/catalog/collections/${c.id}`, { is_active: c.is_active ? 0 : 1 })
     c.is_active = c.is_active ? 0 : 1
     toast(c.is_active ? '已启用 ✓' : '已停用 ✓', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { toggling.delete('col:' + c.id) }
 }
 /* 删除集合：ConfirmDialog 危险确认（不可恢复） */
 const delColDlg = ref(false)
@@ -951,7 +964,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
             </td>
             <td style="text-align:right;white-space:nowrap">
               <button class="btn btn-secondary btn-sm" @click="editDiscount(c)">编辑</button>
-              <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="toggleCode(c)">{{ c.is_active ? '停用' : '启用' }}</button>
+              <button class="btn btn-ghost btn-sm" style="margin-left:4px" :disabled="toggling.has('code:' + c.id)" @click="toggleCode(c)">{{ c.is_active ? '停用' : '启用' }}</button>
               <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="openUsages(c)">明细</button>
               <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delDiscount(c)">删除</button>
             </td>
@@ -1194,7 +1207,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
             <td><span class="tag" :class="r.active ? 'tag-paid' : 'tag-pending'">{{ r.active ? '启用' : '停用' }}</span></td>
             <td style="text-align:right;white-space:nowrap">
               <button class="btn btn-secondary btn-sm" @click="editRate(r)">编辑</button>
-              <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="toggleRate(r)">{{ r.active ? '停用' : '启用' }}</button>
+              <button class="btn btn-ghost btn-sm" style="margin-left:4px" :disabled="toggling.has('rate:' + r.id)" @click="toggleRate(r)">{{ r.active ? '停用' : '启用' }}</button>
               <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delRate(r)">删除</button>
             </td>
           </tr>
@@ -1315,7 +1328,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
             </td>
             <td style="text-align:right;white-space:nowrap">
               <button class="btn btn-secondary btn-sm" @click="editPopup(p)">编辑</button>
-              <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="togglePopup(p)">{{ p.active ? '停用' : '启用' }}</button>
+              <button class="btn btn-ghost btn-sm" style="margin-left:4px" :disabled="toggling.has('pop:' + p.id)" @click="togglePopup(p)">{{ p.active ? '停用' : '启用' }}</button>
               <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delPopup(p)">删除</button>
             </td>
           </tr>
@@ -1403,7 +1416,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
               <td style="text-align:right;white-space:nowrap">
                 <button class="btn btn-secondary btn-sm" @click="openPick(c)">配商品</button>
                 <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="editCollection(c)">编辑</button>
-                <button class="btn btn-ghost btn-sm" style="margin-left:4px" @click="toggleCollection(c)">{{ c.is_active ? '停用' : '启用' }}</button>
+                <button class="btn btn-ghost btn-sm" style="margin-left:4px" :disabled="toggling.has('col:' + c.id)" @click="toggleCollection(c)">{{ c.is_active ? '停用' : '启用' }}</button>
                 <button class="btn btn-ghost btn-sm" style="margin-left:4px;color:var(--error)" @click="delCollection(c)">删除</button>
               </td>
             </tr>

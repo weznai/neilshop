@@ -26,7 +26,7 @@ export const useAuthStore = defineStore('auth', {
       try { localStorage.removeItem('gm_wl_count') } catch (_) { /* 隐私模式 */ }
     },
     async login(email, password) {
-      const d = await req('POST', '/api/account/login', { email, password })
+      const d = await req('POST', '/api/account/login', { email: email.trim().toLowerCase(), password })
       this._cache(d.user)
       wishlistReset()
       await this.fetchPoints().catch(() => {})
@@ -35,7 +35,7 @@ export const useAuthStore = defineStore('auth', {
       return d.user
     },
     async register(email, password, name, refCode) {
-      const body = { email, password, name }
+      const body = { email: email.trim().toLowerCase(), password, name }
       /* 推荐码：后端同步支持 ref_code 字段，多余字段会被忽略（安全） */
       if (refCode) body.ref_code = refCode
       const d = await req('POST', '/api/account/register', body)

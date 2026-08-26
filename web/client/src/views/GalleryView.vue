@@ -304,7 +304,7 @@ function imgFallback(e) {
         <label style="display:block;font-size:12.5px;font-weight:700;margin-bottom:4px">{{ tt('Caption (optional)', '文案（选填）') }}</label>
         <textarea v-model="postForm.caption" class="input" style="width:100%;margin-bottom:6px;min-height:70px;resize:vertical" maxlength="200" :disabled="posting" />
         <p v-if="postErr" style="font-size:12.5px;color:var(--error);margin:0 0 8px">{{ postErr }}</p>
-        <button class="btn btn-primary btn-block" :class="{ loading: posting }" :disabled="posting || pvState === 'bad'" @click="submitPost">
+        <button class="btn btn-primary btn-block" :class="{ loading: posting }" :disabled="posting || pvState === 'loading' || pvState === 'bad'" @click="submitPost">
           {{ tt('Submit for review', '提交审核') }}
         </button>
       </template>

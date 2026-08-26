@@ -413,12 +413,16 @@ async function saveFaq() {
     await loadFaqs()
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }
+const toggling = reactive(new Set())
 async function toggleFaq(f) {
+  if (toggling.has(f.id)) return
+  toggling.add(f.id)
   try {
     await req('PUT', '/api/admin/ops/faqs/' + f.id, { active: f.active ? 0 : 1 })
     f.active = f.active ? 0 : 1
     toast(f.active ? '已显示' : '已隐藏', 'success')
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
+  finally { toggling.delete(f.id) }
 }
 function delFaq(f) {
   askConfirm('删除 FAQ', `删除 FAQ「${f.question}」？不可恢复。`, async () => {
@@ -752,7 +756,7 @@ async function saveArticle() {
         <div style="color:var(--gray);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="f.answer_md">{{ f.answer_md }}</div>
       </div>
       <span class="tag" :class="f.active ? 'tag-paid' : 'tag-pending'">{{ f.active ? '显示中' : '隐藏' }}</span>
-      <button class="btn btn-ghost btn-sm" @click="toggleFaq(f)">{{ f.active ? '隐藏' : '显示' }}</button>
+      <button class="btn btn-ghost btn-sm" :disabled="toggling.has(f.id)" @click="toggleFaq(f)">{{ f.active ? '隐藏' : '显示' }}</button>
       <button class="btn btn-secondary btn-sm" @click="editFaq(f)">编辑</button>
       <button class="btn btn-ghost btn-sm" style="color:var(--error)" @click="delFaq(f)">删除</button>
     </div>

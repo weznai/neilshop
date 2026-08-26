@@ -7,6 +7,7 @@ import { useCartStore } from '../stores/cart'
 import { useUiStore } from '../stores/ui'
 import { useAuthStore } from '../stores/auth'
 import { createOrderIntent } from '../composables/useOrderPay'
+import { COUNTRIES, PHONE_RE } from '../data/countries'
 
 const cart = useCartStore()
 const ui = useUiStore()
@@ -32,7 +33,8 @@ const US_STATE_ABBR = {
   Tennessee: 'TN', Texas: 'TX', Utah: 'UT', Vermont: 'VT', Virginia: 'VA', Washington: 'WA',
   'West Virginia': 'WV', Wisconsin: 'WI', Wyoming: 'WY',
 }
-const COUNTRIES = ['US', 'CA', 'GB', 'AU', 'DE', 'FR']
+/* 国家下拉（data/countries 共享 [code, label] 元组，结算仅展示代码）；地址簿含未列国家时本地补位 */
+const countryCodes = ref(COUNTRIES.map(([c]) => c))
 
 /* 折扣码失败原因走 i18n promo.*（对齐后端 promo REASON_TEXT：preview 返回裸 reason 码），
    t() 缺键返回键本身 → 回退展示原始 reason 码 */
@@ -65,7 +67,7 @@ function fillAddr(a) {
   f.zip = a.zip || ''
   f.phone = a.phone || ''
   const c = (a.country || 'US').toUpperCase()
-  if (c && !COUNTRIES.includes(c)) COUNTRIES.push(c)
+  if (c && !countryCodes.value.includes(c)) countryCodes.value.push(c)
   country.value = c
 }
 
@@ -93,13 +95,20 @@ function fixAddr() {
   addrErrFields.value = null
 }
 
-async function loadAddrs() {
+/* autoPick=false：草稿已带地址（hosted 回跳/误刷新恢复）时不自动选中默认地址覆写用户手填内容，
+    地址簿仍加载供手动选择；restoredSel=草稿选中地址簿 id（存在则优先恢复选中） */
+async function loadAddrs(autoPick = true, restoredSel = 0) {
   if (!auth.isLoggedIn) return
   try {
     const list = await req('GET', '/api/account/addresses')
     savedAddrs.value = Array.isArray(list) ? list : []
-    const def = savedAddrs.value.find((a) => a.is_default) || savedAddrs.value[0]
-    if (def) pickAddr(def)
+    const hit = restoredSel ? savedAddrs.value.find((a) => a.id === restoredSel) : null
+    if (hit) pickAddr(hit)
+    else if (restoredSel) selAddr.value = 0
+    else if (autoPick) {
+      const def = savedAddrs.value.find((a) => a.is_default) || savedAddrs.value[0]
+      if (def) pickAddr(def)
+    }
   } catch (_) { /* 地址簿拉取失败 → 回落手填表单 */ }
 }
 
@@ -174,6 +183,9 @@ async function runPreview() {
     })
     if (seq !== pvSeq) return
     pv.value = d
+    if (d.points_applied != null && Math.floor(Number(pointsInput.value) || 0) > d.points_applied) {
+      pointsInput.value = d.points_applied > 0 ? String(d.points_applied) : ''
+    }
   } catch (e) {
     if (seq !== pvSeq) return
     pv.value = null
@@ -276,6 +288,17 @@ async function loadPayMethods() {
 }
 
 const methodLabel = (m) => i18n.t(m.method === 'express' ? 'co.express' : 'co.standard')
+/* 支付方式名本地化（后端只回英文标签）：已知 id 映射双语，未知回落 p.name */
+const PAY_LABELS = {
+  mock: ['Mock Pay', '模拟支付'],
+  stripe: ['Credit / Debit Card', '信用卡'],
+  paypal: ['PayPal', 'PayPal'],
+  klarna: ['Klarna', 'Klarna'],
+}
+const payLabel = (p) => {
+  const row = PAY_LABELS[p.id]
+  return row ? tt(row[0], row[1]) : p.name
+}
 /* 免邮门槛：settings 下发（shipping-methods 响应），运营改配置后三处展示统一生效 */
 const shipThreshold = ref(3500)
 const selMethod = computed(() => shipMethods.value.find((m) => m.method === shipMethod.value))
@@ -307,6 +330,8 @@ function validate() {
   if (country.value !== 'US' && !(f.state || '').trim()) e.state = true
   if (!(f.zip || '').trim()) e.zip = true
   else if (country.value === 'US' && !/^\d{5}(-\d{4})?$/.test(f.zip.trim())) e.zip = true
+  /* 电话选填：填写时校验格式（与 AddressView 同一 PHONE_RE 口径） */
+  if ((f.phone || '').trim() && !PHONE_RE.test(f.phone.trim())) e.phone = true
   errors.value = e
   const ok = Object.keys(e).length === 0
   if (!ok) {
@@ -379,26 +404,31 @@ function saveDraft() {
     sessionStorage.setItem(DRAFT_KEY, JSON.stringify({
       form: form.value, country: country.value, shipMethod: shipMethod.value,
       paySel: paySel.value, gift: gift.value, giftMsg: giftMsg.value,
+      selAddr: selAddr.value,
       pointsInput: pointsInput.value, appliedGc: appliedGc.value,
       appliedCode: appliedCode.value, code: code.value,
     }))
   } catch (_) { /* 隐私模式 */ }
 }
 function restoreDraft() {
+  /* 返回草稿地址态：hasAddr=草稿含手填地址（不自动选默认地址覆写）、selAddr=草稿选中地址簿 id */
   try {
     const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null')
-    if (!d) return
+    if (!d) return { hasAddr: false, selAddr: 0 }
     if (d.form) form.value = { ...form.value, ...d.form }
     if (d.country) country.value = d.country
     if (d.shipMethod) shipMethod.value = d.shipMethod
     if (d.paySel) paySel.value = d.paySel
     if (d.gift != null) gift.value = !!d.gift
     if (d.giftMsg) giftMsg.value = d.giftMsg
+    if (d.selAddr != null) selAddr.value = d.selAddr
     if (d.pointsInput) pointsInput.value = d.pointsInput
     if (d.appliedGc) appliedGc.value = d.appliedGc
     if (d.appliedCode) appliedCode.value = d.appliedCode
     if (d.code) code.value = d.code
+    return { hasAddr: !!(d.form && String(d.form.addr1 || '').trim()), selAddr: selAddr.value }
   } catch (_) { /* 草稿损坏即弃 */ }
+  return { hasAddr: false, selAddr: 0 }
 }
 function clearDraft() { try { sessionStorage.removeItem(DRAFT_KEY) } catch (_) { /* 隐私模式 */ } }
 
@@ -467,13 +497,25 @@ async function place() {
     try { localStorage.removeItem('gm_applied_code') } catch (_) { /* 隐私模式 */ }
     clearDraft()
     if (auth.isLoggedIn && selAddr.value === 0 && saveAddr.value) saveAddrBook()
+    /* 全额抵扣 0 元单（d.paid）：后端已自动完成支付，跳过 create-intent 直达成功页 */
+    if (d.paid) {
+      ui.toast(tt('Payment complete 🎉', '支付完成 🎉'), 'success')
+      router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
+      return
+    }
     /* 记住支付方式选择：SuccessView 二次支付沿用同一 provider */
     try { localStorage.setItem('gm_pay_provider', paySel.value || '') } catch (_) { /* 隐私模式 */ }
     /* 支付意向 + mock 支付（演示通道；真实 provider 由 webhook 回调，不 mock）；
        createOrderIntent 内与 methods 对账并在 provider_unavailable 时去参重试 */
-    const useMock = paySel.value === 'mock'
     try {
       const intent = await createOrderIntent(d.order_no, f.email.trim(), paySel.value)
+      /* 通道被去参回落 mock（响应无 provider 字段，client_secret 恒 _secret_mock 结尾）也自动 mock 支付；
+         后端给出 redirect_url 时恒走 hosted 跳转（paySel=mock 但默认链为真实通道的场景） */
+      const useMock = !(intent && intent.redirect_url) && (
+        paySel.value === 'mock'
+        || (intent && intent.provider === 'mock')
+        || String((intent && intent.client_secret) || '').endsWith('_secret_mock')
+      )
       /* 真实通道仅返回 client_secret 而无 redirect_url：本页无法完成支付 →
          待支付订单转 /success 托管（有"立即支付"入口），不再滞留在已清空的购物车页 */
       if (intentNoChannel(intent)) {
@@ -487,11 +529,17 @@ async function place() {
         window.location.href = intent.redirect_url
         await new Promise((r) => setTimeout(r, 3000))
         placing.value = false
-        ui.toast(tt('Redirecting to payment… if nothing happened, please retry', '正在跳转支付…若未打开请重试'), 'error')
+        ui.toast(tt('Payment page did not open — you can retry from your order', '未能打开支付页面，可稍后在订单中重试'), 'info')
         router.push({ path: '/success', query: { no: d.order_no, email: f.email.trim() } })
         return
       }
-      if (useMock) await req('POST', '/api/payments/mock-pay', { order_no: d.order_no, email: f.email.trim(), succeed: true })
+      if (useMock) {
+        /* mock 支付以响应状态为准：payment_status/order_status 双 1 才算成功，否则提示去订单中支付 */
+        const mp = await req('POST', '/api/payments/mock-pay', { order_no: d.order_no, email: f.email.trim(), succeed: true })
+        if (!(mp && mp.payment_status === 1 && mp.order_status === 1)) {
+          ui.toast(tt('Payment not completed — you can pay from your order', '支付未完成，可到订单中手动支付'), 'error')
+        }
+      }
     } catch (e) {
       const m = (e.data && e.data.detail) || e.message || ''
       ui.toast((m ? m + ' · ' : '') + tt('Payment not completed — you can pay from your order', '支付未完成，可到订单中手动支付'), 'error')
@@ -507,7 +555,7 @@ watch(() => form.value.email, schedulePreview)
 watch(() => form.value.state, schedulePreview)
 watch(() => cart.items.map((i) => i.vid + ':' + i.qty).join('|'), schedulePreview)
 watch([country, shipMethod, appliedCode, appliedGc, pointsApplied, () => auth.isLoggedIn], schedulePreview)
-watch([form, country, shipMethod, paySel, gift, giftMsg, pointsInput, appliedGc, appliedCode, code], saveDraft, { deep: true })
+watch([form, country, shipMethod, paySel, selAddr, gift, giftMsg, pointsInput, appliedGc, appliedCode, code], saveDraft, { deep: true })
 watch(country, loadShipMethods)
 
 /* hosted 支付取消回跳（?canceled=1）：订单已生成待付，购物车已清 → 给保留订单出口 */
@@ -515,10 +563,11 @@ const canceled = computed(() => String(route.query.canceled || '') === '1')
 
 onMounted(async () => {
   cart.refresh().catch(() => {})
-  restoreDraft()
-  if (auth.user) form.value.email = auth.user.email || ''
+  const draft = restoreDraft()
+  /* email 仅在恢复后仍为空时回填账号邮箱（草稿优先，不覆盖用户输入） */
+  if (auth.user && !form.value.email.trim()) form.value.email = auth.user.email || ''
   if (auth.isLoggedIn) auth.fetchPoints().catch(() => {})
-  loadAddrs()
+  loadAddrs(!draft.hasAddr, draft.selAddr)
   /* 购物车页带入的折扣码（?code= 优先，localStorage gm_applied_code 兜底） */
   let savedCode = ''
   try { savedCode = (localStorage.getItem('gm_applied_code') || '').trim().toUpperCase() } catch (_) { /* 隐私模式 */ }
@@ -571,7 +620,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
         </router-link>
       </div>
 
-      <div v-if="!cart.items.length" style="text-align:center;padding:60px 0;color:var(--gray)">
+      <div v-else-if="!cart.items.length" style="text-align:center;padding:60px 0;color:var(--gray)">
         <div style="font-size:44px;margin-bottom:10px">🛒</div>
         <p style="margin-bottom:18px">{{ i18n.t('co.empty') }}</p>
         <router-link class="btn btn-primary" to="/store">{{ i18n.t('cart.shop') }}</router-link>
@@ -582,6 +631,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
           <!-- 联系 & 地址 -->
           <div class="card" style="padding:22px">
             <h3 class="co-step"><i class="step-b">1</i>{{ i18n.t('co.step1') }}</h3>
+            <form @submit.prevent>
             <div class="field" :class="{ error: errors.email }">
               <label>{{ i18n.t('co.email') }} *</label>
               <input v-model="form.email" class="input" :class="{ error: errors.email }" type="email" placeholder="you@example.com" autocomplete="email">
@@ -634,16 +684,17 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
               <div class="field">
                 <label>{{ i18n.t('co.country') }}</label>
                 <select v-model="country" class="input" @change="form.state = ''">
-                  <option v-for="c in COUNTRIES" :key="c" :value="c">{{ c }}</option>
+                  <option v-for="c in countryCodes" :key="c" :value="c">{{ c }}</option>
                 </select>
               </div>
-              <div class="field"><label>{{ i18n.t('co.phone') }}</label><input v-model="form.phone" class="input" type="tel" autocomplete="tel"></div>
+              <div class="field" :class="{ error: errors.phone }"><label>{{ i18n.t('co.phone') }}</label><input v-model="form.phone" class="input" :class="{ error: errors.phone }" type="tel" autocomplete="tel"><div class="field-msg">{{ tt('Enter a valid phone number', '电话格式不正确') }}</div></div>
             </div>
             <label v-if="auth.isLoggedIn" style="display:flex;gap:10px;align-items:center;font-size:13.5px;cursor:pointer;margin:-6px 0 0">
               <input v-model="saveAddr" type="checkbox" style="width:16px;height:16px">
               {{ tt('Save this address to my address book', '保存到我的地址簿') }}
             </label>
             </template>
+            </form>
           </div>
 
           <!-- 配送 -->
@@ -666,7 +717,7 @@ const totalC = computed(() => (pv.value && pv.value.grand_total != null
             <h3 class="co-step"><i class="step-b">3</i>{{ i18n.t('co.step3') }}</h3>
             <label v-for="p in payProviders" :key="p.id" class="pay-row" :class="{ on: paySel === p.id }" style="cursor:pointer">
               <input v-model="paySel" type="radio" :value="p.id" style="display:none">
-              <b>{{ p.id === 'mock' ? '💳' : '🅿️' }} {{ p.name }}</b>
+              <b>{{ p.id === 'mock' ? '💳' : '🅿️' }} {{ payLabel(p) }}</b>
               <span v-if="p.id === payDefault" class="tag tag-paid" style="margin-left:8px">{{ i18n.t('co.defaultTag') }}</span>
               <span v-if="p.klarna" class="pay-pill" style="margin-left:8px">KLARNA</span>
             </label>

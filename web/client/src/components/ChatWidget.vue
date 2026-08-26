@@ -11,6 +11,8 @@ const router = useRouter()
 const ui = useUiStore()
 const auth = useAuthStore()
 const open = ref(false)
+/* 面板关闭期间轮询到的新消息计数：FAB 角标提示，打开面板即清零（仅会话内，不持久化） */
+const unread = ref(0)
 const busy = ref(false)
 const tab = ref('chat') /* chat（AI+人工合并） | artist */
 const field = ref('')
@@ -75,7 +77,7 @@ function onEsc(e) {
   e.stopPropagation()
   open.value = false
 }
-watch(open, (v) => { ui.chatOpen = v })
+watch(open, (v) => { ui.chatOpen = v; if (v) unread.value = 0 })
 /* 外部唤起（ContactView 等设 ui.chatOpen = true）：同步打开面板 */
 watch(() => ui.chatOpen, (v) => { if (v && !open.value) showPanel() })
 
@@ -302,6 +304,8 @@ async function pollActive() {
     const oldMsgs = conv.messages || []
     if ((d.messages || []).length !== oldMsgs.length || d.status !== conv.status
         || d.agent_admin_id !== conv.agent_admin_id) {
+      /* 关闭面板期间新到的消息累计未读（仅计数增长，避免状态变化误计） */
+      if (!open.value) unread.value += Math.max(0, (d.messages || []).length - oldMsgs.length)
       applyDetail(d)
       scrollBottom()
     }
@@ -311,7 +315,7 @@ let pollTimer = null
 onMounted(() => {
   window.addEventListener('keydown', onEsc, true)
   pollTimer = setInterval(() => {
-    if (open.value && document.visibilityState === 'visible') pollActive()
+    if (document.visibilityState === 'visible') pollActive()
   }, 4000)
 })
 onUnmounted(() => {
@@ -369,7 +373,8 @@ function sugClick(e) {
   <button class="chat-fab" :class="{ active: open }" :aria-label="i18n.t('aria.chat')" @click="toggle()">
     <svg class="chat-ico-bubble" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/><path d="M8.5 10.5h.01M12 10.5h.01M15.5 10.5h.01" stroke-width="2.4"/></svg>
     <svg class="chat-ico-x" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-    <span class="chat-dot"></span>
+    <span v-show="!unread" class="chat-dot"></span>
+    <span v-show="unread" class="cart-badge">{{ unread > 99 ? '99+' : unread }}</span>
   </button>
   <div class="chat-panel" :class="{ open }" role="dialog" :aria-label="i18n.t('chat.title')">
     <div class="chat-head">

@@ -19,11 +19,11 @@ from app.models import (
 # ---------- 用户 ----------
 
 def user_email_taken(db: Session, email: str) -> bool:
-    return db.query(User.id).filter(User.email == email).first() is not None
+    return db.query(User.id).filter(func.lower(User.email) == email.strip().lower()).first() is not None
 
 
 def get_user_by_email(db: Session, email: str) -> User | None:
-    return db.query(User).filter(User.email == email).first()
+    return db.query(User).filter(func.lower(User.email) == email.strip().lower()).first()
 
 
 def add_user(db: Session, *, email: str, password_hash: str, name: str) -> User:
@@ -80,10 +80,11 @@ def get_product(db: Session, product_id: int) -> Product | None:
 
 
 def wishlist_products(db: Session, user_id: int) -> list[Product]:
+    # 仅上架商品（Product.status：0草稿 1上架 2下架），与 catalog 域前台口径一致
     return (
         db.query(Product)
         .join(WishlistItem, WishlistItem.product_id == Product.id)
-        .filter(WishlistItem.user_id == user_id)
+        .filter(WishlistItem.user_id == user_id, Product.status == 1)
         .order_by(WishlistItem.created_at.desc(), Product.id.desc())
         .all()
     )

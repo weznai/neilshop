@@ -18,6 +18,7 @@ const auth = useAuthStore()
 
 const p = ref(null)                 /* 商品详情 */
 const loading = ref(true)
+const loadErr = ref(false)          /* 网络/超时/5xx 失败态（非 404）：可重试，区别于商品不存在 */
 const vIdx = ref(0)
 const qty = ref(1)
 const galIdx = ref(0)
@@ -30,6 +31,8 @@ const notifyEmail = ref('')
 const notifyState = ref(0)          /* 0 未订阅 / 1 提交中 / 2 已订阅 */
 const lightbox = ref(null)          /* { src, caption } */
 const zh = computed(() => i18n.lang === 'zh')
+/* 全站统一邮箱校验（对齐 CheckoutView EMAIL_RE） */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /* 主图/缩略图加载失败兜底：回落 placehold 常量 + dataset 守卫防循环（对齐 HomeView heroFallback） */
 const IMG_FALLBACK = 'https://placehold.co/600x600/E8B4B8/552338?text=GLOWMAG'
@@ -129,6 +132,7 @@ async function load(keep) {
   qty.value = 1
   galIdx.value = 0
   loading.value = true
+  loadErr.value = false
   notifyState.value = 0
   wlDone.value = false
   rvRating.value = 0
@@ -191,9 +195,11 @@ async function load(keep) {
     req('GET', '/api/catalog/reviews/distribution?product_id=' + p.value.id)
       .then((dist) => { if (seq === ldSeq) distData.value = dist })
       .catch(() => { if (seq === ldSeq) distData.value = null })
-  } catch (_) {
+  } catch (e) {
     if (seq !== ldSeq) return
     p.value = null
+    /* 仅 404 视为商品不存在；网络/超时/5xx 等一律进失败态可重试 */
+    if (!(e && e.status === 404)) loadErr.value = true
   }
   loading.value = false
 }
@@ -382,6 +388,10 @@ async function notifyMe() {
     ui.toast(zh.value ? '请先填写邮箱地址' : 'Enter your email first', 'error')
     return
   }
+  if (!EMAIL_RE.test(em)) {
+    ui.toast(zh.value ? '邮箱格式不正确' : 'Enter a valid email address', 'error')
+    return
+  }
   notifyState.value = 1
   try {
     await req('POST', '/api/catalog/stock-notify', { variant_id: variant.value.id, email: em })
@@ -494,9 +504,9 @@ const gmEta = () => {
           <div v-if="media.length > 1 || p.video_url" class="pdp-thumbs" style="display:flex;gap:8px;margin-top:10px;overflow-x:auto;padding-bottom:2px">
             <button
               v-for="(im, i) in media" :key="im"
-              class="pdp-thumb" :class="{ on: mainIdx === i }" :aria-label="`${p.title} view ${i + 1}`" @click="galIdx = i"
+              class="pdp-thumb" :class="{ on: mainIdx === i }" :aria-label="tt(`${p.title} view ${i + 1}`, `${p.title} 图片 ${i + 1}`)" @click="galIdx = i"
             >
-              <img :src="im" :alt="`${p.title} view ${i + 1}`" loading="lazy" @error="imgFallback">
+              <img :src="im" :alt="tt(`${p.title} view ${i + 1}`, `${p.title} 图片 ${i + 1}`)" loading="lazy" @error="imgFallback">
             </button>
             <button v-if="p.video_url" class="pdp-thumb" :class="{ on: showVideo }" :aria-label="zh ? '观看视频' : 'Watch video'" @click="galIdx = media.length">
               <img :src="media[0]" alt="" loading="lazy" @error="imgFallback">
@@ -546,7 +556,7 @@ const gmEta = () => {
               <button
                 v-for="(v, i) in p.variants" :key="v.id"
                 class="vbtn" :class="{ sel: vIdx === i, out: v.stock_status === 'out' }"
-                :aria-label="v.option1_value + (v.stock_status === 'out' ? ' (sold out)' : '')"
+                :aria-label="v.option1_value + (v.stock_status === 'out' ? tt(' (sold out)', '（已售罄）') : '')"
                 @click="vIdx = i"
               >
                 {{ v.option1_value }}
@@ -686,7 +696,7 @@ const gmEta = () => {
           </div>
         </div>
         <div v-else style="text-align:center;color:var(--gray);padding:30px 0">
-          💅 {{ zh ? '第一个来评价吧' : 'Be the first to review this set' }}
+          💅 {{ zh ? '第一个来评价吧' : 'Be the first to review this set' }} — <router-link to="/account/orders" style="color:var(--plum)">{{ tt('view my orders', '查看我的订单') }}</router-link>
         </div>
       </section>
 
@@ -714,6 +724,14 @@ const gmEta = () => {
       <button v-else class="btn btn-primary" :class="{ loading: adding }" :disabled="adding" @click="addToCart">
         {{ zh ? '加入购物车' : 'Add to Cart' }}
       </button>
+    </div>
+  </section>
+
+  <section v-else-if="loadErr" class="section">
+    <div class="container" style="text-align:center;padding:60px 0;color:var(--gray)">
+      <div style="font-size:44px;margin-bottom:10px">⚠️</div>
+      {{ tt('Failed to load this product', '商品加载失败，请重试') }}
+      <div style="margin-top:14px"><button class="btn btn-secondary btn-sm" @click="load">↻ {{ tt('Retry', '重试') }}</button></div>
     </div>
   </section>
 

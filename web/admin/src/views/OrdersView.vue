@@ -126,6 +126,7 @@ watch(() => route.query, (rq) => {
   if (normQuery(rq) === syncedQuery) return
   q.value = ''; dateFrom.value = ''; dateTo.value = ''
   status.value = null; page.value = 1; sort.value = ''
+  perPage.value = 20
   initFromQuery()
   load()
 })
@@ -188,6 +189,7 @@ async function cancelConfirm() {
 }
 
 /* 批量发货勾选：selected 按勾选顺序存 order_no（与单号行一一对应），仅 status 1/2 可勾，load() 时清空 */
+const canBatch = computed(() => session.hasPerm('trade:ship'))
 const selected = ref([])
 const shippable = computed(() => items.value.filter((o) => o.status === 1 || o.status === 2))
 const allChecked = computed(() => shippable.value.length > 0 && shippable.value.every((o) => selected.value.includes(o.order_no)))
@@ -341,7 +343,7 @@ async function exportCsv() {
     <div class="dhead">
       <h3 class="dtitle">订单列表</h3>
       <!-- 批量操作条：勾选后出现 -->
-      <div v-if="selected.length" style="display:flex;align-items:center;gap:8px;font-size:13px;white-space:nowrap">
+      <div v-if="canBatch && selected.length" style="display:flex;align-items:center;gap:8px;font-size:13px;white-space:nowrap">
         已选 <b style="color:var(--plum)">{{ selected.length }}</b> 单
         <button v-if="session.hasPerm('trade:ship')" class="btn btn-primary btn-sm" @click="openBatchShip">📦 批量发货</button>
         <button class="btn btn-secondary btn-sm" @click="selected = []">取消选择</button>
@@ -350,7 +352,7 @@ async function exportCsv() {
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead>
         <tr style="text-align:left;color:var(--gray)">
-          <th style="width:32px;padding:10px" title="全选本页可发货订单（已支付/备货中）"><input type="checkbox" style="cursor:pointer" :checked="allChecked" :indeterminate.prop="someChecked && !allChecked" @change="toggleAll"></th>
+          <th v-if="canBatch" style="width:32px;padding:10px" title="全选本页可发货订单（已支付/备货中）"><input type="checkbox" style="cursor:pointer" :checked="allChecked" :indeterminate.prop="someChecked && !allChecked" @change="toggleAll"></th>
           <th style="padding:10px">订单号</th><th>客户</th><th>留言</th>
           <th class="sortable" tabindex="0" role="button" :aria-sort="ariaSort('total')" title="点击排序" @click="sortBy('total')" @keydown.enter.prevent="sortBy('total')" @keydown.space.prevent="sortBy('total')">金额<span v-if="sortInd('total')" class="sort-ind">{{ sortInd('total') }}</span></th>
           <th>状态</th><th>履约</th>
@@ -361,7 +363,7 @@ async function exportCsv() {
       </thead>
       <tbody>
         <tr v-for="o in items" :key="o.order_no" style="border-top:1px solid var(--gray-light)">
-          <td style="padding:11px 10px"><input type="checkbox" style="cursor:pointer" :checked="selected.includes(o.order_no)" :disabled="o.status !== 1 && o.status !== 2" @change="toggleOne(o.order_no, $event.target.checked)"></td>
+          <td v-if="canBatch" style="padding:11px 10px"><input type="checkbox" style="cursor:pointer" :checked="selected.includes(o.order_no)" :disabled="o.status !== 1 && o.status !== 2" @change="toggleOne(o.order_no, $event.target.checked)"></td>
           <td><b>{{ o.order_no }}</b></td>
           <td>{{ o.email }}</td>
           <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--gray)" :title="o.note || ''">{{ o.note || '—' }}</td>

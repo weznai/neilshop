@@ -1,6 +1,8 @@
 """退货 RMA 用户侧路由（薄路由）—— 申请/列表/详情；业务在 service_returns。"""
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -20,8 +22,14 @@ def create_rma(body: RmaCreateRequest, user: User = Depends(get_current_user), d
 
 @router.get("")
 @router.get("/")
-def list_rmas(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return service_returns.list_rmas(db, user)
+def list_rmas(
+    page: Optional[int] = Query(None, ge=1),
+    size: Optional[int] = Query(None, ge=1, le=100),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # 分页可选：不传保持全量旧结构；传 page 返回 {items,page,size,total,pages}
+    return service_returns.list_rmas(db, user, page=page, size=size)
 
 
 @router.get("/{rma_no}")

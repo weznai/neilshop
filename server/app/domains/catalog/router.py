@@ -64,8 +64,11 @@ def collection_detail(slug: str, db: Session = Depends(get_db)):
 
 
 @router.get("/search")
-def search(q: str, db: Session = Depends(get_db)):
-    return service.search(db, q=q)
+def search(
+    q: str = Query(..., max_length=100),
+    db: Session = Depends(get_db),
+):
+    return service.search(db, q=q.strip())
 
 
 @router.get("/reviews")

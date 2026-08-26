@@ -39,6 +39,8 @@ RATE_RULES: list[tuple[str, int]] = [
     ("/api/account/password-reset", 20),
     ("/api/account/newsletter", 30),
     ("/api/account/consent", 10),
+    # GDPR 导出全量扫描订单/工单/流水，重操作低频 → 3/min
+    ("/api/account/export", 3),
     ("/api/promo/giftcard/purchase", 20),
     ("/api/promo/giftcard", 20),
     ("/api/promo/popup", 60),
@@ -57,8 +59,11 @@ RATE_RULES: list[tuple[str, int]] = [
     ("/api/orders/track", 30),
     ("/api/orders/", 30),
     ("/api/catalog/stock-notify", 10),
+    ("/api/catalog/search", 30),
     ("/api/support/tickets", 30),
     ("/api/chat/", 60),
+    # /api/content/ 前缀兜底全部内容端点（faqs/articles/reviews/ugc，读写同桶）
+    ("/api/content/", 30),
 ]
 
 # 测试/压测可调：GM_RATE_RULES='{"/api/checkout/place": 120}' 覆盖已有规则的阈值

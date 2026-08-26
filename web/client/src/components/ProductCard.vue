@@ -19,7 +19,7 @@ const router = useRouter()
 
 const PLACEHOLDER = 'https://placehold.co/400x400/E8B4B8/552338?text=%E2%9C%A8'
 
-const href = computed(() => `/product?id=${props.p.id}`)
+const href = computed(() => (props.p.slug ? `/product?slug=${props.p.slug}` : `/product?id=${props.p.id}`))
 const zh = computed(() => i18n.lang === 'zh')
 /* 统一展示 p.title：zh 列表/详情由服务端 locale 返回翻译，不再按 id 耦合种子译名 */
 const title = computed(() => props.p.title)
@@ -166,7 +166,7 @@ async function toggleWishlist() {
 
 <style scoped>
 .pcard-sold .pcard-img img { filter: grayscale(.6); }
-.pcard-soldout { position: absolute; inset: 0; z-index: 1; background: rgba(251,240,241,.6); backdrop-filter: blur(1.5px); display: flex; align-items: center; justify-content: center; }
+.pcard-soldout { position: absolute; inset: 0; z-index: 1; background: rgba(251,240,241,.6); backdrop-filter: blur(1.5px); display: flex; align-items: center; justify-content: center; pointer-events: none; }
 .pcard-soldout span { background: rgba(31,27,30,.78); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; padding: 7px 16px; border-radius: 999px; }
 .pcard-price .range { color: var(--plum); font-size: 13px; }
 /* 价格行 SAVE 金额胶囊（折扣百分比已在图片徽标展示，此处去重） */

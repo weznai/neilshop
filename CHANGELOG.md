@@ -3,6 +3,34 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
+## [0.3.12] · 双端前端深度审计修复：Stripe 支付通道打通 + 4 模块 40+ 项流程/体验完善
+
+### Fixed（后端 · P0 支付死胡同）
+- **Stripe 支付通道打通**：`_create_intent_via` 对 stripe 改走 `create_checkout` 托管收银台（返回 `redirect_url`，口径对齐 PayPal）——此前 `create_intent` 只回 `client_secret` 无跳转链接，前端四类支付面（结算页/成功页/订单列表/订单详情）全部落入「暂不支持该支付渠道」死胡同，订单只能超时取消。`success_url` 追加 `&email=`（游客 hosted 回跳双因子查单不再失败）；补 `_site_url`（settings site_url/base_url > `GM_SITE_URL` > 默认）；0 元单 create-intent 同口径拒绝（`invalid_amount`/`already_paid`）。
+- **Email 大小写归一**：注册写入前 `.strip().lower()`，登录/重置/查重查询改 `func.lower(User.email)`（前端四处发送端同步小写）——手机端自动大写首字母注册后无法登录的问题修复。
+
+### Fixed（web/client · 交易主流程）
+- **结算草稿地址不再被默认地址覆盖**：`selAddr` 持久化进草稿，`loadAddrs` 优先恢复草稿选择（地址已删回落手填），hosted 取消回跳/误刷新不丢收货人填写。
+- **游客待付单闭环**：Track 页待付状态补「立即支付」入口（跳成功页携带 email 双因子）；订单详情 `payNow` 改用共享 `createOrderIntent`（通道对账 + `provider_unavailable` 自动去参重试，不再裸发 localStorage 旧通道）。
+- `?canceled=1` 且购物车已清空时不再堆叠「订单已保留」+「购物车为空」双卡片；积分输入与 `points_applied` 钳制值回写同步；CartView 挂载重复 preview 请求去重；CartDrawer 运费请求懒加载（首次开抽屉才发）；换货提交成功补「查看售后进度」链接；`payDiff` 补 `use_webhook` 分支提示；支付方式名双语化（mock/stripe/paypal/klarna 映射）；三处 hosted 跳转补 3s 重定向看门狗；地址区 `<form>` 语义化（Enter 不再误触）；订单时间轴明细改白名单字段（不再泄漏 `payment_intent` 等内部键）；下单后 mock 通道判定改以 intent 实际 provider 为准（通道回落 mock 也自动完成支付）。
+
+### Fixed（web/client · 账户与内容）
+- 心愿单加载失败补「重试」；地址簿/改密码/礼品卡购买表单 `<form>` 化（Enter 即提交，取消钮 `type="button"`）；GDPR 删除横幅英文语序修复；注册页条款/隐私链接 `target="_blank"`（不再销毁已填表单）；心愿单加购失败双重 toast 去重；推荐链接复制补 `execCommand` 降级；退订页重试按钮按 `retryable` 精确显隐；重置成功跳转定时器卸载清理。
+- **PDP 任何请求失败不再误显「商品不存在」**：仅 404 走下架态，超时/5xx 走错误卡 + 重试；售罄蒙层 `pointer-events:none`（点击穿透可进详情订阅到货）；「第一个来评价」补收货后可评价引导链接；商品卡链接优先 `?slug=`（可分享/SEO 友好）。
+- **触屏 Mega 菜单可达**：`@media (hover:none)` 首 tap 展开/次 tap 跳转；**客服面板离线轮询 + 未读角标**（关闭面板期间人工回复照常接收，数字角标替代静态绿点）；Store 页 `?page` 越界自动回第 1 页；Cookie 设置 backdrop 关闭与 Esc 同口径（未同意不再双双消失）；搜索弹窗补「清除最近搜索」+ 方向键滚动跟随 + Home/End；购物车角标初始水合不脉冲；Collection 切语言不再整屏骨架屏闪烁；Contact 查询不再强制覆盖异邮箱工单；Gallery 图片校验中禁提交；社交/toast/aria 硬编码英文双语化。
+
+### Fixed（web/admin）
+- **美甲师角色模板 403 消除**：快捷模板按钮/选择器/斜杠命令按 `ticket:manage` 门控（艺术家仅 `chat:manage` 不再触发全局 403 toast）。
+- **售后退款文案纠偏**：已完成订单「全额退满可退余额将转『已退款』+ 回补库存 + 作废积分」（原文案与后端行为相反）；全额退款时金额下方追加红色警示行。
+- **hasPerm fail-closed**：空权限集不再「有会话即全放行」；路由守卫对旧缓存（无 permissions）先 `verify()` 拉实时权限再判，失效会话回登录。
+- 只读角色隐藏勾选列与批量操作条（orders 按 `trade:ship`、products 按 `catalog:manage`）；Marketing/Content 五处开关钮补 in-flight 防抖（双击不再双翻转）；`resumeAi`/`恢复默认快捷回复` 补确认弹窗；订单深链 `per_page` 重置；RMA 部分退款（状态 7）补「余款可在订单详情继续退款」跳转提示。
+
+### Fixed（随批收编 · 前次会话遗留）
+- 限流补 `/api/account/export`（3/min）、`/api/catalog/search`（30/min）、`/api/content/` 前缀兜底（30/min）；搜索 `q` 长度 ≤100 + strip；评价待审核响应 `pending_review` 标记；`order_items` 售后未决占用列（`rma_pending_qty`/`ex_pending_qty` + Alembic 迁移 + trade 服务层全链路实现：RMA/换货申请即抢占、终态结转或释放，防重复超量申请，新增 test_trade_fix 33 项回归）；结算/地址簿共享国家数据 `data/countries.js`（含手机号校验）；搜索提交改 `router.replace`（不再堆历史）。
+
+### 测试与构建
+- 后端回归全绿（逐套件运行 39 套）：test_payments 84、test_b 76、test_c 83、test_chat_ext 84、test_e2e 62、test_exchanges 57、test_refsub 64、test_a 24、test_concurrency 6 等；双 SPA `npm run build` 零错误。
+
 ## [0.3.11] · 双端前端全面审计修复：交易流程健壮性 + 营销页补全 + 后台 URL/分页口径统一
 
 ### Fixed（web/client · 交易主流程）

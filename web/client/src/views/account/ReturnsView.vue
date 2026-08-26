@@ -15,6 +15,23 @@ const failed = ref(false)
 const partErr = ref('') /* 单侧列表加载失败提示（不隐藏另一侧） */
 const cancelingNo = ref('')
 
+/* 分页：请求带 ?page=&size=（新响应 {items,page,size,total,pages}）；
+   旧数组响应向后兼容 → 前端 slice 分批渲染；两侧各自维护页码与"还有下一页" */
+const PAGE_SIZE = 10
+const rPage = ref(1)
+const xPage = ref(1)
+const rMore = ref(false)
+const xMore = ref(false)
+const moreBusy = ref(false)
+
+function pageSlice(d, page) {
+  if (Array.isArray(d)) {
+    const items = d.slice(0, page * PAGE_SIZE)
+    return { items, more: d.length > items.length }
+  }
+  return { items: d.items || [], more: (d.pages || 1) > page }
+}
+
 /* 两段式确认（useArmConfirm：5s 复位；arm 态红字 + 二段文案） */
 const arm = useArmConfirm()
 
@@ -75,12 +92,14 @@ async function load() {
   loaded.value = false
   failed.value = false
   partErr.value = ''
+  rPage.value = 1
+  xPage.value = 1
   const [r, x] = await Promise.allSettled([
-    req('GET', '/api/returns'),
-    req('GET', '/api/exchanges'),
+    req('GET', '/api/returns?page=1&size=' + PAGE_SIZE),
+    req('GET', '/api/exchanges?page=1&size=' + PAGE_SIZE),
   ])
-  if (r.status === 'fulfilled') returns.value = r.value.items || []
-  if (x.status === 'fulfilled') exchanges.value = x.value.items || []
+  if (r.status === 'fulfilled') { const s = pageSlice(r.value, 1); returns.value = s.items; rMore.value = s.more }
+  if (x.status === 'fulfilled') { const s = pageSlice(x.value, 1); exchanges.value = s.items; xMore.value = s.more }
   /* 单侧失败也要如实提示（避免换货区块静默消失）；双侧失败显示整卡错误态 */
   if (r.status === 'rejected' && x.status === 'rejected') failed.value = true
   else if (r.status === 'rejected') partErr.value = tt('Returns list failed to load —', '退货记录加载失败，')
@@ -88,6 +107,22 @@ async function load() {
   loaded.value = true
 }
 onMounted(load)
+
+/* 加载更多（kind：'r' 退货 / 'x' 换货）：追加当页数据，结构不变 */
+async function loadMore(kind) {
+  if (moreBusy.value) return
+  moreBusy.value = true
+  const isR = kind === 'r'
+  const page = (isR ? rPage.value : xPage.value) + 1
+  try {
+    const d = await req('GET', (isR ? '/api/returns' : '/api/exchanges') + '?page=' + page + '&size=' + PAGE_SIZE)
+    const s = pageSlice(d, page)
+    if (isR) { rPage.value = page; returns.value = returns.value.concat(s.items); rMore.value = s.more }
+    else { xPage.value = page; exchanges.value = exchanges.value.concat(s.items); xMore.value = s.more }
+  } catch (_) {
+    ui.toast(tt('Could not load more — please retry', '加载更多失败，请重试'), 'error')
+  } finally { moreBusy.value = false }
+}
 
 /* 撤销退货申请（仅 status=0 申请中）：后端删除行 → 刷新列表后自然消失；RSTATUS 映射不动；两段式确认 */
 async function cancelRma(r) {
@@ -145,6 +180,8 @@ async function payDiff(x) {
       await load()
     } else if (d === 'mock_provider_disabled') {
       ui.toast(tt('Online payment is not available yet — please contact support to pay the difference', '在线支付暂未开通，请联系客服支付差价'), 'error')
+    } else if (d === 'use_webhook') {
+      ui.toast(tt('Please complete payment via the link emailed to you', '请通过邮件中的支付链接完成付款'), 'error')
     } else {
       ui.toast(tt('Payment failed — please retry later', '支付失败，请稍后再试'), 'error')
     }
@@ -211,6 +248,9 @@ async function payDiff(x) {
           <div v-else-if="r.status === 7" style="font-size:12.5px;color:var(--warn);margin-top:8px">⚠️ {{ tt('Partial refund completed', '部分退款已完成') }} · {{ money(r.refund_amount) }}{{ r.refunded_at ? ' · ' + fmt(r.refunded_at) : '' }}</div>
           <div v-else style="font-size:12.5px;color:var(--error);margin-top:8px">✖ {{ tt('This request was declined —', '申请已被拒绝，如有疑问请') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></div>
         </div>
+        <div v-if="rMore" style="text-align:center">
+          <button class="btn btn-secondary btn-sm" :class="{ loading: moreBusy }" :disabled="moreBusy" @click="loadMore('r')">{{ tt('Load more', '加载更多') }}</button>
+        </div>
       </div>
 
       <!-- 换货 -->
@@ -254,6 +294,9 @@ async function payDiff(x) {
             </div>
           </div>
           <div v-else-if="x.status === 5" style="font-size:12.5px;color:var(--error);margin-top:8px">✖ {{ tt('This request was declined —', '申请已被拒绝，如有疑问请') }}<router-link to="/contact" style="color:var(--plum)">{{ tt('contact support', '联系客服') }}</router-link></div>
+        </div>
+        <div v-if="xMore" style="text-align:center">
+          <button class="btn btn-secondary btn-sm" :class="{ loading: moreBusy }" :disabled="moreBusy" @click="loadMore('x')">{{ tt('Load more', '加载更多') }}</button>
         </div>
       </div>
 

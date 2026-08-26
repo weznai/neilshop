@@ -33,11 +33,14 @@ function imgFallback(e) {
   img.src = IMG_FALLBACK
 }
 
+let lastSlug = null
 async function load() {
-  loaded.value = false
+  /* 同 slug 已加载（仅语言切换）：保留旧数据原地刷新，不闪骨架屏；slug 变化走完整首载 */
+  const soft = loaded.value && lastSlug === String(route.params.slug || '')
+  lastSlug = String(route.params.slug || '')
+  if (!soft) { loaded.value = false; col.value = null }
   failed.value = false
   notFound.value = false
-  col.value = null
   const initShown = parseInt(route.query.shown, 10)
   shownCount.value = Number.isFinite(initShown) && initShown > PAGE_SIZE ? initShown : PAGE_SIZE
   try {

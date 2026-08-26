@@ -106,6 +106,12 @@ async function payNow() {
     }
     if (intent && intent.redirect_url) {
       window.location.href = intent.redirect_url
+      setTimeout(() => {
+        if (document.visibilityState !== 'hidden') {
+          paying.value = false
+          ui.toast(t('Redirecting to payment… if nothing happened, please retry', '正在跳转支付…若未打开请重试'), 'error')
+        }
+      }, 3000)
       return
     }
     try {

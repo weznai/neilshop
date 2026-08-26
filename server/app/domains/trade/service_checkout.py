@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
+from app.domains.trade import service_payments
 from app.domains.trade.schemas import PlaceRequest, PreviewRequest
-from app.models import Cart, Order, OrderItem, User
+from app.models import Cart, Order, OrderItem, Payment, User
 from app.services import points as points_svc
 from app.services.pricing import price_cart
 
@@ -56,6 +57,7 @@ def _place_payload(order: Order) -> dict:
     return {
         "order_no": order.order_no,
         "status": order.status,
+        "paid": order.status == 1,
         "email": order.email,
         "subtotal": order.subtotal,
         "discount_total": order.discount_total,
@@ -230,6 +232,19 @@ def place(db: Session, cart: Cart, body: PlaceRequest, user: User | None) -> dic
         "points_used": pricing["points_applied"],
         "giftcard_discount": pricing["giftcard_discount"],
     })
+    # 0 元单（积分/礼品卡/码全额抵扣）：无支付环节，下单同事务直接走支付成功核心事务
+    # （CAS status 0→1 + 积分发放 + Redemption + outbox 语义与 mock/webhook 一致）；
+    # Payment 记 0 元 SUCCESS，PI_FREE 前缀区分内部标记与 mock PI_ 通道
+    if order.grand_total <= 0:
+        free_payment = Payment(
+            order_id=order.id,
+            stripe_payment_intent="PI_FREE" + uuid.uuid4().hex,
+            amount=0,
+            status=0,
+        )
+        db.add(free_payment)
+        db.flush()
+        service_payments.mark_order_paid(db, order, free_payment, source="free")
     db.commit()
 
     return _place_payload(order)

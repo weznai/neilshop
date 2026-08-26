@@ -114,6 +114,38 @@ _TOTAL_SPENT_OF_SQL = text("SELECT total_spent FROM users WHERE id = :uid")
 _BUMP_SOLD_SQL = text(
     "UPDATE products SET sold_count = sold_count + :qty WHERE id = :pid"
 )
+# 售后未决占用 CAS 抢占：可退余守卫进 WHERE，同一 OrderItem 并发/重复申请不超量
+_CLAIM_ITEM_RMA_SQL = text(
+    "UPDATE order_items SET rma_pending_qty = rma_pending_qty + :qty "
+    "WHERE id = :iid AND qty - refunded_qty - exchanged_qty "
+    "- rma_pending_qty - ex_pending_qty >= :qty"
+)
+_CLAIM_ITEM_EX_SQL = text(
+    "UPDATE order_items SET ex_pending_qty = ex_pending_qty + :qty "
+    "WHERE id = :iid AND qty - refunded_qty - exchanged_qty "
+    "- rma_pending_qty - ex_pending_qty >= :qty"
+)
+# 占用释放（取消/拒绝）：>= 守卫防负数；存量行无占用时 rowcount=0 为无害空操作
+_RELEASE_ITEM_RMA_SQL = text(
+    "UPDATE order_items SET rma_pending_qty = rma_pending_qty - :qty "
+    "WHERE id = :iid AND rma_pending_qty >= :qty"
+)
+_RELEASE_ITEM_EX_SQL = text(
+    "UPDATE order_items SET ex_pending_qty = ex_pending_qty - :qty "
+    "WHERE id = :iid AND ex_pending_qty >= :qty"
+)
+# 终态结转（RMA 退款 → refunded / 换货完成 → exchanged）：单语句原子累计防丢失更新，
+# CASE 防负数（存量/直建行无占用时照常累计、占用保持 0）
+_CONVERT_ITEM_RMA_SQL = text(
+    "UPDATE order_items SET refunded_qty = refunded_qty + :qty, "
+    "rma_pending_qty = CASE WHEN rma_pending_qty >= :qty "
+    "THEN rma_pending_qty - :qty ELSE 0 END WHERE id = :iid"
+)
+_CONVERT_ITEM_EX_SQL = text(
+    "UPDATE order_items SET exchanged_qty = exchanged_qty + :qty, "
+    "ex_pending_qty = CASE WHEN ex_pending_qty >= :qty "
+    "THEN ex_pending_qty - :qty ELSE 0 END WHERE id = :iid"
+)
 
 
 # ---------- 库存：乐观锁写 + 现值读 ----------
@@ -238,6 +270,31 @@ def bump_product_sold_count(db: Session, product_id: int, qty: int) -> None:
     db.execute(_BUMP_SOLD_SQL, {"pid": product_id, "qty": qty})
 
 
+# ---------- 售后未决占用：抢占 / 释放 / 结转 ----------
+def claim_item_rma(db: Session, item_id: int, qty: int) -> int:
+    return db.execute(_CLAIM_ITEM_RMA_SQL, {"iid": item_id, "qty": qty}).rowcount
+
+
+def claim_item_exchange(db: Session, item_id: int, qty: int) -> int:
+    return db.execute(_CLAIM_ITEM_EX_SQL, {"iid": item_id, "qty": qty}).rowcount
+
+
+def release_item_rma(db: Session, item_id: int, qty: int) -> int:
+    return db.execute(_RELEASE_ITEM_RMA_SQL, {"iid": item_id, "qty": qty}).rowcount
+
+
+def release_item_exchange(db: Session, item_id: int, qty: int) -> int:
+    return db.execute(_RELEASE_ITEM_EX_SQL, {"iid": item_id, "qty": qty}).rowcount
+
+
+def convert_item_rma_refunded(db: Session, item_id: int, qty: int) -> None:
+    db.execute(_CONVERT_ITEM_RMA_SQL, {"iid": item_id, "qty": qty})
+
+
+def convert_item_ex_exchanged(db: Session, item_id: int, qty: int) -> None:
+    db.execute(_CONVERT_ITEM_EX_SQL, {"iid": item_id, "qty": qty})
+
+
 def variant_stock_map(db: Session, vids: list[int]) -> dict[int, int]:
     return {
         vid: int(stock)
@@ -327,11 +384,15 @@ def paginate_orders(
     status_in: Optional[list[int]] = None,
     q: Optional[str] = None, page: int = 1, per_page: int = 10,
     date_from: Optional[datetime] = None, date_to: Optional[datetime] = None,
-    sort: Optional[str] = None,
+    sort: Optional[str] = None, email: Optional[str] = None,
 ) -> tuple[list[Order], int]:
     query = db.query(Order)
     if user_id is not None:
-        query = query.filter(Order.user_id == user_id)
+        # 游客下同邮箱的单并入账户列表（email 已归一且有索引；单表 or 条件不产生重复行）
+        if email:
+            query = query.filter(or_(Order.user_id == user_id, Order.email == email))
+        else:
+            query = query.filter(Order.user_id == user_id)
     if status is not None:
         query = query.filter(Order.status == status)
     if status_in is not None:

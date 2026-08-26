@@ -233,7 +233,7 @@ def wishlist_flow(client, fx):
     items = client.get("/api/account/wishlist", headers=h).json()
     assert len(items) == 1
     card = items[0]
-    assert card["slug"] == "bare-gems" and card["rating"] == 487
+    assert card["slug"] == "bare-gems" and card["rating"] == 4.87
     assert card["price_min"] == 1500 and card["price_max"] == 1800
     assert card["compare_at_price"] == 2200
     assert card["stock_summary"]["total"] == 13 and card["stock_summary"]["low"] == 1

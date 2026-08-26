@@ -33,6 +33,10 @@ function onEsc(e) {
   settings.value = false
   if (!consented()) banner.value = true
 }
+function closeSettings() {
+  settings.value = false
+  if (!consented()) banner.value = true
+}
 
 /* ===== a11y：settings 弹窗焦点管理（开→入框 / Esc 关 / 关→还焦）+ 简易 focus trap（对齐 MarketingPopups） ===== */
 const settingsBox = ref(null)
@@ -133,7 +137,7 @@ const consentParts = computed(() => {
     </div>
   </div>
 
-  <div v-if="settings" class="modal open" role="dialog" aria-modal="true" :aria-label="i18n.t('consent.title')" @click.self="settings = false">
+  <div v-if="settings" class="modal open" role="dialog" aria-modal="true" :aria-label="i18n.t('consent.title')" @click.self="closeSettings">
     <div ref="settingsBox" class="modal-box" style="max-width:520px" @keydown="trapKeydown">
       <button class="modal-x" style="font-size:22px" :aria-label="i18n.lang === 'zh' ? '关闭' : 'Close'" @click="settings = false">×</button>
       <h3 style="font-family:var(--font-title);margin-bottom:6px">{{ i18n.t('consent.title') }}</h3>

@@ -1,6 +1,6 @@
 <script setup>
 /* 密码重置落地页：邮件链接 /reset-password?token=…（确认端点需 email + token + new_password） */
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { req } from '../api/client'
 import { useUiStore } from '../stores/ui'
@@ -22,6 +22,7 @@ const err = ref('')
 const done = ref(false)
 const invalidTk = ref(false)
 const resending = ref(false)
+let redirectTimer = 0
 
 const pwLen = computed(() => password.value.length)
 /* 弱密码提示：纯数字易被撞库（与注册页一致） */
@@ -41,13 +42,13 @@ async function submit() {
   busy.value = true
   try {
     await req('POST', '/api/account/password-reset/confirm', {
-      email: email.value.trim(),
+      email: email.value.trim().toLowerCase(),
       token: token.value,
       new_password: password.value,
     })
     done.value = true
     ui.toast(tt('Password reset — please sign in with your new password', '密码已重置，请使用新密码登录'), 'success')
-    setTimeout(() => router.push({ path: '/login', query: { email: email.value.trim() } }), 1200)
+    redirectTimer = setTimeout(() => router.push({ path: '/login', query: { email: email.value.trim().toLowerCase() } }), 1200)
   } catch (e) {
     const d = e && e.data && e.data.detail
     if (e && e.status === 400 && d === 'invalid_token') {
@@ -62,6 +63,8 @@ async function submit() {
   } finally { busy.value = false }
 }
 
+onUnmounted(() => { clearTimeout(redirectTimer) })
+
 /* token 失效后重发：POST /password-reset/request（恒 200 防枚举），新链接走邮件 */
 async function resend() {
   if (!EMAIL_RE.test(email.value.trim())) {
@@ -70,7 +73,7 @@ async function resend() {
   }
   resending.value = true
   try {
-    await req('POST', '/api/account/password-reset/request', { email: email.value.trim() })
+    await req('POST', '/api/account/password-reset/request', { email: email.value.trim().toLowerCase() })
     invalidTk.value = false
     err.value = ''
     ui.toast(tt('Reset email sent — please open the newest link to continue', '重置邮件已发送，请使用最新链接继续'), 'success')

@@ -6,6 +6,7 @@ import { useCartStore } from '../../stores/cart'
 import { useUiStore } from '../../stores/ui'
 import { statusLabel, statusTag } from '../../composables/orderStatus'
 import { useArmConfirm } from '../../composables/useArmConfirm'
+import { createOrderIntent } from '../../composables/useOrderPay'
 import { fmtDateTime, zulu } from '../../composables/datetime'
 import { money } from '../../composables/format'
 import { i18n, tt } from '../../i18n'
@@ -72,6 +73,12 @@ function eventLabel(t) {
 }
 
 const fmt = fmtDateTime
+/* 时间线 detail 已知键 → 双语标签（白名单）：未知键不渲染，最多 3 条（防原始键名/内部 id 泄漏） */
+const DETAIL_LABELS = {
+  from: ['From', '从'], to: ['To', '至'], qty: ['Qty', '数量'],
+  reason: ['Reason', '原因'], amount: ['Amount', '金额'], source: ['Source', '来源'],
+  carrier: ['Carrier', '承运商'], tracking_no: ['Tracking no.', '追踪号'], operator: ['Operator', '操作者'],
+}
 function detailText(ev) {
   const d = ev.detail
   if (!d) return ''
@@ -79,8 +86,10 @@ function detailText(ev) {
     return `${statusLabel(d.from)} → ${statusLabel(d.to)}`
   }
   if (typeof d === 'object') {
-    return Object.entries(d).filter(([k]) => k !== 'code').slice(0, 3)
-      .map(([k, v]) => `${k}: ${v}`).join(' · ')
+    return Object.entries(d)
+      .filter(([k]) => DETAIL_LABELS[k])
+      .slice(0, 3)
+      .map(([k, v]) => `${tt(DETAIL_LABELS[k][0], DETAIL_LABELS[k][1])}: ${v}`).join(' · ')
   }
   return String(d)
 }
@@ -133,22 +142,25 @@ const canBuyAgain = computed(() => !!o.value && ![0, 8, 9].includes(o.value.stat
 /* 已送达待确认：可自助确认收货（4→5 已完成） */
 const canConfirmRecv = computed(() => !!o.value && o.value.status === 4)
 
-/* 待付订单：支付（create-intent → mock-pay）/ 取消 */
+/* 待付订单：支付（createOrderIntent 统一封装：methods 对账 + provider_unavailable 回退）/ 取消 */
 async function payNow() {
   busy.value = true
   try {
-    let provider = ''
-    try { provider = (localStorage.getItem('gm_pay_provider') || '').trim() } catch (_) { /* 隐私模式 */ }
-    const ib = { order_no: o.value.order_no }
-    if (provider && provider !== 'mock') ib.provider = provider
-    const intent = await req('POST', '/api/payments/create-intent', ib)
+    const intent = await createOrderIntent(o.value.order_no)
     if (intentNoChannel(intent)) {
       ui.toast(i18n.t('pay.unsupported_channel'), 'error')
       return
     }
-    /* hosted 通道（Stripe Checkout / PayPal 等）：跳转收银台，回来后由 webhook 推进状态 */
-    if (provider !== 'mock' && intent && intent.redirect_url) {
+    /* hosted 通道（Stripe Checkout / PayPal 等）：跳转收银台，回来后由 webhook 推进状态；
+       3s 未离页 → 恢复按钮并提示重试（对齐 CheckoutView 跳转看门狗） */
+    if (intent && intent.redirect_url) {
       window.location.href = intent.redirect_url
+      setTimeout(() => {
+        if (document.visibilityState !== 'hidden') {
+          busy.value = false
+          ui.toast(tt('Redirecting to payment… if nothing happened, please retry', '正在跳转支付…若未打开请重试'), 'error')
+        }
+      }, 3000)
       return
     }
     const d = await req('POST', '/api/payments/mock-pay', { order_no: o.value.order_no, succeed: true })
@@ -289,6 +301,7 @@ function restoreFocus(el) {
 /* ---------- 退货 RMA ---------- */
 const rma = reactive({ item: null, qty: 1, reason: 1, detail: '', busy: false })
 const rmaSubmitted = ref(false)
+const exSubmitted = ref(false)
 function openRma(it) {
   Object.assign(rma, { item: it, qty: 1, reason: 1, detail: '', busy: false })
   ui.openModal('rma')
@@ -376,6 +389,7 @@ async function submitExchange() {
       reason: ex.reason.trim() || null,
     })
     ui.toast(tt(`Exchange request submitted (${d.exchange_no})`, `换货申请已提交（${d.exchange_no}）`), 'success')
+    exSubmitted.value = true
     ui.closeModal()
     await load()
   } catch (e) {
@@ -502,6 +516,10 @@ async function submitReview(it) {
     </div>
 
     <div v-else style="display:grid;gap:16px">
+      <!-- 返回订单列表入口（移动端同样可见） -->
+      <div>
+        <router-link to="/account/orders" style="font-size:13px;font-weight:600;color:var(--plum)">← {{ tt('Back to orders', '返回订单列表') }}</router-link>
+      </div>
       <!-- 头部 + 进度 -->
       <div class="card" style="padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
@@ -630,7 +648,7 @@ async function submitReview(it) {
           <!-- 时间线 -->
           <div class="card" style="padding:20px">
             <h3 style="font-size:15px;margin-bottom:12px">{{ tt('Order activity', '订单动态') }}</h3>
-            <div v-if="rmaSubmitted" style="margin:-4px 0 12px;font-size:13px">
+            <div v-if="rmaSubmitted || exSubmitted" style="margin:-4px 0 12px;font-size:13px">
               <router-link to="/account/returns" style="color:var(--plum);font-weight:600">{{ tt('View return / exchange progress →', '查看退换货进度 →') }}</router-link>
             </div>
             <div class="tl-list">

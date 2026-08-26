@@ -120,6 +120,7 @@ _expected = {
     "/api/account/password-reset": 20,
     "/api/account/newsletter": 30,
     "/api/account/consent": 10,
+    "/api/account/export": 3,
     "/api/promo/giftcard/purchase": 20,
     "/api/promo/giftcard": 20,
     "/api/promo/popup": 60,
@@ -135,11 +136,13 @@ _expected = {
     "/api/orders/track": 30,
     "/api/orders/": 30,
     "/api/catalog/stock-notify": 10,
+    "/api/catalog/search": 30,
     "/api/support/tickets": 30,
     "/api/chat/": 60,
+    "/api/content/": 30,
 }
 _rules = dict(obs.RATE_RULES)
-check("23 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
+check("26 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
 check("全局规则不含 /api/ai（域内 30/min 自治，避免双重 429）",
       not any(p.startswith("/api/ai") for p, _ in obs.RATE_RULES))
 check("admin/login 规则排在宽前缀 login 之前",

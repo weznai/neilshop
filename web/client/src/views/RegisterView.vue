@@ -134,9 +134,9 @@ async function submit() {
             <label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 14px;font-size:13px;color:var(--gray)">
               <input v-model="agreed" type="checkbox" style="width:16px;height:16px;margin-top:1px;accent-color:var(--plum)">
               <span>{{ tt('I have read and agree to the', '我已阅读并同意') }}
-                <router-link to="/terms" style="color:var(--plum);text-decoration:underline">{{ tt('Terms of Service', '服务条款') }}</router-link>
+                <router-link to="/terms" target="_blank" style="color:var(--plum);text-decoration:underline">{{ tt('Terms of Service', '服务条款') }}</router-link>
                 {{ tt('and', '与') }}
-                <router-link to="/privacy" style="color:var(--plum);text-decoration:underline">{{ tt('Privacy Policy', '隐私政策') }}</router-link>
+                <router-link to="/privacy" target="_blank" style="color:var(--plum);text-decoration:underline">{{ tt('Privacy Policy', '隐私政策') }}</router-link>
               </span>
             </label>
             <button class="btn btn-primary btn-block btn-lg" :class="{ loading: busy }" :disabled="busy">{{ tt('Create Account', '注册') }}</button>

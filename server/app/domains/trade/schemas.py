@@ -50,8 +50,8 @@ class AddressIn(BaseModel):
     city: str
     state: Optional[str] = None
     zip: str
-    country: str = "US"
-    phone: Optional[str] = None
+    country: str = Field(default="US", max_length=2)
+    phone: Optional[str] = Field(default=None, max_length=32)
 
 
 class PlaceRequest(BaseModel):
@@ -61,9 +61,9 @@ class PlaceRequest(BaseModel):
     code: Optional[str] = None
     points: int = 0
     gift_card_code: Optional[str] = None
-    note: Optional[str] = None
+    note: Optional[str] = Field(default=None, max_length=255)
     gift_flag: int = 0
-    gift_message: Optional[str] = None
+    gift_message: Optional[str] = Field(default=None, max_length=255)
     utm: Optional[Dict[str, Any]] = None
 
 
@@ -155,7 +155,7 @@ class ExchangeCreateRequest(BaseModel):
     order_item_id: int
     new_variant_id: int
     qty: int = Field(default=1, ge=1)
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=200)
     email: Optional[EmailIn] = None
 
 
@@ -165,3 +165,4 @@ class ExchangeRejectRequest(BaseModel):
 
 class ExchangeMockPayIn(BaseModel):
     succeed: bool = True
+    email: Optional[EmailIn] = None

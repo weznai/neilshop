@@ -31,13 +31,17 @@ function imgFallback(e) {
   img.src = IMG_FALLBACK
 }
 
-onMounted(async () => {
+async function reload() {
+  loaded.value = false
+  failed.value = false
   try {
     items.value = await req('GET', '/api/account/wishlist')
     localStorage.setItem('gm_wl_count', String(items.value.length))
+    window.dispatchEvent(new Event('gm:wl-changed'))
   } catch (_) { items.value = []; failed.value = true }
   loaded.value = true
-})
+}
+onMounted(reload)
 
 async function add(pid) {
   addingId.value = pid
@@ -126,7 +130,7 @@ function priceRange(w) {
       </div>
     </div>
     <div v-else-if="loaded && failed" class="card" style="padding:30px;text-align:center;color:var(--gray)">
-      {{ tt('Could not load your wishlist — please refresh', '心愿单加载失败，请刷新重试') }}
+      {{ tt('Could not load your wishlist —', '心愿单加载失败 ——') }} <a href="javascript:void(0)" style="color:var(--plum)" @click="reload">{{ tt('retry', '重试') }}</a>
     </div>
     <div v-else-if="loaded" class="card" style="padding:30px;text-align:center;color:var(--gray)">
       💜 {{ tt('Your wishlist is empty — tap the heart on any product page.', '心愿单还是空的 —— 去商品页点亮小心心吧。') }}

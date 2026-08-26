@@ -136,6 +136,7 @@ const sortInd = (k) => (state.sort === k ? '▲' : state.sort === '-' + k ? '▼
 const ariaSort = (k) => (state.sort === k ? 'ascending' : state.sort === '-' + k ? 'descending' : 'none')
 
 /* ===== 批量上下架：全选作用于当前页可见行；翻页/筛选后勾选重置；上架/归档均走 ConfirmDialog ===== */
+const canBatch = computed(() => session.hasPerm('catalog:manage'))
 const selIds = ref([])
 const visIds = computed(() => items.value.map((p) => p.id))
 const allChecked = computed(() => visIds.value.length > 0 && visIds.value.every((id) => selIds.value.includes(id)))
@@ -424,7 +425,7 @@ async function doDelCat() {
 
   <div v-else class="card tbl-wrap">
     <!-- 批量操作条：勾选任意行后出现，上架/归档均走确认弹窗 -->
-    <div v-if="selIds.length" style="display:flex;gap:10px;align-items:center;padding:10px 12px;background:var(--rose-pale);font-size:13px;flex-wrap:wrap">
+    <div v-if="canBatch && selIds.length" style="display:flex;gap:10px;align-items:center;padding:10px 12px;background:var(--rose-pale);font-size:13px;flex-wrap:wrap">
       已选 <b>{{ selIds.length }}</b> 款
       <button v-if="session.hasPerm('catalog:manage')" class="btn btn-primary btn-sm" :disabled="batchBusy" @click="askBatch('publish')">上架</button>
       <button v-if="session.hasPerm('catalog:manage')" class="btn btn-sm" style="background:var(--error);color:#fff" :disabled="batchBusy" @click="askBatch('unpublish')">归档</button>
@@ -432,7 +433,7 @@ async function doDelCat() {
     </div>
     <table v-if="items.length" style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:var(--gray)">
-        <th style="width:28px"><input type="checkbox" :checked="allChecked" :disabled="!visIds.length" title="全选本页" @change="toggleAll"></th>
+        <th v-if="canBatch" style="width:28px"><input type="checkbox" :checked="allChecked" :disabled="!visIds.length" title="全选本页" @change="toggleAll"></th>
         <th class="sortable" tabindex="0" role="button" :aria-sort="ariaSort('title')" title="点击排序（回车/空格亦可）" @click="sortBy('title')" @keydown.enter.prevent="sortBy('title')" @keydown.space.prevent="sortBy('title')">商品<span v-if="sortInd('title')" class="sort-ind">{{ sortInd('title') }}</span></th>
         <th class="sortable" tabindex="0" role="button" :aria-sort="ariaSort('price')" title="点击排序（回车/空格亦可）" @click="sortBy('price')" @keydown.enter.prevent="sortBy('price')" @keydown.space.prevent="sortBy('price')">价格<span v-if="sortInd('price')" class="sort-ind">{{ sortInd('price') }}</span></th>
         <th>库存</th>
@@ -443,7 +444,7 @@ async function doDelCat() {
       </tr></thead>
       <tbody>
         <tr v-for="p in items" :key="p.id" style="border-top:1px solid var(--gray-light)">
-          <td><input type="checkbox" :value="p.id" v-model="selIds"></td>
+          <td v-if="canBatch"><input type="checkbox" :value="p.id" v-model="selIds"></td>
           <td>
             <div style="display:flex;gap:10px;align-items:center">
               <img v-if="p.hero_image && !p.broken" :src="p.hero_image" :alt="p.title" style="width:42px;height:42px;border-radius:8px;object-fit:cover" @error="p.broken = true">

@@ -53,12 +53,15 @@ async function copyLink() {
   if (!link.value) return
   try {
     await navigator.clipboard.writeText(link.value)
-    copyOk.value = true
-    setTimeout(() => { copyOk.value = false }, 1500)
-    ui.toast(tt('Referral link copied 💜', '推荐链接已复制 💜'), 'success')
   } catch (_) {
-    ui.toast(tt('Copy failed — please copy manually: ', '复制失败，请手动复制：') + link.value, 'error')
+    const ta = document.createElement('textarea')
+    ta.value = link.value; document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy') } catch (_) { /* older browsers */ }
+    document.body.removeChild(ta)
   }
+  copyOk.value = true
+  setTimeout(() => { copyOk.value = false }, 1500)
+  ui.toast(tt('Referral link copied 💜', '推荐链接已复制 💜'), 'success')
 }
 
 /* 原生分享（支持则唤起系统分享面板；取消/不支持回落复制链接） */

@@ -77,6 +77,9 @@ def _entries(cart: Cart) -> list[dict]:
 
 
 def _save(db: Session, cart: Cart, entries: list[dict]) -> None:
+    # 总行数上限 99：加行/批量加/改量统一守卫（items-batch 单次限 20 但可反复调用堆积）
+    if len(entries) > 99:
+        raise HTTPException(status_code=409, detail="cart_too_large")
     # 弃购周期重置：回访改车（items 发生变化 = 新弃购周期开始）时清零已发计数，
     # 使三封阶梯从第 1 封重新起算（place 清车后用户再加购即命中）
     if cart.abandoned_mails_sent > 0 and (cart.items or []) != entries:

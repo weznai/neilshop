@@ -184,8 +184,13 @@ onMounted(() => {
           <b style="color:var(--error)">{{ tt('This order was cancelled or refunded.', '该订单已取消或已退款。') }}</b>
         </div>
 
-        <!-- 待付订单：自助取消（email 双因子，无需登录） -->
+        <!-- 待付订单：去支付（/success 托管支付入口）+ 自助取消（email 双因子，无需登录） -->
         <div v-if="result.status === 0" style="margin-top:14px;text-align:right">
+          <router-link
+            class="btn btn-primary btn-sm"
+            :style="{ marginRight: '8px' }"
+            :to="'/success?no=' + encodeURIComponent(result.order_no) + '&email=' + encodeURIComponent(email)"
+          >{{ tt('Pay now', '立即支付') }}</router-link>
           <button
             class="btn btn-ghost btn-sm" :class="{ arm: armIs('cancel') }"
             :disabled="cancelBusy"

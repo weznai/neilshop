@@ -4,6 +4,7 @@ import { req } from '../../api/client'
 import { useUiStore } from '../../stores/ui'
 import { useArmConfirm } from '../../composables/useArmConfirm'
 import { i18n, tt } from '../../i18n'
+import { COUNTRIES, PHONE_RE } from '../../data/countries'
 
 const ui = useUiStore()
 
@@ -23,20 +24,8 @@ const form = reactive({ full_name: '', line1: '', line2: '', city: '', state: ''
 const busy = ref(false)
 const settingDefault = ref(0)
 
-/* 常用国家下拉（2 字母码）+ 其他自填 */
+/* 常用国家下拉（2 字母码，data/countries 共享）+ 其他自填 */
 const OTHER = '__other__'
-const COUNTRIES = [
-  ['US', 'United States 美国'],
-  ['CA', 'Canada 加拿大'],
-  ['GB', 'United Kingdom 英国'],
-  ['AU', 'Australia 澳大利亚'],
-  ['DE', 'Germany 德国'],
-  ['FR', 'France 法国'],
-  ['NL', 'Netherlands 荷兰'],
-  ['NZ', 'New Zealand 新西兰'],
-  ['SG', 'Singapore 新加坡'],
-  ['JP', 'Japan 日本'],
-]
 const countrySel = computed({
   get() {
     const c = (form.country || '').trim().toUpperCase()
@@ -80,7 +69,7 @@ function fieldCheck() {
   if (!form.city.trim()) return tt('Enter the city', '请填写城市')
   if (!form.zip.trim()) return tt('Enter the ZIP / postal code', '请填写邮编')
   if (!/^[A-Za-z]{2}$/.test(form.country.trim())) return tt('Country must be a 2-letter code (e.g. US)', '国家代码需为 2 位字母（如 US）')
-  if (form.phone.trim() && !/^[+()\-\s\d]{6,20}$/.test(form.phone.trim())) return tt('Enter a valid phone number', '电话格式不正确')
+  if (form.phone.trim() && !PHONE_RE.test(form.phone.trim())) return tt('Enter a valid phone number', '电话格式不正确')
   return ''
 }
 
@@ -227,37 +216,39 @@ async function remove(a) {
         <template v-if="editing === null">➕ {{ tt('Add address', '新增地址') }}</template>
         <template v-else>✏️ {{ tt('Edit address', '编辑地址') }}<span v-if="editingAddr" style="color:var(--plum)"> · {{ editingAddr.full_name }}</span></template>
       </h3>
-      <div class="grid-m-1" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Recipient name', '收件人姓名') }} *</label><input v-model="form.full_name" class="input" maxlength="100" autocomplete="name"></div>
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Street address', '街道地址') }} *</label><input v-model="form.line1" class="input" maxlength="191" autocomplete="address-line1"></div>
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Apt / Suite (optional)', '门牌 / 单元（可选）') }}</label><input v-model="form.line2" class="input" maxlength="191" autocomplete="address-line2"></div>
-        <div class="field"><label>{{ tt('City', '城市') }} *</label><input v-model="form.city" class="input" maxlength="100" autocomplete="address-level2"></div>
-        <div class="field"><label>{{ tt('State / Province', '州 / 省') }}</label><input v-model="form.state" class="input" maxlength="100" autocomplete="address-level1"></div>
-        <div class="field"><label>{{ tt('ZIP / Postal code', '邮编') }} *</label><input v-model="form.zip" class="input" maxlength="20" autocomplete="postal-code"></div>
-        <div class="field">
-          <label>{{ tt('Country', '国家') }} *</label>
-          <select v-model="countrySel" class="input" autocomplete="country">
-            <option v-for="[code, label] in COUNTRIES" :key="code" :value="code">{{ label }}（{{ code }}）</option>
-            <option :value="OTHER">{{ tt('Other (enter 2-letter code)', '其他（自填 2 位代码）') }}</option>
-          </select>
+      <form @submit.prevent="save">
+        <div class="grid-m-1" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="field" style="grid-column:1/-1"><label>{{ tt('Recipient name', '收件人姓名') }} *</label><input v-model="form.full_name" class="input" maxlength="100" autocomplete="name"></div>
+          <div class="field" style="grid-column:1/-1"><label>{{ tt('Street address', '街道地址') }} *</label><input v-model="form.line1" class="input" maxlength="191" autocomplete="address-line1"></div>
+          <div class="field" style="grid-column:1/-1"><label>{{ tt('Apt / Suite (optional)', '门牌 / 单元（可选）') }}</label><input v-model="form.line2" class="input" maxlength="191" autocomplete="address-line2"></div>
+          <div class="field"><label>{{ tt('City', '城市') }} *</label><input v-model="form.city" class="input" maxlength="100" autocomplete="address-level2"></div>
+          <div class="field"><label>{{ tt('State / Province', '州 / 省') }}</label><input v-model="form.state" class="input" maxlength="100" autocomplete="address-level1"></div>
+          <div class="field"><label>{{ tt('ZIP / Postal code', '邮编') }} *</label><input v-model="form.zip" class="input" maxlength="20" autocomplete="postal-code"></div>
+          <div class="field">
+            <label>{{ tt('Country', '国家') }} *</label>
+            <select v-model="countrySel" class="input" autocomplete="country">
+              <option v-for="[code, label] in COUNTRIES" :key="code" :value="code">{{ label }}（{{ code }}）</option>
+              <option :value="OTHER">{{ tt('Other (enter 2-letter code)', '其他（自填 2 位代码）') }}</option>
+            </select>
+          </div>
+          <div v-if="countryIsOther" class="field">
+            <label>{{ tt('Country code (2 letters)', '国家代码（2 位字母）') }} *</label>
+            <input v-model="form.country" class="input" maxlength="2" placeholder="US" autocomplete="country-code" @input="form.country = form.country.toUpperCase()">
+          </div>
+          <div class="field" style="grid-column:1/-1"><label>{{ tt('Phone (optional)', '电话（可选）') }}</label><input v-model="form.phone" class="input" maxlength="32" type="tel" autocomplete="tel"></div>
         </div>
-        <div v-if="countryIsOther" class="field">
-          <label>{{ tt('Country code (2 letters)', '国家代码（2 位字母）') }} *</label>
-          <input v-model="form.country" class="input" maxlength="2" placeholder="US" autocomplete="country-code" @input="form.country = form.country.toUpperCase()">
+        <label style="display:flex;gap:8px;align-items:center;margin:12px 0;font-size:13.5px;opacity:.75" :class="{ 'addr-locked': defaultLocked }">
+          <input v-model="form.is_default" type="checkbox" style="width:16px;height:16px" :disabled="defaultLocked">
+          {{ tt('Set as default address', '设为默认地址') }}
+          <span v-if="defaultLocked" style="font-size:12px;color:var(--gray)">（{{ tt('keep at least one default', '需保留至少一个默认地址') }}）</span>
+        </label>
+        <div style="display:flex;gap:10px">
+          <button type="submit" class="btn btn-primary" :class="{ loading: busy }" :disabled="busy">
+            {{ editing === null ? tt('Add address', '添加地址') : tt('Save changes', '保存修改') }}
+          </button>
+          <button type="button" class="btn btn-ghost" @click="reset">{{ tt('Cancel', '取消') }}</button>
         </div>
-        <div class="field" style="grid-column:1/-1"><label>{{ tt('Phone (optional)', '电话（可选）') }}</label><input v-model="form.phone" class="input" maxlength="32" type="tel" autocomplete="tel"></div>
-      </div>
-      <label style="display:flex;gap:8px;align-items:center;margin:12px 0;font-size:13.5px;opacity:.75" :class="{ 'addr-locked': defaultLocked }">
-        <input v-model="form.is_default" type="checkbox" style="width:16px;height:16px" :disabled="defaultLocked">
-        {{ tt('Set as default address', '设为默认地址') }}
-        <span v-if="defaultLocked" style="font-size:12px;color:var(--gray)">（{{ tt('keep at least one default', '需保留至少一个默认地址') }}）</span>
-      </label>
-      <div style="display:flex;gap:10px">
-        <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy" @click="save">
-          {{ editing === null ? tt('Add address', '添加地址') : tt('Save changes', '保存修改') }}
-        </button>
-        <button class="btn btn-ghost" @click="reset">{{ tt('Cancel', '取消') }}</button>
-      </div>
+      </form>
     </div>
   </div>
 </template>

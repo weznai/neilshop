@@ -16,6 +16,7 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
+from urllib.parse import quote
 
 from app.core.config import settings
 
@@ -194,17 +195,22 @@ class StripeProvider(PaymentProvider):
         intent = stripe.PaymentIntent.create(**kwargs)
         return {"payment_intent": intent.id, "client_secret": intent.client_secret}
 
-    def create_checkout(self, order_no: str, amount_cents: int, site_url: str) -> dict:
+    def create_checkout(self, order_no: str, amount_cents: int, site_url: str,
+                        email: str | None = None) -> dict:
         """Hosted Checkout 会话（stripe.checkout.Session.create）：
-        成功回跳 {site_url}/success?no=订单号&session_id={CHECKOUT_SESSION_ID}，
+        成功回跳 {site_url}/success?no=订单号&session_id={CHECKOUT_SESSION_ID}（传入 email 时
+        追加 &email=… URL 编码，游客单回跳双因子查询可用），
         取消回跳 {site_url}/checkout?canceled=1；无 key 抛 ProviderUnavailable。"""
         stripe = self._sdk()
         if not self.key:
             raise ProviderUnavailable("stripe key absent")
         base = site_url.rstrip("/")
+        success_url = f"{base}/success?no={order_no}&session_id={{CHECKOUT_SESSION_ID}}"
+        if email:
+            success_url += "&email=" + quote(email)
         session = stripe.checkout.Session.create(
             mode="payment",
-            success_url=f"{base}/success?no={order_no}&session_id={{CHECKOUT_SESSION_ID}}",
+            success_url=success_url,
             cancel_url=f"{base}/checkout?canceled=1",
             client_reference_id=order_no,
             metadata={"order_no": order_no},

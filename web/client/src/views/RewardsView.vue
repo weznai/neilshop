@@ -26,10 +26,10 @@ const TIERS = [
   ['Diva', '$300+', ['Gold badge · dedicated support', '金卡会员标识 · 专属客服']],
 ]
 
-/* 规则口径与后端一致（services/points.py）：$1=10 分；100 分=$1；评价 +100；推荐 +1000 */
+/* 规则口径与后端一致（services/points.py）：$1=10 分；100 分=$1；评价 +10；推荐 +1000 */
 const EARN_RULES = [
   [['Order spend', '下单消费'], ['+10 pts per $1', '每 $1 +10 分']],
-  [['Write a review', '写商品评价'], ['+100 pts', '+100 分']],
+  [['Write a review', '写商品评价'], ['+10 pts', '+10 分']],
   [['Refer a friend (signup + first order)', '推荐好友（注册并首单）'], ['+1000 pts', '+1000 分']],
   [['Birthday month', '生日月'], ['points gift', '积分小礼物']],
 ]

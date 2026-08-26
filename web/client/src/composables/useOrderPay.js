@@ -57,6 +57,12 @@ export function useOrderPay(onPaid) {
       }
       if (intent && intent.redirect_url) {
         window.location.href = intent.redirect_url
+        setTimeout(() => {
+          if (document.visibilityState !== 'hidden') {
+            payingNo.value = ''
+            ui.toast(tt('Redirecting to payment… if nothing happened, please retry', '正在跳转支付…若未打开请重试'), 'error')
+          }
+        }, 3000)
         return
       }
       const d = await req('POST', '/api/payments/mock-pay', { order_no: o.order_no, succeed: true })

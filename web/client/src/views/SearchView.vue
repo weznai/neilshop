@@ -122,14 +122,14 @@ function setSize(n) {
 function submit() {
   saveRecent(q.value)
   page.value = 1
-  router.push({ path: '/search', query: q.value.trim() ? { ...route.query, q: q.value.trim(), page: undefined } : {} })
+  router.replace({ path: '/search', query: q.value.trim() ? { ...route.query, q: q.value.trim(), page: undefined } : {} })
   manualAt = Date.now()
   search()
 }
 function pickTerm(term) {
   q.value = term
   page.value = 1
-  router.push({ path: '/search', query: { ...route.query, q: term, page: undefined } })
+  router.replace({ path: '/search', query: { ...route.query, q: term, page: undefined } })
   manualAt = Date.now()
   search()
 }

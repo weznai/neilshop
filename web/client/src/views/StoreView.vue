@@ -105,6 +105,12 @@ async function load() {
     if (seq !== ldSeq) return
     state.items = d.items || []
     state.total = d.total ?? state.items.length
+    /* 越界 ?page=N（如商品减少后旧链接）：回第 1 页重拉一次（page=1 恒在界内，无循环风险） */
+    if (state.total > 0 && state.page > Math.ceil(state.total / state.size)) {
+      state.page = 1
+      load()
+      return
+    }
   } catch (_) {
     if (seq !== ldSeq) return
     state.items = []; state.total = 0; loadError.value = true

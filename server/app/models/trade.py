@@ -75,8 +75,10 @@ class OrderItem(Base):
     qty = Column(Integer, nullable=False)
     unit_price = Column(Integer, nullable=False)               # 美分
     subtotal = Column(Integer, nullable=False)
-    refunded_qty = Column(Integer, nullable=False, default=0)  # 退货资格 = qty - refunded - exchanged
+    refunded_qty = Column(Integer, nullable=False, default=0)  # 退货资格 = qty - refunded - exchanged - pending
     exchanged_qty = Column(Integer, nullable=False, default=0)
+    rma_pending_qty = Column(Integer, nullable=False, default=0)  # 未决 RMA 占用（申请至终态期间扣减可退量）
+    ex_pending_qty = Column(Integer, nullable=False, default=0)   # 未决换货占用（同上，防重复超量申请）
     reviewed = Column(SmallInteger, nullable=False, default=0)
 
 

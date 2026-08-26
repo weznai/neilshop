@@ -60,11 +60,17 @@ function undoRemove() {
 const subtotalD = computed(() => (cart.subtotalC / 100).toFixed(2))
 /* 与 CartView/Checkout 同口径：有下架或缺货商品时禁止去结算 */
 const blocked = computed(() => cart.items.some((i) => i.inactive || (i.stock || 0) <= 0 || (i.stock > 0 && i.qty > i.stock)))
-/* 免邮门槛（settings 下发，与 CartView/Checkout 同源；失败回落 $35 文案） */
+/* 免邮门槛（settings 下发，与 CartView/Checkout 同源；失败回落 $35 文案）；
+   首次开抽屉才拉取（loaded 守卫），布局挂载不再例行请求 */
 const freeShipC = ref(3500)
-req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
-  if (d && d.free_shipping_threshold) freeShipC.value = Number(d.free_shipping_threshold) || 3500
-}).catch(() => {})
+let shipLoaded = false
+watch(() => ui.cartDrawer, (open) => {
+  if (!open || shipLoaded) return
+  shipLoaded = true
+  req('GET', '/api/checkout/shipping-methods?country=US').then((d) => {
+    if (d && d.free_shipping_threshold) freeShipC.value = Number(d.free_shipping_threshold) || 3500
+  }).catch(() => {})
+})
 /* 抽屉不跑 preview，无法按折后口径精确计算免邮进度 → 弱化为静态提示，进度条隐藏（以结算页试算为准） */
 const shipHint = computed(() => tt(
   `Free shipping on orders over $${(freeShipC.value / 100).toFixed(0)} (calculated on discounted subtotal, final at checkout)`,

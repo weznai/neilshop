@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import timedelta
+from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -13,6 +14,7 @@ from app.schemas.orders import RmaCreateRequest
 from app.services.pricing import _setting
 
 RETURNABLE_STATUSES = {1, 2, 3, 4, 5}
+PER_PAGE = 10
 
 
 def _get_order(db: Session, order_no: str) -> Order:
@@ -61,8 +63,12 @@ def create_rma(db: Session, user: User, body: RmaCreateRequest) -> dict:
     item = repo.get_order_item(db, body.order_item_id)
     if not item or item.order_id != order.id:
         raise HTTPException(status_code=404, detail="order_item_not_found")
-    available = item.qty - item.refunded_qty - item.exchanged_qty
-    if body.qty > available:
+    # CAS 抢占未决占用（可退余含 pending 守卫进 WHERE）：并发重复申请/超量申请 rowcount=0 → 409
+    if repo.claim_item_rma(db, item.id, body.qty) == 0:
+        db.rollback()
+        db.expire(item)
+        available = max(0, item.qty - item.refunded_qty - item.exchanged_qty
+                        - item.rma_pending_qty - item.ex_pending_qty)
         raise HTTPException(status_code=409, detail=f"qty_exceeds_available:{available}")
 
     rma = Rma(
@@ -84,13 +90,20 @@ def create_rma(db: Session, user: User, body: RmaCreateRequest) -> dict:
     return _payload(rma, item, order_no=order.order_no)
 
 
-def list_rmas(db: Session, user: User) -> dict:
+def list_rmas(
+    db: Session, user: User, *, page: Optional[int] = None, size: Optional[int] = None,
+) -> dict:
     rows = repo.list_user_rmas(db, user.id)
+    items = [_payload(rma, item, order_no=order.order_no) for rma, item, order in rows]
+    # 分页可选：不传 page 保持全量旧结构（向后兼容）；传了才返回分页四件套
+    if page is None:
+        return {"items": items}
+    size = size or PER_PAGE
+    total = len(items)
     return {
-        "items": [
-            _payload(rma, item, order_no=order.order_no)
-            for rma, item, order in rows
-        ]
+        "items": items[(page - 1) * size: page * size],
+        "page": page, "size": size, "total": total,
+        "pages": (total + size - 1) // size,
     }
 
 
@@ -123,6 +136,8 @@ def cancel_rma(db: Session, user: User, rma_no: str) -> dict:
         db.rollback()
         db.expire(rma)
         raise HTTPException(status_code=409, detail=f"rma_not_cancellable:{rma.status}")
+    # 释放未决占用（守卫防负数，rowcount=0 为无害空操作），撤销后可重新申请
+    repo.release_item_rma(db, rma.order_item_id, rma.qty)
     repo.add_timeline(db, order.id, "rma_canceled", actor="user", detail={
         "rma_no": rma.rma_no,
     })

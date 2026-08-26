@@ -64,6 +64,12 @@ function saveRecentSearch(term) {
   try { localStorage.setItem(RECENT_KEY, JSON.stringify(arr)) } catch (_) { /* 隐私模式 */ }
 }
 
+/* 清空最近搜索（对齐 SearchView：移除存储 + 清本地 ref） */
+function clearRecent() {
+  recentTerms.value = []
+  try { localStorage.removeItem(RECENT_KEY) } catch (_) { /* 隐私模式 */ }
+}
+
 function submit() {
   /* 高亮联想项时 Enter 直接跳商品（combobox 惯例）；否则按原行为提交搜索 */
   if (activeIdx.value >= 0 && options.value[activeIdx.value]) {
@@ -145,6 +151,12 @@ function inputKeydown(e) {
   if (!listOpen.value) return
   if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx.value = Math.min(activeIdx.value + 1, options.value.length - 1) }
   else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx.value = Math.max(activeIdx.value - 1, -1) }
+  else if (e.key === 'Home') { e.preventDefault(); activeIdx.value = 0 }
+  else if (e.key === 'End') { e.preventDefault(); activeIdx.value = options.value.length - 1 }
+  else return
+  /* 高亮行滚动进可视区（行元素已有 gm-sug-opt-{idx} id，与 aria-activedescendant 同源） */
+  const el = document.getElementById('gm-sug-opt-' + activeIdx.value)
+  if (el) el.scrollIntoView({ block: 'nearest' })
 }
 function cardTitle(p) {
   if (i18n.lang === 'zh') {
@@ -188,6 +200,7 @@ function cardTitle(p) {
           <template v-if="recentTerms.length">
             <div class="trend-chip-title" style="font-size:12px;color:var(--gray);margin-bottom:8px">
               {{ i18n.lang === 'zh' ? '最近搜索' : 'Recent searches' }}
+              <button type="button" style="margin-left:8px;font-size:12px;color:var(--gray);text-decoration:underline" :aria-label="i18n.lang === 'zh' ? '清除最近搜索' : 'Clear recent searches'" @click="clearRecent">× {{ i18n.lang === 'zh' ? '清除' : 'Clear' }}</button>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
               <button v-for="r in recentTerms.slice(0, 6)" :key="r" class="trend-chip" style="margin:0" @click="goTerm(r)">{{ r }}</button>

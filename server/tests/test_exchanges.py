@@ -378,8 +378,13 @@ try:
         check("LO 单 ship 成功（diff<0 路径也走发货）",
               r.status_code == 200 and r.json()["status"] == 3, r.text[:120])
 
+        # 未批准 ship 守卫用独立订单（EX260816LO001 的 item 已被 ex_lo_no 全额占用，
+        # 未决占用修复后同 item 不可再叠加第二笔换货申请）
+        o_pend, items_pend = make_order(s, "EX260816PEND01", [(v_old.id, 1, 1000)],
+                                        user_id=emma.id, email="emma@glow.test")
+        s.commit()
         r = client.post("/api/exchanges", headers=H_EMMA, json={
-            "order_no": "EX260816LO001", "order_item_id": items_lo[0].id,
+            "order_no": "EX260816PEND01", "order_item_id": items_pend[0].id,
             "new_variant_id": v_hi.id})
         ex_pending_no = r.json()["exchange_no"]
         r = client.post(f"/api/admin/trade/exchanges/{ex_pending_no}/ship", headers=H_OPS,
@@ -465,8 +470,8 @@ try:
         r = client.post("/api/exchanges", headers=H_EMMA, json={
             "order_no": "EX260816QTY001", "order_item_id": items_q2[0].id,
             "new_variant_id": v_hi.id, "qty": 4})
-        check("qty=4 超可换量 3 → 409 qty_exceeds_available:3",
-              r.status_code == 409 and "qty_exceeds_available:3" in r.text, r.text)
+        check("qty=4 超可换量（qty=3 已被 qty=2 未决占用，余 1）→ 409 qty_exceeds_available:1",
+              r.status_code == 409 and "qty_exceeds_available:1" in r.text, r.text)
 
         r = client.post("/api/exchanges", headers=H_EMMA, json={
             "order_no": "EX260816QTY001", "order_item_id": items_q2[0].id,

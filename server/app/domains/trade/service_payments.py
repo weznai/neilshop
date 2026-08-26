@@ -212,6 +212,11 @@ def create_intent(
 ) -> dict:
     order = _get_order(db, order_no)
     ensure_order_owner(order, user, email)
+    # 0 元单无支付环节：下单即标付（status=1）→ already_paid；异常未付 → invalid_amount
+    if order.grand_total <= 0:
+        if order.status == 1:
+            raise HTTPException(status_code=409, detail="already_paid")
+        raise HTTPException(status_code=409, detail="invalid_amount")
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
     provider = get_provider(db)
@@ -296,8 +301,9 @@ def mock_pay(
             "reason": "mock_declined",
         })
     db.commit()
+    # ok 仅在支付核销成功（status=1）时为 True；失败(2)/未核销(0)明确回 false
     return {
-        "ok": True,
+        "ok": payment.status == 1,
         "order_no": order.order_no,
         "order_status": order.status,
         "payment_status": payment.status,

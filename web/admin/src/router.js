@@ -55,12 +55,17 @@ const LEGACY = {
   '/admin-settings.html': '/settings',
 }
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const legacy = LEGACY[to.path]
   if (legacy) return { path: legacy, query: to.query }
   const session = useSessionStore()
   if (!to.meta.public && !session.user) {
     return { path: '/login', query: { next: to.fullPath } }
+  }
+  /* 缓存会话权限集为空（旧缓存无 permissions）：先 verify() 拉实时权限再判，
+   * 防 fail-closed hasPerm 误锁合法会话；verify 失败（会话失效）回登录 */
+  if (!to.meta.public && session.user && !session.perms.length) {
+    try { await session.verify() } catch (_) { return { path: '/login', query: { next: to.fullPath } } }
   }
   /* 声明式权限：meta.perm 未命中 → 无权面。目标为首页（登录默认落地）时
    * 重定向到第一个有权限的菜单（客服→工单 / 美甲师→在线客服），

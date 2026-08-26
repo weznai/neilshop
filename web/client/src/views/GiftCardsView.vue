@@ -225,28 +225,30 @@ const mailto = computed(() => {
           <div style="font-size:12.5px;opacity:.8">GIFT CARD · NO EXPIRY</div>
         </div>
         <div class="card" style="padding:22px">
-          <div class="field"><label>{{ t('Amount', '面额') }}</label>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button v-for="a in AMOUNTS" :key="a" class="btn btn-sm" :class="amountC === a ? 'btn-primary' : 'btn-secondary'" @click="amountC = a">{{ money(a) }}</button>
+          <form @submit.prevent="buy">
+            <div class="field"><label>{{ t('Amount', '面额') }}</label>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button v-for="a in AMOUNTS" :key="a" type="button" class="btn btn-sm" :class="amountC === a ? 'btn-primary' : 'btn-secondary'" @click="amountC = a">{{ money(a) }}</button>
+              </div>
             </div>
-          </div>
-          <div class="field" :class="{ error: purchaserBad }">
-            <label>{{ t('Your email (purchaser)', '你的邮箱（购买人）') }} *</label>
-            <input v-model="purchaser" class="input" :class="{ error: purchaserBad }" type="email" autocomplete="email" placeholder="you@example.com">
-            <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
-          </div>
-          <div class="field" :class="{ error: recipientBad }">
-            <label>{{ t('Recipient email (optional)', '收件人邮箱（选填）') }}</label>
-            <input v-model="recipient" class="input" :class="{ error: recipientBad }" type="email" autocomplete="off" placeholder="friend@example.com">
-            <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
-          </div>
-          <div class="field">
-            <label>{{ t('Message', '留言') }} ({{ msg.length }}/255)</label>
-            <textarea v-model="msg" class="input" rows="2" maxlength="255" :placeholder="t('Happy glam birthday! 💅', '生日快乐！💅')"></textarea>
-          </div>
-          <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy" @click="buy">
-            {{ t(`Buy gift card · ${money(amountC)}`, `购买礼品卡 · ${money(amountC)}`) }}
-          </button>
+            <div class="field" :class="{ error: purchaserBad }">
+              <label>{{ t('Your email (purchaser)', '你的邮箱（购买人）') }} *</label>
+              <input v-model="purchaser" class="input" :class="{ error: purchaserBad }" type="email" autocomplete="email" placeholder="you@example.com">
+              <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
+            </div>
+            <div class="field" :class="{ error: recipientBad }">
+              <label>{{ t('Recipient email (optional)', '收件人邮箱（选填）') }}</label>
+              <input v-model="recipient" class="input" :class="{ error: recipientBad }" type="email" autocomplete="off" placeholder="friend@example.com">
+              <div class="field-msg">{{ t('Enter a valid email', '请输入有效邮箱') }}</div>
+            </div>
+            <div class="field">
+              <label>{{ t('Message', '留言') }} ({{ msg.length }}/255)</label>
+              <textarea v-model="msg" class="input" rows="2" maxlength="255" :placeholder="t('Happy glam birthday! 💅', '生日快乐！💅')"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy">
+              {{ t(`Buy gift card · ${money(amountC)}`, `购买礼品卡 · ${money(amountC)}`) }}
+            </button>
+          </form>
           <p style="font-size:11.5px;color:var(--gray);margin-top:10px;text-align:center">
             {{ t('Instant email delivery · no expiry · stackable with points', '即时发送 · 永久有效 · 可与积分同享') }}
           </p>

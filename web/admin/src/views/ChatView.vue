@@ -266,7 +266,7 @@ const slashAllLoaded = ref(false)
 let slashStart = -1          /* 当前 /token 起始下标（替换用） */
 
 async function ensureSlashAll() {
-  if (slashAllLoaded.value) return
+  if (slashAllLoaded.value || !session.hasPerm('ticket:manage')) return
   try {
     const d = await req('GET', '/api/admin/ops/templates')
     slashAll.value = (d.items || []).filter((t) => t.active)
@@ -383,6 +383,9 @@ const normItem = (x) => {
   return item
 }
 
+const resetDlg = ref(false)
+async function doResetQuicks() { resetDlg.value = false; await resetQuicks() }
+
 async function resetQuicks() {
   if (quickBusy.value) return
   quickBusy.value = true
@@ -446,7 +449,11 @@ async function take() {
   finally { busy.value = false }
 }
 
-/* 人工 → AI 内部切换：同一会话交还 GlowBot 自动应答（客户侧系统提示可见） */
+/* 人工 → AI 内部切换：同一会话交还 GlowBot 自动应答（客户侧系统提示可见）；先确认再切换 */
+const resumeDlg = ref(false)
+function askResume() { if (busy.value || !active.value) return; resumeDlg.value = true }
+async function doResumeAi() { resumeDlg.value = false; await resumeAi() }
+
 async function resumeAi() {
   if (busy.value || !active.value) return
   busy.value = true
@@ -537,7 +544,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="btn btn-secondary" @click="openQuickDlg">⚡ 客户快捷问题</button>
-      <button class="btn btn-secondary" @click="openTplDlg">🗂 快捷模板</button>
+      <button v-if="session.hasPerm('ticket:manage')" class="btn btn-secondary" @click="openTplDlg">🗂 快捷模板</button>
     </div>
   </div>
 
@@ -618,7 +625,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
           </div>
           <div v-if="isOpen" class="cw-head-acts">
             <button v-if="active.channel === 1 && active.agent_admin_id !== session.user?.id" class="btn btn-secondary btn-sm" :disabled="busy" @click="askTake">🙋 接单</button>
-            <button v-if="active.channel === 1" class="btn btn-secondary btn-sm" :disabled="busy" title="人工 → AI（同一会话交还 GlowBot 自动应答）" @click="resumeAi">🤖 转回 AI</button>
+            <button v-if="active.channel === 1" class="btn btn-secondary btn-sm" :disabled="busy" title="人工 → AI（同一会话交还 GlowBot 自动应答）" @click="askResume">🤖 转回 AI</button>
             <button class="btn btn-ghost btn-sm" style="color:var(--error)" :disabled="busy" @click="askClose">关闭会话</button>
           </div>
         </div>
@@ -648,7 +655,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
 
         <div v-if="isOpen" class="cw-reply">
           <div class="cw-reply-bar">
-            <select class="input cw-tplsel" @focus="loadTemplates" @change="applyTemplate">
+            <select v-if="session.hasPerm('ticket:manage')" class="input cw-tplsel" @focus="loadTemplates" @change="applyTemplate">
               <option value="">{{ templatesLoaded ? (templates.length ? '🗂 快捷模板…' : '暂无模板') : '加载快捷模板…' }}</option>
               <option v-for="t in templates" :key="t.id" :value="t.id">{{ t.title }}</option>
             </select>
@@ -775,7 +782,7 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
       </div>
       <div style="display:flex;gap:8px;margin-top:14px;align-items:center">
         <button class="btn btn-primary" :class="{ loading: quickBusy }" :disabled="quickBusy || !isQuickDirty" @click="saveQuicks">{{ isQuickDirty ? '保存修改' : '已保存' }}</button>
-        <button class="btn btn-secondary" :disabled="quickBusy" title="删除自定义配置，恢复出厂默认" @click="resetQuicks">恢复默认</button>
+        <button class="btn btn-secondary" :disabled="quickBusy" title="删除自定义配置，恢复出厂默认" @click="resetDlg = true">恢复默认</button>
         <span style="flex:1"></span>
         <span v-if="isQuickDirty" class="tag tag-error">未保存</span>
         <button class="btn btn-ghost" @click="closeQuickDlg">关闭</button>
@@ -804,6 +811,29 @@ const isOpen = computed(() => !!active.value && active.value.status === 0)
     :busy="busy"
     @confirm="doTake"
     @close="takeDlg = false"
+  />
+
+  <!-- 转回 AI 确认：切换后由 AI 自动回复 -->
+  <ConfirmDialog
+    :open="resumeDlg"
+    title="转回 AI"
+    body="切换后将由 AI 自动回复该会话，确定继续？"
+    confirm-text="确定"
+    :busy="busy"
+    @confirm="doResumeAi"
+    @close="resumeDlg = false"
+  />
+
+  <!-- 恢复默认快捷回复确认（丢弃自定义配置） -->
+  <ConfirmDialog
+    :open="resetDlg"
+    title="恢复默认快捷回复"
+    body="将恢复默认快捷回复并丢弃当前自定义配置，确定？"
+    confirm-text="恢复默认"
+    danger
+    :busy="quickBusy"
+    @confirm="doResetQuicks"
+    @close="resetDlg = false"
   />
 
   <!-- 删除快捷模板确认（danger） -->

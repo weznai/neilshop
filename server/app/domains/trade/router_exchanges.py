@@ -5,10 +5,12 @@
   / 新变体 is_active 且有库存 → exchange_no=EX+yymmdd+4hex, price_diff=new.price-item.unit_price
   （正=待补差 负=退差 0=同价）, status=0 + timeline(exchange_created)
 - GET /api/exchanges（登录本人，游客 ?email=）· GET /api/exchanges/{exchange_no}
-- POST /api/exchanges/{no}/cancel：撤销申请中(0)的换货（CAS 删除，同 RMA cancel 语义）
+- POST /api/exchanges/{no}/cancel：撤销申请中(0)的换货（CAS 删除，同 RMA cancel 语义；
+  登录属主 或 游客 email 双因子）
 - POST /api/exchanges/{no}/pay-intent：status=2 差价支付建单（Payment 挂原单 +
-  diff_payment_id 关联；真实 provider 返回 redirect_url，mock 仅 dev）
-- POST /api/exchanges/{no}/mock-pay {succeed}：差价 mock 核销（仅 dev，2→1）
+  diff_payment_id 关联；真实 provider 返回 redirect_url，mock 仅 dev；游客同上）
+- POST /api/exchanges/{no}/mock-pay {succeed, email?}：差价 mock 核销（仅 dev，2→1；
+  游客 body.email 双因子）
 - 后台（router_admin.py 内，绝对路径 /api/admin/trade/exchanges/*）：
   GET ?status= 队列 · POST /{no}/approve（diff>0→2 待差价，否则→1）/reject /mark-paid（→1，
   已挂用户 payment 时走共享核销）/ship {carrier,tracking_no}（→3：新变体扣库存 type=3 ref exchange
@@ -45,10 +47,13 @@ def create_exchange(
 @router.get("/")
 def list_exchanges(
     email: Optional[str] = Query(None),
+    page: Optional[int] = Query(None, ge=1),
+    size: Optional[int] = Query(None, ge=1, le=100),
     user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
-    return service_exchanges.list_exchanges(db, user, email)
+    # 分页可选：不传保持全量旧结构；传 page 返回 {items,page,size,total,pages}
+    return service_exchanges.list_exchanges(db, user, email, page=page, size=size)
 
 
 @router.get("/{exchange_no}")
@@ -66,28 +71,39 @@ def exchange_detail(
 @router.post("/{exchange_no}/cancel")
 def cancel_exchange(
     exchange_no: str,
-    user: User = Depends(get_current_user),
+    email: Optional[str] = Query(None),
+    user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
-    return service_exchanges.cancel_exchange(db, user, exchange_no)
+    """撤销申请中的换货：登录属主 或 游客 email 双因子（与创建/详情同口径）。"""
+    if user is None and not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return service_exchanges.cancel_exchange(db, user, exchange_no, email)
 
 
 @router.post("/{exchange_no}/pay-intent")
 def create_diff_intent(
     exchange_no: str,
-    user: User = Depends(get_current_user),
+    email: Optional[str] = Query(None),
+    user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
-    return service_exchanges.create_diff_intent(db, user, exchange_no)
+    """差价支付建单：登录属主 或 游客 email 双因子（与创建/详情同口径）。"""
+    if user is None and not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return service_exchanges.create_diff_intent(db, user, exchange_no, email)
 
 
 @router.post("/{exchange_no}/mock-pay")
 def mock_pay_diff(
     exchange_no: str,
     body: ExchangeMockPayIn | None = None,
-    user: User = Depends(get_current_user),
+    user: Optional[User] = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
+    email = body.email if body else None
+    if user is None and not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return service_exchanges.mock_pay_diff(
-        db, user, exchange_no, body.succeed if body else True
+        db, user, exchange_no, body.succeed if body else True, email
     )

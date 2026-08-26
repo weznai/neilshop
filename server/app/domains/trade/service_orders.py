@@ -59,7 +59,12 @@ def _detail(db: Session, order: Order) -> dict:
             "id": i.id, "variant_id": i.variant_id, "title": i.title_snapshot,
             "image": i.image, "qty": i.qty, "unit_price": i.unit_price,
             "subtotal": i.subtotal, "refunded_qty": i.refunded_qty,
-            "exchanged_qty": i.exchanged_qty, "reviewed": bool(i.reviewed),
+            "exchanged_qty": i.exchanged_qty,
+            "rma_pending_qty": i.rma_pending_qty, "ex_pending_qty": i.ex_pending_qty,
+            # 可退/可换展示口径：扣除未决占用（申请中即占额，防重复超量申请后展示虚高）
+            "available": max(0, i.qty - i.refunded_qty - i.exchanged_qty
+                             - i.rma_pending_qty - i.ex_pending_qty),
+            "reviewed": bool(i.reviewed),
         } for i in items],
         "timeline": [{
             "event": t.event, "actor": t.actor, "detail": t.detail,
@@ -83,6 +88,8 @@ def list_orders(
 ) -> dict:
     orders, total = repo.paginate_orders(
         db, user_id=user.id, status=status, q=q, page=page, per_page=PER_PAGE,
+        # 游客期同邮箱下的单并入账户列表（email 已归一 strip+lower 落库）
+        email=(user.email or "").strip().lower() or None,
     )
     return {
         "items": [_brief(o) for o in orders],
@@ -149,15 +156,15 @@ def order_detail(
     return detail
 
 
-def _cancel_pending(db: Session, order: Order, user: User) -> dict:
+def _cancel_pending(db: Session, order: Order, user: User, reason: str = "user") -> dict:
     # CAS 抢占（WHERE status=0）：与支付回调/超时关单并发互斥，防 paid 后被覆盖取消
     now = utcnow()
-    if repo.claim_order_canceled(db, order.id, now, "user") == 0:
+    if repo.claim_order_canceled(db, order.id, now, reason) == 0:
         db.rollback()
         db.expire(order)
         raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
     order.status = 8
-    order.cancel_reason = "user"
+    order.cancel_reason = reason
     order.canceled_at = now
     items = repo.order_items(db, order.id)
     for item in items:
@@ -172,24 +179,26 @@ def _cancel_pending(db: Session, order: Order, user: User) -> dict:
     # 礼品卡扣款回补（MVP 下单即扣；无 change_type=3 流水时为空操作）
     service_admin._refund_giftcard_debit(db, order)
     repo.add_timeline(db, order.id, "status_changed", actor="user", detail={
-        "from": 0, "to": 8, "reason": "user",
+        "from": 0, "to": 8, "reason": reason,
     })
     db.commit()
     return {"order_no": order.order_no, "status": order.status}
 
 
-def _cancel_paid_unshipped(db: Session, order: Order, user: User) -> dict:
+def _cancel_paid_unshipped(
+    db: Session, order: Order, user: User, reason: str = "user",
+) -> dict:
     """已支付未发货取消：CAS（status=1 且 shipping_status=0，与发货互斥）→ 全额退款
     公共路径（库存回补/积分双向/礼品卡回补/outbox，订单终态 9）；
     无可退 payment 时降级补齐副作用（库存/积分/礼品卡照常回补，仅跳过 Payment 记账），
     订单保持 CANCELED(8)，不阻断取消。"""
     now = utcnow()
-    if repo.claim_order_paid_canceled(db, order.id, now, "user") == 0:
+    if repo.claim_order_paid_canceled(db, order.id, now, reason) == 0:
         db.rollback()
         db.expire(order)
         raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
     order.status = 8
-    order.cancel_reason = "user"
+    order.cancel_reason = reason
     order.canceled_at = now
     refund = None
     try:
@@ -197,7 +206,8 @@ def _cancel_paid_unshipped(db: Session, order: Order, user: User) -> dict:
             db, order, None, reason="user_cancel_paid", actor="user",
         )
     except HTTPException as exc:
-        if exc.detail != "no_refundable_payment":
+        # no_refundable_payment / already_fully_refunded 均走降级：订单照常取消不传播 409
+        if exc.detail not in ("no_refundable_payment", "already_fully_refunded"):
             raise
         # 降级补齐：纯礼品卡/积分单无可退 Payment，对齐 apply_refund 全额路径副作用
         # （库存回补 qty-refunded_qty / 积分作废+返还 / 礼品卡回补），订单保持 CANCELED 终态
@@ -218,7 +228,7 @@ def _cancel_paid_unshipped(db: Session, order: Order, user: User) -> dict:
 
 def cancel_order(
     db: Session, order_no: str, user: Optional[User],
-    email: Optional[str] = None,
+    email: Optional[str] = None, reason: Optional[str] = None,
 ) -> dict:
     order = _get_order(db, order_no.strip().upper())
     # 归属判定与 order_detail 同口径：登录属主 或 email 双因子（游客待付单自助取消）
@@ -226,14 +236,16 @@ def cancel_order(
     is_email = email is not None and email.strip().lower() == order.email.lower()
     if not (is_owner or is_email):
         raise HTTPException(status_code=404, detail="order_not_found")
+    # 取消原因：截断 100 字符（对齐 cancel_reason 列宽），空则默认 "user"
+    cancel_reason = (reason or "").strip()[:100] or "user"
     if order.status == 0:
-        return _cancel_pending(db, order, user)
+        return _cancel_pending(db, order, user, cancel_reason)
     if order.status == 1 and order.shipping_status == 0:
         # 已付未发货取消涉及全额资金退款：仅登录属主可操作 —— email 双因子只放行
         # 未支付单，防游客凭订单号+邮箱盗取消他人已付订单套取退款
         if not is_owner:
             raise HTTPException(status_code=403, detail="login_required_for_paid_cancel")
-        return _cancel_paid_unshipped(db, order, user)
+        return _cancel_paid_unshipped(db, order, user, cancel_reason)
     raise HTTPException(status_code=409, detail=f"not_cancellable:{order.status}")
 
 

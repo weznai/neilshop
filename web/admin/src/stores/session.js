@@ -17,11 +17,10 @@ export const useSessionStore = defineStore('session', {
     role: (s) => (s.user && s.user.role) | 0,
     name: (s) => (s.user && s.user.name) || (s.user && s.user.email) || '管理员',
     perms: (s) => (s.user && Array.isArray(s.user.permissions) ? s.user.permissions : []),
-    /* 权限判定：缓存缺失（旧会话无 permissions）时按「有会话即放行」回退，
-     * 最终以后端 require_perm 为准 —— verify() 刷新后即为精确集 */
+    /* 权限判定：空权限集 fail-closed（旧缓存会话由路由守卫先 verify() 刷新后再判） */
     hasPerm() {
       const set = new Set(this.perms)
-      return (p) => !set.size ? true : set.has(p)
+      return (p) => (set.size ? set.has(p) : false)
     },
   },
   actions: {

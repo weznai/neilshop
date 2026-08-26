@@ -150,7 +150,7 @@ async function subscribe() {
         <router-link v-if="tag" to="/blog" class="btn btn-secondary btn-sm" @click="pickTag(tag)">{{ i18n.t('blog.viewAll') }}</router-link>
         <router-link v-else to="/store" class="btn btn-primary btn-sm">{{ i18n.t('blog.shop') }}</router-link>
         <form style="display:flex;gap:8px;max-width:360px;margin:18px auto 0" @submit.prevent="subscribe">
-          <input v-model="subEmail" class="input" type="email" :placeholder="tt('Email for new-post updates', '订阅新文章提醒')" autocomplete="email" aria-label="email">
+          <input v-model="subEmail" class="input" type="email" :placeholder="tt('Email for new-post updates', '订阅新文章提醒')" autocomplete="email" :aria-label="tt('Email', '邮箱')">
           <button class="btn btn-secondary btn-sm" type="submit" :class="{ loading: subBusy }" :disabled="subBusy">{{ tt('Subscribe', '订阅') }}</button>
         </form>
       </div>

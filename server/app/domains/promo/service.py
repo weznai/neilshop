@@ -3,12 +3,14 @@
 import secrets
 import uuid
 from datetime import datetime, timedelta
+from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
+from app.domains.trade import repository as trade_repo
 from app.models import (
     AdminLog, DiscountCode, DiscountRedemption, GiftCard, GiftCardLedger,
     Order, OrderItem, OrderTimeline, PopupConfig, Setting, User,
@@ -130,11 +132,19 @@ def _new_gift_code(db: Session) -> str:
     raise HTTPException(status_code=500, detail="code collision")
 
 
-def purchase_giftcard(db: Session, body: GiftcardPurchaseIn) -> dict:
+def purchase_giftcard(db: Session, body: GiftcardPurchaseIn, user: Optional[User] = None) -> dict:
+    # 风控：黑名单用户拒购（与 service_checkout.place 同口径：登录看 risk_flag，
+    # 游客按归一化 email 命中黑名单用户同拦）
+    if user is not None:
+        if user.risk_flag == 2:
+            raise HTTPException(status_code=403, detail="account_blocked")
+    elif trade_repo.blacklisted_email(db, body.purchaser_email.strip().lower()):
+        raise HTTPException(status_code=403, detail="account_blocked")
     code = _new_gift_code(db)
     now = utcnow()
     order = Order(
         order_no="NS" + now.strftime("%y%m%d") + uuid.uuid4().hex[:6].upper(),
+        user_id=user.id if user else None,
         email=body.purchaser_email, status=0, subtotal=body.amount_cents,
         grand_total=body.amount_cents,
         shipping_address={"full_name": "Gift Card", "line1": "-",

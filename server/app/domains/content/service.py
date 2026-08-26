@@ -171,7 +171,10 @@ def create_review(db: Session, user: User, body: ReviewIn) -> dict:
     db.add(review)
     db.commit()
     db.refresh(review)
-    return {"id": review.id, "status": review.status}
+    out = {"id": review.id, "status": review.status}
+    if review.status == 0:
+        out["pending_review"] = True  # 前端提示「提交成功，审核通过后展示」
+    return out
 
 
 def list_reviews(db: Session, product_id: int, page: int, size: int) -> dict:

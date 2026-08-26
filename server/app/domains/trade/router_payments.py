@@ -6,6 +6,7 @@ provider 字段（stripe|paypal，缺省走默认链；非默认且不可用 →
 MockProvider 下任何取值回落 mock 并在响应标注 provider=mock）。
 无密钥或缺包时回落 MockProvider，行为与原 mock 版完全一致。核心事务在 service_payments。"""
 
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -15,7 +16,7 @@ from app.core.db import get_db
 from app.core.deps import get_current_user_optional
 from app.domains.trade import service_payments
 from app.domains.trade.schemas import CreateIntentRequest, MockPayRequest, WebhookRequest
-from app.models import Payment, User
+from app.models import Payment, Setting, User
 from app.services import payment_provider
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
@@ -57,6 +58,16 @@ def _resolve_provider(provider: str, db: Session) -> payment_provider.PaymentPro
     raise HTTPException(status_code=400, detail="provider_unavailable")
 
 
+def _site_url(db: Session) -> str:
+    for key in ("site_url", "base_url"):
+        row = db.get(Setting, key)
+        if row is not None and row.value:
+            val = str(row.value).strip().rstrip("/")
+            if val.startswith(("http://", "https://")):
+                return val
+    return (os.getenv("GM_SITE_URL") or "").strip().rstrip("/") or "http://localhost:5173"
+
+
 def _create_intent_via(
     db: Session, order_no: str, provider: payment_provider.PaymentProvider,
     *, user: Optional[User] = None, email: Optional[str] = None,
@@ -67,6 +78,11 @@ def _create_intent_via(
         raise HTTPException(status_code=409, detail="mock_provider_disabled")
     order = service_payments._get_order(db, order_no)
     service_payments.ensure_order_owner(order, user, email)
+    # 0 元单无支付环节：与 service_payments.create_intent 同口径拒绝
+    if order.grand_total <= 0:
+        if order.status == 1:
+            raise HTTPException(status_code=409, detail="already_paid")
+        raise HTTPException(status_code=409, detail="invalid_amount")
     if order.status != 0:
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
     # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
@@ -82,7 +98,17 @@ def _create_intent_via(
             "provider": provider.name,
             "redirect_url": "",
         }
-    intent = provider.create_intent(order, order.grand_total)
+    if provider.name == "stripe":
+        ck = provider.create_checkout(
+            order.order_no, order.grand_total, _site_url(db), email=email or order.email,
+        )
+        intent = {
+            "payment_intent": ck["checkout_session_id"],
+            "client_secret": ck["checkout_session_id"],
+            "redirect_url": ck["redirect_url"],
+        }
+    else:
+        intent = provider.create_intent(order, order.grand_total)
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],

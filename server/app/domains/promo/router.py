@@ -1,11 +1,15 @@
 """营销域用户侧路由 —— /api/promo/*（HTTP 编排，业务在 service）"""
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.deps import get_current_user_optional
 from app.domains.promo import service
 from app.domains.promo.schemas import GiftcardIn, GiftcardPurchaseIn, ValidateIn
+from app.models import User
 
 router = APIRouter(prefix="/api/promo", tags=["promo"])
 
@@ -41,5 +45,10 @@ def popup_convert(popup_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/giftcard/purchase", status_code=201)
-def purchase_giftcard(body: GiftcardPurchaseIn, db: Session = Depends(get_db)):
-    return service.purchase_giftcard(db, body)
+def purchase_giftcard(
+    body: GiftcardPurchaseIn,
+    user: Optional[User] = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    # 登录用户购卡：user_id 关联订单（账户订单列表可见）+ 黑名单风控
+    return service.purchase_giftcard(db, body, user)

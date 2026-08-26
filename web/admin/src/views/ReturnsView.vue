@@ -389,7 +389,10 @@ async function exShipConfirm() {
               <b v-if="r.refund_amount != null" style="color:var(--plum)">{{ money(r.refund_amount) }}</b>
               <span v-else style="color:var(--gray)" title="退款额按订单实付比例折算，审核后生成">—</span>
             </td>
-            <td><span class="tag" :class="RMA_STATUS[r.status]?.cls">{{ RMA_STATUS[r.status]?.label || '—' }}</span></td>
+            <td>
+              <span class="tag" :class="RMA_STATUS[r.status]?.cls">{{ RMA_STATUS[r.status]?.label || '—' }}</span>
+              <div v-if="r.status === 7" style="font-size:11px;color:var(--gray);margin-top:4px"><router-link style="color:var(--gray);text-decoration:underline" :to="{ path: '/order-detail', query: { no: r.order_no } }">余款可在订单详情页继续退款</router-link></div>
+            </td>
             <td style="text-align:right;white-space:nowrap">
               <button v-if="r.status === 0 && session.hasPerm('rma:manage')" class="btn btn-primary btn-sm" @click="askRma(r, 'approve')">批准</button>
               <button v-if="r.status === 0 && session.hasPerm('rma:manage')" class="btn btn-ghost btn-sm" style="color:var(--error);margin-left:4px" @click="askRma(r, 'reject')">拒绝</button>

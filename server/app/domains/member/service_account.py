@@ -66,7 +66,7 @@ def _wish_card(p, variants: list) -> dict:
         "price_max": p.price_max,
         "compare_at_price": p.compare_at_price,
         "hero_image": p.hero_image,
-        "rating": p.rating_avg,
+        "rating": round(p.rating_avg / 100, 2),  # 0-5 口径与 catalog 域卡片一致
         "stock_summary": _stock_summary(variants),
     }
 
@@ -92,11 +92,12 @@ _WELCOME_FALLBACK_DISCOUNT = 20
 
 
 def register(db: Session, body: RegisterIn) -> dict:
-    if repo.user_email_taken(db, body.email):
+    email = body.email.strip().lower()
+    if repo.user_email_taken(db, email):
         raise HTTPException(status_code=409, detail="email already registered")
     try:
         user = repo.add_user(
-            db, email=body.email, password_hash=hash_password(body.password), name=body.name
+            db, email=email, password_hash=hash_password(body.password), name=body.name
         )
         db.flush()
         # 推荐绑定闭环：/register?ref= 落地页承诺的双方 1000 积分依赖此绑定记录

@@ -79,7 +79,7 @@ async function sendReset() {
   if (err.value) return
   busy.value = true
   try {
-    await req('POST', '/api/account/password-reset/request', { email: email.value.trim() })
+    await req('POST', '/api/account/password-reset/request', { email: email.value.trim().toLowerCase() })
     mode.value = 'sent'
   } catch (e) {
     err.value = e && e.status === 422 ? tt('Enter a valid email address', '请输入有效的邮箱地址') : tt('Could not send — please retry later', '发送失败，请稍后再试')

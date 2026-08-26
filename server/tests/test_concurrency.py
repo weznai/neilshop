@@ -20,9 +20,9 @@ BASE_URL = f"http://127.0.0.1:{PORT}"
 DB_NAME = "glowmag_test_cc"
 GM_DB_URL = f"mysql+pymysql://glowmag:glowmag123@127.0.0.1:3306/{DB_NAME}?charset=utf8mb4"
 os.environ["GM_COOKIE_AUTH"] = "0"  # 纯 Bearer 通道
-# 压测需瞬时打满 place（30 并发抢购 + 5 并发同用户幂等），把该规则阈值临时调高；
-# 其余规则（password-reset 20/min 等）保持默认，rate-limit 用例不受影响
-os.environ["GM_RATE_RULES"] = '{"/api/checkout/place": 120}'
+# 压测需瞬时打满 place（30 并发抢购 + 5 并发同用户幂等）与 search（读压测 50 并发），
+# 把两规则阈值临时调高；其余规则（password-reset 20/min 等）保持默认，rate-limit 用例不受影响
+os.environ["GM_RATE_RULES"] = '{"/api/checkout/place": 120, "/api/catalog/search": 200}'
 TMP_DIR = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp"))) / "opencode"
 LOG_PATH = TMP_DIR / "uvicorn_8019_cc.log"
 

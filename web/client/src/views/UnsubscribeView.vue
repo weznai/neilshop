@@ -16,6 +16,7 @@ const email = ref(String(route.query.email || ''))
 const token = ref(String(route.query.token || ''))
 const prefs = ref(null)
 const err = ref('')
+const retryable = ref(false)
 const loading = ref(true)
 const saving = ref(false)
 const saved = ref(false)
@@ -29,6 +30,7 @@ const prefLabels = computed(() => [
 
 async function load() {
   err.value = ''
+  retryable.value = false
   loading.value = true
   const qs = hasToken.value
     ? '?email=' + encodeURIComponent(email.value) + '&token=' + encodeURIComponent(token.value)
@@ -37,14 +39,16 @@ async function load() {
     prefs.value = await req('GET', '/api/account/email-preferences' + qs)
   } catch (e) {
     /* 带 token 请求 400（token 失效）且已登录：清参数回退会话读取自身偏好 */
+    let fallbackFailed = false
     if (e && e.status === 400 && qs && auth.isLoggedIn) {
       token.value = ''
       email.value = ''
-      try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { /* 回退也失败则走下方错误态 */ }
+      try { prefs.value = await req('GET', '/api/account/email-preferences') } catch (_) { fallbackFailed = true }
     }
     if (!prefs.value) {
       err.value = e && (e.status === 400 || e.status === 401)
         ? '' : tt('Failed to load, please try again', '加载失败，请稍后再试')
+      retryable.value = fallbackFailed || !(e && (e.status === 400 || e.status === 401))
     }
   } finally { loading.value = false }
   if (prefs.value && prefs.value.email) email.value = prefs.value.email
@@ -138,7 +142,7 @@ async function unsubAll() {
       <div v-else class="card" style="padding:22px;text-align:center;color:var(--gray)">
         <template v-if="auth.isLoggedIn">
           {{ tt('Could not load your email preferences.', '未能加载邮件偏好，请稍后再试。') }}
-          <div v-if="err" style="margin-top:12px">
+          <div v-if="retryable" style="margin-top:12px">
             <button class="btn btn-secondary btn-sm" :class="{ loading }" :disabled="loading" @click="load">{{ tt('Retry', '重试') }}</button>
           </div>
         </template>

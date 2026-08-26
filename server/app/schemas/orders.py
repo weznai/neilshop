@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class CancelRequest(BaseModel):
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=100)
 
 
 class RmaCreateRequest(BaseModel):

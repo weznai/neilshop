@@ -591,12 +591,13 @@ async function addrConfirm() {
         （按最新可退支付计算）。全额退款将回补库存、作废本单积分并恢复礼品卡抵扣。
       </p>
       <p v-if="o.status === 5" style="font-size:12.5px;color:var(--warn);margin:-6px 0 14px">
-        本单已完成，本次为<b>售后退款</b>：订单状态保持「已完成」不变，仅按可退余额执行退款，请确认售后场景后再操作。
+        本单已完成：部分退款订单保持「已完成」；退满可退余额时订单将转为「已退款」，并回补库存、作废订单积分。
       </p>
       <div class="field">
         <label>退款金额（美元）</label>
         <input v-model.number="refundAmt" class="input" type="number" step="0.01" min="0.01" :max="refundable / 100">
       </div>
+      <p v-if="o.status === 5 && refundable > 0 && Math.round(Number(refundAmt) * 100) === refundable" style="font-size:12.5px;font-weight:700;color:var(--error);margin:-6px 0 10px">⚠ 全额退款将把订单转为「已退款」并回补库存</p>
       <div class="field"><label>原因</label><input v-model="refundReason" class="input" placeholder="ops-refund"></div>
       <button class="btn btn-primary btn-block" style="margin-top:12px" :disabled="submitting" @click="refundConfirm">{{ submitting ? '退款中…' : '确认退款' }}</button>
     </div>

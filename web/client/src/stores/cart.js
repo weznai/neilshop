@@ -86,17 +86,19 @@ export const useCartStore = defineStore('cart', {
     },
     async addByProductId(pid, qty, ui) {
       /* 按 product id 加购：动态解析变体（优先选有货变体，避免首选变体售罄即失败）；
-         走 productDetail 内存缓存——同商品快速加购/推荐位重复点击不重复请求 */
+         走 productDetail 内存缓存——同商品快速加购/推荐位重复点击不重复请求。
+         add 失败已自行 _err 并抛出：此处仅吸收为 false，不重复弹错 */
+      let v = null
       try {
         const d = await productDetail(pid)
         const vs = d.variants || []
-        const v = vs.find((x) => (x.stock ?? 0) > 0 && x.stock_status !== 'out')
-        if (!v) {
-          if (ui) ui.toast(i18n.t('cart.soldOut'), 'error')
-          return false
-        }
-        return this.add(v.id, qty || 1, ui)
+        v = vs.find((x) => (x.stock ?? 0) > 0 && x.stock_status !== 'out')
       } catch (e) { this._err(e, ui); return false }
+      if (!v) {
+        if (ui) ui.toast(i18n.t('cart.soldOut'), 'error')
+        return false
+      }
+      return this.add(v.id, qty || 1, ui).catch(() => false)
     },
     async setQty(variantId, qty, ui) {
       try {
