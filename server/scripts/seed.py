@@ -312,7 +312,8 @@ def seed() -> None:
         ("shipping_express", 1499, "快递运费"),
         ("return_days", 30, "退货窗口（天）"),
         ("points_per_dollar_earn", 10, "消费 $1 赚积分"),
-        ("site_url", "http://localhost:5173", "前台站点根地址（重置链接等邮件外链前缀）"),
+        ("site_url", os.getenv("GM_SITE_URL", "http://localhost:5173"),
+         "前台站点根地址（重置链接等邮件外链前缀）"),
     ]:
         s.add(Setting(key=k, value=v, description=desc))
 

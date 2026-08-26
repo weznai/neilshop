@@ -263,10 +263,13 @@ class StripeProvider(PaymentProvider):
             event = stripe.Webhook.construct_event(payload, sig_header, self.webhook_secret)
         except Exception as exc:
             raise InvalidSignatureError(str(exc)) from exc
-        obj = ((event.get("data") or {}).get("object") or {})
+        # StripeObject → dict：新版 SDK 资源对象不开 .get（KeyError 'get'），
+        # 下游 normalize_event/handle_webhook 全按 dict 消费
+        evt = event.to_dict() if hasattr(event, "to_dict") else dict(event)
+        obj = ((evt.get("data") or {}).get("object") or {})
         if not ((obj.get("metadata") or {}).get("order_no")):
             raise WebhookVerificationError("order_no_missing")
-        return event
+        return evt
 
     def webhook_gate_secret(self) -> str:
         return self.webhook_secret
