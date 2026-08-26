@@ -32,6 +32,9 @@ function imgFallback(e) {
 
 const orderNo = computed(() => String(route.query.no || ''))
 const email = computed(() => String(route.query.email || ''))
+/* hosted 收银台回跳带 session_id：钱已在 Stripe 收讫，webhook 在途（秒级）——
+   该窗口内展示「支付成功·确认中」而非吓人的待支付卡；超时后回落自助卡 */
+const sessionId = computed(() => String(route.query.session_id || ''))
 const order = ref(null)
 const loaded = ref(false)
 const orderError = ref(false)
@@ -66,7 +69,8 @@ async function retryLookup() {
   if (order.value && order.value.status === 0) startPolling()
 }
 
-/* 待支付轮询：每 5s 拉一次订单，状态到 1（已支付）或满 12 次（1 分钟）即停；超时停后展示手动刷新按钮；卸载清理 */
+/* 待支付轮询：hosted 回跳确认期 2s 快轮，常规 5s；状态到 1（已支付）或满 12 次即停；
+   超时停后展示手动刷新按钮；卸载清理 */
 let pollTimer = null
 let pollCount = 0
 const pollTimedOut = ref(false)
@@ -83,7 +87,7 @@ function startPolling() {
     await fetchOrder()
     if (!order.value || order.value.status !== 0 || failCount >= 3) stopPolling()
     else if (pollCount >= 12) { pollTimedOut.value = true; stopPolling() }
-  }, 5000)
+  }, sessionId.value ? 2000 : 5000)
 }
 async function refreshStatus() {
   await fetchOrder()
@@ -208,19 +212,37 @@ onMounted(async () => {
         {{ !loaded
           ? i18n.t('pay.orderLoading')
           : order && order.status === 0
-          ? t('Order placed — payment pending', '订单已提交 · 待支付')
+          ? (sessionId && !pollTimedOut
+              ? t('Payment received — confirming…', '支付成功 · 订单确认中…')
+              : t('Order placed — payment pending', '订单已提交 · 待支付'))
           : order && order.status === 8 ? t('Order canceled', '订单已取消')
           : order && order.status === 9 ? t('Order refunded', '订单已退款')
           : orderError ? t('Order placed — confirming…', '订单已提交 · 确认中…')
-          : t('Order confirmed!', '下单成功！') }}
+          : t('Order placed — payment successful!', '下单完成 · 支付成功！') }}
       </h1>
       <p style="color:var(--gray);margin-bottom:8px">
         {{ !loaded ? '' : t('Thanks for your order', '感谢下单') }}<template v-if="loaded && !orderError && (order || email)">, {{ t('confirmation sent to', '确认邮件已发送至') }} <b>{{ (order && order.email) || email }}</b></template>{{ loaded ? '.' : '' }}
       </p>
 
-      <div v-if="order && order.status === 0" class="card" style="padding:18px;margin:20px 0;text-align:left;background:var(--pale-warn);border-color:rgba(234,170,50,.4)">
-        <b style="display:block;margin-bottom:6px">⏳ {{ t('Payment pending', '待支付') }}</b>
+      <div v-if="order && order.status === 0 && sessionId && !pollTimedOut"
+           class="card" style="padding:18px;margin:20px 0;text-align:left;background:var(--pale-success);border-color:rgba(62,189,147,.4)">
+        <b style="display:block;margin-bottom:6px">✅ {{ t('Payment received', '支付成功') }}</b>
         <p style="font-size:13.5px;color:var(--ink);margin-bottom:12px">
+          {{ t('We have received your payment and are confirming your order — it usually completes within seconds.',
+               '我们已收到你的付款（' + money(order.grand_total) + '），正在确认订单，通常几秒内自动完成。') }}
+        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-secondary" :class="{ loading: paying }" @click="refreshStatus">⟳ {{ t('Refresh status', '刷新状态') }}</button>
+        </div>
+      </div>
+
+      <div v-else-if="order && order.status === 0" class="card" style="padding:18px;margin:20px 0;text-align:left;background:var(--pale-warn);border-color:rgba(234,170,50,.4)">
+        <b style="display:block;margin-bottom:6px">⏳ {{ t('Payment pending', '待支付') }}</b>
+        <p v-if="sessionId && pollTimedOut" style="font-size:13.5px;color:var(--ink);margin-bottom:12px">
+          {{ t('Your payment was received and is still being verified — no action needed, the status will update automatically.',
+               '已检测到你的付款，银行/支付通道确认中——无需重复支付，状态将自动更新。') }}
+        </p>
+        <p v-else style="font-size:13.5px;color:var(--ink);margin-bottom:12px">
           {{ t(`Complete payment (${money(order.grand_total)}) to start packing your glam.`, `完成支付（${money(order.grand_total)}）后我们立即开始打包。`) }}
         </p>
         <p v-if="pollTimedOut" style="font-size:12.5px;color:var(--gray);margin:-4px 0 10px">
