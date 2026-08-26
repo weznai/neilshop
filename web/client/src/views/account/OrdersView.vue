@@ -175,26 +175,26 @@ async function confirmRecv(o) {
       <button v-if="kw" type="button" class="btn btn-ghost btn-sm" @click="kw = ''; search()">{{ i18n.t('orders.clear') }}</button>
     </form>
 
-    <div v-if="loading" style="display:grid;gap:12px">
-      <div v-for="i in 3" :key="i" class="skeleton" style="height:76px;border-radius:14px" />
+    <div v-if="loading" style="display:grid;gap:10px">
+      <div v-for="i in 3" :key="i" class="skeleton" style="height:56px;border-radius:12px" />
     </div>
 
     <template v-else>
       <div v-if="failed" class="card" style="padding:30px;text-align:center;color:var(--gray)">
         {{ tt('Could not load your orders —', '订单加载失败，') }}<a href="javascript:void(0)" style="color:var(--plum)" @click="load">{{ tt('retry', '重试') }}</a>
       </div>
-      <div v-else-if="orders.length" style="display:grid;gap:12px">
-        <div v-for="o in orders" :key="o.order_no" class="card ocard" :data-no="o.order_no" style="padding:18px">
-          <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">
-            <div>
-              <b>{{ o.order_no }}</b>
-              <div style="font-size:12px;color:var(--gray)">
+      <div v-else-if="orders.length" style="display:grid;gap:10px">
+        <div v-for="o in orders" :key="o.order_no" class="card ocard" :data-no="o.order_no">
+          <div class="ocard-row">
+            <div class="ocard-info">
+              <span class="ocard-no">{{ o.order_no }}</span>
+              <span class="ocard-sub">
                 {{ fmt(o.placed_at) }}<span v-if="[3, 4, 5].includes(o.status) && SHIP[o.shipping_status]">{{ tt(SHIP[o.shipping_status][0], SHIP[o.shipping_status][1]) }}</span>
-              </div>
+              </span>
             </div>
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <div class="ocard-side">
               <span class="tag" :class="statusTag(o.status)">{{ statusLabel(o.status) }}</span>
-              <b style="color:var(--plum)">{{ money(o.grand_total) }}</b>
+              <b class="ocard-amt">{{ money(o.grand_total) }}</b>
               <template v-if="o.status === 0">
                 <button class="btn btn-primary btn-sm" :class="{ loading: payingNo === o.order_no }" :disabled="payingNo === o.order_no" @click="pay(o)">{{ tt('Pay now', '去支付') }}</button>
               </template>
@@ -211,7 +211,7 @@ async function confirmRecv(o) {
 
         <div v-if="pages > 1" style="display:flex;gap:8px;align-items:center;justify-content:center;padding:6px 0">
           <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="go(page - 1)">{{ tt('← Prev', '← 上一页') }}</button>
-          <span style="font-size:13px;color:var(--gray)">{{ tt(`Page ${page} / ${pages} · ${total} orders`, `第 ${page} / ${pages} 页 · 共 ${total} 单`) }}</span>
+          <span style="font-size:12.5px;color:var(--gray)">{{ tt(`Page ${page} / ${pages} · ${total} orders`, `第 ${page} / ${pages} 页 · 共 ${total} 单`) }}</span>
           <button class="btn btn-secondary btn-sm" :disabled="page >= pages" @click="go(page + 1)">{{ tt('Next →', '下一页 →') }}</button>
         </div>
       </div>
@@ -232,4 +232,17 @@ async function confirmRecv(o) {
 .o-tab.on { color: var(--plum); border-bottom-color: var(--plum); }
 .o-search { display: flex; gap: 8px; margin-bottom: 16px; }
 .o-search .input { flex: 1; height: 38px; padding: 0 12px; }
+
+/* 订单卡：紧凑行距（13px 单号 / 11.5px 时间），hover 描边提示可交互 */
+.ocard { padding: 12px 16px; transition: border-color .15s, box-shadow .2s ease-out; }
+.ocard:hover { border-color: var(--rose); box-shadow: 0 4px 14px rgba(31,27,30,.07); }
+.ocard-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ocard-info { display: grid; gap: 1px; min-width: 0; }
+.ocard-no { font-size: 13px; font-weight: 700; letter-spacing: .3px; font-variant-numeric: tabular-nums; }
+.ocard-sub { font-size: 11.5px; color: var(--gray); line-height: 1.4; }
+.ocard-side { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ocard-amt { font-size: 13.5px; color: var(--plum); font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .ocard { padding: 11px 13px; }
+}
 </style>
