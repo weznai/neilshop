@@ -537,8 +537,16 @@ def variant_referenced(db: Session, variant_id: int) -> bool:
         .first() is not None
     ):
         return True
-    # 购物车 items 为 JSON 列（SQLite/MySQL 键序不同无法 LIKE 兼容），单次载入内存判定
-    for (items,) in db.query(Cart.items).filter(Cart.items.isnot(None)).all():
+    # 购物车 items 为 JSON 列：先 LIKE 预筛候选行再内存精确判定，避免全表载入。
+    # ORM 写入经 json.dumps → "variantId": 1（冒号后带空格；MySQL 原生 JSON 规范化输出同款），
+    # 兼容紧凑格式双模式防漏；前缀误报（:1 命中 :12）由精确解析兜底，只求不漏
+    items_like = or_(
+        cast(Cart.items, String).like(f'%"variantId": {variant_id}%'),
+        cast(Cart.items, String).like(f'%"variantId":{variant_id}%'),
+    )
+    for (items,) in db.query(Cart.items).filter(
+        Cart.items.isnot(None), items_like
+    ).all():
         if any(isinstance(i, dict) and i.get("variantId") == variant_id
                for i in (items or [])):
             return True

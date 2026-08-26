@@ -8,6 +8,7 @@
 """
 
 import logging
+import threading
 
 import httpx
 
@@ -16,6 +17,10 @@ from app.core.config import settings
 log = logging.getLogger("glowmag.llm")
 
 LLM_SETTING_KEY = "llm_config"
+
+# 进程级并发闸门（chat_completion 与 embedding 共用同网关，故共用一槽位池）：
+# 非阻塞获取，拿不到立即返回 None 走调用方本地回落，防慢网关占满线程池
+_gateway_sem = threading.Semaphore(settings.llm_max_concurrency)
 
 
 def resolve_params(db=None) -> dict:
@@ -84,6 +89,11 @@ def chat_completion(system: str, messages: list[dict], temperature: float | None
         "messages": [{"role": "system", "content": system}, *messages],
     }
     headers = {"Authorization": f"Bearer {p['api_key']}"}
+    if not _gateway_sem.acquire(blocking=False):
+        # 并发满载：快速失败走规则引擎回落，绝不排队阻塞请求线程
+        log.warning("llm concurrency limit reached (%d), fallback to rules",
+                    settings.llm_max_concurrency)
+        return None
     try:
         with httpx.Client(timeout=p.get("timeout", 20)) as client:
             r = client.post(f"{p.get('base_url', 'https://api.openai.com/v1')}/chat/completions",
@@ -98,3 +108,5 @@ def chat_completion(system: str, messages: list[dict], temperature: float | None
     except Exception as exc:  # 网络/超时/JSON 解析等全部兜底
         log.warning("llm call failed: %s", exc)
         return None
+    finally:
+        _gateway_sem.release()

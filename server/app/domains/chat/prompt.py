@@ -24,6 +24,8 @@ DEFAULT_PERSONA = (
     "a press-on nail & lash e-commerce shop."
 )
 
+KB_CHAR_BUDGET = 8000  # 全量注入总字符预算：防大 KB 撑爆 system prompt（约 2k token）
+
 SAFETY_RULES = (
     "Rules:\n"
     "- Reply in the same language as the customer (English or Chinese).\n"
@@ -56,8 +58,17 @@ def build_system_prompt(db: Session, query: str | None = None) -> str:
         kb = "\n\n".join(f"Q: {q}\nA: {a}" for _, q, a in hits)
         kb_head = "Knowledge base (most relevant excerpts):"
     else:
+        # 全量注入受总字符预算约束：按运营排序（category/sort_order 即权重序）截断，
+        # 至少保留首条防空 KB 误报；RAG 分支 top-k 天然有界不设预算
         kb_lines = [f"Q: {f.question}\nA: {f.answer_md}" for f in repo.active_faqs(db)]
-        kb = "\n\n".join(kb_lines) if kb_lines else "(knowledge base is empty)"
+        kept: list[str] = []
+        used = 0
+        for line in kb_lines:
+            if kept and used + len(line) > KB_CHAR_BUDGET:
+                break
+            kept.append(line)
+            used += len(line) + 2  # +2 补连接符 \n\n
+        kb = "\n\n".join(kept) if kept else "(knowledge base is empty)"
         kb_head = "Knowledge base:"
 
     facts = "\n".join(filter(None, [_shipping_summary(db, False), _return_summary(db, False)]))

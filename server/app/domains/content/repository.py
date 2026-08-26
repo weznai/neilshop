@@ -84,14 +84,6 @@ def product_reviews_desc(db: Session, product_id: int) -> Query:
     )
 
 
-def approved_ratings(db: Session, product_id: int) -> list[tuple[int]]:
-    return (
-        db.query(Review.rating)
-        .filter(Review.product_id == product_id, Review.status == 1)
-        .all()
-    )
-
-
 def order_for_review(db: Session, order_no: str, user_id: int) -> Order | None:
     return (
         db.query(Order)
@@ -146,10 +138,6 @@ def wall_ugc(db: Session, offset: int, limit: int) -> tuple[int, list[UgcSubmiss
 
 def ugc_by_id(db: Session, ugc_id: int) -> UgcSubmission | None:
     return db.get(UgcSubmission, ugc_id)
-
-
-def user_by_id(db: Session, user_id: int) -> User | None:
-    return db.get(User, user_id)
 
 
 def products_by_ids(db: Session, ids: set[int]) -> list[Product]:

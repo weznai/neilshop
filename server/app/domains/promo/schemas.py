@@ -47,7 +47,8 @@ class DiscountCreateIn(BaseModel):
     type: int = Field(ge=1, le=3)
     value: int = Field(ge=0)
     min_subtotal: int = 0
-    max_discount: int | None = None
+    # 百分比封顶（美分）：非负（负封顶会抬高应付价），仅 type=1 有意义
+    max_discount: int | None = Field(default=None, ge=0)
     usage_limit: int | None = None
     per_user_limit: int = 1
     first_order_only: int = 0
@@ -60,7 +61,7 @@ class DiscountUpdateIn(BaseModel):
     type: int | None = Field(default=None, ge=1, le=3)
     value: int | None = Field(default=None, ge=0)
     min_subtotal: int | None = None
-    max_discount: int | None = None
+    max_discount: int | None = Field(default=None, ge=0)
     usage_limit: int | None = None
     per_user_limit: int | None = None
     first_order_only: int | None = None
@@ -69,7 +70,8 @@ class DiscountUpdateIn(BaseModel):
 
 
 class PopupCreateIn(BaseModel):
-    scene: str
+    # scene 长度对齐 PopupConfig.scene 列宽 String(30)（预置场景之外允许存量自定义值）
+    scene: str = Field(min_length=1, max_length=30)
     title: str
     content_md: str | None = None
     coupon_code: str | None = None
@@ -80,7 +82,7 @@ class PopupCreateIn(BaseModel):
 
 
 class PopupUpdateIn(BaseModel):
-    scene: str | None = None
+    scene: str | None = Field(default=None, min_length=1, max_length=30)
     title: str | None = None
     content_md: str | None = None
     coupon_code: str | None = None

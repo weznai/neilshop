@@ -38,7 +38,8 @@ def active_by_ids(db: Session, ids: list[int]) -> list[Product]:
 
 
 def all_active(db: Session) -> list[Product]:
-    return active_products(db).all()
+    # 兜底数据源封顶 200 行：防商品表涨到千级后推荐聚合全表载入（排序在 Python 按标签命中数）
+    return active_products(db).order_by(Product.id.asc()).limit(200).all()
 
 
 def category_bestsellers(db: Session, category_ids: set[int]) -> list[Product]:
@@ -50,16 +51,19 @@ def category_bestsellers(db: Session, category_ids: set[int]) -> list[Product]:
 
 
 def hot_all(db: Session) -> list[Product]:
+    # SQL 层完成排序并封顶 200（推荐兜底填充最多只需 size≤20 条）
     return (
         active_products(db)
-        .order_by(Product.is_best_seller.desc(), Product.sold_count.desc(), Product.id.asc()).all()
+        .order_by(Product.is_best_seller.desc(), Product.sold_count.desc(), Product.id.asc())
+        .limit(200).all()
     )
 
 
 def new_all(db: Session) -> list[Product]:
     return (
         active_products(db)
-        .order_by(Product.published_at.desc(), Product.id.desc()).all()
+        .order_by(Product.published_at.desc(), Product.id.desc())
+        .limit(200).all()
     )
 
 

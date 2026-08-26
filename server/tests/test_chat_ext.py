@@ -536,6 +536,7 @@ try:
 
     # 查询向量化失败 → 回退全量（两条都在）
     rag_mod.embed_texts = lambda texts, params=None: None
+    rag_mod.invalidate()  # 查询向量已带 TTL 缓存，先失效再模拟网关失败
     r = client.get("/api/admin/ai/prompt-preview", headers=H_OPS, params={"q": "how long shipping takes?"})
     j = r.json()
     check("查询向量化失败回退全量注入（两条 FAQ 均在）",

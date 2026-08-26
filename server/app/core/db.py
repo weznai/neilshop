@@ -29,6 +29,8 @@ def _sqlite_pragma(dbapi_conn, _record):
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA journal_mode=WAL")
+        # 写锁竞争等待 10s：与 WAL 配合降低偶发 database is locked
+        cur.execute("PRAGMA busy_timeout=10000")
         cur.close()
 
 

@@ -11,6 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.db import get_db
 from app.core.deps import get_current_user_optional
@@ -99,16 +100,20 @@ def _create_intent_via(
             "redirect_url": "",
         }
     if provider.name == "stripe":
-        ck = provider.create_checkout(
-            order.order_no, order.grand_total, _site_url(db), email=email or order.email,
-        )
-        intent = {
-            "payment_intent": ck["checkout_session_id"],
-            "client_secret": ck["checkout_session_id"],
-            "redirect_url": ck["redirect_url"],
-        }
-    else:
-        intent = provider.create_intent(order, order.grand_total)
+        try:
+            import stripe  # noqa: F401
+            if not cfg.get("stripe_key"):
+                raise payment_provider.ProviderUnavailable("stripe key absent")
+            return payment_provider.StripeProvider(cfg)
+        except (ImportError, payment_provider.ProviderUnavailable):
+            raise HTTPException(status_code=400, detail="provider_unavailable")
+    if provider.name == "paypal":
+        try:
+            import httpx  # noqa: F401
+            return payment_provider.PayPalProvider(cfg)
+        except (ImportError, payment_provider.ProviderUnavailable):
+            raise HTTPException(status_code=400, detail="provider_unavailable")
+    raise HTTPException(status_code=400, detail="provider_unavailable")
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],
@@ -118,9 +123,9 @@ def _create_intent_via(
     )
     db.add(payment)
     db.commit()
-    # 并发防护：同单同 provider 堆积的旧 PENDING 一并废弃（与 service_payments 同口径）
-    if repo.supersede_stale_pending(db, payment):
-        db.commit()
+    # 并发防护：同单同 provider 堆积的旧 PENDING 一并废弃（与 service_payments 同口径），
+    # 并尽力在 provider 侧取消旧 intent（防用户完成旧支付双扣款）
+    service_payments._supersede_stale(db, provider, payment, order.order_no)
     return {
         "payment_intent": payment.stripe_payment_intent,
         "client_secret": intent["client_secret"],
@@ -183,5 +188,8 @@ async def webhook(
 ):
     payload = await request.body()
     # 全量请求头透传：PayPal 验签需 paypal-transmission-* / paypal-cert-url / paypal-auth-algo
-    return service_payments.handle_webhook(
-        db, payload, stripe_signature, dict(request.headers))
+    # async 端点内直调同步 handler（含 httpx/SDK 同步网络调用）会卡死事件循环 → 线程池执行
+    return await run_in_threadpool(
+        service_payments.handle_webhook, db, payload, stripe_signature,
+        dict(request.headers),
+    )

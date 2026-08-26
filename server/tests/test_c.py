@@ -286,7 +286,7 @@ with TestClient(app) as client:
         "email": customer.email, "category": 1, "subject": "Where is my parcel?",
         "content": "It has been 10 days."})
     check("工单创建 TK 单号", r.status_code == 200 and r.json()["ticket_no"].startswith("TK")
-          and len(r.json()["ticket_no"]) == 12 and r.json()["status"] == 0)
+          and len(r.json()["ticket_no"]) == 14 and r.json()["status"] == 0)
     ticket_no = r.json()["ticket_no"]
     r = client.get("/api/support/tickets", params={"email": customer.email}, headers=CUST_H)
     data = r.json()["items"]

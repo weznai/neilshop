@@ -34,6 +34,12 @@ def embed_texts(texts: list[str], params: dict | None = None) -> list[list[float
         "input": texts,
     }
     headers = {"Authorization": f"Bearer {p['api_key']}"}
+    # 与 chat_completion 共用进程级并发闸门（同网关；满载快速返回 None，调用方回退全量注入）
+    from app.services.llm import _gateway_sem
+
+    if not _gateway_sem.acquire(blocking=False):
+        log.warning("embedding concurrency limit reached, skip batch")
+        return None
     try:
         with httpx.Client(timeout=p.get("timeout", 20)) as client:
             r = client.post(f"{p.get('base_url', 'https://api.openai.com/v1')}/embeddings",
@@ -50,6 +56,8 @@ def embed_texts(texts: list[str], params: dict | None = None) -> list[list[float
     except Exception as exc:  # 网络/超时/JSON 解析等全部兜底
         log.warning("embedding call failed: %s", exc)
         return None
+    finally:
+        _gateway_sem.release()
 
 
 def faq_text(question: str, answer_md: str) -> str:

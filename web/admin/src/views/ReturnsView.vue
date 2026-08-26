@@ -230,6 +230,8 @@ function askExch(x, action) {
   } else if (action === 'mark-paid') {
     title = '标记已付差价'; confirmText = '标记'
     if (x.price_diff > 0) body += ` · 应付差价 ${money(x.price_diff)}`
+    /* 后端 P1-7 强制收款凭据（note）非空，否则 422：复用必填原因输入框收集 */
+    reasonLabel = '收款凭据'; reasonPlaceholder = '必填，如：转账流水号 / POS 单号'
   }
   else if (action === 'complete') { title = '完成换货'; confirmText = '完成' }
   else if (action === 'reject') { title = '拒绝换货'; danger = true; confirmText = '确认拒绝'; body += ' · 拒绝后该换货终止，不可恢复' }
@@ -238,7 +240,7 @@ function askExch(x, action) {
   cfm.reasonLabel = action === 'reject' ? '拒绝原因' : ''
   cfm.reasonPlaceholder = action === 'reject' ? '必填，如：库存不足 / 不符合换货政策' : ''
   cfm.reasonTextarea = action === 'reject'
-  cfm.reasonRequired = action === 'reject'
+  cfm.reasonRequired = action === 'reject' || action === 'mark-paid'
   cfm.confirmText = confirmText
   cfm.pending = { kind: 'exch', no: x.exchange_no, action, label: title }
   cfm.open = true
@@ -251,7 +253,10 @@ async function doConfirm(reason) {
   const { kind, no, action, label } = cfm.pending
   try {
     const url = `/api/admin/trade/${kind === 'rma' ? 'rmas' : 'exchanges'}/${no}/${action}`
-    const d = await req('POST', url, action === 'reject' ? { reason } : undefined)
+    /* reject 提交 {reason}；mark-paid 提交 {note}（收款凭据，后端必填校验）；其余无 body */
+    const payload = action === 'reject' ? { reason }
+      : action === 'mark-paid' ? { note: reason } : undefined
+    const d = await req('POST', url, payload)
     /* RMA 批准响应携带退货标签链接（列表接口不回传）：暂存本地供行内链接 + toast 提示 */
     if (kind === 'rma' && action === 'approve' && d?.label_url) {
       rmaLabels.value[no] = d.label_url

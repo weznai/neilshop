@@ -266,9 +266,11 @@ def add_referral(db: Session, referral: Referral) -> None:
 
 
 def pending_referrals_for_email(db: Session, email: str) -> list[Referral]:
+    # 仅已回填 invited_user_id 的行（REGISTERED=1/FIRST_ORDER=2）可发奖励；
+    # CLICKED(0) 只代表邮箱被登记、从未完成注册绑定，凭邮箱下单不核身，收紧防冒领
     return (
         db.query(Referral)
-        .filter(Referral.invited_email == email, Referral.status < 3)
+        .filter(Referral.invited_email == email, Referral.status.in_([1, 2]))
         .all()
     )
 
@@ -301,6 +303,15 @@ def get_subscription(db: Session, user_id: int, sub_id: int) -> Subscription | N
     )
 
 
+def active_subscription(db: Session, user_id: int) -> Subscription | None:
+    """该用户当前生效（status=1）的订阅：创建去重用（双开防线）"""
+    return (
+        db.query(Subscription)
+        .filter(Subscription.user_id == user_id, Subscription.status == 1)
+        .first()
+    )
+
+
 def add_subscription(db: Session, sub: Subscription) -> None:
     db.add(sub)
 
@@ -319,5 +330,5 @@ __all__ = [
     "user_id_by_email", "all_user_ids", "add_referral",
     "pending_referrals_for_email",
     "add_order_timeline", "list_subscriptions", "get_subscription",
-    "add_subscription", "users_by_ids",
+    "active_subscription", "add_subscription", "users_by_ids",
 ]

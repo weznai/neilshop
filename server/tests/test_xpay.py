@@ -205,8 +205,8 @@ with TestClient(app) as client:
     admin_tok = {"Authorization": f"Bearer {create_token(admin.id, 9)}"}
     ex5 = mk_exchange(s, "EXPY0004", o5, it5, v_short, v_long, 2, 600)
     r = client.post("/api/admin/trade/exchanges/EXPY0004/mark-paid",
-                    headers=admin_tok)
-    check("admin mark-paid（无 payment）→ 1", r.status_code == 200
+                    headers=admin_tok, json={"note": "线下收款流水 XPY-0001"})
+    check("admin mark-paid（无 payment，带凭据）→ 1", r.status_code == 200
           and r.json()["status"] == 1, r.text)
 
     # ===== /me 附带 delete_request =====

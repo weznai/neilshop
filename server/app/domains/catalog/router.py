@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 def list_products(
     category: str | None = None,
     tag: str | None = None,
-    q: str | None = None,
+    q: str | None = Query(None, max_length=100),
     min_price: int | None = Query(None, ge=0),
     max_price: int | None = Query(None, ge=0),
     on_sale: bool = False,
@@ -64,11 +64,8 @@ def collection_detail(slug: str, db: Session = Depends(get_db)):
 
 
 @router.get("/search")
-def search(
-    q: str = Query(..., max_length=100),
-    db: Session = Depends(get_db),
-):
-    return service.search(db, q=q.strip())
+def search(q: str = Query(max_length=100), db: Session = Depends(get_db)):
+    return service.search(db, q=q)
 
 
 @router.get("/reviews")

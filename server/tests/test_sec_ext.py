@@ -239,8 +239,8 @@ try:
     resp2 = Response()
     deps.set_auth_cookie(resp2, "tok-user")
     _u = find_cookie(resp2, "gm_token")
-    check("前台 gm_token 跨域配置下仍 lax（前台与 API 同源）",
-          _u.get("samesite") == "lax" and "secure" in _u, _u)
+    check("跨域前台 gm_token SameSite=none + Secure（前台拆域部署会话才携带）",
+          _u.get("samesite") == "none" and "secure" in _u, _u)
 finally:
     settings.allowed_origins = _orig_origins
 

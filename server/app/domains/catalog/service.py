@@ -7,20 +7,22 @@ from datetime import datetime
 
 from fastapi import HTTPException
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.models import (
     Category, Collection, CollectionProduct, Product, ProductTranslation,
-    StockNotification, User, Variant,
+    StockMovement, StockNotification, User, Variant,
 )
 from app.services.cache import _cache, cached
 
 from app.domains.catalog import repository as repo
 from app.domains.catalog.schemas import (
     BatchStatusIn, CategoryCreateIn, CategoryUpdateIn, CollectionCreateIn,
-    CollectionProductsIn, CollectionUpdateIn, ProductBulkIn, ProductCreateIn,
-    ProductUpdateIn, TranslationUpsertIn, VariantCreateIn, VariantUpdateIn,
+    CollectionProductIn, CollectionProductsIn, CollectionUpdateIn, ProductBulkIn,
+    ProductCreateIn, ProductUpdateIn, TranslationUpsertIn, VariantCreateIn,
+    VariantUpdateIn,
 )
 _SORTS = ("new", "best", "price_asc", "price_desc")
 
@@ -145,7 +147,9 @@ def product_detail(db: Session, *, slug: str, locale: str | None = None) -> dict
 def product_detail_by_id(db: Session, *, product_id: int, locale: str | None = None) -> dict:
     """按 id 查详情（前端 ?id=N 直链用，替代客户端硬编码 id→slug 映射表）。"""
     p = repo.get_product(db, product_id)
-    if not p or p.status != 1:
+    # 可见性对齐 get_product_by_slug 的 _visible 口径：定时未到点不泄露
+    if (not p or p.status != 1
+            or (p.published_at is not None and p.published_at > utcnow())):
         raise HTTPException(status_code=404, detail="product not found")
     return _detail_out(db, p, locale)
 
@@ -299,7 +303,9 @@ def variant_siblings(db: Session, *, variant_id: int) -> dict:
     if not v:
         raise HTTPException(status_code=404, detail="variant not found")
     p = repo.get_product(db, v.product_id)
-    if not p or p.status != 1:
+    # 可见性对齐详情页口径：下架或定时未到点均 404
+    if (not p or p.status != 1
+            or (p.published_at is not None and p.published_at > utcnow())):
         raise HTTPException(status_code=404, detail="product not found")
     variants = repo.active_variants(db, p.id)
     vimgs = repo.variant_images_map(db, [x.id for x in variants])
@@ -332,7 +338,12 @@ def stock_notify_subscribe(db: Session, variant_id: int, email: str) -> tuple[in
     if repo.stock_notification_by(db, variant_id, email) is not None:
         return 200, {"watching": True}
     repo.add_stock_notification(db, StockNotification(variant_id=variant_id, email=email))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 先查后插的并发竞态兜底：prod 库加 uk(variant_id,email) 唯一索引后在此幂等收口
+        db.rollback()
+        return 200, {"watching": True}
     return 201, {"watching": True}
 
 
@@ -571,6 +582,12 @@ def admin_bulk_products(db: Session, admin: User, body: ProductBulkIn) -> dict:
             failed += 1
             results.append({"index": i, "ok": False, "slug": item.slug,
                             "error": exc.detail})
+        except IntegrityError:
+            # 并发撞 slug 唯一键（check-then-insert 竞态）：仅回滚该行，不拖垮整批
+            db.rollback()
+            failed += 1
+            results.append({"index": i, "ok": False, "slug": item.slug,
+                            "error": "slug already exists"})
     if created:
         _invalidate_cache()
     return {"created": created, "failed": failed, "results": results}
@@ -598,7 +615,12 @@ def admin_create_product(db: Session, admin: User, body: ProductCreateIn) -> dic
         is_best_seller=int(body.is_best_seller),
     )
     repo.add_product(db, p)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # check-then-insert 竞态兜底：并发撞 slug 唯一键 → 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="slug already exists")
     _log(db, admin, "create", "product", p.id)
     db.commit()
     _invalidate_cache()
@@ -617,20 +639,37 @@ def admin_update_product(
     if not p:
         raise HTTPException(status_code=404, detail="product not found")
     payload = body.model_dump(exclude_unset=True)
-    if payload.get("category_id") is not None and not repo.get_category(
-        db, payload["category_id"]
-    ):
-        raise HTTPException(status_code=400, detail="category not found")
+    if "category_id" in payload:
+        # 列 nullable=False：显式 null 直接 400，不落到 commit 才炸 IntegrityError 500
+        if payload["category_id"] is None:
+            raise HTTPException(status_code=400, detail="category required")
+        if not repo.get_category(db, payload["category_id"]):
+            raise HTTPException(status_code=400, detail="category not found")
     if payload.get("is_new") is not None:
         payload["is_new"] = int(payload["is_new"])
     if payload.get("is_best_seller") is not None:
         payload["is_best_seller"] = int(payload["is_best_seller"])
+    # price_min/max 为变体汇总冗余列：有在售变体时忽略客户端值（防陈旧区间回写），
+    # PUT 后强制重算；无在售变体保留显式设置（无变体商品可手工定价）
+    has_active_vars = (repo.variant_counts(db, [p.id])
+                       .get(p.id, {}).get("variant_count", 0) > 0)
+    if has_active_vars:
+        payload.pop("price_min", None)
+        payload.pop("price_max", None)
     diff: dict = {}
     for field, new in payload.items():
         old = getattr(p, field)
         if old != new:
             setattr(p, field, new)
             diff[field] = {"before": _diff_value(old), "after": _diff_value(new)}
+    if has_active_vars:
+        # autoflush=False：先落 pending 变更再聚合（口径同变体路径）
+        db.flush()
+        old_range = (p.price_min, p.price_max)
+        _sync_price_range(db, p.id)
+        if (p.price_min, p.price_max) != old_range:
+            diff["price_min"] = {"before": old_range[0], "after": p.price_min}
+            diff["price_max"] = {"before": old_range[1], "after": p.price_max}
     if diff:
         _log(db, admin, "update", "product", p.id, diff)
         db.commit()
@@ -640,10 +679,20 @@ def admin_update_product(
     return _admin_product_out(p, agg)
 
 
+def _validate_publishable(db: Session, p: Product) -> None:
+    """发布前置校验：slug 非空 + 分类存在（单条 publish 与批量 publish 共用同口径）"""
+    if not (p.slug or "").strip():
+        raise HTTPException(status_code=400, detail="slug required")
+    if p.category_id is None or not repo.get_category(db, p.category_id):
+        raise HTTPException(status_code=400, detail="category not found")
+
+
 def admin_publish_product(db: Session, admin: User, product_id: int) -> dict:
     p = repo.get_product(db, product_id)
     if not p:
         raise HTTPException(status_code=404, detail="product not found")
+    # 与批量 publish 同口径：slug/分类不完备直接 400，不产出残缺上架商品
+    _validate_publishable(db, p)
     p.status = 1
     # 定时上架不被覆盖：已有未来 published_at（定时计划）则保留生效；为空或已过才落当前时间
     if not (p.published_at and p.published_at > utcnow()):
@@ -684,7 +733,18 @@ def admin_create_variant(
         weight_gram=body.weight_gram,
     )
     repo.add_variant(db, v)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # check-then-insert 竞态兜底：并发撞 sku 唯一键 → 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="sku already exists")
+    if body.stock > 0:
+        # 初始库存补台账：type=7 手工（对齐 trade 手工调整口径），ref 备注创建初始化
+        db.add(StockMovement(
+            variant_id=v.id, change=body.stock, stock_after=body.stock,
+            type=7, ref_type="create", ref_id=v.id, operator=admin.email,
+        ))
     if body.images is not None:
         repo.add_variant_images(db, v.id, body.images)
     _sync_price_range(db, product_id)
@@ -714,6 +774,8 @@ def admin_update_variant(
         diff["images"] = {"before": repo.variant_images(db, v.id), "after": images}
         repo.replace_variant_images(db, v.id, images)
     if diff:
+        # autoflush=False：先落 pending 变更，_sync_price_range 的聚合查询才看得到新价
+        db.flush()
         _sync_price_range(db, v.product_id)
         # diff 带 product_id：前端 LogsView 深链跳商品编辑页用（entity_id 仍是变体 id）
         diff.setdefault("product_id", v.product_id)
@@ -736,10 +798,8 @@ def admin_batch_status(db: Session, admin: User, body: BatchStatusIn) -> dict:
             if not p:
                 raise HTTPException(status_code=404, detail="product not found")
             if body.status == 1:
-                if not (p.slug or "").strip():
-                    raise HTTPException(status_code=400, detail="slug required")
-                if p.category_id is None or not repo.get_category(db, p.category_id):
-                    raise HTTPException(status_code=400, detail="category not found")
+                # 校验收敛到 _validate_publishable（与单条 publish 同口径）
+                _validate_publishable(db, p)
                 p.status = 1
                 # 定时上架不被覆盖：与单条 publish 同口径
                 if not (p.published_at and p.published_at > utcnow()):
@@ -825,7 +885,12 @@ def admin_create_category(db: Session, admin: User, body: CategoryCreateIn) -> d
     _check_category_chain(db, body.parent_id)
     c = Category(slug=body.slug, name=body.name, parent_id=body.parent_id)
     repo.add_category(db, c)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # check-then-insert 竞态兜底：并发撞 slug 唯一键 → 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="slug already exists")
     _invalidate_cache()
     db.refresh(c)
     return _category_out(c)
@@ -905,7 +970,12 @@ def admin_create_collection(db: Session, admin: User, body: CollectionCreateIn) 
     c = Collection(slug=body.slug, title=body.title, rule_json=body.rule_json,
                    banner_image=body.banner_image)
     repo.add_collection(db, c)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # check-then-insert 竞态兜底：并发撞 slug 唯一键 → 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="slug already exists")
     _invalidate_cache()
     db.refresh(c)
     return {
@@ -924,10 +994,16 @@ def admin_set_collection_products(
     c = repo.get_collection(db, collection_id)
     if not c:
         raise HTTPException(status_code=404, detail="collection not found")
-    ids = {cp.product_id for cp in body.products}
-    if ids:
-        found = repo.existing_product_ids(db, ids)
-        missing = ids - found
+    # 按 product_id 去重（保留首次顺序）：重复 id 会撞复合主键 (collection_id, product_id) 500
+    uniq: list[CollectionProductIn] = []
+    seen: set[int] = set()
+    for cp in body.products:
+        if cp.product_id not in seen:
+            seen.add(cp.product_id)
+            uniq.append(cp)
+    if seen:
+        found = repo.existing_product_ids(db, seen)
+        missing = seen - found
         if missing:
             raise HTTPException(status_code=400, detail=f"unknown products: {sorted(missing)}")
     repo.replace_collection_products(db, collection_id, [
@@ -936,13 +1012,13 @@ def admin_set_collection_products(
             product_id=cp.product_id,
             sort_order=cp.sort_order,
         )
-        for cp in body.products
+        for cp in uniq
     ])
     _log(db, admin, "update", "collection", collection_id,
-         {"products": [cp.model_dump() for cp in body.products]})
+         {"products": [cp.model_dump() for cp in uniq]})
     db.commit()
     _invalidate_cache()
-    return {"ok": True, "count": len(body.products)}
+    return {"ok": True, "count": len(uniq)}
 
 
 def admin_update_collection(

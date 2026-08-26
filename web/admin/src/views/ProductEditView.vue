@@ -230,6 +230,18 @@ async function loadProduct(id) {
 }
 function retryLoad() { if (pid.value) loadProduct(pid.value) }
 
+/* 变体操作（增/改/启停/删）成功后回刷价格区间：后端按在售变体重算，表单同步展示；
+ * 仅回填两字段并重置表单基线，不触碰其他未保存编辑、不误报 dirty */
+async function refreshPriceRange() {
+  if (!pid.value) return
+  try {
+    const p = await req('GET', '/api/admin/catalog/products/' + pid.value)
+    form.price_min = p.price_min
+    form.price_max = p.price_max
+    formSnap.value = snapForm()
+  } catch (_) { /* 回刷失败不打扰：下次保存时服务端仍会重算 */ }
+}
+
 onMounted(async () => {
   window.addEventListener('beforeunload', onUnload)
   /* 非法 id（NaN/<1）：报错并跳回列表，不静默落入新建模式 */
@@ -404,6 +416,7 @@ async function addVariant() {
     newVar.imgs = ''
     variants.value = await loadVariants(pid.value)
     markVarsClean()
+    refreshPriceRange()
     toast('变体已添加 ✓ 价格区间已按在售变体重算', 'success')
   } catch (e) {
     const d = e.data?.detail
@@ -416,6 +429,7 @@ async function toggleVar(v) {
     await req('PUT', '/api/admin/catalog/variants/' + v.id, { is_active: !v.is_active })
     v.is_active = !v.is_active
     markVarsClean()
+    refreshPriceRange()
     toast(v.is_active ? '已启用' : '已停用', 'success')
   } catch (e) { toast('操作失败', 'error') }
 }
@@ -437,6 +451,7 @@ async function doDelVar() {
     delVarDlg.value = false
     variants.value = await loadVariants(pid.value)
     markVarsClean()
+    refreshPriceRange()
   } catch (e) {
     if (e.status === 409) toast('该变体已被订单/退换引用，无法删除', 'error')
     else if (e.status === 404) {
@@ -472,6 +487,7 @@ async function saveEdit() {
     if (v) { v.price = ed.price; v.safety_stock = ed.safety; if (body.weight_gram !== undefined) v.weight_gram = body.weight_gram; v.images = d.images || [] }
     editing.value = null
     markVarsClean()
+    refreshPriceRange()
     toast('变体已更新 ✓', 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
 }

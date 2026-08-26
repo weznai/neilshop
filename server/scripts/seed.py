@@ -1,5 +1,7 @@
 """GLOWMAG 种子数据 —— 对齐 prototype/ 全部基线口径（商品/价格/库存/折扣码/标准订单 $31.10）"""
 
+import os
+import secrets
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -25,6 +27,12 @@ from app.models import (
 )
 
 IMG = "https://placehold.co/600x600/{bg}/{fg}.png?text={label}"
+
+# 种子账号统一密码（弱口令修复）：GM_SEED_PASSWORD 显式指定；
+# 未设置则随机生成一次（seed() 里打印，不回落 glowmag123 默认弱口令）
+_SEED_PW_EXPLICIT = bool(os.getenv("GM_SEED_PASSWORD", "").strip())
+SEED_PASSWORD = os.getenv("GM_SEED_PASSWORD", "").strip() or secrets.token_urlsafe(12)
+
 PALETTES = [
     ("F5D8DA", "6D2E46"), ("E8B4B8", "552338"), ("E8C5D8", "552338"),
     ("DDD6E8", "552338"), ("FBEBD4", "8A6D3B"),
@@ -269,13 +277,17 @@ def seed() -> None:
     s.flush()
 
     # ===== 用户 =====
-    admin = User(email="admin@glowmag.com", password_hash=hash_password("glowmag123"),
+    if not _SEED_PW_EXPLICIT:
+        # 随机密码仅此处打印一次（应用不到已存在的旧库；固定密码请设 GM_SEED_PASSWORD）
+        print(f"seed: GM_SEED_PASSWORD not set, generated random password for all "
+              f"seed accounts: {SEED_PASSWORD}")
+    admin = User(email="admin@glowmag.com", password_hash=hash_password(SEED_PASSWORD),
                  name="Glow Admin", role=int(UserRole.SUPER), email_verified_at=now)
-    ops = User(email="ops@glowmag.com", password_hash=hash_password("glowmag123"),
+    ops = User(email="ops@glowmag.com", password_hash=hash_password(SEED_PASSWORD),
                name="Ops Team", role=int(UserRole.OPS), email_verified_at=now)
-    cs = User(email="cs@glowmag.com", password_hash=hash_password("glowmag123"),
+    cs = User(email="cs@glowmag.com", password_hash=hash_password(SEED_PASSWORD),
               name="CS Team", role=int(UserRole.CS), email_verified_at=now)
-    emma = User(email="emma@glowmag.com", password_hash=hash_password("glowmag123"),
+    emma = User(email="emma@glowmag.com", password_hash=hash_password(SEED_PASSWORD),
                 name="Emma Rodriguez", role=0, points=611, email_verified_at=now,
                 total_spent=3110, last_order_at=now - timedelta(days=18))
     s.add_all([admin, ops, cs, emma])
@@ -287,7 +299,7 @@ def seed() -> None:
         ("yuki@glowmag.com", "Yuki Tanaka", "猫眼/铬色光泽控 · 擅长猫眼、极光与短甲定制"),
         ("luna@glowmag.com", "Luna Park", "手绘艺术甲担当 · 花卉、节日主题与渐变晕染都可以聊"),
     ]:
-        s.add(User(email=a_email, password_hash=hash_password("glowmag123"),
+        s.add(User(email=a_email, password_hash=hash_password(SEED_PASSWORD),
                    name=a_name, role=int(UserRole.ARTIST), artist_intro=a_intro,
                    email_verified_at=now))
     s.flush()
@@ -463,7 +475,7 @@ def seed() -> None:
     ]
     hist = {}
     for (uk, name, email, pts, risk, ago), (line1, city, st, zip_) in zip(HIST_USERS, ADDRS):
-        u = User(email=email, password_hash=hash_password("glowmag123"), name=name,
+        u = User(email=email, password_hash=hash_password(SEED_PASSWORD), name=name,
                  role=0, points=pts, risk_flag=risk, email_verified_at=now - timedelta(days=ago),
                  created_at=now - timedelta(days=ago))
         s.add(u)

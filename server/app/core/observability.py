@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -12,6 +13,8 @@ from contextvars import ContextVar
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+
+from app.core.config import settings
 
 logger = logging.getLogger("glowmag.access")
 logger.setLevel(logging.INFO)
@@ -167,9 +170,12 @@ def _check_rate_limit(ip: str, path: str) -> tuple[str | None, int]:
                 bucket = _RATE_BUCKETS.setdefault(key, deque())
                 while bucket and bucket[0] <= now - RATE_WINDOW:
                     bucket.popleft()
+                if not bucket and key in _RATE_BUCKETS:
+                    del _RATE_BUCKETS[key]  # 样本全过期的空桶顺手删键，防 (ip,prefix) 键无界泄漏
                 if len(bucket) >= limit:
                     return prefix, max(1, math.ceil(bucket[0] + RATE_WINDOW - now))
                 bucket.append(now)
+                _RATE_BUCKETS[key] = bucket  # 删键后重建（本请求样本仍在窗口内）
             return prefix, 0
     return None, 0
 
@@ -221,7 +227,22 @@ def setup(app: FastAPI) -> None:
             _RID_VAR.reset(token)
 
     @app.get("/metrics", include_in_schema=False)
-    def metrics_endpoint():
+    def metrics_endpoint(request: Request, token: str = ""):
+        # 公网防裸奔：dev 保持开放（本地调试/测试）；非 dev 必须 GM_METRICS_TOKEN
+        #（?token= 或 Authorization: Bearer）恒时比较匹配；未配置令牌一律 403（fail-closed）
+        if settings.env != "dev":
+            supplied = token
+            if not supplied:
+                auth = request.headers.get("authorization", "")
+                supplied = auth[7:] if auth.startswith("Bearer ") else auth
+            if not settings.metrics_token or not secrets.compare_digest(
+                supplied.encode("utf-8"), settings.metrics_token.encode("utf-8")
+            ):
+                return Response(
+                    "metrics: forbidden\n",
+                    status_code=403,
+                    media_type="text/plain; charset=utf-8",
+                )
         return Response(
             content=render_metrics(),
             media_type="text/plain; version=0.0.4; charset=utf-8",

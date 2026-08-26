@@ -12,7 +12,9 @@ FAQ 增删改后由 invalidate() 主动失效。
 """
 
 import math
+import threading
 import time
+from collections import OrderedDict
 
 from sqlalchemy.orm import Session
 
@@ -22,29 +24,42 @@ RAG_TOP_K = 5          # 每次注入的 FAQ 片段数
 RAG_MIN_SCORE = 0.30   # 余弦相似度阈值（低于视为不相关，不注入）
 RAG_MIN_COVERAGE = 0.5  # 已索引 FAQ 占比低于此值 → 视为 RAG 未就绪，回退全量
 _CACHE_TTL = 60
+_QCACHE_TTL = 300      # 查询向量缓存：热门问题重复嵌入纯属网络开销
+_QCACHE_MAX = 200
 
 _cache: dict = {"at": 0.0, "rows": []}  # rows = [(id, question, answer_md, vector)]
+_cache_lock = threading.Lock()         # 双检锁：并发首查只允许一次全量加载
+_ready_cache: dict = {"at": 0.0, "ok": False}  # rag_ready 结果缓存（对齐 rows 缓存 TTL）
+_qcache: "OrderedDict[str, tuple[float, list[float]]]" = OrderedDict()
+_qlock = threading.Lock()
 
 
 def invalidate() -> None:
     _cache["at"] = 0.0
     _cache["rows"] = []
+    _ready_cache["at"] = 0.0
+    _ready_cache["ok"] = False
+    with _qlock:
+        _qcache.clear()
 
 
 def _load_rows(db: Session) -> list[tuple]:
     """启用中的 FAQ 向量集（TTL 缓存；无向量的行不进缓存，检索时直接跳过）"""
     if time.monotonic() - _cache["at"] < _CACHE_TTL:
         return _cache["rows"]
-    from app.domains.chat import repository as repo
+    with _cache_lock:
+        if time.monotonic() - _cache["at"] < _CACHE_TTL:  # 双检：等锁期间他人已加载
+            return _cache["rows"]
+        from app.domains.chat import repository as repo
 
-    rows = [
-        (f.id, f.question, f.answer_md, f.embedding)
-        for f in repo.active_faqs(db)
-        if isinstance(f.embedding, list) and f.embedding
-    ]
-    _cache["at"] = time.monotonic()
-    _cache["rows"] = rows
-    return rows
+        rows = [
+            (f.id, f.question, f.answer_md, f.embedding)
+            for f in repo.active_faqs(db)
+            if isinstance(f.embedding, list) and f.embedding
+        ]
+        _cache["at"] = time.monotonic()
+        _cache["rows"] = rows
+        return rows
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -59,19 +74,42 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def rag_ready(db: Session) -> bool:
-    """RAG 可用性：embedding 网关已配 + 已索引 FAQ 覆盖率达标"""
+    """RAG 可用性：embedding 网关已配 + 已索引 FAQ 覆盖率达标
+    （结果 TTL 缓存：否则每条消息 retrieve 前都要全量扫一遍 FAQ 算覆盖率）"""
+    if time.monotonic() - _ready_cache["at"] < _CACHE_TTL:
+        return _ready_cache["ok"]
     from app.services.embedding import embedding_available
     from app.services.llm import resolve_params
 
-    if not embedding_available(resolve_params(db)):
-        return False
-    from app.domains.chat import repository as repo
+    ok = False
+    if embedding_available(resolve_params(db)):
+        from app.domains.chat import repository as repo
 
-    total = repo.active_faqs(db)
-    if not total:
-        return False  # 空 KB 本就走全量分支（注入 empty 提示）
-    embedded = sum(1 for f in total if isinstance(f.embedding, list) and f.embedding)
-    return embedded / len(total) >= RAG_MIN_COVERAGE
+        total = repo.active_faqs(db)
+        if total:
+            embedded = sum(1 for f in total if isinstance(f.embedding, list) and f.embedding)
+            ok = embedded / len(total) >= RAG_MIN_COVERAGE
+    _ready_cache["at"] = time.monotonic()
+    _ready_cache["ok"] = ok
+    return ok
+
+
+def _query_vector(query: str) -> list[list[float]] | None:
+    """查询向量 TTL+LRU 缓存（同问重复嵌入省一次网络往返）"""
+    now = time.monotonic()
+    with _qlock:
+        hit = _qcache.get(query)
+        if hit is not None and now - hit[0] < _QCACHE_TTL:
+            _qcache.move_to_end(query)
+            return [hit[1]]
+    vecs = embed_texts([query])
+    if vecs:
+        with _qlock:
+            _qcache[query] = (time.monotonic(), vecs[0])
+            _qcache.move_to_end(query)
+            while len(_qcache) > _QCACHE_MAX:
+                _qcache.popitem(last=False)
+    return vecs
 
 
 def retrieve(db: Session, query: str, k: int = RAG_TOP_K) -> list[tuple[int, str, str]] | None:
@@ -82,7 +120,7 @@ def retrieve(db: Session, query: str, k: int = RAG_TOP_K) -> list[tuple[int, str
     rows = _load_rows(db)
     if not rows:
         return None
-    qv = embed_texts([query])
+    qv = _query_vector(query)
     if not qv:
         return None
     scored = [( _cosine(qv[0], vec), fid, q, a) for fid, q, a, vec in rows]
@@ -125,6 +163,8 @@ def reindex(db: Session, only_missing: bool = True) -> dict:
         return {"ok": True, "indexed": 0, "failed": 0}
     indexed = failed = 0
     B = 64  # 分批防单请求超限
+    # 先结束加载 FAQ 的读事务，后续 embed 网络调用不持任何事务
+    db.commit()
     for i in range(0, len(targets), B):
         batch = targets[i:i + B]
         vectors = embed_texts([faq_text(f.question, f.answer_md) for f in batch], p)
@@ -134,7 +174,7 @@ def reindex(db: Session, only_missing: bool = True) -> dict:
         for f, v in zip(batch, vectors):
             f.embedding = v
             indexed += 1
-        db.flush()
-    db.commit()
+        # 每批独立短事务：批间不持写锁（跨网络批次长事务会独占 SQLite 写者）
+        db.commit()
     invalidate()
     return {"ok": failed == 0, "indexed": indexed, "failed": failed}

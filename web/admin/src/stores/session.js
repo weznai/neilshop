@@ -17,10 +17,12 @@ export const useSessionStore = defineStore('session', {
     role: (s) => (s.user && s.user.role) | 0,
     name: (s) => (s.user && s.user.name) || (s.user && s.user.email) || '管理员',
     perms: (s) => (s.user && Array.isArray(s.user.permissions) ? s.user.permissions : []),
-    /* 权限判定：空权限集 fail-closed（旧缓存会话由路由守卫先 verify() 刷新后再判） */
+    /* 权限判定：空权限集 = 无权限数据 → 不放行（登录/verify 响应必含 permissions，
+     * 正常路径不受影响；旧缓存缺 permissions 时收敛到 /403，AdminLayout verify()
+     * 刷新后恢复），最终以后端 require_perm 为准 */
     hasPerm() {
       const set = new Set(this.perms)
-      return (p) => (set.size ? set.has(p) : false)
+      return (p) => set.has(p)
     },
   },
   actions: {

@@ -28,6 +28,21 @@ _EXT_CONTENT_TYPES = {
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5MB 上限（超出 413）
 
+# 魔数白名单：按扩展名匹配文件头（JPEG/PNG/GIF/WEBP），杜绝改扩展名/改 Content-Type 的伪装载荷
+_IMAGE_MAGICS: dict[str, tuple[bytes, ...]] = {
+    "png": (b"\x89PNG\r\n\x1a\n",),
+    "jpg": (b"\xff\xd8\xff",),
+    "jpeg": (b"\xff\xd8\xff",),
+    "gif": (b"GIF87a", b"GIF89a"),
+}
+
+
+def _magic_ok(ext: str, data: bytes) -> bool:
+    """文件头魔数校验：WEBP 需 RIFF + 偏移 8..12 为 WEBP 双段判定，其余按前缀白名单"""
+    if ext == "webp":
+        return data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    return any(data.startswith(m) for m in _IMAGE_MAGICS.get(ext, ()))
+
 # 文件名/目录段白名单：字母数字加点划线（拒绝路径穿越 ../..、盘符、反斜杠、空白与控制符）
 _NAME_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -49,6 +64,9 @@ def save_upload(
         raise HTTPException(status_code=400, detail="unsupported image type")
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="file too large")
+    if not _magic_ok(ext, data):
+        # 扩展名/Content-Type 合法但文件头不是图片 → 415（防伪装成图片的非图片载荷）
+        raise HTTPException(status_code=415, detail="invalid image content")
     month_dir = _UPLOAD_ROOT / utcnow().strftime("%Y%m")
     month_dir.mkdir(parents=True, exist_ok=True)
     target = None

@@ -101,7 +101,7 @@ async function submit() {
         <button class="btn btn-primary btn-block" :class="{ loading: busy }" :disabled="busy" style="margin-top:16px">登录后台</button>
       </form>
       <div v-if="DEV" id="demoTip" style="margin-top:16px;padding:10px 12px;background:var(--rose-pale);border-radius:10px;font-size:12px;color:var(--gray);text-align:center">
-        🧪 种子账号：直接填 <b>ops</b> 或 <b>admin</b>（自动补全邮箱）· 密码 <b>glowmag123</b>
+        🧪 种子账号：直接填 <b>ops</b> 或 <b>admin</b>（自动补全邮箱）· 密码取 <b>GM_SEED_PASSWORD</b>（未设置时 seed 随机生成并打印一次）
       </div>
       <div style="margin-top:14px;text-align:center;font-size:12px;color:var(--gray)">
         HttpOnly Cookie 会话 · 后台专用短时效令牌（后台角色账号）

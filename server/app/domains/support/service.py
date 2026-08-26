@@ -3,6 +3,7 @@
 import uuid
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -23,7 +24,8 @@ def log_admin(db: Session, admin: User, action: str, entity: str, entity_id: int
 
 
 def _ticket_no() -> str:
-    return "TK" + utcnow().strftime("%y%m%d") + uuid.uuid4().hex[:4].upper()
+    # 6 位随机熵（24bit）：4 位撞唯一索引概率偏高；再长会超 ticket_no String(14) 列宽
+    return "TK" + utcnow().strftime("%y%m%d") + uuid.uuid4().hex[:6].upper()
 
 
 def _ticket_dict(t: Ticket, messages: list[TicketMessage]) -> dict:
@@ -65,26 +67,33 @@ def create_ticket(db: Session, body: TicketCreateIn, user: User | None = None) -
         order = trade_repo.order_by_no(db, body.order_no.strip().upper())
         if order and order.email.strip().lower() != body.email.strip().lower():
             raise HTTPException(status_code=403, detail="order_email_mismatch")
-    ticket = Ticket(
-        ticket_no=_ticket_no(),
-        user_id=user.id if user else None,
-        email=body.email,
-        order_no=body.order_no,
-        category=body.category,
-        subject=body.subject,
-        status=0,
-    )
-    db.add(ticket)
-    db.flush()
-    db.add(TicketMessage(ticket_id=ticket.id, sender=1, content=body.content))
-    # 关联订单侧落 ticket_linked 时间线（客服在订单时间线即可看到工单入口）
-    if order is not None:
-        trade_repo.add_timeline(
-            db, order.id, "ticket_linked", actor="user",
-            detail={"ticket_no": ticket.ticket_no, "subject": body.subject},
+    # ticket_no 撞唯一索引（极小概率）→ 换号重建一次（同 deps._create_cart 重试风格）
+    for _attempt in range(2):
+        ticket = Ticket(
+            ticket_no=_ticket_no(),
+            user_id=user.id if user else None,
+            email=body.email,
+            order_no=body.order_no,
+            category=body.category,
+            subject=body.subject,
+            status=0,
         )
-    db.commit()
-    return {"ticket_no": ticket.ticket_no, "status": ticket.status}
+        db.add(ticket)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            continue
+        db.add(TicketMessage(ticket_id=ticket.id, sender=1, content=body.content))
+        # 关联订单侧落 ticket_linked 时间线（客服在订单时间线即可看到工单入口）
+        if order is not None:
+            trade_repo.add_timeline(
+                db, order.id, "ticket_linked", actor="user",
+                detail={"ticket_no": ticket.ticket_no, "subject": body.subject},
+            )
+        db.commit()
+        return {"ticket_no": ticket.ticket_no, "status": ticket.status}
+    raise HTTPException(status_code=503, detail="ticket no conflict, retry")
 
 
 def list_tickets_for_request(db: Session, user: User | None, email: str, ticket_no: str | None) -> dict:
@@ -93,7 +102,9 @@ def list_tickets_for_request(db: Session, user: User | None, email: str, ticket_
         if user.email.strip().lower() != email_norm:
             raise HTTPException(status_code=403, detail="not ticket owner")
         tickets = repo.tickets_by_email_desc(db, email_norm)
-        return {"items": [_ticket_dict(t, repo.messages_asc(db, t.id)) for t in tickets]}
+        # 消息一次 IN 批查分组（替代逐单查消息的 N+1；响应结构不变，仍带全量消息）
+        mmap = repo.messages_asc_map(db, [t.id for t in tickets])
+        return {"items": [_ticket_dict(t, mmap.get(t.id, [])) for t in tickets]}
     if not ticket_no:
         raise HTTPException(status_code=403, detail="ticket_no required")
     t = repo.ticket_by_no(db, ticket_no.strip())
@@ -236,7 +247,12 @@ def admin_reply(db: Session, admin: User, ticket_no: str, body: ReplyIn) -> dict
     if t.status in (0, 2):
         # 待处理(0)/等待客户(2) 下客服回复 → 处理中(1)（等待客户时回复自动回流，免手动切状态）
         t.status = 1
-    log_admin(db, admin, "reply", "ticket", t.id, {"status": t.status})
+    diff = {"status": t.status}
+    if body.priority is not None:
+        # 顺带更新优先级（0紧急 1普通，见 models/support.py），激活原本死掉的 priority 字段
+        t.priority = body.priority
+        diff["priority"] = body.priority
+    log_admin(db, admin, "reply", "ticket", t.id, diff)
     db.commit()
     db.refresh(t)
     return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))
@@ -248,10 +264,17 @@ def admin_close(db: Session, admin: User, ticket_no: str, body: CloseIn) -> dict
         # 重复关闭会覆盖 closed_at/close_reason 审计数据 → 409；
         # 3(已解决待关)→4 是正常确认流，0/1/2 主动关单均保留（前端既有行为不受影响）
         raise HTTPException(status_code=409, detail="ticket_already_closed")
+    # 关单 CAS：与并发关单/状态流转互斥（rowcount=0 = 已被并发推进），护住 close 审计字段
+    if repo.claim_ticket_close(db, t.id) == 0:
+        raise HTTPException(status_code=409, detail="ticket_already_closed")
     t.status = 4
     t.closed_at = utcnow()
     t.close_reason = _norm_close_reason(body.close_reason)
-    log_admin(db, admin, "close", "ticket", t.id, {"status": 4, "close_reason": body.close_reason})
+    diff = {"status": 4, "close_reason": body.close_reason}
+    if body.priority is not None:
+        t.priority = body.priority
+        diff["priority"] = body.priority
+    log_admin(db, admin, "close", "ticket", t.id, diff)
     db.commit()
     db.refresh(t)
     return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))
@@ -265,22 +288,42 @@ def admin_assign(db: Session, admin: User, ticket_no: str, body: AssignIn) -> di
     if (assignee is None or assignee.role not in ADMIN_ACCOUNT_ROLES
             or assignee.status != 1):
         raise HTTPException(status_code=400, detail="invalid_admin_id")
-    t.assignee_admin_id = body.admin_id
-    log_admin(db, admin, "assign", "ticket", t.id, {"admin_id": body.admin_id})
+    prev_assignee = t.assignee_admin_id
+    if body.admin_id == admin.id and prev_assignee != admin.id:
+        # 「指派给我」：未指派走 CAS 抢注（并发互斥），已被他人指派 → 409
+        if prev_assignee is not None:
+            raise HTTPException(status_code=409, detail="already_assigned")
+        if repo.claim_ticket_assign(db, t.id, admin.id) == 0:
+            raise HTTPException(status_code=409, detail="already_assigned")
+        t.assignee_admin_id = body.admin_id  # 同步 ORM 快照（CAS 已落库）
+    else:
+        # 显式改派（指定他人/重复指派给自己）：保留覆盖语义，审计记录原指派人
+        t.assignee_admin_id = body.admin_id
+    log_admin(db, admin, "assign", "ticket", t.id,
+              {"admin_id": body.admin_id, "from": prev_assignee})
     db.commit()
     db.refresh(t)
     return _ticket_admin_dict(t, _assignee_names(db, [t]), _last_message(db, t))
 
 
+# 关单原因白名单（CloseIn 数字枚举语义）：1已解决 2重复 3无效 9其他
+_CLOSE_REASON_VALUES = {1, 2, 3, 9}
+
+
 def _norm_close_reason(value) -> int | None:
-    """关单原因归一化到 CloseReason 数字枚举（列为 SmallInteger）：
-    数字/数字串直取，自由文本落 9（其他），空值保持 None"""
+    """关单原因归一化到白名单枚举（列为 SmallInteger）：
+    白名单内数字/数字串直取，自由文本与越界数字（如 5/-1）落 9（其他），空值保持 None"""
     if value is None or value == "":
         return None
+    if isinstance(value, bool):
+        return 9
     if isinstance(value, int):
-        return value
+        return value if value in _CLOSE_REASON_VALUES else 9
     s = str(value).strip()
-    return int(s) if s.lstrip("-").isdigit() else 9
+    if s.lstrip("-").isdigit():
+        n = int(s)
+        return n if n in _CLOSE_REASON_VALUES else 9
+    return 9
 
 
 # 状态机：1→2/3/4、2→1/3/4、3→1/4；4→1 为重开（清空关单审计）；3→1 仅切状态不清 close 字段
@@ -294,7 +337,10 @@ def admin_set_status(db: Session, admin: User, ticket_no: str, body: TicketStatu
     prev = t.status
     if (prev, body.status) not in _ALLOWED_TRANSITIONS:
         raise HTTPException(status_code=409, detail="invalid_status_transition")
-    t.status = body.status
+    # 每条边原子化：CAS 抢占（WHERE status=:prev），并发同边/异边流转后者 rowcount=0 → 409
+    if repo.claim_ticket_status(db, t.id, prev, body.status) == 0:
+        raise HTTPException(status_code=409, detail="status_conflict")
+    t.status = body.status  # 同步 ORM 快照（CAS 已落库）
     if body.status == 4:
         t.closed_at = utcnow()
         t.close_reason = _norm_close_reason(body.close_reason)

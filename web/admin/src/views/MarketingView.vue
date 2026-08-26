@@ -159,7 +159,10 @@ async function toggleCode(c) {
   } catch (e) { toast('操作失败：' + (e.data?.detail || e.message), 'error') }
   finally { toggling.delete('code:' + c.id) }
 }
+/* 新建折扣码 busy：请求期间禁用提交（防连点重复建码），状态机同 ConfirmDialog busy 写法 */
+const newCodeBusy = ref(false)
 async function addCode() {
+  if (newCodeBusy.value) return
   if (!newCode.code) { toast('折扣码必填', 'error'); return }
   if (newCode.type === 1 && (newCode.value <= 0 || newCode.value > 100)) { toast('百分比折扣需在 1-100 之间', 'error'); return }
   if (newCode.type === 2 && !(newCode.value > 0)) { toast('固定减免金额需大于 $0', 'error'); return }
@@ -167,6 +170,7 @@ async function addCode() {
   const startMs = newCode.starts_at ? new Date(newCode.starts_at).getTime() : Date.now()
   const endMs = newCode.days > 0 ? Math.max(startMs, Date.now()) + newCode.days * 864e5 : null
   if (endMs != null && endMs <= startMs) { toast('结束时间需晚于开始时间（有效天数过短）', 'error'); return }
+  newCodeBusy.value = true
   try {
     await req('POST', '/api/admin/ops/discounts', {
       code: newCode.code.toUpperCase().trim(),
@@ -188,6 +192,7 @@ async function addCode() {
     await loadDiscounts()
     toast('折扣码已创建 ✓', 'success')
   } catch (e) { toast('创建失败：' + (JSON.stringify(e.data?.detail || e.message)).slice(0, 120), 'error') }
+  newCodeBusy.value = false
 }
 
 /* 一键复制折扣码（clipboard API 失败降级 execCommand，再失败提示手动复制） */
@@ -401,12 +406,16 @@ const gcBarCls = (g) => { const p = gcPct(g); return p <= 25 ? 'low' : p <= 60 ?
 const gcNewDlg = ref(false)
 const GC_NEW = { code: '', amount: 50, days: null, note: '' }
 const gcNew = reactive({ ...GC_NEW })
+/* 手工发卡 busy：请求期间禁用提交（防连点重复发卡），状态机同 ConfirmDialog busy 写法 */
+const gcNewBusy = ref(false)
 function openGcNew() { Object.assign(gcNew, GC_NEW); gcNewDlg.value = true }
 async function createGiftcard() {
+  if (gcNewBusy.value) return
   if (!(gcNew.amount > 0)) { toast('面额需大于 0', 'error'); return }
   /* 自定义卡号格式校验：1-19 位字母/数字（留空=自动生成） */
   const code = gcNew.code.trim()
   if (code && !/^[A-Za-z0-9]{1,19}$/.test(code)) { toast('自定义卡号需为 1-19 位字母或数字', 'error'); return }
+  gcNewBusy.value = true
   try {
     await req('POST', '/api/admin/promo/giftcards', {
       ...(code ? { code: code.toUpperCase() } : {}),
@@ -419,6 +428,7 @@ async function createGiftcard() {
     await loadGiftcards()
     toast('礼品卡已创建 ✓', 'success')
   } catch (e) { toast('创建失败：' + (e.data?.detail || e.message), 'error') }
+  gcNewBusy.value = false
 }
 
 /* 冻结↔解冻：按当前状态切换动作，ConfirmDialog busy 状态机防重复提交 */
@@ -528,31 +538,36 @@ async function codeExists(code) {
     return items.some((c) => c.code === code) || items.length >= 100
   } catch (_) { return true }
 }
+/* 弹窗保存 busy：券码校验+保存请求期间禁用提交（防连点重复建/存配置） */
+const popupBusy = ref(false)
 async function savePopup() {
+  if (popupBusy.value) return
   if (!popupForm.title.trim()) { toast('标题必填', 'error'); return }
   /* 有效期校验：起止都填了时结束必须晚于开始（datetime-local → Date 毫秒比较，同 saveEdit 口径） */
   if (popupForm.start_at && popupForm.end_at && new Date(popupForm.end_at).getTime() <= new Date(popupForm.start_at).getTime()) { toast('结束时间需晚于开始时间', 'error'); return }
-  /* 绑定券码严格校验：仅「新建」或「券码已改动」时要求精确查询命中，防绑定错误码；
-   * 编辑未改码跳过校验（原券码可能不在折扣码列表） */
-  const code = popupForm.coupon_code ? popupForm.coupon_code.trim().toUpperCase() : ''
-  if (code && (!popupForm.id || code !== popupCoupon0) && !(await codeExists(code))) { toast('券码不存在，请核对', 'error'); return }
-  const body = {
-    scene: popupForm.scene.trim().toLowerCase(),
-    title: popupForm.title.trim(),
-    content_md: popupForm.content_md || null,
-    coupon_code: code || null,
-    trigger_rules: { delaySec: Math.round(popupForm.delaySec || 0), exitIntent: !!popupForm.exitIntent, mobileOnly: !!popupForm.mobileOnly },
-    start_at: dtOut(popupForm.start_at),
-    end_at: dtOut(popupForm.end_at),
-    active: popupForm.active ? 1 : 0,
-  }
+  popupBusy.value = true
   try {
+    /* 绑定券码严格校验：仅「新建」或「券码已改动」时要求精确查询命中，防绑定错误码；
+     * 编辑未改码跳过校验（原券码可能不在折扣码列表） */
+    const code = popupForm.coupon_code ? popupForm.coupon_code.trim().toUpperCase() : ''
+    if (code && (!popupForm.id || code !== popupCoupon0) && !(await codeExists(code))) { toast('券码不存在，请核对', 'error'); popupBusy.value = false; return }
+    const body = {
+      scene: popupForm.scene.trim().toLowerCase(),
+      title: popupForm.title.trim(),
+      content_md: popupForm.content_md || null,
+      coupon_code: code || null,
+      trigger_rules: { delaySec: Math.round(popupForm.delaySec || 0), exitIntent: !!popupForm.exitIntent, mobileOnly: !!popupForm.mobileOnly },
+      start_at: dtOut(popupForm.start_at),
+      end_at: dtOut(popupForm.end_at),
+      active: popupForm.active ? 1 : 0,
+    }
     if (popupForm.id) await req('PUT', '/api/admin/ops/popups/' + popupForm.id, body)
     else await req('POST', '/api/admin/ops/popups', body)
     popupDlg.value = false
     popups.value = (await req('GET', '/api/admin/ops/popups')).items || []
     toast(popupForm.id ? '弹窗已保存 ✓' : '弹窗已创建 ✓', 'success')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
+  popupBusy.value = false
 }
 async function togglePopup(p) {
   if (toggling.has('pop:' + p.id)) return
@@ -991,7 +1006,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
           <div v-if="newCode.type !== 3" class="field"><label>{{ newCode.type === 1 ? '折扣 %' : '减免 $' }}</label>
             <input v-model.number="newCode.value" class="input" type="number"></div>
           <div class="field"><label>门槛 $（0=无）</label><input v-model.number="newCode.min_subtotal" class="input" type="number"></div>
-          <div v-if="newCode.type === 1" class="field"><label>封顶 $（可选，%码适用）</label><input v-model.number="newCode.max_discount" class="input" type="number"></div>
+          <div v-if="newCode.type === 1" class="field"><label>封顶 $（可选，%码适用）</label><input v-model.number="newCode.max_discount" class="input" type="number" min="0"></div>
           <div class="field"><label>开始时间（空=立即生效）</label><input v-model="newCode.starts_at" class="input" type="datetime-local"></div>
           <div class="field"><label>有效天数（0 或留空 = 永久有效）</label><input v-model.number="newCode.days" class="input" type="number" placeholder="0"></div>
           <div class="field"><label>总次数（空=不限）</label><input v-model.number="newCode.usage_limit" class="input" type="number" min="1"></div>
@@ -1002,7 +1017,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
         </label>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="closeNew">取消</button>
-          <button class="btn btn-primary btn-sm" @click="addCode">创建</button>
+          <button class="btn btn-primary btn-sm" :disabled="newCodeBusy" @click="addCode">{{ newCodeBusy ? '创建中…' : '创建' }}</button>
         </div>
       </div>
     </div>
@@ -1019,7 +1034,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
           <div v-if="editCode.type !== 3" class="field"><label>{{ editCode.type === 1 ? '折扣 %' : '减免 $' }}</label>
             <input v-model.number="editCode.value" class="input" type="number"></div>
           <div class="field"><label>门槛 $（0=无）</label><input v-model.number="editCode.min_subtotal" class="input" type="number"></div>
-          <div v-if="editCode.type === 1" class="field"><label>封顶 $（可选）</label><input v-model.number="editCode.max_discount" class="input" type="number"></div>
+          <div v-if="editCode.type === 1" class="field"><label>封顶 $（可选）</label><input v-model.number="editCode.max_discount" class="input" type="number" min="0"></div>
           <div class="field"><label>总次数（空=不限，≥已用 {{ editCode.used_count }}）</label><input v-model.number="editCode.usage_limit" class="input" type="number" min="1"></div>
           <div class="field"><label>每人限用次数</label><input v-model.number="editCode.per_user_limit" class="input" type="number" min="1"></div>
           <div class="field"><label>开始时间（必填）</label><input v-model="editCode.starts_at" class="input" type="datetime-local"></div>
@@ -1109,7 +1124,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
               <td><span class="tag" :class="GC_STATUS[g.status]?.[1] || 'tag-done'">{{ GC_STATUS[g.status]?.[0] || '未知' }}</span></td>
               <td style="color:var(--gray);font-size:12px">{{ g.purchaser_email || '—' }}</td>
               <td style="color:var(--gray);font-size:12px">{{ g.recipient_email || '—' }}</td>
-              <td style="color:var(--gray);font-size:12px">{{ g.expired_at ? dt(g.expired_at) : '永久' }}</td>
+              <td style="color:var(--gray);font-size:12px">{{ g.expires_at ? dt(g.expires_at) : '永久' }}</td>
               <td style="text-align:right;white-space:nowrap">
                 <button v-if="g.status === 1 || g.status === 2" class="btn btn-ghost btn-sm" style="margin-left:4px" @click="askGcFreeze(g)">{{ g.status === 1 ? '冻结' : '解冻' }}</button>
                 <!-- 非用尽(3)/作废(4) 状态可作废（余额清零不可恢复） -->
@@ -1143,7 +1158,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="gcNewDlg = false">取消</button>
-          <button class="btn btn-primary btn-sm" @click="createGiftcard">创建</button>
+          <button class="btn btn-primary btn-sm" :disabled="gcNewBusy" @click="createGiftcard">{{ gcNewBusy ? '创建中…' : '创建' }}</button>
         </div>
       </div>
     </div>
@@ -1375,7 +1390,7 @@ watch([collections, colPage], () => { if (colPage.value > chunkPages(collections
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px">
           <button class="btn btn-secondary btn-sm" @click="popupDlg = false">取消</button>
-          <button class="btn btn-primary btn-sm" @click="savePopup">保存</button>
+          <button class="btn btn-primary btn-sm" :disabled="popupBusy" @click="savePopup">{{ popupBusy ? '保存中…' : '保存' }}</button>
         </div>
       </div>
     </div>

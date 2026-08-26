@@ -50,6 +50,15 @@ def _payload(rma: Rma, item: OrderItem | None, order_no: str | None = None) -> d
     }
 
 
+def _new_rma_no(db: Session) -> str:
+    """RMA 单号：RMA+yymmdd+7hex（rma_no 列宽 16 顶格，8hex 会溢出）；查重循环防极小概率撞唯一索引 500"""
+    for _ in range(3):
+        no = "RMA" + utcnow().strftime("%y%m%d") + uuid.uuid4().hex[:7].upper()
+        if not repo.rma_by_no(db, no):
+            return no
+    raise HTTPException(status_code=503, detail="rma_no conflict, retry")
+
+
 def create_rma(db: Session, user: User, body: RmaCreateRequest) -> dict:
     order = _get_order(db, body.order_no)
     if order.user_id != user.id:
@@ -63,16 +72,14 @@ def create_rma(db: Session, user: User, body: RmaCreateRequest) -> dict:
     item = repo.get_order_item(db, body.order_item_id)
     if not item or item.order_id != order.id:
         raise HTTPException(status_code=404, detail="order_item_not_found")
-    # CAS 抢占未决占用（可退余含 pending 守卫进 WHERE）：并发重复申请/超量申请 rowcount=0 → 409
-    if repo.claim_item_rma(db, item.id, body.qty) == 0:
-        db.rollback()
-        db.expire(item)
-        available = max(0, item.qty - item.refunded_qty - item.exchanged_qty
-                        - item.rma_pending_qty - item.ex_pending_qty)
+    # 可退余叠加在途量（未终态 RMA + 在途换货，P0-1）：申请即占额，防重复申请双回补/双补发
+    inflight = repo.rma_inflight_qty(db, item.id) + repo.exchange_inflight_qty(db, item.id)
+    available = item.qty - item.refunded_qty - item.exchanged_qty - inflight
+    if body.qty > available:
         raise HTTPException(status_code=409, detail=f"qty_exceeds_available:{available}")
 
     rma = Rma(
-        rma_no="RMA" + utcnow().strftime("%y%m%d") + uuid.uuid4().hex[:4].upper(),
+        rma_no=_new_rma_no(db),
         order_id=order.id,
         order_item_id=item.id,
         qty=body.qty,

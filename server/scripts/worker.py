@@ -1,20 +1,32 @@
-"""GLOWMAG 后台任务 worker —— outbox 消费/超时关单/弃购三封阶梯召回/积分过期/每日对账（standalone 进程 + MySQL GET_LOCK 单实例）"""
+"""GLOWMAG 后台任务 worker —— outbox 消费/超时关单/弃购三封阶梯召回/积分过期/每日对账
+（standalone 进程；MySQL GET_LOCK / SQLite 跨平台文件锁 单实例互斥）"""
 
 import argparse
 import logging
 import os
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import func, text
+# 跨平台文件锁原语：Windows msvcrt.locking / POSIX fcntl.flock（二者必有其一）
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.db import SessionLocal, engine, utcnow
-from app.core.enums import OrderStatus, PointsReason, StockMovementType
+from app.core.enums import OrderStatus, PaymentStatus, PointsReason, StockMovementType
 from app.models import (
     Cart, DataRequest, EmailPreference, Order, OrderItem, OrderTimeline,
     OutboxEvent, Payment, PointsLedger, Product, ReconciliationDaily, Rma,
@@ -80,6 +92,15 @@ _LAST_LEDGER_SQL = text(
     "  FROM points_ledger"
     ") t WHERE rn = 1"
 )
+# SQLite 分支互斥不走 GET_LOCK（MySQL 专有），改用文件锁判别后端
+_IS_SQLITE = engine.url.get_backend_name() == "sqlite"
+# 积分过期原子扣减（余额守卫进 WHERE，对齐 points.py _ADMIN_DEBIT_SQL 风格）：
+# points_svc.add_points 无守卫（负增量并发下可扣穿成负数），故本地同款 SQL；
+# rowcount=0 = 并发花分致余额不足 → 本轮跳过该用户下轮重算
+_EXPIRE_DEDUCT_SQL = text(
+    "UPDATE users SET points = points - :amt WHERE id = :uid AND points >= :amt"
+)
+_POINTS_BALANCE_SQL = text("SELECT points FROM users WHERE id = :uid")
 
 
 def _setting_int(db: Session, key: str, default: int) -> int:
@@ -114,11 +135,31 @@ def _fmt_subject(tpl: str, payload: dict) -> str:
 
 
 def consume_outbox(db: Session) -> None:
-    events = (
-        db.query(OutboxEvent)
-        .filter(OutboxEvent.published == 0, OutboxEvent.retry_count < OUTBOX_MAX_RETRY)
-        .order_by(OutboxEvent.id).limit(OUTBOX_BATCH).all()
-    )
+    # 原子认领：模型仅 published 0/1 无 status 字段（create_all 不做列迁移，不能加列），
+    # 用 published_at=认领时间戳抢占——先 UPDATE 圈定再按值取回，防 MySQL 多实例
+    # 「先查后置位」竞态重复发送；崩溃残留行 published 仍 0，下轮可再认领（at-least-once）。
+    # 同秒两次认领碰撞由外层单实例锁（GET_LOCK/文件锁）互斥兜底
+    claim_ids = [
+        r[0] for r in (
+            db.query(OutboxEvent.id)
+            .filter(OutboxEvent.published == 0, OutboxEvent.retry_count < OUTBOX_MAX_RETRY)
+            .order_by(OutboxEvent.id).limit(OUTBOX_BATCH).all()
+        )
+    ]
+    events = []
+    if claim_ids:
+        claim_ts = utcnow()
+        db.query(OutboxEvent).filter(
+            OutboxEvent.id.in_(claim_ids), OutboxEvent.published == 0,
+            OutboxEvent.retry_count < OUTBOX_MAX_RETRY,
+        ).update({OutboxEvent.published_at: claim_ts}, synchronize_session=False)
+        db.commit()
+        events = (
+            db.query(OutboxEvent)
+            .filter(OutboxEvent.id.in_(claim_ids), OutboxEvent.published == 0,
+                    OutboxEvent.published_at == claim_ts)
+            .order_by(OutboxEvent.id).all()
+        )
     # 死信汇总：OutboxEvent 仅 published 0/1 语义（无 status 字段），retry 打满的事件
     # 不再置位，每轮 logger.error 汇总一条待人工介入
     dead = (
@@ -301,16 +342,22 @@ def expire_points(db: Session) -> None:
     for user_id, ledgers in by_user.items():
         user = db.get(User, user_id)
         amount = min(sum(r.change for r in ledgers), user.points) if (user and user.points > 0) else 0
-        for r in ledgers:
-            r.expires_at = None
         if amount > 0:
-            user.points -= amount
+            # 原子扣减（守卫 points>=amt，rowcount=0=并发余额不足）：本轮跳过该用户、
+            # 过期标记保留 下轮按新余额重算；杜绝 ORM 读改写并发丢更新，
+            # balance_after 用扣减后回读现值（不改 user.points 属性，防 flush 脏快照回写）
+            if db.execute(_EXPIRE_DEDUCT_SQL, {"uid": user_id, "amt": amount}).rowcount != 1:
+                db.rollback()
+                continue
+            balance = int(db.execute(_POINTS_BALANCE_SQL, {"uid": user_id}).scalar())
             db.add(PointsLedger(
-                user_id=user_id, change=-amount, balance_after=user.points,
+                user_id=user_id, change=-amount, balance_after=balance,
                 reason=int(PointsReason.EXPIRE), frozen=0, expires_at=None,
             ))
             expired_users += 1
             expired_points += amount
+        for r in ledgers:
+            r.expires_at = None
         db.commit()
     log.info("[points-expire] rows=%d users=%d expired=%d", len(rows), expired_users, expired_points)
 
@@ -319,11 +366,22 @@ def reconcile_daily(db: Session) -> None:
     now = utcnow()
     today = now.date()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 支付/订单两侧统一按支付归属日（Payment.created_at 当日）开窗：
+    # 原 payment.created_at vs order.paid_at 双时钟跨午夜必错位（23:59 支付 / 00:00 落 paid_at → 恒误报）；
+    # 订单侧 = 当日成功支付对应订单实付合计（subquery 去重防一单多次支付重复计数），
+    # 原口径 status>=1 含 8(取消)/9(全额退款) 语义含糊 → 统一排除：取消单本就无成功支付，
+    # 全额退款的支付 status=3/4 已被支付侧过滤，此排除只拦真正的脏数据（对账本应暴露）
+    paid_today = select(Payment.order_id).where(
+        Payment.status == int(PaymentStatus.SUCCESS), Payment.created_at >= day_start)
     payments_gross = int(db.query(func.coalesce(func.sum(Payment.amount), 0)).filter(
-        Payment.status.in_([1, 3, 4]), Payment.created_at >= day_start).scalar())
+        Payment.status == int(PaymentStatus.SUCCESS), Payment.created_at >= day_start).scalar())
     orders_paid_total = int(db.query(func.coalesce(func.sum(Order.grand_total), 0)).filter(
-        Order.status >= 1, Order.paid_at.isnot(None), Order.paid_at >= day_start).scalar())
+        Order.id.in_(paid_today), Order.status >= 1, Order.status.notin_((8, 9))).scalar())
     diff_payment = payments_gross - orders_paid_total
+    # 退款列补真实值：Payment.refunded_amount 无退款时间戳无法按日开窗，取单一时钟
+    # RMA 退款流水（refunded_at 当日）合计为当日退款额；退款本身非异常，不参与 status 判定
+    refund_total = int(db.query(func.coalesce(func.sum(Rma.refund_amount), 0)).filter(
+        Rma.refunded_at.isnot(None), Rma.refunded_at >= day_start).scalar())
     # 积分对账两列：台账侧 = 每用户最后一条流水余额合计（_LAST_LEDGER_SQL）；
     # 用户表侧 = SUM(users.points)；diff = 台账 - 用户表（0 为平）
     points_ledger_sum = int(db.execute(_LAST_LEDGER_SQL).scalar())
@@ -338,7 +396,7 @@ def reconcile_daily(db: Session) -> None:
     row.payments_gross = payments_gross
     row.orders_paid_total = orders_paid_total
     row.diff_payment = diff_payment
-    row.diff_refund = 0
+    row.diff_refund = refund_total
     row.points_ledger_sum = points_ledger_sum
     row.users_points_sum = users_points_sum
     row.diff_points = diff_points
@@ -346,8 +404,8 @@ def reconcile_daily(db: Session) -> None:
     row.checked_at = now
     db.commit()
     log.info("[reconcile] date=%s payments_gross=%d orders_paid=%d diff_payment=%d "
-             "points_sum=%d ledger_last=%d diff_points=%d status=%d",
-              today, payments_gross, orders_paid_total, diff_payment,
+             "refund=%d points_sum=%d ledger_last=%d diff_points=%d status=%d",
+              today, payments_gross, orders_paid_total, diff_payment, refund_total,
               users_points_sum, points_ledger_sum, diff_points, status)
 
 
@@ -391,15 +449,28 @@ def process_data_requests(db: Session) -> None:
                 DataRequest.created_at < cutoff)
         .order_by(DataRequest.id).all()
     )
-    anonymized = 0
+    from app.domains.ops.repository import claim_data_request
+
+    anonymized = failed = 0
     for req in requests:
-        if anonymize_user(db, req.user_id):
-            anonymized += 1
-        req.status = 1
-        req.fulfilled_at = utcnow()
-        db.commit()
-        log.info("[gdpr] data request %s fulfilled, user %s anonymized", req.id, req.user_id)
-    log.info("[gdpr] due=%d anonymized=%d grace=%dd", len(requests), anonymized, grace_days)
+        # 逐条隔离：单条失败不阻塞其余请求；DataRequest 无 failed 字段，
+        # 失败条保持 pending（status=0）下轮重试
+        try:
+            # CAS 抢占 0→1：与后台 execute/reject 端点互斥（驳回后 worker 不再匿化）
+            if claim_data_request(db, req.id, 1) == 0:
+                db.rollback()
+                continue
+            if anonymize_user(db, req.user_id):
+                anonymized += 1
+            req.fulfilled_at = utcnow()
+            db.commit()
+            log.info("[gdpr] data request %s fulfilled, user %s anonymized", req.id, req.user_id)
+        except Exception:
+            db.rollback()
+            failed += 1
+            log.exception("[gdpr] data request %s failed, keep pending", req.id)
+    log.info("[gdpr] due=%d anonymized=%d failed=%d grace=%dd",
+             len(requests), anonymized, failed, grace_days)
 
 
 def restock_notify(db: Session) -> None:
@@ -580,6 +651,13 @@ TASKS = (
     daily_digest,
 )
 
+# 重任务降频：对账/日报是全表+窗口函数重查询，分钟级轮询里 6h 一次足够；
+# 内存水位即可（worker 常驻进程，重启即重算一次无妨；日报另有 digest_last_date
+# 落库水位防同日重复发送）
+_HEAVY_TASKS = ("reconcile_daily", "daily_digest")
+_HEAVY_INTERVAL_SECONDS = 6 * 3600
+_heavy_last_run: dict[str, float] = {}
+
 
 def _get_lock(conn) -> bool:
     cur = conn.cursor()
@@ -598,27 +676,99 @@ def _release_lock(conn) -> None:
         log.warning("release lock failed", exc_info=True)
 
 
-def run_once() -> bool:
-    lock_conn = engine.raw_connection()
-    try:
-        if not _get_lock(lock_conn):
-            log.warning("lock %s held by another worker, skip this round", LOCK_NAME)
+def _sqlite_lock_path() -> str:
+    # 锁文件落 sqlite db 同目录（内存库/无路径兜底 temp）
+    db_path = engine.url.database or ""
+    if db_path and db_path != ":memory:":
+        directory = os.path.dirname(os.path.abspath(db_path))
+    else:
+        directory = tempfile.gettempdir()
+    return os.path.join(directory, "worker.lock")
+
+
+class _FileLock:
+    """SQLite 分支单实例互斥：GET_LOCK 是 MySQL 专有，改用跨平台文件锁
+    （Windows msvcrt.locking / POSIX fcntl.flock，try/except 双实现），
+    锁 1 字节即可，进程存活期间持锁、退出自动释放"""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.fh = None
+
+    def acquire(self) -> bool:
+        try:
+            self.fh = open(self.path, "a+b")
+            self.fh.seek(0)
+            if msvcrt is not None:
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+            elif fcntl is not None:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                self.fh.close()
+                self.fh = None
+                return False  # 两种原语都不可用：宁可跳过也不双跑
+            return True
+        except OSError:
+            if self.fh:
+                self.fh.close()
+                self.fh = None
             return False
-    except Exception:
-        lock_conn.close()
-        raise
+
+    def release(self) -> None:
+        if self.fh is None:
+            return
+        try:
+            self.fh.seek(0)
+            if msvcrt is not None:
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+            elif fcntl is not None:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            log.warning("release file lock failed", exc_info=True)
+        finally:
+            self.fh.close()
+            self.fh = None
+
+
+def run_once() -> bool:
+    file_lock = None
+    lock_conn = None
+    if _IS_SQLITE:
+        file_lock = _FileLock(_sqlite_lock_path())
+        if not file_lock.acquire():
+            log.warning("file lock %s held by another worker, skip this round", file_lock.path)
+            return False
+    else:
+        lock_conn = engine.raw_connection()
+        try:
+            if not _get_lock(lock_conn):
+                log.warning("lock %s held by another worker, skip this round", LOCK_NAME)
+                lock_conn.close()
+                return False
+        except Exception:
+            lock_conn.close()
+            raise
     db = SessionLocal()
     try:
         for task in TASKS:
+            name = task.__name__
+            if name in _HEAVY_TASKS \
+                    and time.time() - _heavy_last_run.get(name, 0.0) < _HEAVY_INTERVAL_SECONDS:
+                continue
             try:
                 task(db)
+                if name in _HEAVY_TASKS:
+                    _heavy_last_run[name] = time.time()  # 成功才推水位，失败下轮重试
             except Exception:
                 db.rollback()
-                log.exception("task %s failed", task.__name__)
+                log.exception("task %s failed", name)
     finally:
         db.close()
-        _release_lock(lock_conn)
-        lock_conn.close()
+        if file_lock is not None:
+            file_lock.release()
+        if lock_conn is not None:
+            _release_lock(lock_conn)
+            lock_conn.close()
     return True
 
 
@@ -634,9 +784,16 @@ def main() -> None:
         run_once()
         return
     log.info("worker loop started, interval=%ds", args.interval)
+    delay = float(args.interval)
     while True:
-        run_once()
-        time.sleep(args.interval)
+        try:
+            run_once()
+            delay = float(args.interval)
+        except Exception:
+            # 主循环兜底：单轮崩溃只退避不退进程，连续失败指数退避封顶 5min
+            delay = min(delay * 2, 300)
+            log.exception("worker round failed, backoff %.0fs", delay)
+        time.sleep(delay)
 
 
 if __name__ == "__main__":

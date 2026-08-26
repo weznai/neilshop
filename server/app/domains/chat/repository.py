@@ -1,9 +1,9 @@
 """聊天域仓储 —— 纯查询/分页，不掺业务规则"""
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Query, Session
 
-from app.core.enums import UserRole
+from app.core.enums import ChatSender, UserRole
 from app.models import ChatConversation, ChatMessage, Faq, User
 
 
@@ -124,6 +124,30 @@ def admin_conversations_query(
     return query.order_by(
         ChatConversation.status.asc(), ChatConversation.last_message_at.desc(), ChatConversation.id.desc()
     )
+
+
+def pending_reply_count(db: Session, mine_admin_id: int | None) -> int:
+    """全局待回复数（SQL COUNT 聚合，不再整表拉会话行到 Python 数）：
+    status=0 且该会话最新一条消息来自客户（相关子查询取 MAX(id) 行的 sender，
+    与 per-item pending_reply / _pending_total 原谓词同口径；mine 作用域保留）"""
+    last_sender = (
+        select(ChatMessage.sender)
+        .where(ChatMessage.conversation_id == ChatConversation.id)
+        .order_by(ChatMessage.id.desc())
+        .limit(1)
+        .correlate(ChatConversation)
+        .scalar_subquery()
+    )
+    q = db.query(func.count(ChatConversation.id)).filter(
+        ChatConversation.status == 0,
+        last_sender == int(ChatSender.CUSTOMER),
+    )
+    if mine_admin_id is not None:
+        q = q.filter(or_(
+            (ChatConversation.channel == 1) & (ChatConversation.agent_admin_id == mine_admin_id),
+            (ChatConversation.channel == 2) & (ChatConversation.artist_id == mine_admin_id),
+        ))
+    return q.scalar() or 0
 
 
 def active_faqs(db: Session) -> list[Faq]:

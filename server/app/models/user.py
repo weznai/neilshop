@@ -32,9 +32,8 @@ class User(Base):
     status = Column(SmallInteger, nullable=False, default=1)     # 1正常 0禁用 -1注销
     email_verified_at = Column(DateTime)
     last_login_at = Column(DateTime)
-    # 第三方登录绑定（NULL=纯密码账号；email 命中且 email_verified 也可后绑）
-    oauth_provider = Column(String(20))   # google/apple
-    oauth_subject = Column(String(191))   # IdP 侧唯一 sub
+    # 密码最近修改时间：密码重置 token 一次性校验（iat 早于此值的 pwreset token 视为已用）
+    pwd_changed_at = Column(DateTime)
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 

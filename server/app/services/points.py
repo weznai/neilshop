@@ -17,11 +17,18 @@ from app.core.enums import PointsReason
 from app.models import Order, PointsLedger, Setting, User
 
 # 原子扣减/回补（余额守卫放进 WHERE，rowcount=0 即余额不足，杜绝并发双花）
+# 可用额守卫一并下推 SQL：扣减后余额须 ≥ 冻结额（points_ledger 中 frozen=1 的正流水和，
+# 与 usable_balance 口径一致），封死 Python 预检（ORM 读）与实际扣减（SQL）之间的并发窗口；
+# `change` 在 MySQL 是保留字须反引号（SQLite 兼容该引号），子查 points_ledger 非被更新表，两库均合法
 _SPEND_SQL = text(
-    "UPDATE users SET points = points - :amt WHERE id = :uid AND points >= :amt"
+    "UPDATE users SET points = points - :amt WHERE id = :uid "
+    "AND points - :amt >= (SELECT COALESCE(SUM(`change`), 0) FROM points_ledger "
+    "WHERE user_id = :uid AND frozen = 1 AND `change` > 0)"
 )
 _ADD_POINTS_SQL = text("UPDATE users SET points = points + :amt WHERE id = :uid")
 _POINTS_OF_SQL = text("SELECT points FROM users WHERE id = :uid")
+# GDPR 匿名化清零（置 0 无需守卫；与 _VOID_POINTS_SQL 同为 raw 通道防 ORM 脏值覆盖）
+_ZERO_POINTS_SQL = text("UPDATE users SET points = 0 WHERE id = :uid")
 # 管理员人工扣减（delta 为负）：余额守卫进 WHERE，并发下不会扣成负数
 _ADMIN_DEBIT_SQL = text(
     "UPDATE users SET points = points + :delta WHERE id = :uid AND points + :delta >= 0"
@@ -77,16 +84,38 @@ def usable_balance(db: Session, user_id: int) -> int:
     return max(0, get_balance(db, user_id) - frozen_sum)
 
 
+def add_points(db: Session, user_id: int, delta: int) -> int:
+    """发放类原子累加公共原语（推荐奖励/grant/GDPR/后续 worker 复用）：
+    raw UPDATE + 回读现值，返回新余额；调用方自写 ledger（balance_after 用返回值），
+    杜绝 ORM 读-改-写在并发提交时丢更新（少发积分）。只写不 commit，事务归调用方。"""
+    db.execute(_ADD_POINTS_SQL, {"uid": user_id, "amt": delta})
+    return int(db.execute(_POINTS_OF_SQL, {"uid": user_id}).scalar())
+
+
+def clear_points(db: Session, user_id: int, *, ref_type: str = "gdpr",
+                 ref_id: int | None = None) -> int:
+    """GDPR 匿名化积分清零：原子置 0 并补写 ledger（reason=ADMIN_ADJUST，balance_after=0），
+    保证对账 diff_points=0；余额本就为 0 时不写空流水。返回清零前余额。"""
+    balance = int(db.execute(_POINTS_OF_SQL, {"uid": user_id}).scalar() or 0)
+    if balance > 0:
+        db.execute(_ZERO_POINTS_SQL, {"uid": user_id})
+        _write_ledger(db, user_id, -balance, PointsReason.ADMIN_ADJUST, 0,
+                      ref_type=ref_type, ref_id=ref_id)
+    return balance
+
+
 def grant_for_order(db: Session, order: Order, points_earned: int) -> PointsLedger | None:
     """支付成功后发放（冻结）。B 的支付回调在同一事务内调用。"""
     if not order.user_id or points_earned <= 0:
         return None
-    user = db.get(User, order.user_id)
-    if not user:
+    if db.get(User, order.user_id) is None:
         return None
-    user.points += points_earned
+    # 原子累加后回读现值写 ledger（对齐 refund_void/refund_return 写法）：
+    # ORM user.points += 在并发回调下会丢更新（少发积分）；不改 user.points 属性，
+    # 避免 commit flush 时 ORM 脏快照覆盖 raw 扣减结果
+    balance = add_points(db, order.user_id, points_earned)
     entry = _write_ledger(
-        db, user.id, points_earned, PointsReason.ORDER_EARN_FROZEN, user.points,
+        db, order.user_id, points_earned, PointsReason.ORDER_EARN_FROZEN, balance,
         ref_type="order", ref_id=order.id, frozen=1,
     )
     order.points_earned = points_earned
@@ -95,7 +124,8 @@ def grant_for_order(db: Session, order: Order, points_earned: int) -> PointsLedg
 
 def spend(db: Session, user_id: int, points: int, order_id: int | None = None) -> int:
     """下单用分（先扣，退款走返还）；返回扣减后余额。可用不足时抛 ValueError。
-    扣减为原子 UPDATE（points >= :amt 守卫），并发下不会扣成负数/双花。"""
+    扣减为原子 UPDATE，守卫进 WHERE（余额足够 且 扣后不侵占冻结额），并发下不会
+    扣成负数/双花/花掉冻结分。Python 预检仅保留友好报错，以 SQL 守卫为准。"""
     if points <= 0:
         return get_balance(db, user_id)
     if points > usable_balance(db, user_id):

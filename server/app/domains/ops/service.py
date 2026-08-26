@@ -54,7 +54,9 @@ def dashboard(db: Session) -> dict:
 
     views = repo.newsletter_count(db) + repo.cookie_consent_count(db)
     add_to_cart = repo.carts_with_items_count(db)
+    # today 窗口三连只查一次：此处结果同时供 today 卡与 funnel 复用（原 _win(today) 会重复查 3 次）
     orders_today = repo.orders_placed_since(db, today_start)
+    gmv_today = repo.paid_gmv_since(db, today_start)
     paid_today = repo.paid_orders_since(db, today_start)
     cutoff = _naive_utcnow() - timedelta(hours=24)
     abandoned = repo.abandoned_carts_count(db, cutoff)
@@ -97,7 +99,9 @@ def dashboard(db: Session) -> dict:
         logger.warning("dashboard low stock top failed", exc_info=True)
         low_stock_top = []
     return {
-        "today": _win(today_start),
+        # today 复用上文单次查询结果（与 last7/last30 同结构）
+        "today": {"gmv_cents": int(gmv_today), "orders": int(orders_today),
+                  "paid_count": int(paid_today)},
         "last7": _win(now - timedelta(days=7)),
         "last30": _win(now - timedelta(days=30)),
         "funnel": {
@@ -255,14 +259,23 @@ def admin_reviews(
 
 
 def bulk_reviews(db: Session, admin: User, body: ReviewBulkIn) -> dict:
-    """批量审核：仅处理待审(0)记录（非待审/不存在跳过），单条逻辑复用 content 域 service"""
+    """批量审核：仅处理待审(0)记录（非待审/不存在跳过），单条逻辑复用 content 域 service；
+    返回 {updated, skipped}（skipped=并发冲突跳过数；updated 保持旧字段名，前端已消费）"""
     rows = repo.reviews_pending_by_ids(db, body.ids)
+    updated = skipped = 0
     for r in rows:
-        if body.action == "approve":
-            content_service.approve_review(db, admin, r.id)
-        else:
-            content_service.reject_review(db, admin, r.id, ReasonIn(reason=body.reason or ""))
-    return {"updated": len(rows)}
+        try:
+            if body.action == "approve":
+                content_service.approve_review(db, admin, r.id)
+            else:
+                content_service.reject_review(db, admin, r.id, ReasonIn(reason=body.reason or ""))
+            updated += 1
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                skipped += 1  # 批查询后已被并发处理 → 计入 skipped 继续其余
+                continue
+            raise
+    return {"updated": updated, "skipped": skipped}
 
 
 def unapprove_review(db: Session, admin: User, review_id: int) -> dict:
@@ -282,14 +295,23 @@ def unapprove_review(db: Session, admin: User, review_id: int) -> dict:
 
 
 def bulk_ugc(db: Session, admin: User, body: UgcBulkIn) -> dict:
-    """UGC 批量审核：与评价同构（无 reason），单条逻辑复用 content 域 service"""
+    """UGC 批量审核：与评价同构（无 reason），单条逻辑复用 content 域 service；
+    逐条容错（409 并发冲突 → skipped），返回 {updated, skipped}"""
     rows = repo.ugc_pending_by_ids(db, body.ids)
+    updated = skipped = 0
     for u in rows:
-        if body.action == "approve":
-            content_service.approve_ugc(db, admin, u.id)
-        else:
-            content_service.reject_ugc(db, admin, u.id)
-    return {"updated": len(rows)}
+        try:
+            if body.action == "approve":
+                content_service.approve_ugc(db, admin, u.id)
+            else:
+                content_service.reject_ugc(db, admin, u.id)
+            updated += 1
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                skipped += 1  # 批查询后已被并发处理 → 计入 skipped 继续其余
+                continue
+            raise
+    return {"updated": updated, "skipped": skipped}
 
 
 def unapprove_ugc(db: Session, admin: User, ugc_id: int) -> dict:
@@ -431,13 +453,16 @@ def reconciliations(
 
 def resolve_reconciliation(db: Session, admin: User, rec_id: int) -> dict:
     """对账差异人工核销：0平/1告警 → 2已处理（死胡同出口，操作留审计）；
-    已处理 → 409"""
+    已处理 → 409；CAS 抢占防双击并发重复审计"""
     rec = db.get(ReconciliationDaily, rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="reconciliation not found")
     if rec.status == 2:
         raise HTTPException(status_code=409, detail="already resolved")
-    rec.status = 2
+    if repo.claim_reconciliation_resolved(db, rec.id) == 0:
+        # 快照读后已被并发核销 → 409（不重复落审计）
+        raise HTTPException(status_code=409, detail="already resolved")
+    rec.status = 2  # 同步 ORM 快照（CAS 已落库）
     log_admin(db, admin, "resolve", "reconcile", rec.id, {})
     db.commit()
     return {"ok": True}
@@ -482,13 +507,16 @@ def data_requests(
 
 
 def reject_data_request(db: Session, admin: User, req_id: int) -> dict:
-    """驳回：仅受理中(0)可驳回（已执行/已驳回 → 409）"""
+    """驳回：仅受理中(0)可驳回（已执行/已驳回 → 409）；CAS 抢占防与
+    后台立即执行/worker 到期执行三方竞态（rowcount=0 = 已被处理）"""
     req = repo.data_request_by_id(db, req_id)
     if not req:
         raise HTTPException(status_code=404, detail="data request not found")
     if req.status != 0:
         raise HTTPException(status_code=409, detail="request not pending")
-    req.status = 2
+    if repo.claim_data_request(db, req.id, 2) == 0:
+        raise HTTPException(status_code=409, detail="request not pending")
+    req.status = 2  # 同步 ORM 快照（CAS 已落库）
     log_admin(db, admin, "reject", "data_request", req.id, {"status": 2})
     db.commit()
     return {"id": req.id, "status": req.status}
@@ -497,18 +525,26 @@ def reject_data_request(db: Session, admin: User, req_id: int) -> dict:
 def execute_data_request(db: Session, admin: User, req_id: int) -> dict:
     """立即执行：删除类走 anonymize_user（与 worker 同一实现），
     导出类申请时即已完成（正常不会出现 pending 导出单，防御性直接置完成）；
-    已执行/已驳回 → 409"""
+    已执行/已驳回 → 409；CAS 抢占成功后再执行匿化（失败整体回滚，状态回 0 可重试）"""
     req = repo.data_request_by_id(db, req_id)
     if not req:
         raise HTTPException(status_code=404, detail="data request not found")
     if req.status != 0:
         raise HTTPException(status_code=409, detail="request not pending")
-    anonymized = anonymize_user(db, req.user_id) if req.type == 2 else False
-    req.status = 1
-    req.fulfilled_at = utcnow()
-    log_admin(db, admin, "execute", "data_request", req.id,
-              {"type": req.type, "status": 1, "anonymized": anonymized})
-    db.commit()
+    # 与 worker 到期执行/后台驳回三方互斥：抢占失败即已被处理
+    if repo.claim_data_request(db, req.id, 1) == 0:
+        raise HTTPException(status_code=409, detail="request not pending")
+    try:
+        anonymized = anonymize_user(db, req.user_id) if req.type == 2 else False
+        req.status = 1  # 同步 ORM 快照（CAS 已落库）
+        req.fulfilled_at = utcnow()
+        log_admin(db, admin, "execute", "data_request", req.id,
+                  {"type": req.type, "status": 1, "anonymized": anonymized})
+        db.commit()
+    except Exception:
+        # 匿化失败回滚抢占（status 回 0 保持待处理）与半成品匿化数据，可安全重试
+        db.rollback()
+        raise
     return {"id": req.id, "status": req.status, "anonymized": anonymized}
 
 

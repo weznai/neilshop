@@ -20,11 +20,12 @@ def _email_format(value: str) -> str:
 
 
 class TicketCreateIn(BaseModel):
-    email: str
-    order_no: str | None = None
+    # 长度上限与 models/support.py 列宽对齐（超长 422 而非落库截断/报错）
+    email: str = Field(max_length=191)
+    order_no: str | None = Field(default=None, max_length=20)
     category: int = Field(ge=1, le=6)
-    subject: str
-    content: str
+    subject: str = Field(max_length=200)
+    content: str = Field(max_length=20000)  # DB Text，上限防垃圾灌入
 
     _email_check = field_validator("email")(_email_format)
 
@@ -36,12 +37,15 @@ class TicketMessageIn(BaseModel):
 
 class ReplyIn(BaseModel):
     content: str = Field(max_length=2000)  # 超长 422（原静默截断改为显式拒绝）
+    # 可选顺带更新优先级（0紧急 1普通，models/support.py）；不传不动
+    priority: int | None = Field(default=None, ge=0, le=1)
 
 
 class CloseIn(BaseModel):
     """关单原因：数字枚举（1已解决 2重复 3无效 9其他）或自由文本（服务层归一为 9 其他）；
     兼容后台 ConfirmDialog 自由文本输入与旧数字枚举两种提交"""
     close_reason: int | str | None = None
+    priority: int | None = Field(default=None, ge=0, le=1)  # 同 ReplyIn：可选顺带更新优先级
 
 
 class TicketStatusIn(BaseModel):

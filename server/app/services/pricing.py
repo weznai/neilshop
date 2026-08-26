@@ -110,6 +110,10 @@ def _resolve_items(db: Session, items: list[dict]) -> list[dict]:
         if not variant.is_active:
             raise HTTPException(status_code=409, detail=f"variant_inactive:{vid}")
         product = db.get(Product, variant.product_id)
+        # 下架/草稿商品拦截：商品归档(status!=1)后变体仍 is_active，只校验变体会
+        # 把不可售商品加进购物车下单
+        if product is not None and product.status != 1:
+            raise HTTPException(status_code=409, detail=f"product_unavailable:{vid}")
         category = db.get(Category, product.category_id) if product else None
         lines.append({
             "variant_id": variant.id,

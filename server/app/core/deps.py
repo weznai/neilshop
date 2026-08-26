@@ -86,7 +86,9 @@ def set_auth_cookie(response: Response, token: str, admin: bool = False) -> None
         samesite = "none" if cross_site else "strict"
     else:
         max_age = settings.token_days * 86400
-        samesite = "lax"
+        # 前台拆域部署（前台与 API 不同域）时 Lax 跨站不携带 → 会话失效，
+        # 对齐 admin 的 SameSite=None + 强制 Secure 写法；同源部署保持 lax
+        samesite = "none" if cross_site else "lax"
     response.set_cookie(
         ADMIN_COOKIE if admin else STORE_COOKIE,
         token,

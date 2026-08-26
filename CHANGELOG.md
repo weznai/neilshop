@@ -3,55 +3,59 @@
 本变更日志基于《MVP实现说明-MySQL版.md》§1-21 与 README 整理，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 各批次未单独记录发布日期，按批次倒序排列（最新在前）；"回归断言"为该批次收官时全测试套件合计断言数（全 MySQL 实库）。
 
-## [0.3.13] · 遗留功能补全：券包中心 + 邮箱修改验证 + 用户改址 + 评价传图 + Google/Apple 登录
+## [0.3.12] · 后端全域多智能体审计修复：资损/并发/重复提交 P0 清零 + 幂等键补全 + 性能优化
 
-### Added（后端）
-- **优惠券领取/券包**：`discount_codes` 增 `is_claimable`，新表 `user_coupons`（`UniqueConstraint(user_id, code_id)` 防重复领）；`GET /api/promo/coupons`（公开领券中心，含 remaining/claimed）、`POST /api/promo/coupons/{id}/claim`（IntegrityError 兜底 `already_claimed`）、`GET /api/promo/coupons/mine`（可用/已用/已过期三态）；下单 `place` 成功路径按 `code_id` CAS(`status=0`) 核销挂单号（90 秒防重回路径不重复核销）。
-- **邮箱修改（双步验证）**：`POST /api/account/email-change`（密码校验 + 新邮箱查重 + 6 位码经邮件服务下发，旧码作废，dev 回 `dev_code`）/ `confirm`（10 分钟有效，confirm 时复查抢注 `email_taken`）。
-- **用户侧修改未发货订单地址**：`PUT /api/orders/{no}/address`（`status∈{0,1,2} && shipping_status=0` 否则 409 `not_editable`；游客 `?email=` 双因子；timeline `address_updated` 存新旧 city/country/zip 脱敏）。
-- **评价图片上传**：`POST /api/content/reviews/upload`（登录 multipart，png/jpeg/webp/gif ≤5MB，content-type+扩展名双校验，落 `static/uploads/reviews/{yyyymm}/{uuid}.{ext}`）；评价 `images` 放行 `/static/uploads/` 相对路径。
-- **Google/Apple 第三方登录**：`users` 增 `oauth_provider/oauth_subject`；`GET /api/account/oauth/{provider}/authorize`（HMAC state 600s 自校验防伪造，未配置 409 `not_configured`，dev 回 `dev_mock`）；回调（Google token 端点 TLS 直取 + aud/exp 校验；Apple PyJWKClient ES256 在线验签）→ 按 subject 命中 / `email_verified` 绑定 / 建号（复用注册欢迎券钩子）→ 302 `/login?oauth_token=`；`POST /api/account/oauth/dev-login`（仅 dev，演示账号直登）。authorize/callback/dev-login 入限流矩阵。
+八组并行审计（trade 前台/后台、catalog、member、promo+content、support+ops、chat/ai+公共服务、core+worker）覆盖全部功能页面与接口，约 60 项实质问题统一修复。
 
-### Added（web/client）
-- **领券中心 `/coupons`**（票券卡：百分比/固定/免邮权益渲染、门槛、有效期、剩余量、首单标；未登录领取引导 `next` 回跳）+ **我的券包 `/account/coupons`**（三态 tab、券码点击复制、已用券跳关联订单）+ 账户侧栏/页脚/移动端入口。
-- **结算页选券**：折扣码区新增「我的优惠券」面板（仅可用券，点选回填 `code` 走既有 `applyCode`/preview 联动，手输码与礼品卡逻辑不变）。
-- **设置页邮箱修改**：两步式（密码+新邮箱×2 前端校验 → 验证码确认，`dev_code` 按重置密码页模式提示）。
-- **订单详情**：未发货订单「修改地址」弹层（COUNTRIES/PHONE_RE 共享校验，游客 email 透传）+ 评价表单「上传图片」（原生 fetch multipart，类型/≤5MB/≤6 张预检，URL 复用现有图片列表 UI）。
-- **登录/注册页 Google/Apple 按钮**：authorize 跳转 / `dev_mock` 演示直登 / `not_configured` 明确提示；`?oauth_token=` 回跳经 `auth.oauthLogin()`（me 拉取 + 积分/心愿单同步）完成登录，`?oauth_error=` 分支文案。
+### Fixed（后端 · 资损与并发 P0）
+- **退款池被换货差价支付污染**：`refundable_payment_of_order` 改主款行优先（金额=grand_total 的成功行），service 层 `goods_payment_of_order` 排除 `exchanges.diff_payment_id` 挂钩行——全额退款不再只退差价、主款永不退；`charge.refunded` 命中差价行仅记账不进整单退款语义。
+- **RMA/换货在途申请不占量（双回补/双补发）**：consume 侧原子占量（`claim_item_refunded/exchanged`，`qty-refunded-exchanged >= q` 守卫进 WHERE）+ create 侧在途量校验（两侧互防穿透）；重复申请同一件货不再双份回补库存/双发新品。
+- **`_restock_items` 忽略 exchanged_qty**：整单退款对旧变体不再二次回补（换货完成件已发新品）。
+- **纯礼品卡单多笔 RMA 重复回补余额**：`_refund_giftcard_debit` 加 timeline 标记查重 + 按 RMA 退款额比例折算 + 原子回补 SQL（`status != 4` 守卫进 WHERE）。
+- **superseded 支付迟到成功双扣款**：订单已 PAID 的重复成功回调自动全额退款（`_refund_duplicate_success`）+ supersede 时尽力 provider 取消（Stripe PI.cancel / PayPal void）。
+- **折扣码 per_user_limit 支付核销失守**：mark_order_paid 同事务 per-user 计数守卫——囤多张 PENDING 单逐一支付不再绕过每人限用次数。
+- **积分发放三处 ORM 读改写丢失更新**：`grant_for_order`/referral `_grant`/worker `expire_points` 统一原子累加 + 回读写 ledger（新公共原语 `points.add_points/clear_points`）。
+- **`spend` 冻结口径不一致**：`_SPEND_SQL` 守卫下推 SQL（可用=余额-冻结），并发双单不再透支冻结积分。
+- **UGC 奖励积分薅分**：`_grant_ugc_reward` 改原子原语 + ledger ref 查重；approve/reject（UGC 与 review 四处）CAS 化——approve→unapprove→re-approve 循环不再无限发分。
+- **礼品卡 freeze 状态机穿隧**：freeze 仅限 status=1、unfreeze 校验购卡订单已支付——待激活卡"冻结→解冻"免费复活通道封堵。
+- **工单状态机/认领 TOCTOU**：全部流转边 CAS（`UPDATE ... WHERE status=:prev`）；"指派给我"未指派抢占（`WHERE assignee IS NULL`），已被他人认领 409。
+- **GDPR 删除请求三方竞态**：后台 execute/reject 与 worker 到期执行统一 `claim_data_request` CAS 抢占——驳回后不再被 worker 匿名化。
+- **chat send_message 持写事务做 LLM 网络调用**：拆三段事务（客户消息先提交→网络调用在事务外→回复独立事务）——SQLite 写锁不再被 20-120s 独占；rag_reindex 每批独立事务。
+- **worker SQLite 崩溃 + 主循环无兜底**：SQLite 分支跨平台文件锁（msvcrt/fcntl）、loop 每轮 try/except 指数退避；GDPR 逐条异常隔离。
+- **PayPal webhook 链路断裂**：`normalize_event` 支持 `event_type+resource` 真实结构、handle_webhook 按特征路由对应 provider 验签、intent 缺失时按 custom_id/order_no 定位。
+- **webhook async 端点阻塞事件循环**：`run_in_threadpool` 包裹同步 handler（PayPal 验签两次外呼不再卡死全站）。
 
-### Migration
-- `d9e4f2a7c5b1`（券包）+ `c7e9d2b4a6f8`（OAuth/邮箱修改）双分支 → `f2a4c6d8e0b1` 合并（全新库 `upgrade head` 全链验证通过）。
+### Fixed（后端 · 幂等/重复提交）
+- 订阅创建加活跃订阅去重（409 `subscription_exists`）；密码重置 token 一次性（`users.pwd_changed_at` 锚点，iat<=锚点即作废，含 Alembic 迁移）。
+- 心愿单/newsletter/退订、商品/变体/分类/合集 slug、礼品卡/折扣码/文章创建：IntegrityError 统一捕获 → 409/幂等 200（并发双击不再 500）；`stock_notifications` 补 `(variant_id,email)` 唯一索引迁移。
+- admin mark-paid 差价代记必须携带收款凭据（422 `diff_payment_proof_required`）；单号熵扩容（hex[:4]→[:8]，ticket 列宽上限内 6 位）+ 撞号重试。
+- bulk_reviews/bulk_ugc 逐条容错（409 计 skipped 继续），返回 `{updated, skipped}`；mark_delivered 补 CAS（最后一个非 CAS 流转）。
+- approve/ship/receive RMA 与换货前重验订单现态（409 `order_state_invalid`）——整单退款/取消后存量申请不可再批准发货。
 
-### 回归断言
-- 新增 `test_coupons`（39）+ `test_member_ext2`（52）；回归 `test_payments` 84 / `test_trade_fix` 33 / `test_a` 24 / `test_e2e` 62 全过；client+admin 双端构建通过。
+### Fixed（后端 · 安全与配置）
+- **GM_ENV fail-open**：未显式设置时探测 GM_DB 主机——sqlite/localhost→dev（现行为不变），远程主机按 prod 闸门（默认 JWT secret 拒绝启动 + mock_pay 禁用）。
+- **/metrics 公网裸奔**：非 dev 必须 `GM_METRICS_TOKEN`（Bearer/query 恒时比较），未配置 403。
+- seed 弱口令改 `GM_SEED_PASSWORD` 注入（缺省随机生成打印一次）；拆域部署前台 Cookie cross_site 补 `none`+Secure。
+- 前端 `hasPerm` 空 permissions 缓存由全放行改全拒绝（verify 后恢复）；下架商品 `_resolve_items` 补 `product.status` 校验（409 `product_unavailable`）；by-id 详情/变体兄弟补 `published_at` 可见性（定时上架不再提前泄露）。
+- 媒体上传补 magic bytes 白名单（415）；工单/评价/配送参数补长度与枚举校验（列宽对齐防 MySQL DataError 500）；close_reason 白名单；订阅 pause/skip 时间未来校验。
 
-## [0.3.12] · 双端前端深度审计修复：Stripe 支付通道打通 + 4 模块 40+ 项流程/体验完善
+### Fixed（后端 · 功能与口径）
+- 变体改价 `admin_update_variant` 补 flush（price_min/max 不再落库旧区间）；商品 PUT 剔除客户端价格区间回写（有在售变体时强制重算）。
+- RMA 待退列表实时预估 `refund_amount`（部分退款 UI 死路解除）；换货差价折算整数运算；check_giftcard 补过期校验；弹窗补窗口交叉校验；shipping_rate create 补查重。
+- GMV 口径统一（`status NOT IN (8,9)`，退款/取消不再虚计营收）；未关工单口径含状态 3；对账统一按 Payment.created_at 单时钟开窗 + diff_refund 补真实值（跨午夜双日误报消除）；工单 priority 补写入口（reply/close 可携带）。
+- 推荐奖励只认 REGISTERED/FIRST_ORDER 行（CLICKED 预登记行不再凭邮箱冒领）；GDPR 匿名化积分清零补流水（对账为平）+ Referral/EmailPreference PII 清理。
+- 邮件模板链接改 `GM_SITE_URL` 注入（去占位域名硬编码）。
 
-### Fixed（后端 · P0 支付死胡同）
-- **Stripe 支付通道打通**：`_create_intent_via` 对 stripe 改走 `create_checkout` 托管收银台（返回 `redirect_url`，口径对齐 PayPal）——此前 `create_intent` 只回 `client_secret` 无跳转链接，前端四类支付面（结算页/成功页/订单列表/订单详情）全部落入「暂不支持该支付渠道」死胡同，订单只能超时取消。`success_url` 追加 `&email=`（游客 hosted 回跳双因子查单不再失败）；补 `_site_url`（settings site_url/base_url > `GM_SITE_URL` > 默认）；0 元单 create-intent 同口径拒绝（`invalid_amount`/`already_paid`）。
-- **Email 大小写归一**：注册写入前 `.strip().lower()`，登录/重置/查重查询改 `func.lower(User.email)`（前端四处发送端同步小写）——手机端自动大写首字母注册后无法登录的问题修复。
+### Performance
+- TTLCache 加 maxsize LRU（`GM_CACHE_MAXSIZE` 默认 1 万）；/api/ai/recommend|hot 补 60/min/IP 限流；LLM/embedding 信号量限并发（`GM_LLM_MAX_CONCURRENCY` 默认 8，满载快速回落）+ Stripe 超时 10s/重试 2。
+- KB 注入 8000 字符预算；查询向量/RAG 就绪状态 TTL 缓存；ai 仓储 SQL 层 limit；`_pending_total` SQL COUNT；工单列表消息 IN 批查；评分重算 SQL AVG；标签云缓存；dashboard 去重查询；sitemap 动态段 600s 缓存 + 异常告警日志；SQLite busy_timeout=10s；worker 对账/日报 6h 水位短路；限流空 bucket 回收。
 
-### Fixed（web/client · 交易主流程）
-- **结算草稿地址不再被默认地址覆盖**：`selAddr` 持久化进草稿，`loadAddrs` 优先恢复草稿选择（地址已删回落手填），hosted 取消回跳/误刷新不丢收货人填写。
-- **游客待付单闭环**：Track 页待付状态补「立即支付」入口（跳成功页携带 email 双因子）；订单详情 `payNow` 改用共享 `createOrderIntent`（通道对账 + `provider_unavailable` 自动去参重试，不再裸发 localStorage 旧通道）。
-- `?canceled=1` 且购物车已清空时不再堆叠「订单已保留」+「购物车为空」双卡片；积分输入与 `points_applied` 钳制值回写同步；CartView 挂载重复 preview 请求去重；CartDrawer 运费请求懒加载（首次开抽屉才发）；换货提交成功补「查看售后进度」链接；`payDiff` 补 `use_webhook` 分支提示；支付方式名双语化（mock/stripe/paypal/klarna 映射）；三处 hosted 跳转补 3s 重定向看门狗；地址区 `<form>` 语义化（Enter 不再误触）；订单时间轴明细改白名单字段（不再泄漏 `payment_intent` 等内部键）；下单后 mock 通道判定改以 intent 实际 provider 为准（通道回落 mock 也自动完成支付）。
+### 前端（web/admin）
+- MarketingView：礼品卡过期字段 `expires_at` 修正（恒显"永久"修复）、发卡/加码/弹窗保存 busy 防重、max_discount min=0。
+- TicketsView：`already_assigned` 409 文案映射；ReturnsView：mark-paid 凭据输入复用必填机制；ProductEditView：变体操作后刷新价格区间；session store hasPerm 收紧。
 
-### Fixed（web/client · 账户与内容）
-- 心愿单加载失败补「重试」；地址簿/改密码/礼品卡购买表单 `<form>` 化（Enter 即提交，取消钮 `type="button"`）；GDPR 删除横幅英文语序修复；注册页条款/隐私链接 `target="_blank"`（不再销毁已填表单）；心愿单加购失败双重 toast 去重；推荐链接复制补 `execCommand` 降级；退订页重试按钮按 `retryable` 精确显隐；重置成功跳转定时器卸载清理。
-- **PDP 任何请求失败不再误显「商品不存在」**：仅 404 走下架态，超时/5xx 走错误卡 + 重试；售罄蒙层 `pointer-events:none`（点击穿透可进详情订阅到货）；「第一个来评价」补收货后可评价引导链接；商品卡链接优先 `?slug=`（可分享/SEO 友好）。
-- **触屏 Mega 菜单可达**：`@media (hover:none)` 首 tap 展开/次 tap 跳转；**客服面板离线轮询 + 未读角标**（关闭面板期间人工回复照常接收，数字角标替代静态绿点）；Store 页 `?page` 越界自动回第 1 页；Cookie 设置 backdrop 关闭与 Esc 同口径（未同意不再双双消失）；搜索弹窗补「清除最近搜索」+ 方向键滚动跟随 + Home/End；购物车角标初始水合不脉冲；Collection 切语言不再整屏骨架屏闪烁；Contact 查询不再强制覆盖异邮箱工单；Gallery 图片校验中禁提交；社交/toast/aria 硬编码英文双语化。
-
-### Fixed（web/admin）
-- **美甲师角色模板 403 消除**：快捷模板按钮/选择器/斜杠命令按 `ticket:manage` 门控（艺术家仅 `chat:manage` 不再触发全局 403 toast）。
-- **售后退款文案纠偏**：已完成订单「全额退满可退余额将转『已退款』+ 回补库存 + 作废积分」（原文案与后端行为相反）；全额退款时金额下方追加红色警示行。
-- **hasPerm fail-closed**：空权限集不再「有会话即全放行」；路由守卫对旧缓存（无 permissions）先 `verify()` 拉实时权限再判，失效会话回登录。
-- 只读角色隐藏勾选列与批量操作条（orders 按 `trade:ship`、products 按 `catalog:manage`）；Marketing/Content 五处开关钮补 in-flight 防抖（双击不再双翻转）；`resumeAi`/`恢复默认快捷回复` 补确认弹窗；订单深链 `per_page` 重置；RMA 部分退款（状态 7）补「余款可在订单详情继续退款」跳转提示。
-
-### Fixed（随批收编 · 前次会话遗留）
-- 限流补 `/api/account/export`（3/min）、`/api/catalog/search`（30/min）、`/api/content/` 前缀兜底（30/min）；搜索 `q` 长度 ≤100 + strip；评价待审核响应 `pending_review` 标记；`order_items` 售后未决占用列（`rma_pending_qty`/`ex_pending_qty` + Alembic 迁移 + trade 服务层全链路实现：RMA/换货申请即抢占、终态结转或释放，防重复超量申请，新增 test_trade_fix 33 项回归）；结算/地址簿共享国家数据 `data/countries.js`（含手机号校验）；搜索提交改 `router.replace`（不再堆历史）。
-
-### 测试与构建
-- 后端回归全绿（逐套件运行 39 套）：test_payments 84、test_b 76、test_c 83、test_chat_ext 84、test_e2e 62、test_exchanges 57、test_refsub 64、test_a 24、test_concurrency 6 等；双 SPA `npm run build` 零错误。
+### 测试与迁移
+- 全量 39 套件回归绿（含新增 `test_payments_ext/test_points_ext/test_returns_occupy_ext/test_promo_content_ext/test_tickets_cas_ext/test_catalog_ext2/test_cache_ext`，共 ~1400 断言）；Alembic 新增 `c9d2e4f7a3b1`（users.pwd_changed_at + stock_notifications uk）；双 SPA `npm run build` 零错误。
 
 ## [0.3.11] · 双端前端全面审计修复：交易流程健壮性 + 营销页补全 + 后台 URL/分页口径统一
 

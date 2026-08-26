@@ -97,6 +97,9 @@ def my_subscriptions(db: Session, user: User) -> dict:
 
 
 def create(db: Session, user: User, body: SubscriptionCreateIn) -> dict:
+    # 双开防线：同一用户已有生效（status=1）订阅 → 409（与地址簿/推荐域 409 风格一致）
+    if repo.active_subscription(db, user.id) is not None:
+        raise HTTPException(status_code=409, detail="subscription_exists")
     sub = Subscription(
         user_id=user.id,
         stripe_subscription_id="SUBMOCK" + secrets.token_hex(6),

@@ -316,7 +316,8 @@ async function loadAdmins() {
     adminsLoaded.value = true
   } catch (_) { /* 失败保持空列表，指派下拉仅剩占位项 */ }
 }
-/* 指派给我：AssignIn 需 admin_id（取当前登录管理员 id），接入 busy 防重复提交 */
+/* 指派给我：AssignIn 需 admin_id（取当前登录管理员 id），接入 busy 防重复提交；
+ * 409 already_assigned = 工单已被他人认领（后端 CAS 抢注互斥） */
 async function assignMe() {
   if (busy.value) return
   const adminId = session.user?.id
@@ -327,7 +328,7 @@ async function assignMe() {
     Object.assign(active.value, t)
     toast('已指派给你 ✓', 'success')
     load(st.page)
-  } catch (e) { toast('指派失败：' + terr(e), 'error') }
+  } catch (e) { toast('指派失败：' + (e.data?.detail === 'already_assigned' ? '工单已被他人认领' : terr(e)), 'error') }
   finally { busy.value = false }
 }
 /* 指派给其他管理员：下拉选择即提交（选项文案「姓名 email前缀」，当前指派人标记） */

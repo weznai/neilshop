@@ -19,6 +19,7 @@ with _cn.cursor() as _cur:
 _cn.close()
 os.environ["GM_DB"] = "mysql+pymysql://glowmag:glowmag123@127.0.0.1:3306/glowmag_test_w?charset=utf8mb4"
 os.environ["GM_COOKIE_AUTH"] = "0"  # 纯 Bearer 通道
+os.environ["GM_SEED_PASSWORD"] = "glowmag123"  # seed 密码改为环境变量注入（缺省随机生成）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _seed = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "scripts" / "seed.py")],
@@ -262,14 +263,17 @@ with TestClient(app) as client:
     d = r.json()
     check("A 推荐码 GLOW- 存在", r.status_code == 200
           and str(d.get("code", "")).startswith("GLOW-"), d)
+    u2_code = d.get("code", "")
 
     b_email = f"e2e.b.{RUN}@{DOM}"
     r = client.post("/api/referrals/simulate-invite", headers=u2_auth, json={"email": b_email})
     check("A simulate-invite B", r.status_code == 201
           and str(r.json().get("code", "")).startswith("GLOW-"), r.text[:200])
 
+    # 注册必须带 ref_code 升级 CLICKED→REGISTERED：奖励只认已回填 invited_user_id 的行
     r = client.post("/api/account/register",
-                    json={"email": b_email, "password": "Glow12345!", "name": "Bee Referral"})
+                    json={"email": b_email, "password": "Glow12345!",
+                          "name": "Bee Referral", "ref_code": u2_code})
     d = r.json()
     check("B 注册 201 → token", r.status_code == 201 and d.get("token"), r.text[:200])
     b_auth = {"Authorization": f"Bearer {d['token']}"}
@@ -415,7 +419,9 @@ with TestClient(app) as client:
     check("全额退 → 订单 REFUNDED(9) + Payment 全退",
           b_order.status == 9 and b_pay.status == 3 and b_pay.refunded_amount == 2038,
           (b_order.status, b_pay.status, b_pay.refunded_amount))
-    check("积分作废 frozen 清零 / points 扣回", b_user.points == 0 and frozen_left == 0
+    # 订单积分作废仅覆盖本单赚取（frozen 清零）；被邀方首单奖励（reward_invitee=1000，
+    # 非冻结营销成本，与推荐人奖励同口径）不追回
+    check("积分作废 frozen 清零 / points 扣回", b_user.points == 1000 and frozen_left == 0
           and void_row is not None, (b_user.points, frozen_left))
 
     print("\n== 礼品卡 ==")

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from sqlalchemy import text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -20,6 +21,8 @@ from app.domains.content.schemas import (
     ArticleCreateIn, ArticleUpdateIn, FaqCreateIn, FaqUpdateIn, ReasonIn,
     ReviewIn, UgcIn, FAQ_CATEGORY, REVIEW_REWARD, UGC_REWARD,
 )
+from app.services.cache import _cache, cached
+from app.services.points import add_points
 
 
 def log_admin(db: Session, admin: User, action: str, entity: str, entity_id: int, diff: dict | None = None):
@@ -137,6 +140,22 @@ def _article_summary(content_md: str | None) -> str:
     return body[:120] if body else raw[:120]
 
 
+def _invalidate_cache() -> None:
+    """文章写路径失效标签云缓存（对齐 catalog 的域前缀清理写法）"""
+    _cache.clear("content")
+
+
+@cached("content:tags")
+def _article_tag_cloud(db: Session) -> list[dict]:
+    """标签云聚合（TTL 缓存，GM_CACHE 默认关闭时直查等价原实现）：
+    全量已发布文章 tags（JSON 列表）Counter 聚合，count 降序（并列按首次出现）"""
+    counter: Counter = Counter()
+    for tags in repo.published_article_tags(db):
+        for t in tags or []:
+            counter[str(t)] += 1
+    return [{"name": name, "count": n} for name, n in counter.most_common()]
+
+
 def list_articles(db: Session, page: int, size: int, tag: str | None) -> dict:
     q = repo.published_articles(db, tag)
     total = q.count()
@@ -153,17 +172,12 @@ def list_articles(db: Session, page: int, size: int, tag: str | None) -> dict:
         }
         for a in rows
     ]
-    # 标签云：全量已发布文章 tags（JSON 列表）Counter 聚合，count 降序（并列按首次出现）
-    counter: Counter = Counter()
-    for tags in repo.published_article_tags(db):
-        for t in tags or []:
-            counter[str(t)] += 1
     return {
         "items": items,
         "total": total,
         "page": page,
         "size": size,
-        "tags": [{"name": name, "count": n} for name, n in counter.most_common()],
+        "tags": _article_tag_cloud(db),
     }
 
 
@@ -296,27 +310,31 @@ def list_ugc_wall(db: Session, page: int, size: int) -> dict:
 # ===== 后台：评价审核 =====
 
 
+# 评分重算改单条聚合 SQL（原全量拉行内存求均）；AVG(rating)*100 与旧口径
+# round(sum*100/cnt) 等价（rating 整数），COUNT/AVG 双方言通用
+_RATING_SQL = text(
+    "SELECT COUNT(*), COALESCE(AVG(rating), 0) FROM reviews "
+    "WHERE product_id = :pid AND status = 1"
+)
+
+
 def _recalc_rating(db: Session, product_id: int):
-    rows = repo.approved_ratings(db, product_id)
-    cnt = len(rows)
-    avg = round(sum(r[0] for r in rows) * 100 / cnt) if cnt else 0
+    cnt, avg = db.execute(_RATING_SQL, {"pid": product_id}).one()
     product = repo.product_by_id(db, product_id)
     if product:
-        product.rating_avg = avg
-        product.rating_count = cnt
+        product.rating_avg = round(float(avg) * 100)
+        product.rating_count = int(cnt)
 
 
-# 评价奖励积分发放用原子 UPDATE（与 services/points.py 同通道：先原子加分再读余额记流水，
-# 避免与同事务内其他 ORM 脏快照互相覆盖）
-_ADD_POINTS_SQL = text("UPDATE users SET points = points + :amt WHERE id = :uid")
-_POINTS_OF_SQL = text("SELECT points FROM users WHERE id = :uid")
+# 发分走 points.add_points 公共原语（raw UPDATE + 回读现值），避免与同事务内
+# 其他 ORM 脏快照互相覆盖（调用方自写 ledger，事务边界归各 approve 函数）
 
 
 def _grant_review_reward(db: Session, review: Review) -> None:
     """评价过审发放奖励积分（REVIEW_REWARD=10，不冻结，即时可用）。
     幂等：同 review 只发一次（ledger 查 ref_type='review' + ref_id 命中即跳过），
     双保险 approve_review 本身已有 status!=0 → 409 挡重复过审。"""
-    if not review.user_id:
+    if not review.user_id or db.get(User, review.user_id) is None:
         return
     dup = (
         db.query(PointsLedger.id)
@@ -328,8 +346,7 @@ def _grant_review_reward(db: Session, review: Review) -> None:
     )
     if dup:
         return
-    db.execute(_ADD_POINTS_SQL, {"uid": review.user_id, "amt": REVIEW_REWARD})
-    balance = int(db.execute(_POINTS_OF_SQL, {"uid": review.user_id}).scalar())
+    balance = add_points(db, review.user_id, REVIEW_REWARD)
     db.add(PointsLedger(
         user_id=review.user_id,
         change=REVIEW_REWARD,
@@ -348,8 +365,15 @@ def approve_review(db: Session, admin: User, review_id: int) -> dict:
         raise HTTPException(status_code=404, detail="review not found")
     if r.status != 0:
         raise HTTPException(status_code=409, detail="review not pending")
-    r.status = 1
-    db.flush()
+    # CAS 0→1：双管理员并发过审只有一个赢家（rowcount=0 → 409，不重复发分）
+    claimed = db.execute(
+        update(Review)
+        .where(Review.id == r.id, Review.status == 0)
+        .values(status=1)
+    )
+    if claimed.rowcount == 0:
+        raise HTTPException(status_code=409, detail="review not pending")
+    db.refresh(r)
     _grant_review_reward(db, r)
     _recalc_rating(db, r.product_id)
     log_admin(db, admin, "approve", "review", r.id, {"status": 1, "points": REVIEW_REWARD})
@@ -363,8 +387,15 @@ def reject_review(db: Session, admin: User, review_id: int, body: ReasonIn) -> d
         raise HTTPException(status_code=404, detail="review not found")
     if r.status != 0:
         raise HTTPException(status_code=409, detail="review not pending")
-    r.status = 2
-    r.reject_reason = body.reason
+    # CAS 0→2：并发通过+拒绝互斥，状态机不穿隧
+    claimed = db.execute(
+        update(Review)
+        .where(Review.id == r.id, Review.status == 0)
+        .values(status=2, reject_reason=body.reason)
+    )
+    if claimed.rowcount == 0:
+        raise HTTPException(status_code=409, detail="review not pending")
+    db.refresh(r)
     log_admin(db, admin, "reject", "review", r.id, {"status": 2, "reason": body.reason})
     db.commit()
     return {"id": r.id, "status": r.status, "reject_reason": r.reject_reason}
@@ -399,18 +430,29 @@ def admin_ugc(db: Session, status: int | None, page: int = 1, size: int = 20) ->
     }
 
 
-def _grant_ugc_reward(db: Session, ugc: UgcSubmission):
-    if not ugc.user_id:
+def _grant_ugc_reward(db: Session, ugc: UgcSubmission) -> None:
+    """UGC 过审发放奖励积分（UGC_REWARD=100，不冻结，即时可用）。
+    幂等：同 ugc 只发一次（ledger 查 ref_type='ugc' + ref_id 命中即跳过）——
+    防历史/后台路径把状态改回待审后 re-approve 循环薅分；
+    加分走 points.add_points 原子原语（同 _grant_review_reward，避免 ORM 脏快照覆盖并发加分）。"""
+    if not ugc.user_id or db.get(User, ugc.user_id) is None:
         return
-    user = repo.user_by_id(db, ugc.user_id)
-    if not user:
+    dup = (
+        db.query(PointsLedger.id)
+        .filter(PointsLedger.user_id == ugc.user_id,
+                PointsLedger.reason == int(PointsReason.UGC_REWARD),
+                PointsLedger.ref_type == "ugc",
+                PointsLedger.ref_id == ugc.id)
+        .first()
+    )
+    if dup:
         return
-    user.points += UGC_REWARD
+    balance = add_points(db, ugc.user_id, UGC_REWARD)
     db.add(PointsLedger(
-        user_id=user.id,
+        user_id=ugc.user_id,
         change=UGC_REWARD,
         reason=int(PointsReason.UGC_REWARD),
-        balance_after=user.points,
+        balance_after=balance,
         ref_type="ugc",
         ref_id=ugc.id,
         frozen=0,
@@ -425,7 +467,15 @@ def approve_ugc(db: Session, admin: User, ugc_id: int) -> dict:
         raise HTTPException(status_code=404, detail="ugc not found")
     if u.status != 0:
         raise HTTPException(status_code=409, detail="ugc not pending")
-    u.status = 1
+    # CAS 0→1：双管理员并发过审只有一个赢家（配合 ledger 查重双保险不重复发分）
+    claimed = db.execute(
+        update(UgcSubmission)
+        .where(UgcSubmission.id == u.id, UgcSubmission.status == 0)
+        .values(status=1)
+    )
+    if claimed.rowcount == 0:
+        raise HTTPException(status_code=409, detail="ugc not pending")
+    db.refresh(u)
     _grant_ugc_reward(db, u)
     log_admin(db, admin, "approve", "ugc", u.id, {"status": 1, "points": u.points_rewarded})
     db.commit()
@@ -438,7 +488,15 @@ def reject_ugc(db: Session, admin: User, ugc_id: int) -> dict:
         raise HTTPException(status_code=404, detail="ugc not found")
     if u.status != 0:
         raise HTTPException(status_code=409, detail="ugc not pending")
-    u.status = 2
+    # CAS 0→2：并发通过+拒绝只有一个赢家，状态机不穿隧
+    claimed = db.execute(
+        update(UgcSubmission)
+        .where(UgcSubmission.id == u.id, UgcSubmission.status == 0)
+        .values(status=2)
+    )
+    if claimed.rowcount == 0:
+        raise HTTPException(status_code=409, detail="ugc not pending")
+    db.refresh(u)
     log_admin(db, admin, "reject", "ugc", u.id, {"status": 2})
     db.commit()
     return {"id": u.id, "status": u.status}
@@ -484,7 +542,7 @@ def create_article(db: Session, admin: User, body: ArticleCreateIn) -> dict:
     if not slug:
         raise HTTPException(status_code=422, detail="slug required")
     if repo.article_id_by_slug(db, slug):
-        raise HTTPException(status_code=409, detail="slug exists")
+        raise HTTPException(status_code=409, detail="slug_exists")
     a = Article(
         slug=slug,
         title=body.title.strip(),
@@ -496,9 +554,15 @@ def create_article(db: Session, admin: User, body: ArticleCreateIn) -> dict:
         published_at=utcnow() if body.status == 1 else None,
     )
     db.add(a)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # 并发同 slug：先查后插竞态窗口撞唯一索引 → 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="slug_exists")
     log_admin(db, admin, "create", "article", a.id, {"slug": slug, "title": a.title, "status": a.status})
     db.commit()
+    _invalidate_cache()
     db.refresh(a)
     return _article_dict(a)
 
@@ -513,13 +577,14 @@ def update_article(db: Session, admin: User, article_id: int, body: ArticleUpdat
         if not data["slug"]:
             raise HTTPException(status_code=422, detail="slug required")
         if repo.article_id_by_slug(db, data["slug"], exclude_id=a.id):
-            raise HTTPException(status_code=409, detail="slug exists")
+            raise HTTPException(status_code=409, detail="slug_exists")
     if data.get("status") == 1 and a.published_at is None:
         a.published_at = utcnow()
     for k, v in data.items():
         setattr(a, k, v)
     log_admin(db, admin, "update", "article", a.id, data)
     db.commit()
+    _invalidate_cache()
     db.refresh(a)
     return _article_dict(a)
 
@@ -531,6 +596,7 @@ def delete_article(db: Session, admin: User, article_id: int) -> dict:
     log_admin(db, admin, "delete", "article", a.id, {"slug": a.slug, "title": a.title})
     db.delete(a)
     db.commit()
+    _invalidate_cache()
     return {"id": article_id, "deleted": True}
 
 

@@ -142,7 +142,8 @@ class CollectionProductIn(BaseModel):
 
 
 class CollectionProductsIn(BaseModel):
-    products: list[CollectionProductIn]
+    # 上限 200：防一次请求打爆复合主键插入与 replace 事务
+    products: list[CollectionProductIn] = Field(max_length=200)
 
 
 class StockNotifyIn(BaseModel):

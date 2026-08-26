@@ -14,7 +14,8 @@ class ReviewIn(BaseModel):
     order_no: str
     order_item_id: int
     rating: int = Field(ge=1, le=5)
-    content: str | None = None
+    # DB 列 String(2000)：超长入库前拦截（422）
+    content: str | None = Field(default=None, max_length=2000)
     images: list[str] | None = None
 
 

@@ -130,6 +130,11 @@ class PaymentProvider(ABC):
         """非 dev 环境 webhook 验签门禁密钥（stripe=webhook 签名密钥 / paypal=webhook_id）"""
         return ""
 
+    def cancel_intent(self, payment_intent: str) -> None:
+        """尽力取消 provider 侧未完成的 intent（supersede 防双扣款）：默认无操作，
+        不可取消/失败由调用方告警兜底（迟到成功回调另有自动退款兜底）。"""
+        return None
+
 
 class MockProvider(PaymentProvider):
     name = "mock"
@@ -177,7 +182,12 @@ class StripeProvider(PaymentProvider):
             import stripe
         except ImportError as exc:
             raise ProviderUnavailable("stripe package not installed") from exc
+        # 模块级网络参数：超时防 SDK 无限挂起 + 网络错误自动重试（幂等键已带，重试安全）。
+        # 已知残留风险：全局 stripe.api_key 赋值在多 key 配置并发下有竞态（当前单租户
+        # 单 key 部署不触发；SDK 资源方法支持 per-request api_key，测试桩未透传故暂不迁移）
         stripe.api_key = self.key
+        stripe.timeout = 10
+        stripe.max_network_retries = 2
         return stripe
 
     def create_intent(self, order, amount_cents: int) -> dict:
@@ -224,6 +234,12 @@ class StripeProvider(PaymentProvider):
             }],
         )
         return {"checkout_session_id": session.id, "redirect_url": session.url}
+
+    def cancel_intent(self, payment_intent: str) -> None:
+        """尽力取消未完成的 PI（supersede 防双扣款）：已确认/已成功的 PI 会抛错，
+        由调用方告警兜底（迟到成功回调自动退款兜底）。"""
+        stripe = self._sdk()
+        stripe.PaymentIntent.cancel(payment_intent)
 
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("stripe payments are driven by webhook events")
@@ -293,29 +309,37 @@ class PayPalProvider(PaymentProvider):
         return resp.json()["access_token"]
 
     def create_intent(self, order, amount_cents: int) -> dict:
-        with self._client() as client:
-            token = self._token(client)
-            resp = client.post(
-                f"{self.base}/v2/checkout/orders",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    # 时变幂等键（与 Stripe 同因）：固定 order_no 失败重试永远取回旧失败单
-                    "PayPal-Request-Id": f"{order.order_no}:{int(time.time())}",
-                },
-                json={
-                    "intent": "CAPTURE",
-                    "purchase_units": [{
-                        "amount": {
-                            "currency_code": "USD",
-                            "value": f"{amount_cents / 100:.2f}",
-                        },
-                        "custom_id": order.order_no,
-                        "metadata": {"order_no": order.order_no},
-                    }],
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            with self._client() as client:
+                token = self._token(client)
+                resp = client.post(
+                    f"{self.base}/v2/checkout/orders",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        # 时变幂等键（与 Stripe 同因）：固定 order_no 失败重试永远取回旧失败单
+                        "PayPal-Request-Id": f"{order.order_no}:{int(time.time())}",
+                    },
+                    json={
+                        "intent": "CAPTURE",
+                        "purchase_units": [{
+                            "amount": {
+                                "currency_code": "USD",
+                                # 纯整数拼串：cents/100 浮点除法对极端金额有精度误差
+                                "value": f"{amount_cents // 100}.{amount_cents % 100:02d}",
+                            },
+                            "custom_id": order.order_no,
+                            "metadata": {"order_no": order.order_no},
+                        }],
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except ProviderUnavailable:
+            raise
+        except Exception as exc:
+            # httpx 网络/超时/4xx5xx（raise_for_status）→ 统一映射 ProviderUnavailable，
+            # 由调用方降级 mock / 502，避免未分类 500
+            raise ProviderUnavailable(f"paypal create_intent failed: {exc}") from exc
         approve = next(
             (str(link.get("href")) for link in data.get("links") or []
              if link.get("rel") == "approve"),
@@ -328,18 +352,32 @@ class PayPalProvider(PaymentProvider):
     def confirm(self, order, payment, succeed: bool) -> bool:
         raise NotImplementedError("paypal payments are driven by webhook events")
 
+    def cancel_intent(self, payment_intent: str) -> None:
+        """尽力作废未支付的 PayPal order（supersede 防双扣款）：已捕获/已完成会抛错，
+        由调用方告警兜底。"""
+        with self._client() as client:
+            token = self._token(client)
+            resp = client.post(
+                f"{self.base}/v2/checkout/orders/{payment_intent}/void",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            resp.raise_for_status()
+
     def verify_webhook(
         self, payload: bytes, sig_header: str | None, headers: dict | None = None,
     ) -> dict:
         """真实验签：携带 webhook_id + paypal-transmission-* 请求头 POST
         /v1/notifications/verify-webhook-signature，校验 verification_status == VERIFIED。
         webhook_id 未配置（dev 降级，非 dev 由 handle_webhook 门禁 400 拒绝）时保持
-        原结构桩行为：事件结构（id/type 必填）+ webhook_id 匹配（双方均配置时）。"""
+        原结构桩行为：事件结构（id + type/event_type 必填，真实 PayPal 事件是
+        event_type + resource，无 Stripe 形态的 type 键）+ webhook_id 匹配。"""
         try:
             event = json.loads(payload.decode("utf-8"))
         except Exception as exc:
             raise WebhookVerificationError("invalid_payload") from exc
-        if not isinstance(event, dict) or not event.get("id") or not event.get("type"):
+        if not isinstance(event, dict) or not event.get("id") or not (
+            event.get("type") or event.get("event_type")
+        ):
             raise WebhookVerificationError("invalid_event")
         expected = self.webhook_id
         if expected and event.get("webhook_id") != expected:
@@ -373,7 +411,56 @@ class PayPalProvider(PaymentProvider):
         return self.webhook_id
 
 
+# PayPal 真实事件 → Stripe 语义映射（capture 完成=支付成功 / 退款与安全支付撤销=退款入账）
+_PAYPAL_EVENT_TYPE_MAP = {
+    "PAYMENT.CAPTURE.COMPLETED": "payment_intent.succeeded",
+    "PAYMENT.CAPTURE.REFUNDED": "charge.refunded",
+    "PAYMENT.CAPTURE.REVERSED": "charge.refunded",
+}
+
+
+def _money_cents(value) -> int | None:
+    """PayPal 金额（"10.00" 十进制字符串）→ 美分 int；解析失败返回 None。"""
+    try:
+        return int(round(float(value) * 100))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_paypal_event(event: dict) -> dict:
+    """PayPal 真实事件（event_type + resource）→ 与 Stripe 一致的归一化结构。
+    intent 解析优先级：related_ids.payment_intent（Payments v1）→ related_ids.order_id
+    （Orders v2，即建单时落库的 PI）→ resource.id；均拿不到时 metadata.order_no
+    （custom_id）供调用方按订单定位。"""
+    resource = event.get("resource") if isinstance(event.get("resource"), dict) else {}
+    related = resource.get("supplementary_data")
+    related = related.get("related_ids") if isinstance(related, dict) else None
+    related = related if isinstance(related, dict) else {}
+    intent = (
+        related.get("payment_intent") or related.get("order_id")
+        or resource.get("id") or ""
+    )
+    amount = _money_cents(
+        resource.get("amount").get("value")
+        if isinstance(resource.get("amount"), dict) else None
+    )
+    return {
+        "id": event.get("id") or "",
+        "type": _PAYPAL_EVENT_TYPE_MAP.get(
+            event.get("event_type"), event.get("event_type") or ""),
+        "data": {
+            "payment_intent": intent,
+            "amount": amount,
+            "metadata": {"order_no": resource.get("custom_id") or ""},
+        },
+    }
+
+
 def normalize_event(event) -> dict:
+    # PayPal 真实事件形态（event_type + resource，无 Stripe 的 data.object 包装）
+    # 先归一为 Stripe 语义，消费侧（handle_webhook）零分支差异
+    if isinstance(event, dict) and event.get("event_type") and not event.get("type"):
+        return _normalize_paypal_event(event)
     data = event.get("data") or {}
     if isinstance(data, dict) and isinstance(data.get("object"), dict):
         obj = data["object"] or {}

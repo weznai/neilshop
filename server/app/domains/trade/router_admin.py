@@ -216,9 +216,12 @@ def reject_exchange(
 
 @router.post("/exchanges/{exchange_no}/mark-paid")
 def mark_paid_exchange(
-    exchange_no: str, admin: User = Depends(require_perm("trade:refund")), db: Session = Depends(get_db),
+    exchange_no: str, body: dict | None = None,
+    admin: User = Depends(require_perm("trade:refund")), db: Session = Depends(get_db),
 ):
-    return service_exchanges.mark_paid_exchange(db, admin, exchange_no)
+    """代记差价已收（P1-7）：body.note 必填（收款凭据/流水号），service 校验非空并留痕"""
+    note = (body or {}).get("note") if isinstance(body, dict) else None
+    return service_exchanges.mark_paid_exchange(db, admin, exchange_no, note)
 
 
 @router.post("/exchanges/{exchange_no}/ship")

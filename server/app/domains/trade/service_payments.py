@@ -9,6 +9,7 @@
 环境门禁（GM_ENV，默认 dev）：非 dev 下 mock-pay 404；webhook 在非 dev 且
 未配置 provider 验签密钥时 400 拒绝处理。"""
 
+import json
 import logging
 
 from fastapi import HTTPException
@@ -18,6 +19,7 @@ from app.core.config import settings
 from app.core.db import utcnow
 from app.domains.trade import repository as repo
 from app.models import Order, Payment, User
+from app.services import payment_provider
 from app.services import points as points_svc
 from app.services.payment_provider import (
     InvalidSignatureError, MockProvider, ProviderUnavailable,
@@ -99,6 +101,40 @@ def _refund_late_success(db: Session, order: Order, payment: Payment) -> None:
     log.warning(
         "late webhook success on canceled/refunded order=%s auto-refunded: "
         "payment=%s amount=%s",
+        order.order_no, payment.id, refund_amount,
+    )
+
+
+def _refund_duplicate_success(db: Session, order: Order, payment: Payment) -> None:
+    """同单双扣款自动退款：订单已 PAID（另一笔已成功），本行（多为被 supersede 的旧
+    intent）迟到成功 —— provider 侧已真实扣款，全额退本行资金（payment→3）；
+    订单保持 PAID、不回补库存/积分（主款对应的履约不受影响），仅记退款资金事件。
+    幂等：已退（3/4）或已退满不二次退。"""
+    if payment.status in (3, 4) or payment.refunded_amount >= payment.amount:
+        return
+    if payment.status != 1:
+        payment.status = 1
+        _timeline(db, order.id, "payment_succeeded", detail={
+            "payment_intent": payment.stripe_payment_intent,
+            "amount": payment.amount, "source": "webhook",
+            "late": True, "order_status": order.status, "duplicate": True,
+        })
+    refund_amount = payment.amount - payment.refunded_amount
+    payment.refunded_amount += refund_amount
+    payment.status = 3
+    repo.add_outbox_event(
+        db, aggregate_type="order", aggregate_id=order.id,
+        event_type="order.refunded",
+        payload={
+            "order_no": order.order_no, "amount": refund_amount,
+            "full": False, "reason": "duplicate_charge_auto_refund",
+        },
+    )
+    _timeline(db, order.id, "refund_issued", detail={
+        "amount": refund_amount, "reason": "duplicate_charge_auto_refund", "full": False,
+    })
+    log.warning(
+        "duplicate charge on paid order=%s auto-refunded: payment=%s amount=%s",
         order.order_no, payment.id, refund_amount,
     )
 
@@ -190,20 +226,55 @@ def mark_order_paid(
                 user.tier_updated_at = now
 
     if order.discount_code_id:
-        amount = _code_discount_of(db, order)
-        repo.add_discount_redemption(
-            db, code_id=order.discount_code_id, order_id=order.id,
-            user_id=order.user_id, email=order.email, discount_amount=amount,
-        )
-        # used_count 原子自增（限额守卫进 WHERE）：并发多单抢同码不超发；
-        # rowcount=0 = 已达上限 —— 支付已成功，超发一次比丢单好，仅告警不回滚
-        if repo.bump_discount_used_count(db, order.discount_code_id) == 0:
+        dc = repo.get_discount_code(db, order.discount_code_id)
+        # per-user 守卫：下单时校验会被「囤多张 PENDING 单后逐一支付」绕过 —— 核销前
+        # 同事务按 (code,email) 计数（口径同 promo_rules），超限不插 Redemption 不计数；
+        # 支付已捕获，按 over-issue accepted 风格仅告警，订单保留、价格不变
+        if (dc is not None and dc.per_user_limit and order.email
+                and repo.redemption_count_by_code_email(
+                    db, dc.id, order.email.strip().lower()) >= dc.per_user_limit):
             log.warning(
-                "discount_code %s usage_limit exceeded on paid order=%s: "
-                "over-issue accepted (payment already captured, order kept)",
+                "discount_code %s per_user_limit exceeded on paid order=%s: "
+                "over-issue accepted (redemption skipped, order kept)",
                 order.discount_code_id, order.order_no,
             )
+        else:
+            amount = _code_discount_of(db, order)
+            repo.add_discount_redemption(
+                db, code_id=order.discount_code_id, order_id=order.id,
+                user_id=order.user_id, email=order.email, discount_amount=amount,
+            )
+            # used_count 原子自增（限额守卫进 WHERE）：并发多单抢同码不超发；
+            # rowcount=0 = 已达上限 —— 支付已成功，超发一次比丢单好，仅告警不回滚
+            if repo.bump_discount_used_count(db, order.discount_code_id) == 0:
+                log.warning(
+                    "discount_code %s usage_limit exceeded on paid order=%s: "
+                    "over-issue accepted (payment already captured, order kept)",
+                    order.discount_code_id, order.order_no,
+                )
     return True
+
+
+def _supersede_stale(
+    db: Session, provider, keep: Payment, order_no: str,
+) -> None:
+    """废弃同单旧 PENDING（提交）+ 尽力 provider 取消：superseded 行只在本地置
+    FAILED 的话，旧 intent 在 provider 侧仍可支付，用户完成旧支付即双扣款；
+    取消失败仅告警不阻塞 —— 迟到成功回调另有自动退款兜底。"""
+    intents = repo.stale_pending_intents_of_order(db, keep)
+    superseded = repo.supersede_stale_pending(db, keep)
+    if not superseded:
+        return
+    db.commit()
+    log.info("superseded %d stale PENDING payment(s) for order=%s",
+             superseded, order_no)
+    cancel = getattr(provider, "cancel_intent", None)
+    for pi in intents:
+        try:
+            if cancel is not None:
+                cancel(pi)
+        except Exception as exc:
+            log.warning("cancel superseded intent %s failed at provider: %s", pi, exc)
 
 
 def create_intent(
@@ -239,7 +310,9 @@ def create_intent(
         intent = provider.create_intent(order, order.grand_total)
     except ProviderUnavailable:
         if not mock_pay_enabled(db):
-            raise HTTPException(status_code=409, detail="mock_provider_disabled")
+            # 真实通道暂时不可用（网络/凭据故障）：502 provider_unavailable，
+            # 而非误导性的 409 mock_provider_disabled
+            raise HTTPException(status_code=502, detail="provider_unavailable")
         intent = MockProvider().create_intent(order, order.grand_total)
     payment = Payment(
         order_id=order.id,
@@ -251,12 +324,9 @@ def create_intent(
     db.add(payment)
     db.commit()
     # 双击/并发防护：先查后插的窗口可能堆积多条 PENDING —— 提交后废弃同 provider
-    # 旧行（status=2 superseded），只保留最新一笔待支付
-    superseded = repo.supersede_stale_pending(db, payment)
-    if superseded:
-        db.commit()
-        log.info("superseded %d stale PENDING payment(s) for order=%s",
-                 superseded, order.order_no)
+    # 旧行（status=2 superseded），只保留最新一笔待支付，并尽力在 provider 侧取消
+    # 旧 intent（防旧 intent 迟到支付造成双扣款）
+    _supersede_stale(db, provider, payment, order.order_no)
     return {
         "payment_intent": payment.stripe_payment_intent,
         "client_secret": intent["client_secret"],
@@ -318,11 +388,83 @@ _UNRECOVERABLE_PREFIXES = (
 )
 
 
+def _route_webhook_provider(db: Session, payload: bytes, headers: dict | None):
+    """webhook 验签 provider 路由：多通道并存时默认链（stripe 优先）验不了 PayPal
+    事件（必 400 invalid_signature）—— 按 PayPal 特征（paypal-transmission-* 头 /
+    载含有 event_type 无 type）切到已配置的 PayPalProvider；未配置 paypal 则维持
+    默认链按现状拒绝。返回 (provider, source) 供验签与事件落库。"""
+    hdr = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    looks_paypal = bool(hdr.get("paypal-transmission-id"))
+    if not looks_paypal:
+        try:
+            body = json.loads(payload.decode("utf-8", "replace"))
+        except Exception:
+            body = None
+        looks_paypal = (
+            isinstance(body, dict) and bool(body.get("event_type"))
+            and not body.get("type")
+        )
+    if looks_paypal:
+        cfg = payment_provider.resolve_pay_config(db)
+        if cfg.get("paypal_client_id") and cfg.get("paypal_secret"):
+            try:
+                return payment_provider.PayPalProvider(cfg), "paypal"
+            except Exception:
+                pass
+    default = get_provider(db)
+    return default, default.name
+
+
+def _pending_payment_by_amount(db: Session, order_id: int, amount) -> Payment | None:
+    """订单 PENDING 行按金额优先匹配（PayPal capture 事件拿不到 intent 时的单内
+    定位）：跨 provider 多笔 PENDING 并存时金额兜底防错核销，缺省回落最新一笔。"""
+    pend = repo.pending_payment_of_order(db, order_id)
+    if pend is None or amount is None:
+        return pend
+    try:
+        amt = int(amount)
+    except (TypeError, ValueError):
+        return pend
+    if pend.amount == amt:
+        return pend
+    return next(
+        (p for p in repo.order_payments(db, order_id)
+         if p.status == 0 and p.amount == amt),
+        pend,
+    )
+
+
+def _record_diff_refund(db: Session, order: Order, payment: Payment, data, ex) -> None:
+    """换货差价支付行的退款回调：仅在该行 CAS 记账（refunded_amount 累计），
+    不进 apply_refund 整单语义 —— 差价行退款不得触发整单 REFUNDED/回补库存/
+    积分返还（主款对应的履约不受影响）。"""
+    cumulative = (data or {}).get("cumulative_refunded")
+    amount = (data or {}).get("amount")
+    if cumulative is not None:
+        target = int(cumulative)
+    elif amount is not None:
+        target = int(payment.refunded_amount or 0) + int(amount)
+    else:
+        return
+    delta = target - int(payment.refunded_amount or 0)
+    if delta <= 0:
+        return
+    full = delta >= payment.amount - payment.refunded_amount
+    if repo.claim_payment_refund(db, payment.id, delta, full) == 0:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="already_fully_refunded")
+    db.expire(payment)
+    _timeline(db, order.id, "refund_issued", detail={
+        "amount": delta, "reason": "webhook:exchange_diff_refunded",
+        "full": full, "exchange_no": ex.exchange_no,
+    })
+
+
 def handle_webhook(
     db: Session, payload: bytes, stripe_signature: str | None,
     headers: dict | None = None,
 ) -> dict:
-    provider = get_provider(db)
+    provider, source = _route_webhook_provider(db, payload, headers)
     # 环境门禁：非 dev 必须配置对应 provider 的验签密钥，否则任何人可伪造回调
     # （密钥取自 provider 生效配置——settings 表 payment_config 或环境变量，二选一非空即通过）
     if settings.env != "dev" and not provider.webhook_gate_secret():
@@ -346,17 +488,34 @@ def handle_webhook(
         return {"ok": True, "skipped": True}
     if not existing:
         repo.add_webhook_event(
-            db, event_id=event_id, source="stripe", type=event_type,
+            db, event_id=event_id, source=source, type=event_type,
             payload={"id": event_id, "type": event_type, "data": data},
         )
         db.flush()
 
     try:
         payment_intent = (data or {}).get("payment_intent")
-        payment = repo.payment_by_intent(db, payment_intent)
-        if not payment:
+        payment = repo.payment_by_intent(db, payment_intent) if payment_intent else None
+        order = None
+        if payment is None:
+            # PayPal capture 事件可能拿不到 intent（resource.id 是 capture id）：
+            # 按 metadata.order_no（custom_id）定位订单后单内选行 ——
+            # succeeded 按金额/最新 PENDING，refunded 取主可退行
+            order_no = str(
+                ((data or {}).get("metadata") or {}).get("order_no") or ""
+            ).strip().upper()
+            if order_no:
+                order = repo.order_by_no(db, order_no)
+                if order is not None:
+                    if event_type == "payment_intent.succeeded":
+                        payment = _pending_payment_by_amount(
+                            db, order.id, (data or {}).get("amount"))
+                    elif event_type == "charge.refunded":
+                        payment = repo.refundable_payment_of_order(db, order.id)
+        if payment is None:
             raise HTTPException(status_code=404, detail="payment_intent_not_found")
-        order = repo.get_order(db, payment.order_id)
+        if order is None:
+            order = repo.get_order(db, payment.order_id)
         if not order:
             raise HTTPException(status_code=404, detail="order_not_found")
 
@@ -379,25 +538,33 @@ def handle_webhook(
                         if order.status in (8, 9):
                             _refund_late_success(db, order, payment)
                 else:
-                    payment.status = 1
+                    # 订单已被另一笔支付付清（本行多为被 supersede 的旧 intent 迟到
+                    # 成功）：provider 侧已真实扣款 → 自动退本行资金，订单保持 PAID
+                    _refund_duplicate_success(db, order, payment)
         elif event_type == "charge.refunded":
-            from app.domains.trade.service_admin import apply_refund
+            # 差价行退款（任意状态的关联换货）：只在该行记账，不进 apply_refund
+            # 整单语义，防止退差价触发整单 REFUNDED/回补库存
+            linked_any = repo.exchange_linked_to_payment(db, payment.id)
+            if linked_any is not None:
+                _record_diff_refund(db, order, payment, data, linked_any)
+            else:
+                from app.domains.trade.service_admin import apply_refund
 
-            cumulative = (data or {}).get("cumulative_refunded")
-            if cumulative is not None:
-                # 累计口径求增量：delta = 累计退款 - 已记账 refunded_amount；
-                # delta<=0（重复推送/旧事件回放）跳过，防止 amount_refunded 重复入账
-                delta = int(cumulative) - int(payment.refunded_amount or 0)
-                if delta > 0:
+                cumulative = (data or {}).get("cumulative_refunded")
+                if cumulative is not None:
+                    # 累计口径求增量：delta = 累计退款 - 已记账 refunded_amount；
+                    # delta<=0（重复推送/旧事件回放）跳过，防止 amount_refunded 重复入账
+                    delta = int(cumulative) - int(payment.refunded_amount or 0)
+                    if delta > 0:
+                        apply_refund(
+                            db, order, delta,
+                            reason="webhook:charge.refunded", actor="system",
+                        )
+                else:
                     apply_refund(
-                        db, order, delta,
+                        db, order, (data or {}).get("amount"),
                         reason="webhook:charge.refunded", actor="system",
                     )
-            else:
-                apply_refund(
-                    db, order, (data or {}).get("amount"),
-                    reason="webhook:charge.refunded", actor="system",
-                )
         else:
             pass
     except HTTPException as exc:
@@ -407,7 +574,7 @@ def handle_webhook(
         # rollback（撤回上面的 WebhookEvent 插入）→ 重插并标记 status=2 + 告警 + 200 skipped
         db.rollback()
         repo.add_webhook_event(
-            db, event_id=event_id, source="stripe", type=event_type,
+            db, event_id=event_id, source=source, type=event_type,
             payload={"id": event_id, "type": event_type, "data": data},
         )
         db.flush()

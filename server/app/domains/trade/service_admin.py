@@ -15,12 +15,15 @@ from app.domains.trade.schemas import (
     NoteIn, OrderAddressUpdateIn, RefundRequest, RmaRejectRequest, RmaRefundRequest,
     ShipRequest, ShippingRateIn, ShippingRateUpdateIn, StockAdjustRequest,
 )
-from app.models import Order, Rma, Shipment, ShippingRate, User
+from app.models import Exchange, Order, Payment, Rma, Shipment, ShippingRate, User
 from app.services import points as points_svc
 
 PER_PAGE_ORDERS = 10
 PER_PAGE_MOVEMENTS = 20
 PER_PAGE_RMAS = 20
+# 履约可用订单态（P1-5）：已支付起的正常在途/终到态；待付(0)/取消(8)/整退(9)
+# 后 RMA/换货不可再推进（approve/receive/ship 前校验，防订单终态后仍回补/补发）
+FULFILLABLE_ORDER_STATUSES = {1, 2, 3, 4, 5}
 
 
 def _timeline(
@@ -55,41 +58,100 @@ def _get_rma(db: Session, rma_no: str) -> Rma:
 
 
 def _restock_items(db: Session, order: Order, *, ref_type: str) -> None:
+    # 回补口径扣除换货占量 exchanged_qty（P0-2）：换货完成的件已发新品，
+    # 整单退款再按全量回补会虚增库存（eligible 判断与释放量同口径）
     items = repo.order_items(db, order.id)
-    eligible = [i for i in items if i.qty - i.refunded_qty > 0]
+    eligible = [i for i in items if i.qty - i.refunded_qty - i.exchanged_qty > 0]
     for item in eligible:
-        repo.release_stock(db, item.variant_id, item.qty - item.refunded_qty)
+        repo.release_stock(db, item.variant_id, item.qty - item.refunded_qty - item.exchanged_qty)
     stocks: dict[int, int] = {}
     if eligible:
         vids = list({i.variant_id for i in eligible})
         stocks = repo.variant_stock_map(db, vids)
     for item in eligible:
         repo.add_stock_movement(
-            db, variant_id=item.variant_id, change=item.qty - item.refunded_qty,
+            db, variant_id=item.variant_id,
+            change=item.qty - item.refunded_qty - item.exchanged_qty,
             stock_after=stocks[item.variant_id],
             type=5, ref_type=ref_type, ref_id=order.id,
         )
 
 
-def _refund_giftcard_debit(db: Session, order: Order) -> None:
+def _giftcard_refund_marked(db: Session, order_id: int, ref_no: str) -> bool:
+    """该单号礼品卡回补是否已落标记（P0-3 查重，防多笔 RMA 重复回补/状态回退重放）"""
+    return any(
+        (m.detail or {}).get("ref_no") == ref_no
+        for m in repo.giftcard_refund_marks(db, order_id)
+    )
+
+
+def _refund_giftcard_debit(
+    db: Session, order: Order, *, share_amount: Optional[int] = None,
+    ref_no: Optional[str] = None,
+) -> None:
     """礼品卡扣款回补：按该单 ledger change_type=3（消费确认）流水反查逐卡返还
-    （余额加回 + 用尽卡复活 + change_type=5 流水）；无礼品卡扣款时为空操作。
-    礼品卡 MVP 下单即扣且不建 payment 行，取消/超时/退款共用此回补。"""
+    （余额原子加回 + 用尽卡复活 + change_type=5 流水）；无礼品卡扣款时为空操作。
+    礼品卡 MVP 下单即扣且不建 payment 行，取消/超时/退款共用此回补。
+    share_amount 传入时按其占 grand_total 比例折算逐卡返还（纯礼品卡单 RMA 退款路径，
+    P0-3）：多笔 RMA 各退各的份额而非整单回补；timeline giftcard_refunded 标记
+    （ref_no 查重 + 逐卡累计钳制）防重复返还与四舍五入累计超退。"""
+    total = order.grand_total or 0
+    credited: dict[int, int] = {}
+    if ref_no is not None:
+        for mark in repo.giftcard_refund_marks(db, order.id):
+            for gid, amt in ((mark.detail or {}).get("cards") or []):
+                credited[int(gid)] = credited.get(int(gid), 0) + int(amt)
+    cards: list[list[int]] = []
     for row in repo.giftcard_debit_ledgers(db, order.id):
+        if share_amount is None:
+            amt = row.amount
+        else:
+            # 退款额 × 该卡扣款 / 实付（四舍五入到分）；累计钳制不超该卡扣款
+            amt = (
+                (share_amount * row.amount + total // 2) // total
+                if total > 0 else share_amount
+            )
+            amt = max(0, min(amt, row.amount - credited.get(row.gift_card_id, 0)))
+        if amt <= 0:
+            continue
+        # 余额原子加回（作废卡 status=4 守卫进 WHERE，rowcount=0 跳过）：作废卡不可复活，
+        # 该笔退款资金走原路退回（卡支付部分）/人工处理，不复活卡余额
+        if repo.credit_gift_card(db, row.gift_card_id, amt) == 0:
+            continue
         gc = repo.get_gift_card(db, row.gift_card_id)
-        if not gc:
-            continue
-        if gc.status == 4:
-            # 作废卡不可复活：余额已清零且作废负流水已记账，跳过回填与流水，
-            # 该笔退款资金走原路退回（卡支付部分）/人工处理，不复活卡余额
-            continue
-        gc.balance += row.amount
+        db.expire(gc)  # 原生 UPDATE 绕过身份映射，expire 重读余额
         if gc.status == 3 and gc.balance > 0:
             gc.status = 1
         repo.add_giftcard_ledger(
             db, gift_card_id=gc.id, order_id=order.id, change_type=5,
-            amount=row.amount, balance_after=gc.balance,
+            amount=amt, balance_after=gc.balance,
         )
+        cards.append([gc.id, amt])
+    if ref_no is not None and cards:
+        repo.add_timeline(db, order.id, "giftcard_refunded", actor="admin", detail={
+            "ref_no": ref_no, "cards": cards,
+        })
+
+
+def goods_payment_of_order(db: Session, order: Order) -> Optional[Payment]:
+    """可退货款支付行：refundable_payment_of_order 口径上再排除换货差价行
+    （exchanges.diff_payment_id 挂钩的行是差价收款而非原单货款，P0-4 污染：
+    差价行常居 id 最大被选中，会顶掉货款行/虚减可退余）；服务层封装过滤，
+    与 repository.refundable_payment_of_order（支付侧重构中）保持同口径兼容。"""
+    rows = (
+        db.query(Payment)
+        .filter(Payment.order_id == order.id, Payment.status.in_([1, 4]))
+        .order_by(Payment.id.desc())
+        .all()
+    )
+    if not rows:
+        return None
+    diff_ids = {
+        pid for (pid,) in db.query(Exchange.diff_payment_id)
+        .filter(Exchange.order_id == order.id, Exchange.diff_payment_id.isnot(None))
+        if pid is not None
+    }
+    return next((p for p in rows if p.id not in diff_ids), None)
 
 
 def apply_refund(
@@ -102,7 +164,7 @@ def apply_refund(
     admin: Optional[User] = None,
 ) -> dict:
     """退款公共路径（admin 全额/部分、RMA 退款、webhook charge.refunded 共用；调用方 commit）"""
-    payment = repo.refundable_payment_of_order(db, order.id)
+    payment = goods_payment_of_order(db, order)
     if not payment:
         raise HTTPException(status_code=409, detail="no_refundable_payment")
     remaining = payment.amount - payment.refunded_amount
@@ -241,25 +303,37 @@ def order_detail(db: Session, order_no: str) -> dict:
     }
 
 
+def _new_shipment_no(db: Session) -> str:
+    """SP 单号：SP+yymmdd+8hex（列宽 16 顶格）；查重循环防极小概率撞唯一索引 500"""
+    for _ in range(3):
+        no = "SP" + utcnow().strftime("%y%m%d") + uuid.uuid4().hex[:8].upper()
+        if not db.query(Shipment.id).filter(Shipment.shipment_no == no).first():
+            return no
+    raise HTTPException(status_code=503, detail="shipment_no conflict, retry")
+
+
 def ship_order(db: Session, admin: User, order_no: str, body: ShipRequest) -> dict:
     order = _get_order(db, order_no)
     prev_status = order.status
     if prev_status not in (1, 2):
         raise HTTPException(status_code=409, detail=f"not_shippable:{prev_status}")
-    items = repo.order_items(db, order.id)
     now = utcnow()
     # 发货 CAS（WHERE status IN (1,2)）：并发重复发货/已付取消竞态时 rowcount=0 → 409
     if repo.claim_order_shipped(db, order.id, now, body.tracking_no) == 0:
         db.rollback()
         db.expire(order)
         raise HTTPException(status_code=409, detail=f"not_shippable:{order.status}")
+    # CAS 成功后重读条目：快照按未退量（qty - refunded_qty）记录，
+    # 已退件不再虚记发货（P2-13）
+    items = repo.order_items(db, order.id)
     shipment = Shipment(
-        shipment_no="SP" + now.strftime("%y%m%d") + uuid.uuid4().hex[:4].upper(),
+        shipment_no=_new_shipment_no(db),
         order_id=order.id,
         carrier=body.carrier,
         tracking_no=body.tracking_no,
         status=3,
-        item_json=[{"order_item_id": i.id, "qty": i.qty} for i in items],
+        item_json=[{"order_item_id": i.id, "qty": i.qty - i.refunded_qty}
+                   for i in items if i.qty - i.refunded_qty > 0],
         shipped_at=now,
     )
     db.add(shipment)
@@ -292,8 +366,12 @@ def mark_delivered(db: Session, admin: User, order_no: str) -> dict:
     if order.status != 3:
         raise HTTPException(status_code=409, detail=f"not_in_transit:{order.status}")
     now = utcnow()
-    order.status = 4
-    order.delivered_at = now
+    # 送达 CAS（WHERE status=3 → 4，P1-6）：与并发重复标记/状态推进互斥，rowcount=0 → 409
+    if repo.claim_order_delivered(db, order.id, now) == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail=f"not_in_transit:{order.status}")
+    db.expire(order)  # 原生 UPDATE 绕过身份映射，expire 重读保证响应携带新状态
     shipments = repo.order_shipments(db, order.id)
     for s in shipments:
         if s.status == 3:
@@ -361,7 +439,18 @@ def update_order_address(
             addr[field] = new
     if not diff:
         return {"order_no": order.order_no, "shipping_address": addr}
-    order.shipping_address = addr
+    # 条件 UPDATE 收窄读-判-写窗口（P2-12）：并发把订单推进到发货后（status>2）时
+    # rowcount=0 → 409，不再覆盖已发货订单的地址
+    updated = (
+        db.query(Order)
+        .filter(Order.id == order.id, Order.status <= 2)
+        .update({Order.shipping_address: addr}, synchronize_session=False)
+    )
+    if updated == 0:
+        db.rollback()
+        db.expire(order)
+        raise HTTPException(status_code=409, detail="order already shipped")
+    db.expire(order)  # 条件 UPDATE 绕过身份映射，expire 重读落库后的地址
     _timeline(db, order.id, "address_updated", actor="admin", detail={
         "old": {k: v["old"] for k, v in diff.items()},
         "new": {k: v["new"] for k, v in diff.items()},
@@ -424,6 +513,21 @@ def add_order_note(db: Session, admin: User, order_no: str, body: NoteIn) -> dic
     return {"ok": True}
 
 
+def _estimate_rma_refund(rma: Rma, item, order: Order, total_qty: int) -> int:
+    """待退(4)单预估可退额：折算公式对齐 refund_rma（实付比例 + 退货运费按件分摊，
+    封顶 grand_total）；仅 UI 预填展示，实退以退款接口计算为准（P1-11）"""
+    amount = (
+        int(rma.qty * item.unit_price * order.grand_total / order.subtotal + 0.5)
+        if order.subtotal > 0 else rma.qty * item.unit_price
+    )
+    shipping = 0
+    if rma.reason in (2, 4, 5) and order.shipping_fee > 0 and total_qty > 0:
+        shipping = max(0, min(
+            int(order.shipping_fee * rma.qty / total_qty + 0.5), order.shipping_fee,
+        ))
+    return min(amount + shipping, order.grand_total)
+
+
 def list_rmas(
     db: Session, status: Optional[int],
     page: int = 1, per_page: int = PER_PAGE_RMAS, q: Optional[str] = None,
@@ -432,8 +536,19 @@ def list_rmas(
     rows, total = repo.list_rmas(
         db, status, q=q, page=page, per_page=per_page, status_in=status_in,
     )
-    return {
-        "items": [{
+    # 待退(4)单预估可退额预填（P1-11）：refund_amount 仅在为 null 时实时折算，
+    # 前端部分退款弹窗依赖该值开放手填（实退金额仍以退款接口守卫为准）
+    pending = [order.id for rma, _i, order in rows
+               if rma.status == 4 and rma.refund_amount is None]
+    imap = repo.order_items_map(db, list(set(pending))) if pending else {}
+    items = []
+    for rma, item, order in rows:
+        refund_amount = rma.refund_amount
+        if refund_amount is None and rma.status == 4:
+            total_qty = sum(i.qty for i in imap.get(order.id, []))
+            if total_qty > 0:
+                refund_amount = _estimate_rma_refund(rma, item, order, total_qty)
+        items.append({
             "rma_no": rma.rma_no,
             "order_no": order.order_no,
             "email": order.email,
@@ -442,9 +557,11 @@ def list_rmas(
             "reason": rma.reason,
             "item_title": item.title_snapshot,
             "unit_price": item.unit_price,
-            "refund_amount": rma.refund_amount,
+            "refund_amount": refund_amount,
             "created_at": rma.created_at.isoformat() if rma.created_at else None,
-        } for rma, item, order in rows],
+        })
+    return {
+        "items": items,
         "page": page, "per_page": per_page, "total": total,
         "pages": (total + per_page - 1) // per_page,
     }
@@ -454,6 +571,10 @@ def approve_rma(db: Session, admin: User, rma_no: str) -> dict:
     rma = _get_rma(db, rma_no)
     if rma.status != 0:
         raise HTTPException(status_code=409, detail=f"rma_not_approvable:{rma.status}")
+    # 订单现态守卫（P1-5）：待付/取消/整退后的订单不可再批准退货（否则收货回补必撞终态）
+    order = repo.get_order(db, rma.order_id)
+    if not order or order.status not in FULFILLABLE_ORDER_STATUSES:
+        raise HTTPException(status_code=409, detail=f"order_state_invalid:{order.status if order else -1}")
     # CAS 抢占（WHERE status=0）：并发双击/与 reject 互斥；成功后 expire 重读再补写其余字段
     if repo.claim_rma_approved(db, rma.id) == 0:
         db.rollback()
@@ -496,11 +617,20 @@ def receive_rma(db: Session, admin: User, rma_no: str) -> dict:
     rma = _get_rma(db, rma_no)
     if rma.status not in (1, 2, 3):
         raise HTTPException(status_code=409, detail=f"rma_not_receivable:{rma.status}")
+    # 订单现态守卫（P1-5）：整单退款已按剩余量回补过库存，再收货回补会虚增
+    order = repo.get_order(db, rma.order_id)
+    if not order or order.status not in FULFILLABLE_ORDER_STATUSES:
+        raise HTTPException(status_code=409, detail=f"order_state_invalid:{order.status if order else -1}")
     # CAS 抢占（WHERE status IN (1,2,3)）：并发重复收货互斥，成功后再回补库存/流水
     if repo.claim_rma_received(db, rma.id) == 0:
         db.rollback()
         db.expire(rma)
         raise HTTPException(status_code=409, detail=f"rma_not_receivable:{rma.status}")
+    # 收货回补前原子占量（P0-1）：refunded_qty 可退余守卫进 WHERE（同时看 exchanged_qty，
+    # 防换货穿透），余量不足（重复申请穿透/并发占用）→ 409 回滚连带 CAS 一并撤销
+    if repo.claim_item_refunded(db, rma.order_item_id, rma.qty) == 0:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="qty_exceeded")
     item = repo.get_order_item(db, rma.order_item_id)
     repo.release_stock(db, item.variant_id, rma.qty)
     repo.add_stock_movement(
@@ -554,7 +684,8 @@ def refund_rma(
     full_amount = min(amount + refund_shipping, order.grand_total)
     # 多笔 RMA 按比例折算各摊运费可能累计超过剩余可退（apply_refund 会 409 拒绝，
     # RMA 将永远卡在 4 态无法结案）；缺省路径钳到剩余可退，恰好收尾为全额退
-    payment = repo.refundable_payment_of_order(db, order.id)
+    # （选款排除换货差价行，P0-4：差价行非货款，计入会虚减可退余）
+    payment = goods_payment_of_order(db, order)
     remaining = (
         payment.amount - payment.refunded_amount if payment is not None else None
     )
@@ -567,10 +698,12 @@ def refund_rma(
         amount = cap
     partial = amount < full_amount
 
-    # 占用结转 refunded_qty：单语句原子累计（防并发丢失更新），CASE 防负数；
-    # 原生 UPDATE 不经过身份映射，expire 后 apply_refund 全额回补路径读到新值
-    repo.convert_item_rma_refunded(db, item.id, rma.qty)
-    db.expire(item)
+    # 占量以 receive 原子累计为准（restock_qty 已记，P0-1）；直达 4 态的存量/异常单
+    # 在此补占：可退余守卫失败（并发换货发货/整单退款已占）→ 409 回滚连带退款 CAS 撤销
+    if (rma.restock_qty or 0) < rma.qty:
+        if repo.claim_item_refunded(db, item.id, rma.qty) == 0:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="qty_exceeded")
     try:
         result = apply_refund(
             db, order, amount, reason=f"rma:{rma.rma_no}", actor="admin", admin=admin,
@@ -579,9 +712,10 @@ def refund_rma(
         if exc.detail != "no_refundable_payment":
             raise
         # 纯礼品卡/积分抵扣单无 Payment 行（对齐换货 _refund_negative_diff 的 bypass 模式）：
-        # 纯礼品卡单按整单回补礼品卡，不做 Payment 记账，timeline 手动补 refund_issued
-        if order.giftcard_discount > 0:
-            _refund_giftcard_debit(db, order)
+        # 按本 RMA 退款额比例折算回补礼品卡（非整单，P0-3），timeline 标记查重防多笔重复；
+        # timeline 手动补 refund_issued
+        if order.giftcard_discount > 0 and not _giftcard_refund_marked(db, order.id, rma.rma_no):
+            _refund_giftcard_debit(db, order, share_amount=amount, ref_no=rma.rma_no)
         repo.add_timeline(db, order.id, "refund_issued", actor="admin", detail={
             "amount": amount, "reason": f"rma:{rma.rma_no}", "full": True,
         })
@@ -696,6 +830,18 @@ def create_shipping_rate(db: Session, admin: User, body: ShippingRateIn) -> dict
     )
     if r.eta_max_days < r.eta_min_days:
         raise HTTPException(status_code=422, detail="eta_max_below_min")
+    # 同口径查重（P1-10，与 update 一致）：目的地+承运商+方式 撞已有模板 → 409
+    dup = (
+        db.query(ShippingRate)
+        .filter(
+            ShippingRate.dest_country == r.dest_country,
+            ShippingRate.carrier == r.carrier,
+            ShippingRate.method == r.method,
+        )
+        .first()
+    )
+    if dup:
+        raise HTTPException(status_code=409, detail="rate_conflict")
     db.add(r)
     db.flush()
     _admin_log(db, admin, "create", "shipping_rate", r.id, {"price": r.price, "method": r.method})

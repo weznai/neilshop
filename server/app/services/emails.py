@@ -4,17 +4,22 @@ import logging
 
 from jinja2 import Environment
 
+from app.core.config import settings
+
 log = logging.getLogger("glowmag.emails")
 
 env = Environment(autoescape=True)
 
+# 站内链接前缀统一走 settings.site_url（GM_SITE_URL 可配，默认保持原硬编码域名兼容存量渲染）
+# 退订链接：ctx 带 token（HMAC，见 member 域 _unsubscribe_token）则随链下发免登录退订；
+# TODO: worker/outbox 组装 payload 时尚未生成 token（跨域查库不在本层职责），暂维持邮箱明文参数
 _FOOTER = (
     '<hr style="border:none;border-top:1px solid #eee;margin:24px 0">'
     '<p style="color:#999;font-size:12px;line-height:1.6">'
     "GLOWMAG &middot; Press-on nails, made to glow<br>"
-    '<a href="https://glowmag.example/shop">Shop</a> &middot; '
-    '<a href="https://glowmag.example/help">Help</a> &middot; '
-    '<a href="https://glowmag.example/unsubscribe?email={{ email }}">Unsubscribe</a><br>'
+    '<a href="{{ site_url }}/shop">Shop</a> &middot; '
+    '<a href="{{ site_url }}/help">Help</a> &middot; '
+    '<a href="{{ site_url }}/unsubscribe?email={{ email }}{% if token %}&token={{ token }}{% endif %}">Unsubscribe</a><br>'
     "&copy; GLOWMAG, 123 Glow Lane, Los Angeles, CA &middot; You receive this at {{ email }}"
     "</p>"
 )
@@ -28,7 +33,7 @@ _BODIES = {
          Total: <strong>${{ '%.2f'|format(grand_total / 100) }}</strong>.</p>
       <p>We're hand-checking every set and will email you the moment your parcel ships.
          Typical delivery is 3&ndash;5 business days after dispatch.</p>
-      <p style="margin:28px 0"><a href="https://glowmag.example/orders/{{ order_no }}"
+      <p style="margin:28px 0"><a href="{{ site_url }}/orders/{{ order_no }}"
          style="background:#000;color:#fff;padding:12px 28px;text-decoration:none">Track order</a></p>
       <p>Stay glowing,<br>The GLOWMAG Team</p>
     </div>
@@ -40,7 +45,7 @@ _BODIES = {
       <p>Your order <strong>{{ order_no }}</strong> is on its way via <strong>{{ carrier|upper }}</strong>!</p>
       <p>Tracking number: <strong>{{ tracking_no }}</strong> &mdash; allow up to 24h for the carrier
          to show movement.</p>
-      <p style="margin:28px 0"><a href="https://glowmag.example/orders/{{ order_no }}"
+      <p style="margin:28px 0"><a href="{{ site_url }}/orders/{{ order_no }}"
          style="background:#000;color:#fff;padding:12px 28px;text-decoration:none">Track parcel</a></p>
       <p>Stay glowing,<br>The GLOWMAG Team</p>
     </div>
@@ -109,7 +114,7 @@ _BODIES = {
       <p>Here's <strong>{{ discount }}% off</strong> your first set with code:</p>
       <p style="font-size:24px;letter-spacing:4px;font-weight:bold;background:#f7f7f7;
                 padding:14px;text-align:center">{{ code }}</p>
-      <p style="margin:28px 0"><a href="https://glowmag.example/shop"
+      <p style="margin:28px 0"><a href="{{ site_url }}/shop"
          style="background:#000;color:#fff;padding:12px 28px;text-decoration:none">Shop new arrivals</a></p>
       <p>Earn 10 points for every $1 and unlock birthday gifts along the way.</p>
       <p>Stay glowing,<br>The GLOWMAG Team</p>
@@ -122,7 +127,7 @@ _BODIES = {
       <p>Good news &mdash; <strong>{{ product_title }}</strong>{% if variant %} ({{ variant }}){% endif %}
          is back in stock!</p>
       <p>You asked, we restocked. Last time it sold out in days, so grab yours now:</p>
-      <p style="margin:28px 0"><a href="https://glowmag.example/shop"
+      <p style="margin:28px 0"><a href="{{ site_url }}/shop"
          style="background:#000;color:#fff;padding:12px 28px;text-decoration:none">Shop now</a></p>
       <p>Stay glowing,<br>The GLOWMAG Team</p>
     </div>
@@ -191,6 +196,8 @@ TEMPLATES = {name: body + _FOOTER for name, body in _BODIES.items()}
 
 
 def render(name: str, **ctx) -> str:
+    # site_url 缺省注入（调用方 worker.py 不感知；ctx 显式传入则尊重调用方）
+    ctx.setdefault("site_url", settings.site_url)
     return env.from_string(TEMPLATES[name]).render(**ctx)
 
 

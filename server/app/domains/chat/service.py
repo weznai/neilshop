@@ -11,6 +11,7 @@ import re
 import uuid
 
 from fastapi import HTTPException
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -276,8 +277,10 @@ def send_message(db: Session, conv_no: str, body: MessageIn, user: User | None) 
     conv = _get_authorized(db, conv_no, body.token, user)
     if conv.status == 1:
         raise HTTPException(status_code=409, detail="conversation closed")
+    # SQLite 单写者：客户消息先独立短事务落库，写锁立即释放，
+    # 后续 embedding/LLM 网络调用（20-60s）不再横跨写事务（expire_on_commit=False，conv 跨事务可续用）
     user_msg = _add_msg(db, conv, int(ChatSender.CUSTOMER), body.content)
-    db.flush()
+    db.commit()
 
     new_msgs = [user_msg]
     suggestions: list[str] = []
@@ -310,18 +313,15 @@ def send_message(db: Session, conv_no: str, body: MessageIn, user: User | None) 
             new_msgs.append(bot)
             source = "rules"
         else:
+            # 检索（embedding 网络）与 LLM 调用均在事务外完成，拿到回复后再开第二个短事务落 bot 消息
             p = llm.resolve_params(db)
-            reply = llm.chat_completion(_system_prompt(db, body.content), _llm_history(
-                repo.messages_asc(db, conv.id)), params=p)
-            if reply:
-                bot = _add_msg(db, conv, int(ChatSender.BOT), reply)
-                new_msgs.append(bot)
-                source = "llm"
-            else:
-                bot = _add_msg(db, conv, int(ChatSender.BOT), rules["reply"])
-                new_msgs.append(bot)
-                source = "rules"
-    db.commit()
+            system = _system_prompt(db, body.content)
+            history = _llm_history(repo.messages_asc(db, conv.id))
+            reply = llm.chat_completion(system, history, params=p)
+            bot = _add_msg(db, conv, int(ChatSender.BOT), reply or rules["reply"])
+            new_msgs.append(bot)
+            source = "llm" if reply else "rules"
+        db.commit()
 
     detail = _conv_detail(db, conv)
     detail["new_messages"] = [
@@ -343,13 +343,9 @@ def _admin_names(db: Session, convs: list[ChatConversation]) -> dict[int, str]:
 
 def _pending_total(db: Session, mine_admin_id: int | None) -> int:
     """全局待回复总数（与 per-item pending_reply 同谓词：status=0 且最后一条为客户消息）。
-    忽略分页与 channel/status/q 筛选；mine 作用域保留（美甲师只见本人范围的计数）。"""
-    convs = repo.admin_conversations_query(db, None, 0, None, mine_admin_id).all()
-    lmap = repo.last_messages_map(db, [c.id for c in convs])
-    return sum(
-        1 for c in convs
-        if (m := lmap.get(c.id)) is not None and m.sender == int(ChatSender.CUSTOMER)
-    )
+    忽略分页与 channel/status/q 筛选；mine 作用域保留（美甲师只见本人范围的计数）。
+    SQL COUNT 聚合见 repo.pending_reply_count（原实现全量拉会话行被 4s 轮询放大）。"""
+    return repo.pending_reply_count(db, mine_admin_id)
 
 
 def admin_list(
@@ -407,8 +403,12 @@ def admin_reply(db: Session, admin: User, conv_no: str, content: str) -> dict:
         conv.channel = 1
         joined = True
     if conv.channel == 1 and conv.agent_admin_id is None:
-        conv.agent_admin_id = admin.id
-        joined = True
+        # 回复即接手：CAS 抢占，并发下只有赢家发「接入」系统消息（输家不改绑他人名下会话）
+        if _try_claim(db, conv, admin.id):
+            joined = True
+        else:
+            # 落败：evaluate 同步可能给内存对象写入幻影归属，失效后由 _conv_detail 读回真实值
+            db.expire(conv, ["agent_admin_id"])
     if joined:
         _add_msg(db, conv, int(ChatSender.SYSTEM),
                  SYS_AGENT_JOINED[lang].format(name=admin.name or "Agent"))
@@ -439,6 +439,17 @@ def admin_resume_ai(db: Session, admin: User, conv_no: str) -> dict:
     return _conv_detail(db, conv)
 
 
+def _try_claim(db: Session, conv: ChatConversation, admin_id: int) -> bool:
+    """CAS 接单：仅当尚未有人接手时抢占（并发双击/双开工作台只有一个赢家），
+    避免读-改-写竞态互相覆盖；显式改派不经过本函数"""
+    stmt = (
+        update(ChatConversation)
+        .where(ChatConversation.id == conv.id, ChatConversation.agent_admin_id.is_(None))
+        .values(agent_admin_id=admin_id)
+    )
+    return db.execute(stmt).rowcount == 1
+
+
 def admin_take(db: Session, admin: User, conv_no: str) -> dict:
     conv = repo.conversation_by_no(db, conv_no)
     if not conv:
@@ -448,14 +459,18 @@ def admin_take(db: Session, admin: User, conv_no: str) -> dict:
         raise HTTPException(status_code=400, detail="not a human conversation")
     if conv.status == 1:
         raise HTTPException(status_code=400, detail="conversation closed")
-    first = conv.agent_admin_id is None
-    conv.agent_admin_id = admin.id
-    if first:
+    if _try_claim(db, conv, admin.id):
         lang = "zh" if conv.lang == "zh" else "en"
         _add_msg(db, conv, int(ChatSender.SYSTEM),
                  SYS_AGENT_JOINED[lang].format(name=admin.name or "Agent"))
-    log_admin(db, admin, "take", "chat_conversation", conv.id, {})
-    db.commit()
+        log_admin(db, admin, "take", "chat_conversation", conv.id, {})
+        db.commit()
+    else:
+        # CAS 落败：已被并发抢占。本人重复接手幂等成功；他人接手 409
+        db.rollback()
+        conv = repo.conversation_by_no(db, conv_no)
+        if conv.agent_admin_id != admin.id:
+            raise HTTPException(status_code=409, detail="already_taken")
     return _conv_detail(db, conv)
 
 

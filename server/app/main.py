@@ -7,6 +7,8 @@
 后台会话独立 Cookie gm_admin_token（SameSite=Strict + 短时效）。
 """
 
+import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -124,6 +126,11 @@ _SITEMAP_STATIC_PATHS = (
     "/collabs", "/subscribe", "/gift-cards",
 )
 
+# 动态段进程级缓存 600s（模块级变量+时间戳即可，免引入 cache.py）：免每请求全表扫
+# 商品/文章；仅非 dev 生效——dev 保持实时查询，兜底路径可复现（测试契约不变）
+_SITEMAP_CACHE_TTL = 600.0
+_sitemap_cache = {"ts": 0.0, "products": (), "articles": ()}
+
 
 def _xml_escape(value) -> str:
     return (
@@ -156,28 +163,37 @@ def robots_txt(request: Request):
 def sitemap_xml(request: Request):
     base = str(request.base_url).rstrip("/")
     urls = [_sitemap_url(base, p) for p in _SITEMAP_STATIC_PATHS]
-    try:
-        db = SessionLocal()
+    if settings.env != "dev" and time.monotonic() - _sitemap_cache["ts"] < _SITEMAP_CACHE_TTL:
+        products, articles = _sitemap_cache["products"], _sitemap_cache["articles"]
+    else:
         try:
-            now = utcnow()
-            products = (
-                db.query(Product.slug, Product.published_at)
-                .filter(Product.status == 1, _visible_published(Product.published_at, now))
-                .order_by(Product.id.asc())
-                .all()
+            db = SessionLocal()
+            try:
+                now = utcnow()
+                products = (
+                    db.query(Product.slug, Product.published_at)
+                    .filter(Product.status == 1, _visible_published(Product.published_at, now))
+                    .order_by(Product.id.asc())
+                    .all()
+                )
+                articles = (
+                    db.query(Article.slug, Article.published_at)
+                    .filter(Article.status == 1, _visible_published(Article.published_at, now))
+                    .order_by(Article.id.asc())
+                    .all()
+                )
+            finally:
+                db.close()
+            # 仅成功时刷缓存；失败不写缓存（下个请求即重试），也保留不了半成品
+            _sitemap_cache.update(ts=time.monotonic(), products=products, articles=articles)
+        except Exception:
+            # 兜底：动态部分查询失败仅返回静态路由，sitemap 不整体 5xx（不再静默吞异常）
+            logging.getLogger(__name__).warning(
+                "sitemap dynamic query failed, fallback to static only", exc_info=True
             )
-            urls += [_sitemap_url(base, f"/product?slug={quote(slug, safe='')}", pub) for slug, pub in products]
-            articles = (
-                db.query(Article.slug, Article.published_at)
-                .filter(Article.status == 1, _visible_published(Article.published_at, now))
-                .order_by(Article.id.asc())
-                .all()
-            )
-            urls += [_sitemap_url(base, f"/blog/post?slug={quote(slug, safe='')}", pub) for slug, pub in articles]
-        finally:
-            db.close()
-    except Exception:
-        pass  # 兜底：动态部分查询失败仅返回静态路由，sitemap 不整体 5xx
+            products, articles = [], []
+    urls += [_sitemap_url(base, f"/product?slug={quote(slug, safe='')}", pub) for slug, pub in products]
+    urls += [_sitemap_url(base, f"/blog/post?slug={quote(slug, safe='')}", pub) for slug, pub in articles]
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'

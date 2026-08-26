@@ -9,11 +9,12 @@ import hmac
 import os
 import secrets
 import time
-from datetime import timedelta
+from datetime import timedelta, timezone
 from urllib.parse import quote
 
 import jwt as pyjwt
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,7 @@ from app.models import (
     TicketMessage, User, UserAddress, WishlistItem,
 )
 from app.services.emails import deliver, render
+from app.services import points as points_svc
 
 from app.domains.member import repository as repo
 from app.domains.member import service_referrals
@@ -269,7 +271,12 @@ def add_to_wishlist(db: Session, user: User, product_id: int) -> tuple[dict, boo
     if repo.get_wishlist_item(db, user.id, product_id):
         return {"ok": True, "product_id": product_id}, False
     repo.add_wishlist_item(db, user.id, product_id)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # 并发双加撞复合主键 → 幂等返回"已存在"（同 register 的 409 收敛思路，此处语义为幂等 200）
+        db.rollback()
+        return {"ok": True, "product_id": product_id}, False
     return {"ok": True, "product_id": product_id}, True
 
 
@@ -285,29 +292,46 @@ def remove_from_wishlist(db: Session, user: User, product_id: int) -> dict:
 # ---------- 邮件订阅 / 隐私 ----------
 
 def newsletter(db: Session, user: User | None, body: NewsletterIn) -> dict:
-    sub = repo.get_newsletter_subscriber(db, body.email)
-    if sub:
-        sub.source = body.source
-    else:
-        repo.add_newsletter_subscriber(db, email=body.email, source=body.source)
-    pref = repo.get_email_preference(db, body.email)
-    if pref:
-        pref.user_id = user.id if user else pref.user_id
-        pref.source = body.source
-        pref.sub_promo = 1
-        pref.sub_new_arrival = 1
-        pref.sub_cart_abandon = 1
-        pref.unsubscribed_at = None
-    else:
-        repo.add_email_preference(db, EmailPreference(
-            email=body.email,
-            user_id=user.id if user else None,
-            source=body.source,
-            sub_promo=1,
-            sub_new_arrival=1,
-            sub_cart_abandon=1,
-        ))
-    db.commit()
+    try:
+        sub = repo.get_newsletter_subscriber(db, body.email)
+        if sub:
+            sub.source = body.source
+        else:
+            repo.add_newsletter_subscriber(db, email=body.email, source=body.source)
+        pref = repo.get_email_preference(db, body.email)
+        if pref:
+            pref.user_id = user.id if user else pref.user_id
+            pref.source = body.source
+            pref.sub_promo = 1
+            pref.sub_new_arrival = 1
+            pref.sub_cart_abandon = 1
+            pref.unsubscribed_at = None
+        else:
+            repo.add_email_preference(db, EmailPreference(
+                email=body.email,
+                user_id=user.id if user else None,
+                source=body.source,
+                sub_promo=1,
+                sub_new_arrival=1,
+                sub_cart_abandon=1,
+            ))
+        db.commit()
+    except IntegrityError:
+        # 并发同邮箱首次订阅：check-then-insert 竞态撞唯一主键 → 回滚后重查走更新路径，
+        # 幂等 200（register 同款捕获，只是此处语义为收敛而非 409）
+        db.rollback()
+        sub = repo.get_newsletter_subscriber(db, body.email)
+        if sub:
+            sub.source = body.source
+        pref = repo.get_email_preference(db, body.email)
+        if pref:
+            pref.user_id = user.id if user else pref.user_id
+            pref.source = body.source
+            pref.sub_promo = 1
+            pref.sub_new_arrival = 1
+            pref.sub_cart_abandon = 1
+            pref.unsubscribed_at = None
+        db.commit()
     return {"ok": True, "email": body.email}
 
 
@@ -353,6 +377,20 @@ def unsubscribe(db: Session, user: User | None, body: UnsubscribeIn) -> dict:
             sub_promo=0, sub_new_arrival=0, sub_cart_abandon=0,
             unsubscribed_at=now, source="unsubscribe",
         ))
+        try:
+            db.commit()
+        except IntegrityError:
+            # 并发退订首插竞态：回滚重查走更新路径，幂等 200
+            db.rollback()
+            pref = repo.get_email_preference(db, body.email)
+            if pref is None:
+                raise
+            pref.sub_promo = 0
+            pref.sub_new_arrival = 0
+            pref.sub_cart_abandon = 0
+            pref.unsubscribed_at = now
+            db.commit()
+        return {"ok": True}
     db.commit()
     return {"ok": True}
 
@@ -401,7 +439,15 @@ def password_reset_confirm(db: Session, body: PasswordResetConfirmIn) -> dict:
     user = repo.get_user_by_email(db, body.email)
     if not user or payload.get("sub") != str(user.id):
         raise HTTPException(status_code=400, detail="invalid_token")
+    # token 一次性：签发（iat）不晚于最近改密秒 → 视为已用/过期作废（含上次重置/改密），
+    # 封死 15 分钟内重复改密窗口。取保守侧（<=）：同秒签发同秒改密的 token 一并作废，
+    # 新 token 最迟下一秒即可用；不依赖"已用"标记位
+    if user.pwd_changed_at is not None and int(payload.get("iat", 0)) <= int(
+        user.pwd_changed_at.replace(tzinfo=timezone.utc).timestamp()
+    ):
+        raise HTTPException(status_code=400, detail="invalid_token")
     user.password_hash = hash_password(body.new_password)
+    user.pwd_changed_at = utcnow()
     db.commit()
     return {"ok": True}
 
@@ -409,12 +455,14 @@ def password_reset_confirm(db: Session, body: PasswordResetConfirmIn) -> dict:
 def change_password(db: Session, user: User, body: PasswordChangeIn) -> dict:
     """登录态改密：旧密校验失败 401；password_hash 为 None（GDPR 匿名/OAuth-only 用户）
     无旧密可验 → 401（走邮件重置流）。不做 token_version 主动失效旧会话 ——
-    与邮件重置 password_reset_confirm 同口径（既有 token 自然过期）。"""
+    与邮件重置 password_reset_confirm 同口径（既有 token 自然过期）；
+    但同样落 pwd_changed_at，使改密前签发的 pwreset token 全部作废。"""
     if user.password_hash is None or not verify_password(
         body.old_password, user.password_hash
     ):
         raise HTTPException(status_code=401, detail="invalid credentials")
     user.password_hash = hash_password(body.new_password)
+    user.pwd_changed_at = utcnow()
     db.commit()
     return {"ok": True}
 
@@ -505,11 +553,20 @@ def _gdpr_delay_days(db: Session) -> int:
 
 
 def export_my_data(db: Session, user: User) -> dict:
-    orders = []
-    for o in (
+    # N+1 修复：订单 items / 工单 messages 先收集 id 后 IN 批查内存分组（批查范式同 repository.active_variants_by_product）
+    order_rows = (
         db.query(Order).filter(Order.user_id == user.id).order_by(Order.id.asc()).all()
-    ):
-        orders.append({
+    )
+    items_by_order: dict[int, list] = {}
+    if order_rows:
+        for it in (
+            db.query(OrderItem)
+            .filter(OrderItem.order_id.in_([o.id for o in order_rows]))
+            .order_by(OrderItem.id.asc()).all()
+        ):
+            items_by_order.setdefault(it.order_id, []).append(it)
+    orders = [
+        {
             "order_no": o.order_no,
             "status": o.status,
             "currency": o.currency,
@@ -532,13 +589,24 @@ def export_my_data(db: Session, user: User) -> dict:
                     "unit_price": i.unit_price,
                     "subtotal": i.subtotal,
                 }
-                for i in db.query(OrderItem)
-                .filter(OrderItem.order_id == o.id).order_by(OrderItem.id.asc()).all()
+                for i in items_by_order.get(o.id, [])
             ],
-        })
-    tickets = []
-    for t in db.query(Ticket).filter(Ticket.user_id == user.id).order_by(Ticket.id.asc()).all():
-        tickets.append({
+        }
+        for o in order_rows
+    ]
+    ticket_rows = (
+        db.query(Ticket).filter(Ticket.user_id == user.id).order_by(Ticket.id.asc()).all()
+    )
+    msgs_by_ticket: dict[int, list] = {}
+    if ticket_rows:
+        for m in (
+            db.query(TicketMessage)
+            .filter(TicketMessage.ticket_id.in_([t.id for t in ticket_rows]))
+            .order_by(TicketMessage.id.asc()).all()
+        ):
+            msgs_by_ticket.setdefault(m.ticket_id, []).append(m)
+    tickets = [
+        {
             "ticket_no": t.ticket_no,
             "subject": t.subject,
             "category": t.category,
@@ -547,10 +615,11 @@ def export_my_data(db: Session, user: User) -> dict:
             "created_at": t.created_at,
             "messages": [
                 {"sender": m.sender, "content": m.content, "created_at": m.created_at}
-                for m in db.query(TicketMessage)
-                .filter(TicketMessage.ticket_id == t.id).order_by(TicketMessage.id.asc()).all()
+                for m in msgs_by_ticket.get(t.id, [])
             ],
-        })
+        }
+        for t in ticket_rows
+    ]
     data = {
         "profile": _user_out(user),
         "addresses": [_addr_out(a) for a in repo.list_addresses(db, user.id)],
@@ -650,19 +719,29 @@ def anonymize_user(db: Session, user_id: int) -> bool:
     user = db.get(User, user_id)
     if user is None:
         return False
+    old_email = user.email
     anon_email = f"deleted+{user.id}@anonymized.local"
     user.email = anon_email
     user.password_hash = None
     user.name = ""
-    user.points = 0
     user.status = -1
     user.birthday = None
+    # 积分清零走 points.py 原子原语并补流水（reason=ADMIN_ADJUST/ref=gdpr，balance_after=0），
+    # 保证对账 diff_points=0；不再 ORM 赋 user.points=0（无流水且 flush 可能覆盖 raw 结果）
+    points_svc.clear_points(db, user_id, ref_type="gdpr", ref_id=user_id)
     db.query(UserAddress).filter(UserAddress.user_id == user.id).delete(
         synchronize_session=False)
     db.query(Cart).filter(Cart.user_id == user.id).delete(
         synchronize_session=False)
     db.query(WishlistItem).filter(WishlistItem.user_id == user.id).delete(
         synchronize_session=False)
+    # PII 残留清理：推荐行 invited_email 脱敏（deleted+行id，与订单匿名化同风格且唯一索引安全）；
+    # 邮件偏好按 GDPR 删除语义直接删行（邮箱或 user_id 关联的都清）
+    for ref in db.query(Referral).filter(Referral.invited_email == old_email).all():
+        ref.invited_email = f"deleted+{ref.id}@anonymized.local"
+    db.query(EmailPreference).filter(
+        or_(EmailPreference.email == old_email, EmailPreference.user_id == user_id)
+    ).delete(synchronize_session=False)
     for order in db.query(Order).filter(Order.user_id == user.id).all():
         order.email = anon_email
         addr = dict(order.shipping_address or {})

@@ -15,9 +15,11 @@ MISS = object()
 
 
 class TTLCache:
-    def __init__(self, ttl: int, clock=time.time):
+    def __init__(self, ttl: int, clock=time.time, maxsize: int | None = None):
         self.ttl = ttl
         self.clock = clock
+        # 条目上限（默认走配置 GM_CACHE_MAXSIZE）：超限按最旧（最早写入序）淘汰，防无界增长
+        self.maxsize = maxsize if (maxsize is not None and maxsize > 0) else settings.cache_maxsize
         self._lock = threading.Lock()
         self._data: OrderedDict = OrderedDict()
         self._hits = 0
@@ -42,6 +44,8 @@ class TTLCache:
             return
         with self._lock:
             self._data[key] = (self.clock() + self.ttl, value)
+            while len(self._data) > self.maxsize:
+                self._data.popitem(last=False)  # 最旧淘汰（OrderedDict 首位）
 
     def clear(self, prefix: str = "") -> None:
         with self._lock:

@@ -144,9 +144,9 @@ try:
             "order_no": "EX260816OK01", "order_item_id": items_ok[0].id,
             "new_variant_id": v_hi.id, "reason": "want longer"})
         d = r.json()
-        check("本人创建换货 201 → EX+yymmdd+4hex / status 0 / diff 贵 500",
+        check("本人创建换货 201 → EX+yymmdd+8hex / status 0 / diff 贵 500",
               r.status_code == 201 and d["exchange_no"].startswith("EX")
-              and len(d["exchange_no"]) == 12 and d["status"] == 0
+              and len(d["exchange_no"]) == 16 and d["status"] == 0
               and d["price_diff"] == 500
               and d["status_label"] == "申请"
               and d["old_variant"]["id"] == v_old.id
@@ -320,7 +320,8 @@ try:
         r = client.post(f"/api/admin/trade/exchanges/{ex_hi_no}/approve", headers=H_OPS)
         check("重复 approve → 409", r.status_code == 409, r.text[:120])
 
-        r = client.post(f"/api/admin/trade/exchanges/{ex_hi_no}/mark-paid", headers=H_OPS)
+        r = client.post(f"/api/admin/trade/exchanges/{ex_hi_no}/mark-paid", headers=H_OPS,
+                        json={"note": "WIRE-20260816-500"})
         check("mark-paid 2→1 + timeline 记 diff 500",
               r.status_code == 200 and r.json()["status"] == 1
               and ev_count(o_ok.id, "exchange_diff_paid") == 1
@@ -378,13 +379,21 @@ try:
         check("LO 单 ship 成功（diff<0 路径也走发货）",
               r.status_code == 200 and r.json()["status"] == 3, r.text[:120])
 
-        # 未批准 ship 守卫用独立订单（EX260816LO001 的 item 已被 ex_lo_no 全额占用，
-        # 未决占用修复后同 item 不可再叠加第二笔换货申请）
+        # 已发货换货已占量（exchanged_qty，P0-1）：同件不可再申请 —— 防双补发资损
         o_pend, items_pend = make_order(s, "EX260816PEND01", [(v_old.id, 1, 1000)],
-                                        user_id=emma.id, email="emma@glow.test")
+                                         user_id=emma.id, email="emma@glow.test")
         s.commit()
         r = client.post("/api/exchanges", headers=H_EMMA, json={
             "order_no": "EX260816PEND01", "order_item_id": items_pend[0].id,
+            "new_variant_id": v_hi.id})
+        check("已发货换货占量后同件再申请 → 409 qty_exceeds_available:0",
+              r.status_code == 409 and "qty_exceeds_available:0" in r.text, r.text)
+        # 0 态 ship 守卫用例换新单（在途未占量的申请单）
+        o_pd, items_pd = make_order(s, "EX260816PEND01", [(v_old.id, 1, 1000)],
+                                    user_id=emma.id, email="emma@glow.test")
+        s.commit()
+        r = client.post("/api/exchanges", headers=H_EMMA, json={
+            "order_no": "EX260816PEND01", "order_item_id": items_pd[0].id,
             "new_variant_id": v_hi.id})
         ex_pending_no = r.json()["exchange_no"]
         r = client.post(f"/api/admin/trade/exchanges/{ex_pending_no}/ship", headers=H_OPS,
@@ -470,7 +479,7 @@ try:
         r = client.post("/api/exchanges", headers=H_EMMA, json={
             "order_no": "EX260816QTY001", "order_item_id": items_q2[0].id,
             "new_variant_id": v_hi.id, "qty": 4})
-        check("qty=4 超可换量（qty=3 已被 qty=2 未决占用，余 1）→ 409 qty_exceeds_available:1",
+        check("qty=4 超余量（3 - 在途换货 2 = 1）→ 409 qty_exceeds_available:1",
               r.status_code == 409 and "qty_exceeds_available:1" in r.text, r.text)
 
         r = client.post("/api/exchanges", headers=H_EMMA, json={
@@ -485,7 +494,11 @@ try:
         check("qty=2 diff>0 → approve 到 2 待差价",
               r.status_code == 200 and r.json()["status"] == 2, r.text[:120])
         r = client.post(f"/api/admin/trade/exchanges/{ex_q2_no}/mark-paid", headers=H_OPS)
-        check("qty=2 mark-paid → 1（补差 1000）",
+        check("mark-paid 缺收款凭据 → 422 diff_payment_proof_required（P1-7）",
+              r.status_code == 422 and "proof" in r.text, r.text[:120])
+        r = client.post(f"/api/admin/trade/exchanges/{ex_q2_no}/mark-paid", headers=H_OPS,
+                        json={"note": "POS-8801 收讫"})
+        check("qty=2 mark-paid（带凭据）→ 1（补差 1000）",
               r.status_code == 200 and r.json()["status"] == 1
               and r.json()["price_diff"] == 1000, r.text[:120])
 

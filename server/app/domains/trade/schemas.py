@@ -5,7 +5,7 @@ app/schemas/checkout.py 保留为 re-export shim。
 """
 
 import re
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import AfterValidator, BaseModel, Field
 
@@ -27,6 +27,24 @@ def _check_email(v: Optional[str]) -> Optional[str]:
 EmailIn = Annotated[str, AfterValidator(_check_email)]
 
 
+def _norm_country(v: Optional[str]) -> Optional[str]:
+    """国家码归一：strip + 大写，必须恰为 2 字母（ISO 3166-1 alpha-2）。
+    旧行为 [:2] 静默截断会把 "CHN"/"USA1" 存成脏数据，改为 422 invalid_country。"""
+    if v is None:
+        return v
+    v = v.strip().upper()
+    if len(v) != 2 or not v.isalpha():
+        raise ValueError("invalid_country")
+    return v
+
+
+CountryIn = Annotated[str, AfterValidator(_norm_country)]
+
+# 配送方式白名单（pricing 支持 standard/express，与 ShippingRateIn 同口径）：
+# 任意字符串入库会静默回落 standard 运费
+ShippingMethodIn = Literal["standard", "express"]
+
+
 class CartItemIn(BaseModel):
     variant_id: int
     qty: int = Field(default=1, ge=1, le=99)
@@ -34,13 +52,13 @@ class CartItemIn(BaseModel):
 
 class PreviewRequest(BaseModel):
     items: Optional[List[CartItemIn]] = None
-    country: str = "US"
+    country: CountryIn = "US"
     state: Optional[str] = None
     code: Optional[str] = None
     points: int = 0
     gift_card_code: Optional[str] = None
     email: Optional[EmailIn] = None
-    shipping_method: str = "standard"
+    shipping_method: ShippingMethodIn = "standard"
 
 
 class AddressIn(BaseModel):
@@ -50,14 +68,14 @@ class AddressIn(BaseModel):
     city: str
     state: Optional[str] = None
     zip: str
-    country: str = Field(default="US", max_length=2)
-    phone: Optional[str] = Field(default=None, max_length=32)
+    country: CountryIn = "US"
+    phone: Optional[str] = None
 
 
 class PlaceRequest(BaseModel):
     email: EmailIn
     address: AddressIn
-    shipping_method: str = "standard"
+    shipping_method: ShippingMethodIn = "standard"
     code: Optional[str] = None
     points: int = 0
     gift_card_code: Optional[str] = None
@@ -79,14 +97,19 @@ class MockPayRequest(BaseModel):
 
 
 class WebhookRequest(BaseModel):
+    """webhook 载荷形态宽松化：真实 PayPal 事件是 event_type + resource（无 Stripe
+    的 type/data 键），路由仅借模型做 JSON 探测，真实解析在 service 层按原始 bytes。"""
     id: str
-    type: str
-    data: dict
+    type: Optional[str] = None
+    event_type: Optional[str] = None
+    data: Optional[dict] = None
+    resource: Optional[dict] = None
 
 
 class ShipRequest(BaseModel):
-    carrier: str
-    tracking_no: str
+    # 列宽对齐 shipments 表（carrier 30 / tracking_no 64）：越界在入口 422 拦截（P1-8）
+    carrier: str = Field(min_length=1, max_length=30)
+    tracking_no: str = Field(min_length=1, max_length=64)
 
 
 class RefundRequest(BaseModel):

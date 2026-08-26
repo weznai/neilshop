@@ -4,9 +4,11 @@
 及 account 路由内联模型（退订/改密 body）。
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.core.db import utcnow
 
 
 # ---------- 账户 ----------
@@ -25,8 +27,28 @@ class LoginIn(BaseModel):
 
 
 class ProfileUpdateIn(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=100)
+    name: str | None = Field(default=None, max_length=100)
     birthday: date | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str | None) -> str | None:
+        # strip 后非空：拒绝纯空白名（否则前端传空格串是"假成功"脏数据）
+        if v is not None and not v.strip():
+            raise ValueError("name must not be blank")
+        return v.strip() if v is not None else v
+
+    @field_validator("birthday")
+    @classmethod
+    def _birthday_sane(cls, v: date | None) -> date | None:
+        # 生日不得为未来 / 超 120 岁（后端零校验补齐）
+        if v is not None:
+            today = date.today()
+            if v > today:
+                raise ValueError("birthday must not be in the future")
+            if v < date(today.year - 120, today.month, today.day):
+                raise ValueError("birthday out of range")
+        return v
 
 
 class AddressIn(BaseModel):
@@ -116,8 +138,23 @@ class SubscriptionCreateIn(BaseModel):
     style_mode: int = Field(ge=1, le=2)
 
 
+def _future_dt(v: datetime | None, field: str) -> datetime | None:
+    """恢复/跳过时间后端校验：必须在未来（60s 容忍客户端/服务器时钟偏移）；naive 视作 UTC"""
+    if v is not None:
+        if v.tzinfo is not None:
+            v = v.astimezone(timezone.utc).replace(tzinfo=None)
+        if v < utcnow() - timedelta(seconds=60):
+            raise ValueError(f"{field} must be in the future")
+    return v
+
+
 class SubscriptionPauseIn(BaseModel):
-    resume_at: datetime | None = None
+    resume_at: datetime | None = None  # None=无限期暂停，允许
+
+    @field_validator("resume_at")
+    @classmethod
+    def _resume_at_future(cls, v: datetime | None) -> datetime | None:
+        return _future_dt(v, "resume_at")
 
 
 class SubscriptionCancelIn(BaseModel):
@@ -126,3 +163,8 @@ class SubscriptionCancelIn(BaseModel):
 
 class SubscriptionSkipIn(BaseModel):
     skip_until: datetime
+
+    @field_validator("skip_until")
+    @classmethod
+    def _skip_until_future(cls, v: datetime) -> datetime:
+        return _future_dt(v, "skip_until")

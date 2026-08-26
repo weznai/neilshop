@@ -76,6 +76,10 @@ def check_giftcard(db: Session, body: GiftcardIn) -> dict:
     card = repo.giftcard_by_code(db, code)
     if not card or card.status != 1:
         raise HTTPException(status_code=404, detail="invalid_card")
+    # 过期口径与结算（services/pricing.py）统一：expires_at < now 视为过期
+    #（等于 now 仍可用，两边同口径，避免查询可用而结算报过期的错位）
+    if card.expires_at and card.expires_at < utcnow():
+        raise HTTPException(status_code=409, detail="gift_card_expired")
     return {"balance_cents": card.balance, "status": card.status, "expires_at": card.expires_at}
 
 
@@ -302,7 +306,8 @@ def list_discounts(db: Session, page: int, size: int, q: str | None = None) -> d
 
 
 def _validate_discount(type_: int, value: int) -> None:
-    """类型/面值交叉校验：百分比 1-100；固定减免须 ≥1 分（免邮 type=3 值无意义放行 0）"""
+    """类型/面值交叉校验：百分比 1-100；固定减免须 ≥1 分（免邮 type=3 值无意义放行 0）。
+    max_discount 非负由 schema Field(ge=0) 拦截（负封顶会抬高应付价），service 不重复校验"""
     if type_ == 1 and not (1 <= value <= 100):
         raise HTTPException(status_code=422, detail="invalid_percent_value")
     if type_ == 2 and value < 1:
@@ -316,10 +321,26 @@ def _validate_window(starts_at, ends_at) -> None:
         raise HTTPException(status_code=422, detail="ends_before_starts")
 
 
+def _validate_popup_scene(scene: str) -> str:
+    """弹窗 scene 宽松校验：strip 非空且 ≤30（PopupConfig.scene 列宽）。
+    预置 welcome/exit_intent/newsletter 之外放行存量自定义值——前端下拉为
+    「预置场景 ∪ 已有数据」动态集合，后端不收严到固定白名单以免历史配置不可编辑"""
+    s = (scene or "").strip()
+    if not s or len(s) > 30:
+        raise HTTPException(status_code=422, detail="invalid_scene")
+    return s
+
+
+def _validate_popup_window(start_at, end_at) -> None:
+    """弹窗窗口：两端皆可空（空=不限），都给值时须 end >= start（允许相等，口径同折扣码）"""
+    if start_at is not None and end_at is not None and end_at < start_at:
+        raise HTTPException(status_code=422, detail="ends_before_starts")
+
+
 def create_discount(db: Session, admin: User, body: DiscountCreateIn) -> dict:
     code = body.code.strip().upper()
     if repo.discount_id_by_code(db, code):
-        raise HTTPException(status_code=409, detail="code exists")
+        raise HTTPException(status_code=409, detail="code_exists")
     _validate_discount(body.type, body.value)
     _validate_window(body.starts_at, body.ends_at)
     dc = DiscountCode(
@@ -336,7 +357,12 @@ def create_discount(db: Session, admin: User, body: DiscountCreateIn) -> dict:
         is_active=1,
     )
     db.add(dc)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # 并发同码：先查后插竞态窗口撞 code 唯一索引 → 409 而非 500
+        db.rollback()
+        raise HTTPException(status_code=409, detail="code_exists")
     log_admin(db, admin, "create", "discount", dc.id, {"code": code, "type": body.type, "value": body.value})
     db.commit()
     db.refresh(dc)
@@ -351,7 +377,7 @@ def update_discount(db: Session, admin: User, discount_id: int, body: DiscountUp
     if "code" in data:
         data["code"] = data["code"].strip().upper()
         if repo.discount_id_by_code_excluding(db, data["code"], dc.id):
-            raise HTTPException(status_code=409, detail="code exists")
+            raise HTTPException(status_code=409, detail="code_exists")
     # starts_at 非空列：显式传 null 直接拒绝（避免 IntegrityError 500）
     if data.get("starts_at") is None:
         data.pop("starts_at", None)
@@ -457,7 +483,7 @@ def create_giftcard(db: Session, admin: User, body: GiftcardAdminCreateIn) -> di
     code = (body.code or "").strip().upper()
     if code:
         if repo.giftcard_id_by_code(db, code):
-            raise HTTPException(status_code=409, detail="code exists")
+            raise HTTPException(status_code=409, detail="code_exists")
     else:
         code = _new_gift_code(db)
     card = GiftCard(
@@ -466,7 +492,12 @@ def create_giftcard(db: Session, admin: User, body: GiftcardAdminCreateIn) -> di
         expires_at=utcnow() + timedelta(days=body.expires_days) if body.expires_days else None,
     )
     db.add(card)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # 并发自定义卡号：先查后插竞态窗口撞 code 唯一索引 → 409 而非 500（register 同款）
+        db.rollback()
+        raise HTTPException(status_code=409, detail="code_exists")
     db.add(GiftCardLedger(
         gift_card_id=card.id, change_type=1,
         amount=body.initial_cents, balance_after=card.balance,
@@ -481,9 +512,15 @@ def create_giftcard(db: Session, admin: User, body: GiftcardAdminCreateIn) -> di
 
 
 def freeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
+    """冻结仅限有效卡(1)；已冻结(2)幂等返回；待激活(0)/用尽(3)/作废(4)一律 409——
+    堵旧路径 freeze(0)→unfreeze(2→1) 把未支付待激活卡直接"复活"为有效（免费拿卡）"""
     card = db.get(GiftCard, gift_card_id)
     if not card:
         raise HTTPException(status_code=404, detail="giftcard not found")
+    if card.status == 2:
+        return _giftcard_dict(card)
+    if card.status != 1:
+        raise HTTPException(status_code=409, detail="invalid_status")
     card.status = 2
     log_admin(db, admin, "freeze", "giftcard", card.id, {"code": card.code, "status": card.status})
     db.commit()
@@ -492,12 +529,18 @@ def freeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
 
 
 def unfreeze_giftcard(db: Session, admin: User, gift_card_id: int) -> dict:
-    """仅冻结卡(2)可解冻：待激活/已用尽/已作废的卡不允许借解冻复活为有效"""
+    """仅冻结卡(2)可解冻（待激活/已用尽/作废不允许借解冻复活）；另有来源校验：
+    关联购卡订单（purchaser_order_id）且订单仍未支付(status=0)的卡，解冻=绕过支付
+    直接激活 → 409 unpaid_giftcard（防存量被误冻结的待激活卡 2→1 穿隧）"""
     card = db.get(GiftCard, gift_card_id)
     if not card:
         raise HTTPException(status_code=404, detail="giftcard not found")
     if card.status != 2:
         raise HTTPException(status_code=409, detail="invalid_status")
+    if card.purchaser_order_id:
+        order = db.get(Order, card.purchaser_order_id)
+        if order is not None and order.status == 0:
+            raise HTTPException(status_code=409, detail="unpaid_giftcard")
     card.status = 1
     log_admin(db, admin, "unfreeze", "giftcard", card.id, {"code": card.code, "status": card.status})
     db.commit()
@@ -575,8 +618,10 @@ def list_popups(db: Session) -> dict:
 
 
 def create_popup(db: Session, admin: User, body: PopupCreateIn) -> dict:
+    scene = _validate_popup_scene(body.scene)
+    _validate_popup_window(body.start_at, body.end_at)
     p = PopupConfig(
-        scene=body.scene,
+        scene=scene,
         title=body.title,
         content_md=body.content_md,
         coupon_code=body.coupon_code,
@@ -587,7 +632,7 @@ def create_popup(db: Session, admin: User, body: PopupCreateIn) -> dict:
     )
     db.add(p)
     db.flush()
-    log_admin(db, admin, "create", "popup", p.id, {"scene": body.scene, "active": body.active})
+    log_admin(db, admin, "create", "popup", p.id, {"scene": scene, "active": body.active})
     db.commit()
     db.refresh(p)
     return _popup_dict(p)
@@ -598,6 +643,14 @@ def update_popup(db: Session, admin: User, popup_id: int, body: PopupUpdateIn) -
     if not p:
         raise HTTPException(status_code=404, detail="popup not found")
     data = body.model_dump(exclude_unset=True)
+    if "scene" in data:
+        data["scene"] = _validate_popup_scene(data["scene"])
+    # 窗口交叉校验按合并后口径（任一端变更时用现值兜底另一端）
+    if "start_at" in data or "end_at" in data:
+        _validate_popup_window(
+            data.get("start_at", p.start_at),
+            data.get("end_at", p.end_at),
+        )
     for k, v in data.items():
         setattr(p, k, v)
     log_admin(db, admin, "update", "popup", p.id, _json_safe_diff(data))

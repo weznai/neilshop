@@ -19,6 +19,7 @@ from app.models import (
 
 from app.domains.member import repository as repo
 from app.domains.member.schemas import SimulateInviteIn
+from app.services import points as points_svc
 
 
 def derive_code(user_id: int) -> str:
@@ -94,6 +95,25 @@ def simulate_invite(db: Session, user: User, body: SimulateInviteIn) -> dict:
     return {"code": code}
 
 
+# 推荐码反查快照缓存（code→uid，60s TTL）：derive_code 无存储列，原实现每次全表扫 + N 次 HMAC；
+# 整体重建后原子换引用（读侧无锁），未命中强制重建一次，新注册用户的码立即可见（正确性不受 TTL 影响）
+_CODE_INDEX: dict[str, int] = {}
+_CODE_INDEX_AT: float = 0.0
+_CODE_INDEX_TTL = 60.0
+
+
+def _code_to_uid(db: Session, code: str) -> int | None:
+    import time as _time
+
+    global _CODE_INDEX, _CODE_INDEX_AT
+    now = _time.monotonic()
+    stale = now - _CODE_INDEX_AT > _CODE_INDEX_TTL
+    if stale or code not in _CODE_INDEX:
+        index = {derive_code(uid): uid for uid in repo.all_user_ids(db)}
+        _CODE_INDEX, _CODE_INDEX_AT = index, now
+    return _CODE_INDEX.get(code)
+
+
 def bind_referral_on_register(db: Session, ref_code: str | None, new_user: User) -> None:
     """/register?ref= 落地承诺的绑定闭环：注册时 ref_code 有效（存在且属于其它用户）则落
     Referral 记录。复用 invite→REGISTERED 既有流转：已有 CLICKED 行（如 simulate-invite
@@ -102,9 +122,7 @@ def bind_referral_on_register(db: Session, ref_code: str | None, new_user: User)
     code = (ref_code or "").strip().upper()
     if not code:
         return
-    referrer_id = next(
-        (uid for uid in repo.all_user_ids(db) if derive_code(uid) == code), None
-    )
+    referrer_id = _code_to_uid(db, code)
     if referrer_id is None or referrer_id == new_user.id:
         return  # 无效码 / 自邀：静默忽略，不阻断注册
     row = repo.find_referral(db, code, new_user.email)
@@ -124,10 +142,12 @@ def bind_referral_on_register(db: Session, ref_code: str | None, new_user: User)
 # ---------- 支付钩子 ----------
 
 def _grant(db: Session, user: User, points: int, order_id: int) -> None:
-    user.points += points
+    # 原子累加 + 回读现值写 ledger（复用 points.py 公共原语，与 grant_for_order 同口径），
+    # 杜绝并发支付回调下 ORM user.points += 丢更新（少发奖励）
+    balance = points_svc.add_points(db, user.id, points)
     db.add(PointsLedger(
         user_id=user.id, change=points, reason=int(PointsReason.REFERRAL),
-        balance_after=user.points, ref_type="referral", ref_id=order_id,
+        balance_after=balance, ref_type="referral", ref_id=order_id,
         frozen=0, created_at=utcnow(),
     ))
 

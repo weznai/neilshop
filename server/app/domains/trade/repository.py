@@ -6,7 +6,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import or_, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -99,6 +99,26 @@ _CLAIM_EXCHANGE_COMPLETED_SQL = text(
 _DEBIT_GIFT_CARD_SQL = text(
     "UPDATE gift_cards SET balance = balance - :amt "
     "WHERE id = :gid AND status = 1 AND balance >= :amt"
+)
+# 礼品卡原子回补：作废卡(4)守卫进 WHERE（回补不可复活作废卡），rowcount=0 = 卡作废
+_CREDIT_GIFT_CARD_SQL = text(
+    "UPDATE gift_cards SET balance = balance + :amt "
+    "WHERE id = :gid AND status != 4"
+)
+# order_items 占量 CAS（可退/可换余守卫进 WHERE）：RMA 收货占 refunded_qty / 换货发货占
+# exchanged_qty，与整单退款回补、并发占量互斥，rowcount=0 = 余量不足
+_CLAIM_ITEM_REFUNDED_SQL = text(
+    "UPDATE order_items SET refunded_qty = refunded_qty + :q "
+    "WHERE id = :iid AND qty - refunded_qty - exchanged_qty >= :q"
+)
+_CLAIM_ITEM_EXCHANGED_SQL = text(
+    "UPDATE order_items SET exchanged_qty = exchanged_qty + :q "
+    "WHERE id = :iid AND qty - refunded_qty - exchanged_qty >= :q"
+)
+# 后台送达 CAS：仅发货中(3)可推送达(4)，与重复标记/状态回退并发互斥
+_CLAIM_DELIVERED_SQL = text(
+    "UPDATE orders SET status = 4, delivered_at = :now "
+    "WHERE id = :oid AND status = 3"
 )
 # 折扣码计数原子自增：限额守卫进 WHERE，并发支付回调抢同码不超发（rowcount=0 = 已满）
 _BUMP_DC_USED_SQL = text(
@@ -245,9 +265,31 @@ def claim_payment_refund(db: Session, payment_id: int, amount: int, full: bool) 
     }).rowcount
 
 
-# ---------- 礼品卡：原子扣减 ----------
+def claim_order_delivered(db: Session, order_id: int, now) -> int:
+    return db.execute(_CLAIM_DELIVERED_SQL, {"oid": order_id, "now": now}).rowcount
+
+
+# ---------- order_items 占量（RMA 收货 / 换货发货） ----------
+def claim_item_refunded(db: Session, item_id: int, qty: int) -> int:
+    """RMA 占可退量：qty - refunded_qty - exchanged_qty 守卫进 WHERE（P0-1）"""
+    return db.execute(_CLAIM_ITEM_REFUNDED_SQL, {"iid": item_id, "q": qty}).rowcount
+
+
+def claim_item_exchanged(db: Session, item_id: int, qty: int) -> int:
+    """换货占可换量：同 refunded 守卫（两口径同看双计数，防 RMA/换货互相穿透）"""
+    return db.execute(_CLAIM_ITEM_EXCHANGED_SQL, {"iid": item_id, "q": qty}).rowcount
+
+
+# ---------- 礼品卡：原子扣减/回补 ----------
 def debit_gift_card(db: Session, gift_card_id: int, amount: int) -> int:
     return db.execute(_DEBIT_GIFT_CARD_SQL, {
+        "gid": gift_card_id, "amt": amount,
+    }).rowcount
+
+
+def credit_gift_card(db: Session, gift_card_id: int, amount: int) -> int:
+    """礼品卡回补原子化（ORM 读改写在并发回补下会丢失更新）：作废卡守卫进 WHERE"""
+    return db.execute(_CREDIT_GIFT_CARD_SQL, {
         "gid": gift_card_id, "amt": amount,
     }).rowcount
 
@@ -257,6 +299,17 @@ def bump_discount_used_count(db: Session, code_id: int) -> int:
     """折扣码 used_count 原子 +1（限额守卫进 WHERE）：rowcount=0 = 已达 usage_limit。
     支付已成功场景由调用方决定超发语义（记日志放行，不回滚订单）。"""
     return db.execute(_BUMP_DC_USED_SQL, {"cid": code_id}).rowcount
+
+
+def redemption_count_by_code_email(db: Session, code_id: int, email: str) -> int:
+    """按 (code_id, email) 的已核销 Redemption 计数 —— 支付侧 per-user 限额守卫用，
+    口径与 promo_rules.validate_code 一致（email 需调用方 strip+lower 归一）。"""
+    return (
+        db.query(DiscountRedemption)
+        .filter(DiscountRedemption.code_id == code_id,
+                DiscountRedemption.email == email)
+        .count()
+    )
 
 
 def add_user_total_spent(db: Session, user_id: int, amount: int) -> int:
@@ -529,11 +582,24 @@ def pending_payment_of_order(
 
 
 def refundable_payment_of_order(db: Session, order_id: int) -> Optional[Payment]:
-    return (
+    """可退支付行 = 主支付行：金额等于 order.grand_total 的成功行优先，否则 id 最小的
+    成功行（status∈1/4）。旧行为按 id 最大取 —— 换货差价 Payment（挂原订单、
+    amount=price_diff 远小于 grand_total、settle 后 id 更大）会污染退款池：
+    全额退款只退差价额且误判 full=True 整单置 REFUNDED，主款永不退。"""
+    rows = (
         db.query(Payment)
         .filter(Payment.order_id == order_id, Payment.status.in_([1, 4]))
-        .order_by(Payment.id.desc()).first()
+        .order_by(Payment.id.asc())
+        .all()
     )
+    if not rows:
+        return None
+    order = db.get(Order, order_id)
+    grand = int(order.grand_total) if order is not None else None
+    for row in rows:
+        if grand is not None and int(row.amount) == grand:
+            return row
+    return rows[0]
 
 
 def supersede_stale_pending(db: Session, keep: Payment) -> int:
@@ -563,7 +629,47 @@ def payment_by_intent(db: Session, payment_intent: str) -> Optional[Payment]:
     )
 
 
+def stale_pending_intents_of_order(db: Session, keep: Payment) -> list[str]:
+    """与 supersede_stale_pending 同口径将被废弃的旧 PENDING PI 先行取出
+    （供调用方废弃后尽力 provider 取消 —— 旧 intent 在 provider 侧仍可支付，
+    用户完成旧支付即双扣款）。"""
+    pi = keep.stripe_payment_intent or ""
+    prefix = next((p for p in _PI_PREFIXES.values() if pi.startswith(p)), None)
+    if not prefix:
+        return []
+    rows = (
+        db.query(Payment.stripe_payment_intent)
+        .filter(Payment.order_id == keep.order_id,
+                Payment.status == 0,
+                Payment.id != keep.id,
+                Payment.stripe_payment_intent.like(prefix + "%"))
+        .all()
+    )
+    return [r[0] for r in rows if r[0]]
+
+
+def exchange_linked_to_payment(db: Session, payment_id: int) -> Optional[Exchange]:
+    """按 diff_payment_id 反查换货（任意状态）：webhook 退款回调识别「换货差价支付行」
+    用 —— settle 后换货状态已离开 2，exchange_by_diff_payment 的 status==2 过滤会漏判，
+    差价行退款会被误当主款退款进整单语义。"""
+    return (
+        db.query(Exchange)
+        .filter(Exchange.diff_payment_id == payment_id)
+        .first()
+    )
+
+
 # ---------- RMA ----------
+def rma_inflight_qty(db: Session, order_item_id: int) -> int:
+    """该条目未终态 RMA 在途占量（0-3；4 已收货在 receive 原子计入 refunded_qty 不重复计）"""
+    total = (
+        db.query(func.sum(Rma.qty))
+        .filter(Rma.order_item_id == order_item_id, Rma.status.in_([0, 1, 2, 3]))
+        .scalar()
+    )
+    return int(total or 0)
+
+
 def list_user_rmas(db: Session, user_id: int) -> list[tuple[Rma, OrderItem, Order]]:
     return (
         db.query(Rma, OrderItem, Order)
@@ -615,6 +721,18 @@ def giftcard_debit_ledgers(db: Session, order_id: int) -> list[GiftCardLedger]:
     return (
         db.query(GiftCardLedger)
         .filter(GiftCardLedger.order_id == order_id, GiftCardLedger.change_type == 3)
+        .all()
+    )
+
+
+def giftcard_refund_marks(db: Session, order_id: int) -> list[OrderTimeline]:
+    """礼品卡比例回补标记（timeline giftcard_refunded，detail.ref_no=RMA 单号）：
+    查重 + 逐卡累计钳制数据源（detail 为 JSON，跨库不查键值、内存比对，
+    同 exchange_diff_refunded 模式）"""
+    return (
+        db.query(OrderTimeline)
+        .filter(OrderTimeline.order_id == order_id,
+                OrderTimeline.event == "giftcard_refunded")
         .all()
     )
 
@@ -721,6 +839,16 @@ def add_webhook_event(
 
 
 # ---------- 换货 Exchange ----------
+def exchange_inflight_qty(db: Session, order_item_id: int) -> int:
+    """该条目在途换货占量（0-2；3 已发货在 ship 原子计入 exchanged_qty 不重复计）"""
+    total = (
+        db.query(func.sum(Exchange.qty))
+        .filter(Exchange.order_item_id == order_item_id, Exchange.status.in_([0, 1, 2]))
+        .scalar()
+    )
+    return int(total or 0)
+
+
 def exchange_by_no(db: Session, exchange_no: str) -> Optional[Exchange]:
     return db.query(Exchange).filter(Exchange.exchange_no == exchange_no).first()
 
