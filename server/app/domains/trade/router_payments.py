@@ -88,7 +88,17 @@ def _create_intent_via(
         raise HTTPException(status_code=409, detail=f"order_not_pending:{order.status}")
     # 幂等：同单同 provider 已有 PENDING payment 直接复用返回，不堆积新行（跨 provider 建新）
     pending = repo.pending_payment_of_order(db, order.id, provider=provider.name)
-    if pending:
+    reuse_redirect = ""
+    if pending and provider.name == "stripe" \
+            and (pending.stripe_checkout_session or "").startswith("cs_"):
+        # 托管会话须回查 Stripe 取最新支付链接（过期/完成会话 url 为 None → 走下方新建，
+        # 旧行由 _supersede_stale 废弃）；回查失败按过期处理
+        try:
+            reuse_redirect = provider.retrieve_checkout_url(
+                pending.stripe_checkout_session) or ""
+        except Exception:
+            reuse_redirect = ""
+    if pending and (provider.name != "stripe" or reuse_redirect):
         return {
             "payment_intent": pending.stripe_payment_intent,
             "client_secret": (
@@ -97,23 +107,30 @@ def _create_intent_via(
             ),
             "amount": pending.amount,
             "provider": provider.name,
-            "redirect_url": "",
+            "redirect_url": reuse_redirect,
         }
     if provider.name == "stripe":
+        # Hosted Checkout：前端只认 redirect_url（跳 Stripe 收银台），client_secret
+        # 仅 mock 判定用；Payment 行以 checkout session id 为主键口径，webhook 回调
+        # 走 metadata.order_no + amount 兜底定位（见 handle_webhook / normalize_event）
         try:
-            import stripe  # noqa: F401
-            if not cfg.get("stripe_key"):
-                raise payment_provider.ProviderUnavailable("stripe key absent")
-            return payment_provider.StripeProvider(cfg)
-        except (ImportError, payment_provider.ProviderUnavailable):
-            raise HTTPException(status_code=400, detail="provider_unavailable")
-    if provider.name == "paypal":
+            session = provider.create_checkout(
+                order.order_no, order.grand_total, _site_url(db), email=email)
+        except payment_provider.ProviderUnavailable:
+            raise HTTPException(status_code=502, detail="provider_unavailable")
+        intent = {
+            "payment_intent": session.get("checkout_session_id") or "",
+            "client_secret": session.get("checkout_session_id") or "",
+            "redirect_url": session.get("redirect_url") or "",
+        }
+    elif provider.name == "paypal":
+        # PayPal Orders v2：create_intent 直接返回 approve 链接（redirect_url）
         try:
-            import httpx  # noqa: F401
-            return payment_provider.PayPalProvider(cfg)
-        except (ImportError, payment_provider.ProviderUnavailable):
-            raise HTTPException(status_code=400, detail="provider_unavailable")
-    raise HTTPException(status_code=400, detail="provider_unavailable")
+            intent = provider.create_intent(order, order.grand_total)
+        except payment_provider.ProviderUnavailable:
+            raise HTTPException(status_code=502, detail="provider_unavailable")
+    else:
+        raise HTTPException(status_code=400, detail="provider_unavailable")
     payment = Payment(
         order_id=order.id,
         stripe_payment_intent=intent["payment_intent"],

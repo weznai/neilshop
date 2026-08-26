@@ -235,10 +235,21 @@ class StripeProvider(PaymentProvider):
         )
         return {"checkout_session_id": session.id, "redirect_url": session.url}
 
-    def cancel_intent(self, payment_intent: str) -> None:
-        """尽力取消未完成的 PI（supersede 防双扣款）：已确认/已成功的 PI 会抛错，
-        由调用方告警兜底（迟到成功回调自动退款兜底）。"""
+    def retrieve_checkout_url(self, session_id: str) -> str:
+        """回查托管会话支付链接：过期/完成会话 url 为 None（返回空串），
+        调用方据此判定复用还是新建。"""
         stripe = self._sdk()
+        session = stripe.checkout.Session.retrieve(session_id)
+        url = getattr(session, "url", None)
+        return str(url) if url else ""
+
+    def cancel_intent(self, payment_intent: str) -> None:
+        """尽力取消未完成的支付（supersede 防双扣款）：已确认/已成功的会抛错，
+        由调用方告警兜底（迟到成功回调自动退款兜底）。cs_ 前缀为托管会话。"""
+        stripe = self._sdk()
+        if str(payment_intent).startswith("cs_"):
+            stripe.checkout.Session.cancel(payment_intent)
+            return
         stripe.PaymentIntent.cancel(payment_intent)
 
     def confirm(self, order, payment, succeed: bool) -> bool:
