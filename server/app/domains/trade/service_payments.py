@@ -434,6 +434,33 @@ def _pending_payment_by_amount(db: Session, order_id: int, amount) -> Payment | 
     )
 
 
+def _paid_payment_by_amount(db: Session, order_id: int, amount) -> Payment | None:
+    """已入账支付行按金额匹配（charge.refunded 兜底）：外呼退款先于回调记账时
+    行已是退款终态（3/4），refundable_payment_of_order 过滤不到 —— 这里按
+    金额在 1/3/4 行里选（全额退 → status=3 行），命中后走累计口径幂等对账
+    （delta<=0 跳过，不重复入账）。"""
+    rows = [p for p in repo.order_payments(db, order_id) if p.status in (1, 3, 4)]
+    if not rows:
+        return None
+    try:
+        amt = int(amount) if amount is not None else None
+    except (TypeError, ValueError):
+        amt = None
+    if amt is not None:
+        for p in rows:
+            if p.amount == amt:
+                return p
+        # 部分退款金额对不上行金额：取有退款记录的行
+        for p in rows:
+            if (p.refunded_amount or 0) > 0:
+                return p
+    # 无金额线索：优先有退款记录的行，否则最新成功行
+    for p in rows:
+        if (p.refunded_amount or 0) > 0:
+            return p
+    return rows[-1]
+
+
 def _record_diff_refund(db: Session, order: Order, payment: Payment, data, ex) -> None:
     """换货差价支付行的退款回调：仅在该行 CAS 记账（refunded_amount 累计），
     不进 apply_refund 整单语义 —— 差价行退款不得触发整单 REFUNDED/回补库存/
@@ -496,11 +523,19 @@ def handle_webhook(
     try:
         payment_intent = (data or {}).get("payment_intent")
         payment = repo.payment_by_intent(db, payment_intent) if payment_intent else None
+        if payment is None and payment_intent and str(payment_intent).startswith("pi_"):
+            # hosted checkout 流程 Payment 行存 cs_ 会话 id（webhook 推的是真实 PI）：
+            # 展开兜底 —— 同单同 provider 的 PENDING/成功行里找 checkout_session 等于
+            # 该 PI 对应会话的行不可行（事件不带 cs_），改走 order_no 定位（下方分支）
+            payment = None
         order = None
         if payment is None:
-            # PayPal capture 事件可能拿不到 intent（resource.id 是 capture id）：
-            # 按 metadata.order_no（custom_id）定位订单后单内选行 ——
-            # succeeded 按金额/最新 PENDING，refunded 取主可退行
+            # 定位兜底：按 metadata.order_no 定位订单后单内选行 ——
+            # PayPal capture 事件（resource.id 是 capture id，无 intent）、
+            # hosted checkout（行存 cs_，webhook 推 pi_）都走这里。选行口径：
+            # succeeded 按金额/最新 PENDING；refunded 取主可退行，
+            # 若行已是全额退款终态(3)——外呼退款先于回调入账的正常时序——
+            # 也按金额/最新选中，让累计口径对账（delta<=0 幂等跳过）
             order_no = str(
                 ((data or {}).get("metadata") or {}).get("order_no") or ""
             ).strip().upper()
@@ -512,6 +547,9 @@ def handle_webhook(
                             db, order.id, (data or {}).get("amount"))
                     elif event_type == "charge.refunded":
                         payment = repo.refundable_payment_of_order(db, order.id)
+                        if payment is None:
+                            payment = _paid_payment_by_amount(
+                                db, order.id, (data or {}).get("amount"))
         if payment is None:
             raise HTTPException(status_code=404, detail="payment_intent_not_found")
         if order is None:
