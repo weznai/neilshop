@@ -85,8 +85,13 @@ const fmt = fmtDateTime
 /* 时间线 detail 已知键 → 双语标签（白名单）：未知键不渲染，最多 3 条（防原始键名/内部 id 泄漏） */
 const DETAIL_LABELS = {
   from: ['From', '从'], to: ['To', '至'], qty: ['Qty', '数量'],
-  reason: ['Reason', '原因'], amount: ['Amount', '金额'], source: ['Source', '来源'],
+  reason: ['Reason', '原因'], amount: ['Amount', '金额'],
   carrier: ['Carrier', '承运商'], tracking_no: ['Tracking no.', '追踪号'], operator: ['Operator', '操作者'],
+}
+/* reason 为 RMA_REASON 数字码（1-6）时翻译为可读文案，其余原样展示 */
+function detailValue(k, v) {
+  if (k === 'reason' && RMA_REASON[v]) return tt(RMA_REASON[v][0], RMA_REASON[v][1])
+  return v
 }
 function detailText(ev) {
   const d = ev.detail
@@ -98,7 +103,7 @@ function detailText(ev) {
     return Object.entries(d)
       .filter(([k]) => DETAIL_LABELS[k])
       .slice(0, 3)
-      .map(([k, v]) => `${tt(DETAIL_LABELS[k][0], DETAIL_LABELS[k][1])}: ${v}`).join(' · ')
+      .map(([k, v]) => `${tt(DETAIL_LABELS[k][0], DETAIL_LABELS[k][1])}: ${detailValue(k, v)}`).join(' · ')
   }
   return String(d)
 }
@@ -112,8 +117,6 @@ async function load() {
   if (!no) { err.value = tt('Missing order number', '缺少订单号'); loading.value = false; return }
   try {
     o.value = await req('GET', '/api/orders/' + encodeURIComponent(no) + guestQ())
-    /* ?help=support：自动展开退换货入口（CancelFlowView 换货分流跳转） */
-    if (route.query.help === 'support') supportMode.value = true
     /* reviewed 持久化：order detail items 新增 reviewed 字段（无字段时回落会话内行为） */
     for (const it of (o.value.items || [])) if (it.reviewed) reviewed.value[it.id] = true
   } catch (e) {
@@ -186,9 +189,7 @@ async function payNow() {
 /* 两段式确认（useArmConfirm：5s 复位；按钮 arm 态红字 + 二段文案） */
 const recvArm = useArmConfirm()
 
-/* 退换货入口收起态：默认隐藏商品行的「申请退货/换货」按钮，从底部「订单帮助」卡展开；
-   ?help=support 直达展开（CancelFlowView 换货分流跳转用） */
-const supportMode = ref(false)
+/* 退换货按钮直接展示在商品行（原交互恢复）；?help=support 由 CancelFlowView 换货分流跳转，直达即可见 */
 
 /* 确认收货（仅 status=4 已送达）：CAS 4→5 已完成 */
 async function confirmReceived() {
@@ -674,12 +675,12 @@ async function submitReview(it) {
                 </div>
                 <b style="font-size:13px;font-variant-numeric:tabular-nums">{{ money(it.subtotal) }}</b>
               </div>
-              <div v-if="(supportMode && statusReturnable && avail(it) > 0) || reviewableStatus" class="item-actions">
-                <template v-if="supportMode && statusReturnable && avail(it) > 0 && inReturnWindow">
+              <div v-if="(statusReturnable && avail(it) > 0) || reviewableStatus" class="item-actions">
+                <template v-if="statusReturnable && avail(it) > 0 && inReturnWindow">
                   <button class="btn btn-ghost btn-sm" @click="openRma(it)">↩️ {{ tt('Request return', '申请退货') }}（{{ tt('max', '可退') }} {{ avail(it) }}）</button>
                   <button class="btn btn-ghost btn-sm" @click="openExchange(it)">🔁 {{ tt('Request exchange', '申请换货') }}</button>
                 </template>
-                <span v-else-if="supportMode && statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (valid return period only)', '已超退货窗口（退货有效期内可退）') }}</span>
+                <span v-else-if="statusReturnable && avail(it) > 0 && !inReturnWindow" class="tag tag-error">{{ tt('Return window closed (valid return period only)', '已超退货窗口（退货有效期内可退）') }}</span>
                 <!-- 评价入口：已发货（3/4/5）展示；提交后置灰 -->
                 <button v-if="reviewableStatus" class="btn btn-ghost btn-sm" :class="{ 'rv-done': reviewDone(it) }" :disabled="reviewDone(it)" @click="!reviewDone(it) && toggleReview(it)">
                   {{ reviewDone(it) ? tt('Submitted · pending review', '已提交·审核后展示') : '✍️ ' + tt('Write a review', '写评价') }}
@@ -804,22 +805,17 @@ async function submitReview(it) {
             <p style="font-size:12px;color:var(--gray);margin-bottom:10px">{{ tt('Something off? Most issues solve faster than a refund:', '遇到问题？大部分问题都能比退款更快解决：') }}</p>
             <div style="display:grid;gap:8px">
               <button v-if="addrEditable" type="button" class="od-help" @click="openAddr">✏️ {{ tt('Edit shipping address', '修改收货地址') }}</button>
-              <button v-if="statusReturnable" type="button" class="od-help" @click="supportMode = !supportMode">
-                {{ supportMode ? '▾' : '▸' }} ↩️ {{ tt('Return or exchange an item', '退换某件商品') }}
-              </button>
               <router-link class="od-help" to="/contact">💬 {{ tt('Contact support (replies ~2 min)', '联系客服（约 2 分钟回复）') }}</router-link>
-            </div>
-            <div v-if="supportMode && statusReturnable" style="font-size:11.5px;color:var(--plum);background:var(--rose-pale);border-radius:8px;padding:8px 12px;margin-top:10px">
-              {{ tt('Pick “Request return / exchange” on the item above ⤴', '请在上方商品行选择「申请退货 / 申请换货」⤴') }}
             </div>
             <div class="od-help-quiet">
               <span style="font-size:12px;color:var(--gray)">
                 {{ tt('Returns & exchanges within the valid period; exchanges always free.', '退换货需在退货有效期内发起；换货永久免费。') }}
               </span>
-              <button v-if="cancellable" type="button" class="od-cancel-link" @click="goCancel">
-                {{ tt('Still want to cancel this order? →', '仍要取消订单/申请退款？→') }}
-              </button>
             </div>
+            <!-- 取消/退款入口：弱化文字链升级为整行可见按钮（红描边，仍置于卡底） -->
+            <button v-if="cancellable" type="button" class="od-cancel-btn" @click="goCancel">
+              💸 {{ tt('Cancel order / request refund →', '取消订单 / 申请退款 →') }}
+            </button>
           </div>
         </div>
       </div>
@@ -1027,7 +1023,7 @@ async function submitReview(it) {
 /* 订单帮助卡：引导解决为主，取消入口刻意弱化（灰色小字链，沉到卡底部） */
 .od-help { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1.5px solid var(--gray-light); border-radius: 10px; font-size: 13px; font-weight: 500; color: var(--ink); background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; text-decoration: none; font-family: inherit; }
 .od-help:hover { border-color: var(--rose); background: var(--rose-pale); transform: translateY(-1px); }
-.od-help-quiet { border-top: 1px solid var(--gray-light); margin-top: 12px; padding-top: 10px; display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
-.od-cancel-link { background: none; border: none; cursor: pointer; font-size: 12px; color: var(--gray); text-decoration: underline; text-underline-offset: 3px; padding: 4px 2px; font-family: inherit; }
-.od-cancel-link:hover { color: var(--plum); }
+.od-help-quiet { border-top: 1px solid var(--gray-light); margin-top: 12px; padding-top: 10px; }
+.od-cancel-btn { display: flex; gap: 10px; align-items: center; justify-content: center; width: 100%; margin-top: 10px; padding: 10px 12px; border: 1.5px solid var(--pale-error); border-radius: 10px; font-size: 13px; font-weight: 600; color: var(--error); background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; font-family: inherit; }
+.od-cancel-btn:hover { border-color: var(--error); background: var(--pale-error); transform: translateY(-1px); }
 </style>
