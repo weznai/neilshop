@@ -419,7 +419,14 @@ def test_payments_connectivity(
         try:
             bal = stripe.Balance.retrieve()
             ms = int((time.monotonic() - t0) * 1000)
-            avail = sum(int(a.get("amount", 0)) for a in (getattr(bal, "available", None) or []))
+            # available 元素是 stripe.Available 资源对象（新版 SDK 禁用 .get()），属性取值 + dict 兜底
+            avail = 0
+            for a in (getattr(bal, "available", None) or []):
+                item = a.to_dict() if hasattr(a, "to_dict") else a
+                if isinstance(item, dict):
+                    avail += int(item.get("amount", 0))
+                else:
+                    avail += int(getattr(a, "amount", 0))
             mode = "test" if cfg["stripe_key"].startswith("sk_test_") else "live"
             return {"ok": True, "provider": "stripe", "latency_ms": ms, "mode": mode,
                     "balance_cents": avail}
