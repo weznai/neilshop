@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<title>CDN 部署说明 · GLOWMAG 独立站</title>
+<style>
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1e40af;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --text: #1e293b;
+    --text-light: #64748b;
+    --code-bg: #0f172a;
+    --code-text: #f1f5f9;
+    --accent-green: #059669;
+    --accent-amber: #d97706;
+    --accent-red: #dc2626;
+    --accent-purple: #7c3aed;
+    --accent-cyan: #0891b2;
+    color-scheme: light;
+  }
+  html { background: #f8fafc; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.7; font-size: 15px;
+  }
+  .layout { display: flex; max-width: 1320px; margin: 0 auto; }
+  .toc {
+    width: 260px; flex-shrink: 0; position: sticky; top: 0; height: 100vh;
+    overflow-y: auto; padding: 24px 14px; border-right: 1px solid var(--border);
+    background: var(--card);
+  }
+  .toc h3 { font-size: 14px; color: var(--primary); margin-bottom: 12px; padding-left: 8px; }
+  .toc a {
+    display: block; padding: 5px 10px; font-size: 12.5px; color: var(--text-light);
+    text-decoration: none; border-radius: 6px; border-left: 2px solid transparent;
+  }
+  .toc a:hover { color: var(--primary); background: #eff6ff; border-left-color: var(--primary); }
+  .toc .grp { font-size: 11px; color: #64748b; padding: 10px 10px 4px; letter-spacing: 1px; }
+  .content { flex: 1; padding: 32px 48px 96px; min-width: 0; }
+  header.hero {
+    background: linear-gradient(135deg, #0f172a 0%, #1b3691 55%, #1e40af 100%);
+    color: #fff; border-radius: 14px; padding: 40px 44px; margin-bottom: 36px;
+  }
+  header.hero h1 { font-size: 28px; margin-bottom: 10px; }
+  header.hero p { font-size: 15px; max-width: 900px; color: #f1f5f9; }
+  header.hero code {
+    background: rgba(255,255,255,.18); color: #fff;
+    border: 1px solid rgba(255,255,255,.32);
+  }
+  .hero-meta { display: flex; gap: 12px; margin-top: 18px; font-size: 13px; color: rgba(255,255,255,.92); flex-wrap: wrap; }
+  .hero-meta span { background: rgba(255,255,255,.16); padding: 3px 12px; border-radius: 999px; }
+  section { margin-bottom: 46px; }
+  section > h2 {
+    font-size: 21px; color: var(--primary-dark); padding-bottom: 10px;
+    border-bottom: 2px solid var(--border); margin-bottom: 20px; display: flex; align-items: center; gap: 10px;
+  }
+  section > h2 .num {
+    background: var(--primary); color: #fff; font-size: 13px; min-width: 26px; height: 26px;
+    border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    padding: 0 4px;
+  }
+  h3.sub { font-size: 16px; margin: 24px 0 12px; color: var(--text); }
+  h4.minor { font-size: 14.5px; margin: 18px 0 8px; color: #334155; }
+  p { margin-bottom: 12px; color: #334155; }
+  ul, ol { margin: 0 0 14px 22px; color: #334155; }
+  li { margin-bottom: 6px; }
+  code {
+    background: #eef2ff; color: #3730a3; padding: 1px 6px; border-radius: 4px;
+    font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px;
+  }
+  pre {
+    background: var(--code-bg); color: var(--code-text); border-radius: 10px;
+    padding: 18px 20px; overflow-x: auto; margin: 14px 0 18px; font-size: 13px; line-height: 1.6;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 8px; overflow: hidden; margin: 14px 0 18px; font-size: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  th { background: #f1f5f9; text-align: left; padding: 10px 14px; font-weight: 600; color: var(--text); border-bottom: 2px solid var(--border); white-space: nowrap; }
+  td { padding: 9px 14px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8fafc; }
+  td code { white-space: nowrap; }
+  .tag { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; margin-right: 6px; font-weight: 500; }
+  .tag.rec { background: #dbeafe; color: #1d4ed8; }
+  .tag.done { background: #dcfce7; color: #15803d; }
+  .tag.warn { background: #fee2e2; color: #b91c1c; }
+  .tag.info { background: #ecfeff; color: #0e7490; }
+  .tag.block { background: #fef3c7; color: #b45309; }
+  .tag.gray { background: #f1f5f9; color: #475569; }
+  .tag.pro { background: #ede9fe; color: #6d28d9; }
+  .callout {
+    border-radius: 10px; padding: 14px 18px; margin: 14px 0 18px; font-size: 14px;
+    border-left: 4px solid;
+  }
+  .callout.tip { background: #f0fdf4; border-color: var(--accent-green); }
+  .callout.warn { background: #fffbeb; border-color: var(--accent-amber); }
+  .callout.danger { background: #fef2f2; border-color: var(--accent-red); }
+  .callout.info { background: #eff6ff; border-color: var(--primary); }
+  .callout p { margin-bottom: 4px; }
+  .callout p:last-child { margin-bottom: 0; }
+  .arch {
+    background: var(--code-bg); color: var(--code-text); border-radius: 10px;
+    padding: 20px 22px; margin: 14px 0 18px; font-size: 12.5px; line-height: 1.55;
+    font-family: "JetBrains Mono", Consolas, monospace; overflow-x: auto; white-space: pre;
+  }
+  .steps { counter-reset: step; list-style: none; margin-left: 0; }
+  .steps > li {
+    position: relative; padding: 0 0 18px 44px; border-left: 2px solid var(--border);
+    margin-left: 14px;
+  }
+  .steps > li:last-child { border-left-color: transparent; padding-bottom: 4px; }
+  .steps > li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: -15px; top: 0;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--primary); color: #fff; font-size: 13px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps > li b { display: block; margin-bottom: 2px; }
+  .checklist { list-style: none; margin-left: 4px; }
+  .checklist li { padding-left: 26px; position: relative; margin-bottom: 8px; }
+  .checklist li::before {
+    content: "☐"; position: absolute; left: 0; top: 0;
+    color: var(--primary); font-size: 15px;
+  }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--text-light); font-size: 13px; }
+  @media (max-width: 960px) {
+    .toc { display: none; }
+    .content { padding: 20px 18px 64px; }
+    header.hero { padding: 28px 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc">
+  <h3>CDN 部署说明 v2.0</h3>
+  <div class="grp">总览</div>
+  <a href="#s1">1. 概述：CDN 是什么</a>
+  <a href="#s2">2. 架构与请求生命周期</a>
+  <a href="#s3">3. 前置条件</a>
+  <a href="#s4">4. 现状与目标态（zoo1.cn）</a>
+  <div class="grp">接入部署</div>
+  <a href="#s5">5. 域名接入 Cloudflare</a>
+  <a href="#s6">6. 方案 A：Tunnel</a>
+  <a href="#s7">7. 方案 B：Caddy 反代</a>
+  <a href="#s8">8. 方案对比与选型</a>
+  <a href="#s9">9. TLS / 证书全解</a>
+  <div class="grp">缓存与性能</div>
+  <a href="#s10">10. 缓存机制原理</a>
+  <a href="#s11">11. 缓存规则实操</a>
+  <a href="#s12">12. 性能优化套件</a>
+  <div class="grp">安全防护</div>
+  <a href="#s13">13. WAF 与自定义规则</a>
+  <a href="#s14">14. Rate Limiting 限流</a>
+  <a href="#s15">15. Access 保护后台</a>
+  <a href="#s16">16. 真实 IP 与日志</a>
+  <div class="grp">进阶能力</div>
+  <a href="#s17">17. Workers 边缘脚本</a>
+  <a href="#s18">18. API 自动化</a>
+  <a href="#s19">19. 静态资源与图片</a>
+  <a href="#s20">20. 兜底与故障转移</a>
+  <div class="grp">日常运维</div>
+  <a href="#s21">21. 监控与可观测</a>
+  <a href="#s22">22. 大促预案</a>
+  <a href="#s23">23. 故障排查大全</a>
+  <a href="#s24">24. 上线检查清单</a>
+  <a href="#s25">25. 附录：成本与术语</a>
+</nav>
+
+<main class="content">
+<header class="hero">
+  <h1>CDN 部署说明</h1>
+  <p>本说明面向 GLOWMAG 指甲电商独立站（生产域名 <code>zoo1.cn</code>），完整阐述 Cloudflare CDN 的部署与运维：域名接入、源站打通、TLS、缓存机制与策略、性能套件、WAF 安全、Access 后台防护、真实 IP、Workers 边缘脚本、API 自动化、兜底容灾、监控排障与上线清单。对齐仓库 <code>docs/deploy.md §2.1</code>、<code>高可用架构设计-v2.md §7.0</code> 与 <code>上线检查清单.md §1</code>。</p>
+  <div class="hero-meta">
+    <span>项目：GLOWMAG（nailshop）</span>
+    <span>入口：Cloudflare DNS / CDN / WAF</span>
+    <span>版本：v2.0 · 25 节</span>
+    <span>更新：2026-08-28</span>
+  </div>
+</header>
+
+<!-- ===================== 1 概述 ===================== -->
+<section id="s1">
+  <h2><span class="num">1</span>概述：CDN 是什么，为什么用</h2>
+  <p><b>CDN（Content Delivery Network，内容分发网络）</b>是一组分布在全球各地的边缘服务器（PoP，Point of Presence）。用户访问网站时，DNS 通过 <b>Anycast</b> 技术把请求调度到<em>距离最近、延迟最低</em>的节点：静态内容直接从边缘返回（不再触碰源站），动态请求由边缘经优化路径回源。Cloudflare 在全球 330+ 城市部署节点（以官方数据为准），免费计划即提供 CDN + WAF + 无限量 DDoS 防护。</p>
+
+  <h3 class="sub">1.1 Cloudflare 组件全景（本项目用到哪些）</h3>
+  <table>
+    <tr><th>组件</th><th>作用</th><th>本项目用途</th><th>计划要求</th></tr>
+    <tr><td><b>DNS</b></td><td>权威域名解析，NS 托管</td><td>域名入口，橙云开关控制代理</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><b>CDN / Cache</b></td><td>边缘缓存静态资源</td><td>JS/CSS/图片/字体就近分发</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><b>WAF</b></td><td>Web 应用防火墙</td><td>托管规则 + 自定义规则拦攻击</td><td><span class="tag done">免费起</span></td></tr>
+    <tr><td><b>Rate Limiting</b></td><td>请求频率限制</td><td>全站防扫、登录防爆破</td><td><span class="tag done">免费 1 条</span></td></tr>
+    <tr><td><b>Tunnel（cloudflared）</b></td><td>出站加密隧道</td><td>源站零开放端口接入</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><b>SSL/TLS</b></td><td>边缘证书 + 回源加密</td><td>全站 HTTPS、Full (strict)</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><b>R2</b></td><td>S3 兼容对象存储</td><td>数据库异地备份；图片托管（出口流量免费）</td><td><span class="tag done">免费额度</span></td></tr>
+    <tr><td><b>Workers / KV</b></td><td>边缘无服务器脚本</td><td>兜底页、响应头注入、A/B</td><td><span class="tag done">免费 10 万请求/天</span></td></tr>
+    <tr><td><b>Access（Zero Trust）</b></td><td>零信任 SSO 前置</td><td>/admin 后台加邮箱 OTP 门禁</td><td><span class="tag done">免费 50 用户</span></td></tr>
+    <tr><td><b>Analytics / GraphQL</b></td><td>流量与缓存分析</td><td>命中率监控、攻击事件分析</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td>Argo Smart Routing</td><td>回源智能路由加速</td><td>可选（大促期临时开）</td><td><span class="tag pro">付费 $5/月+</span></td></tr>
+    <tr><td>Load Balancing</td><td>多源站健康检查+故障转移</td><td>演进期多源站阶段</td><td><span class="tag pro">付费</span></td></tr>
+    <tr><td>Polish / Mirage</td><td>图片压缩转换 / 移动端优化</td><td>可选图片优化</td><td><span class="tag pro">Pro</span></td></tr>
+    <tr><td>Logpush</td><td>日志外推（S3/R2 等）</td><td>合规留存/深度分析</td><td><span class="tag gray">高阶计划</span></td></tr>
+  </table>
+
+  <h3 class="sub">1.2 CDN 承担的四类角色（架构 v2 §7.0 纪律）</h3>
+  <table>
+    <tr><th>角色</th><th>说明</th><th>对应架构纪律</th></tr>
+    <tr><td><b>内容分发</b></td><td>静态资源缓存在边缘，用户就近命中，源站只承受动态回源请求</td><td>「静态资源+缓存挡掉大半流量」</td></tr>
+    <tr><td><b>安全防护</b></td><td>TLS 终止、WAF、CC 防护、Bot 拦截、限流，脏流量在边缘丢弃</td><td>「入口交给 Cloudflare」</td></tr>
+    <tr><td><b>高可用入口</b></td><td>DNS 多活；源站故障时边缘仍可服务缓存内容与兜底页</td><td>§2.1 接入层「用户永远打得开」</td></tr>
+    <tr><td><b>零暴露通道</b></td><td>Tunnel 方案下源站不开任何公网入站端口</td><td>「8000 与 3306 绝不对公网开放」</td></tr>
+  </table>
+
+  <h3 class="sub">1.3 收益量化（单机阶段）</h3>
+  <ul>
+    <li><b>源站压力</b>：静态资源全走 CDN 后，回源只剩 API 动态调用；单台 4C8G 可承载日 PV 10-30 万 / 日订单 3000-8000（架构 v2 §7.0 容量天花板经验值）；</li>
+    <li><b>延迟</b>：边缘命中 TTFB 通常 &lt;50ms；首屏 LCP &lt;2.5s（4G）目标依赖 Hero 图 AVIF + CDN 分发；</li>
+    <li><b>成本</b>：免费计划覆盖核心能力，单机全套（服务器 + CDN + 备份）预算 <b>$100/月内</b>；</li>
+    <li><b>可用性</b>：入口高可用交给云；源站整机宕机时 CF 仍服务缓存内容与兜底品牌页（§20）。</li>
+  </ul>
+  <div class="callout tip">
+    <p><b>为什么选 Cloudflare 而非传统 CDN：</b>① 免费计划即含 WAF 与无限 DDoS 防护；② 与 Tunnel / R2 / Origin CA / Access 一体化，无需另购证书与专线；③ 本项目目标市场为海外 DTC（美/欧），CF 边缘节点覆盖正好匹配。国内用户访问 CF 免费节点速度一般——本站主要面向海外买家，不受影响。</p>
+  </div>
+</section>
+
+<!-- ===================== 2 架构与生命周期 ===================== -->
+<section id="s2">
+  <h2><span class="num">2</span>架构与请求生命周期</h2>
+
+  <h3 class="sub">2.1 流量拓扑</h3>
+  <div class="arch">                    ┌──────────────────────────────┐
+   [用户/海外买家] ──► │  Cloudflare 边缘节点 (PoP)     │
+                    │  DNS(Anycast) · WAF · Rate Limit │
+                    │  TLS 终止 · CDN 缓存             │
+                    └──────────┬───────────────────┘
+                               │ 回源(仅动态请求)
+              ┌────────────────┴─────────────────┐
+              │ 方案A: cloudflared Tunnel(出站)  │ ← 推荐,零开放端口
+              │ 方案B: Caddy 反代(80/443)        │
+              └────────────────┬─────────────────┘
+                               │ 127.0.0.1:8000 / 容器内网
+                    ┌──────────┴───────────┐
+                    │ Docker Compose        │
+                    │  api(8010)  worker    │
+                    │  mysql(3306 不出网)   │
+                    └──────────────────────┘
+
+  缓存命中: 静态资源在边缘直接返回(不回源)
+  回源命中: /api/* 动态请求 → 源站计算
+  兜底:     源站不可达 → CF 服务缓存页 / Worker 兜底页</div>
+
+  <h3 class="sub">2.2 一次请求的完整生命周期（8 步）</h3>
+  <table>
+    <tr><th>步</th><th>环节</th><th>发生什么</th><th>失败表现</th></tr>
+    <tr><td>1</td><td>DNS 解析</td><td>Anycast IP 返回，用户接入最近 PoP</td><td>DNS 未生效 → 打不开（§23）</td></tr>
+    <tr><td>2</td><td>TLS 握手</td><td>边缘证书（Universal SSL）完成 HTTPS；可选 TLS 1.3 / 0-RTT</td><td>证书问题 → 525/526（回源段）</td></tr>
+    <tr><td>3</td><td>安全检查</td><td>WAF 托管/自定义规则、Rate Limiting、Bot 判定依次执行</td><td>命中 → 403/429/质询页</td></tr>
+    <tr><td>4</td><td>缓存查询</td><td>按缓存键（域名+路径+查询串）查边缘副本</td><td>—</td></tr>
+    <tr><td>5</td><td>命中返回</td><td>HIT：直接从 PoP 返回，不回源（毫秒级）</td><td>—</td></tr>
+    <tr><td>6</td><td>未命中回源</td><td>MISS → 经 Tunnel/反代到达 api 容器；可先查上层 PoP（Tiered Cache，§11.6）</td><td>源站异常 → 52x 错误码（§23）</td></tr>
+    <tr><td>7</td><td>响应缓存</td><td>响应头/规则允许时写入边缘缓存并设置 Edge TTL</td><td>不该缓存被缓存 → 旧数据（§23）</td></tr>
+    <tr><td>8</td><td>日志计量</td><td>cf-ray、cf-cache-status、Analytics 计数</td><td>—</td></tr>
+  </table>
+
+  <h3 class="sub">2.3 缓存层级（三级）</h3>
+  <div class="arch">[浏览器] ──miss──► [CF 边缘 PoP(就近)] ──miss──► [上层 PoP/Tiered Cache] ──miss──► [源站]
+    ▲                    ▲                                  ▲
+  Browser TTL          Edge TTL                           上层缓存兜底
+ (Cache-Control)    (Cache Rules/源站头)              (Smart Tiered Cache,免费开启)
+
+  命中率逐级兜底: 浏览器 60-90% → 边缘 85%+ → Tiered → 源站只承受长尾</div>
+  <p>三级缓存的 TTL 各自独立：<b>Browser TTL</b> 由 <code>Cache-Control: max-age</code> 控制（用户本地），<b>Edge TTL</b> 由 Cache Rules 或源站 <code>s-maxage</code> 控制（CF 边缘），互不干扰。发布新版后浏览器缓存由 hash 文件名天然失效（§19.1）。</p>
+
+  <h3 class="sub">2.4 请求分流规则（部署后应达到的状态）</h3>
+  <table>
+    <tr><th>请求类型</th><th>示例</th><th>处理位置</th><th>验证响应头</th></tr>
+    <tr><td>静态资源</td><td><code>/assets/*.js</code>、<code>*.css</code>、<code>*.woff2</code>、<code>*.webp/avif</code></td><td>CF 边缘缓存</td><td><code>cf-cache-status: HIT</code></td></tr>
+    <tr><td>API 动态</td><td><code>/api/*</code>（下单/鉴权/搜索）</td><td>回源 api 容器</td><td><code>cf-cache-status: DYNAMIC/BYPASS</code></td></tr>
+    <tr><td>SPA 页面</td><td><code>/</code>、<code>/admin/</code> HTML 入口</td><td>短缓存或回源（§11.2 规则 5）</td><td>视缓存规则</td></tr>
+    <tr><td>公开文档</td><td><code>/pub_doc/*.html</code>（本文档）</td><td>静态文件直出（免登录）</td><td><code>cf-cache-status: MISS→HIT</code></td></tr>
+    <tr><td>被拦截流量</td><td>CC 攻击、Bot、WAF 命中</td><td>CF 边缘丢弃</td><td><code>403/429</code> + 质询页</td></tr>
+  </table>
+
+  <h3 class="sub">2.5 cf-cache-status 完整对照表</h3>
+  <table>
+    <tr><th>值</th><th>含义</th><th>期望场景</th></tr>
+    <tr><td><span class="tag done">HIT</span></td><td>边缘缓存命中，未回源</td><td>静态资源二次访问</td></tr>
+    <tr><td><span class="tag info">MISS</span></td><td>边缘无副本，已回源取回（并已写缓存）</td><td>首次访问 / 清缓存后</td></tr>
+    <tr><td><span class="tag info">EXPIRED</span></td><td>副本过期，已回源刷新</td><td>Edge TTL 到期</td></tr>
+    <tr><td><span class="tag info">REVALIDATED</span></td><td>协商缓存（ETag/Last-Modified）确认未变，继续用副本</td><td>源站支持协商缓存时</td></tr>
+    <tr><td><span class="tag warn">DYNAMIC</span></td><td>默认不缓存（非静态扩展名且无规则覆盖）</td><td><b>/api/* 接口的正确状态</b></td></tr>
+    <tr><td><span class="tag rec">BYPASS</span></td><td>被规则显式绕过缓存</td><td>api-bypass / admin-bypass 规则生效</td></tr>
+    <tr><td><span class="tag info">UPDATING</span></td><td>副本正在后台刷新，先返回旧副本（stale-while-revalidate）</td><td>配置 SWR 的 HTML</td></tr>
+    <tr><td><span class="tag info">STALE</span></td><td>返回过期副本（源站故障时的 stale-if-error 保护）</td><td>源站宕机期间</td></tr>
+    <tr><td><span class="tag gray">UNHIT</span></td><td>Cache Reserve（持久缓存，付费）未命中</td><td>开启 Cache Reserve 后</td></tr>
+  </table>
+</section>
+
+<!-- ===================== 3 前置条件 ===================== -->
+<section id="s3">
+  <h2><span class="num">3</span>前置条件</h2>
+  <table>
+    <tr><th>项</th><th>要求</th><th>状态标记</th></tr>
+    <tr><td>域名</td><td>一个可修改 NS 的域名（本项目 <code>zoo1.cn</code>，当前注册商 DNS 为 dnspod，可改 NS）</td><td><span class="tag block">BLOCK</span></td></tr>
+    <tr><td>Cloudflare 账号</td><td>免费计划起步（CDN/WAF/DDoS/Analytics 均含）</td><td><span class="tag block">BLOCK</span></td></tr>
+    <tr><td>源站服务器</td><td>4C8G+，Debian/Ubuntu，Docker Engine ≥ 24 + Compose v2，NTP 时间同步（deploy.md §1）</td><td><span class="tag block">BLOCK</span></td></tr>
+    <tr><td>应用就绪</td><td><code>curl http://127.0.0.1:8000/api/health</code> 返回 <code>{"ok":true,...}</code>（deploy.md §2 步骤 8）</td><td><span class="tag block">BLOCK</span></td></tr>
+    <tr><td>防火墙纪律</td><td>仅开放 22（SSH）与 80/443（仅方案 B）；<b>8000 与 3306 绝不对公网开放</b></td><td><span class="tag warn">纪律</span></td></tr>
+    <tr><td>回源目标确认</td><td>方案 A 容器内网 <code>http://api:8000</code>；方案 B <code>127.0.0.1:8000</code></td><td><span class="tag info">确认</span></td></tr>
+  </table>
+  <div class="callout danger">
+    <p><b>安全红线：</b>api 仅绑 <code>127.0.0.1:8000</code>，mysql 3306 不映射宿主机（compose 内 <code>glowmag-net</code> 隔离）。任何时刻不得把业务端口直接暴露公网——所有公网入口必须经 Cloudflare。</p>
+  </div>
+</section>
+
+<!-- ===================== 4 现状与目标态 ===================== -->
+<section id="s4">
+  <h2><span class="num">4</span>现状与目标态（zoo1.cn 实测）</h2>
+  <p>对 <code>zoo1.cn</code> 的 DNS 实测（2026-08-28）：</p>
+<pre><code>$ nslookup -type=NS zoo1.cn 8.8.8.8
+zoo1.cn  nameserver = carl.dnspod.net      # 腾讯云 dnspod 托管
+zoo1.cn  nameserver = sixteen.dnspod.net
+$ nslookup -type=A zoo1.cn 8.8.8.8
+zoo1.cn  address = 43.139.171.103          # A 记录直指源站公网 IP</code></pre>
+  <p>即：<b>当前生产为「dnspod DNS + 源站 IP 直连 + nginx 直出」，未经过任何 CDN/WAF</b>。本文描述的是目标态。差距与价值对照：</p>
+  <table>
+    <tr><th>维度</th><th>现状（直连）</th><th>目标态（Cloudflare 前置）</th></tr>
+    <tr><td>DNS</td><td>dnspod NS</td><td>CF NS（Anycast 调度最近 PoP）</td></tr>
+    <tr><td>入口</td><td>源站 IP 43.139.171.103 直接暴露</td><td>橙云隐藏源站 IP / Tunnel 零暴露</td></tr>
+    <tr><td>TLS</td><td>源站证书（nginx）</td><td>边缘 Universal SSL + Full (strict) 回源</td></tr>
+    <tr><td>攻击面</td><td>源站直接承受扫描/CC/爆破</td><td>WAF + Rate Limit + Bot 在边缘拦截</td></tr>
+    <tr><td>静态分发</td><td>全部回源（nginx 直接扛）</td><td>边缘缓存命中，源站只扛动态</td></tr>
+    <tr><td>故障表现</td><td>源站宕机 = 全站不可用</td><td>缓存内容 + 兜底页仍可服务（§20）</td></tr>
+  </table>
+
+  <h3 class="sub">4.1 存量站点割接 Runbook（低风险切换 7 步）</h3>
+  <ol class="steps">
+    <li><b>预检（割接前 1 天）</b><br>确认源站 nginx 80/443 正常（<code>curl -sI https://zoo1.cn/api/health</code>）；CF 添加站点并导入 DNS 记录（§5），此时仅灰云。<b>此步不影响线上</b>。</li>
+    <li><b>降 TTL</b><br>在 dnspod 把 <code>@</code>/<code>www</code> 的 A 记录 TTL 降到 300 秒，加快后续切换收敛与回滚。</li>
+    <li><b>择低峰窗口</b><br>选流量谷段（看访问日志，一般凌晨），预估影响窗口 ≤30 分钟（仅 DNS 收敛期间可能波动）。</li>
+    <li><b>改 NS</b><br>到域名注册商（腾讯云控制台）把 NS 从 dnspod 改为 CF 分配的两个 NS。生效 5 分钟～24 小时，可用 <code>dig NS zoo1.cn +short</code> 轮询确认。</li>
+    <li><b>灰云验证</b><br>NS 生效后记录仍是灰云（DNS only），流量仍直连源站——验证解析正确、业务无异常。</li>
+    <li><b>开橙云</b><br>确认 SSL 模式已设 <b>Full (strict)</b>（§9）后，把 A 记录切换为橙云。验证：<code>curl -sI https://zoo1.cn/</code> 出现 <code>cf-ray</code> / <code>server: cloudflare</code>。</li>
+    <li><b>观察 24h + 回滚预案</b><br>关注 Security Events 误拦、缓存状态、5xx 比例。异常回滚：CF 记录改灰云（秒级）或 NS 改回 dnspod（≤TTL 300s 收敛）。</li>
+  </ol>
+  <div class="callout warn"><p><b>割接后必做：</b>① Stripe webhook 地址仍为 <code>https://zoo1.cn/api/payments/webhook</code>（域名不变无需改，但需确认未被 WAF 误拦，§23）；② 源站防火墙收紧为只放行 CF 回源 IP 段（方案 B）或关停 80/443（方案 A），防直连绕过 CF；③ 源站 IP 已暴露过，割接稳定后评估换 IP（Tunnel 方案可彻底规避）。</p></div>
+</section>
+
+<!-- ===================== 5 域名接入 ===================== -->
+<section id="s5">
+  <h2><span class="num">5</span>第一步：域名接入 Cloudflare</h2>
+  <ol class="steps">
+    <li><b>添加站点</b><br>CF 控制台 → <code>Add a domain</code> → 输入裸域 <code>zoo1.cn</code> → 选 <code>Free</code> 计划。CF 自动扫描 dnspod 侧现有记录并导入。</li>
+    <li><b>修改注册商 NS</b><br>CF 分配两个 NS（形如 <code>xxx.ns.cloudflare.com</code>），到腾讯云控制台把域名 NS 改为这两个地址。站点页显示 <span class="tag done">Active</span> 即生效。验证：
+<pre><code>dig NS zoo1.cn +short          # 应返回两个 *.ns.cloudflare.com
+dig A zoo1.cn +short @1.1.1.1  # 解析验证</code></pre></li>
+    <li><b>配置 DNS 记录</b><br>按下表（<b>Proxy 状态</b>决定是否走 CDN）：
+      <table>
+        <tr><th>类型</th><th>名称</th><th>内容</th><th>Proxy</th><th>用途</th></tr>
+        <tr><td>A / AAAA</td><td><code>@</code>（裸域）</td><td>源站公网 IP</td><td><span class="tag rec">橙云 ON</span></td><td>主站（方案 B 必须；方案 A 可仅留 Tunnel CNAME）</td></tr>
+        <tr><td>A / AAAA</td><td><code>www</code></td><td>同上</td><td><span class="tag rec">橙云 ON</span></td><td>www 访问</td></tr>
+        <tr><td>CNAME</td><td><code>&lt;tunnel-id&gt;.cfargotunnel.com</code></td><td>—</td><td><span class="tag rec">橙云 ON</span></td><td>方案 A：由 Tunnel 的 Public Hostname 自动创建</td></tr>
+        <tr><td>CNAME</td><td><code>cdn</code></td><td>R2 自定义域（§19）</td><td><span class="tag rec">橙云 ON</span></td><td>可选：图片走 R2 + CDN</td></tr>
+        <tr><td>CNAME</td><td><code>staging</code></td><td>测试环境源站</td><td><span class="tag gray">灰云/橙云+Access</span></td><td>预发布环境（§15 亦可加门禁）</td></tr>
+        <tr><td>MX / TXT</td><td><code>@</code></td><td>邮件服务器 / SPF·DKIM</td><td><span class="tag gray">自动灰云</span></td><td>邮件记录<b>不可代理</b>（CF 强制 DNS only），照常导入即可</td></tr>
+      </table>
+      <div class="callout warn"><p><b>橙云 vs 灰云：</b>橙云（Proxied）= 流量经 CF CDN/WAF，源站 IP 隐藏；灰云（DNS only）= 纯解析直连。对外 Web 记录一律橙云；MX/TXT 等邮件记录只能灰云。排障临时切灰云会暴露源站 IP，用完必须改回。</p></div>
+    </li>
+    <li><b>开启全站 HTTPS 跳转</b><br>CF → <code>SSL/TLS</code> → <code>Edge Certificates</code> → 打开 <code>Always Use HTTPS</code>。</li>
+    <li><b>（推荐）开启 DNSSEC</b><br>CF → <code>DNS</code> → <code>Settings</code> → <code>Enable DNSSEC</code>，把给出的 DS 记录（Key Tag/Algorithm/Digest）填到注册商的 DNSSEC 设置。防 DNS 劫持/中间人污染。生效后 <code>dig DS zoo1.cn +short</code> 验证；未生效前不要重复开启。</li>
+  </ol>
+  <h3 class="sub">5.1 进阶 DNS 知识</h3>
+  <table>
+    <tr><th>主题</th><th>要点</th></tr>
+    <tr><td><b>CNAME Flattening</b></td><td>根域（裸域）协议上不允许 CNAME，CF 自动将其「扁平化」为 A 记录返回——因此裸域也能安全指向 Tunnel/R2 的 CNAME 目标，注册商 DNS 常无此能力</td></tr>
+    <tr><td><b>TTL 策略</b></td><td>橙云记录对外通告 TTL 固定 300 秒（Auto）；灰云记录自定义 TTL——割接前降 TTL、稳定后调大减少查询延迟</td></tr>
+    <tr><td><b>子域规划</b></td><td>主站 <code>zoo1.cn / www</code>；图片 <code>cdn.zoo1.cn</code>（R2）；预发 <code>staging.zoo1.cn</code>。注意 Universal SSL 免费证书只覆盖<b>裸域+一级子域</b>，更深层级（<code>a.b.zoo1.cn</code>）需付费 ACM 或改用一级子域</td></tr>
+    <tr><td><b>泛解析</b></td><td><code>*</code> 记录可橙云，但配合 Universal SSL 同样只覆盖一级；避免依赖深层泛子域</td></tr>
+  </table>
+</section>
+
+<!-- ===================== 6 方案 A Tunnel ===================== -->
+<section id="s6">
+  <h2><span class="num">6</span>第二步 · 方案 A：cloudflared Tunnel（推荐，零开放端口）</h2>
+  <p>原理：源站运行 <code>cloudflared</code> 守护进程，主动向 CF 建立<b>出站</b>加密隧道（4 条 HA 连接）；公网流量经边缘节点逆行进隧道到达内网服务。源站<b>不需要任何入站端口</b>，防火墙只留 22。</p>
+
+  <h3 class="sub">6.1 部署五步（Dashboard Token 方式）</h3>
+  <ol class="steps">
+    <li><b>创建 Tunnel</b><br>CF → <code>Zero Trust</code> → <code>Networks</code> → <code>Tunnels</code> → <code>Create a tunnel</code> → <code>Cloudflared</code> 类型 → 命名 <code>glowmag-prod</code> → 记下 <b>Token</b>。</li>
+    <li><b>compose 追加 tunnel 服务</b><br>仓库根 <code>docker-compose.yml</code> 末尾追加（与 api 同网络 <code>glowmag-net</code>，容器名直连不经过宿主端口）：
+<pre><code>  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: glowmag-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    networks: [glowmag-net]</code></pre></li>
+    <li><b>.env 注入 Token</b><br><code>CF_TUNNEL_TOKEN=eyJhIjoixxxx...</code>（密钥永不入库，与 GM_JWT_SECRET 同纪律）。</li>
+    <li><b>配置 Public Hostname</b><br>Tunnel 详情页 → <code>Public Hostname</code> → <code>Add</code>：
+      <table>
+        <tr><th>字段</th><th>值</th><th>说明</th></tr>
+        <tr><td>Subdomain / Domain</td><td><code>zoo1.cn</code>（及一条 <code>www</code>）</td><td>CF 自动建 CNAME 记录（橙云）</td></tr>
+        <tr><td>Type</td><td><code>HTTP</code></td><td>隧道内段容器内网明文即可（外段仍 HTTPS）</td></tr>
+        <tr><td>URL</td><td><code>api:8000</code></td><td><b>容器名直连</b>，勿写 127.0.0.1（tunnel 容器内 127.0.0.1 是它自己）</td></tr>
+      </table></li>
+    <li><b>启动并验证</b>
+<pre><code>cd /opt/nailshop &amp;&amp; docker compose up -d
+docker compose logs -f tunnel        # "Registered tunnel connection" ×4 即成功
+curl -sI https://zoo1.cn/api/health  # 200 + cf-ray</code></pre></li>
+  </ol>
+
+  <h3 class="sub">6.2 备选：config.yml 本地配置方式（不入 Dashboard）</h3>
+  <p>适合配置进 git 做版本管理。登录机器执行 <code>cloudflared tunnel login</code> 取证书，再写配置：</p>
+<pre><code># /etc/cloudflared/config.yml
+tunnel: glowmag-prod
+credentials-file: /etc/cloudflared/glowmag-prod.json
+ingress:
+  - hostname: zoo1.cn
+    service: http://api:8000        # 或本机部署时 http://localhost:8000
+  - hostname: cdn.zoo1.cn
+    service: https://&lt;ACCOUNT&gt;.r2.cloudflarestorage.com   # 直接把 R2 挂在隧道后也可
+  - service: http_status:404        # 兜底必须放最后</code></pre>
+  <p>系统服务：<code>cloudflared service install</code>；Docker 方式把该文件挂进容器并去掉 <code>--token</code> 参数。两种方式<b>二选一</b>（Token 方式配置存 CF 侧，改后即生效；yml 方式配置随代码走）。</p>
+
+  <h3 class="sub">6.3 高可用与运维要点</h3>
+  <ul>
+    <li><b>多副本</b>：同一 Token 起第二个 cloudflared 实例（另一台机或同机容器），CF 自动在多连接间负载均衡——单进程挂不影响入口；</li>
+    <li><b>指标</b>：容器内 <code>localhost:20241/metrics</code> 暴露 Prometheus 指标（连接数/重连次数），可接入 §21 监控；</li>
+    <li><b>排障</b>：<code>docker compose logs tunnel</code> 看重连日志；Tunnel 页面看连接数（正常 4）；<code>docker compose restart tunnel</code> 处理偶发断连；</li>
+    <li><b>能力边界</b>：支持 WebSocket（站内若加实时功能无碍）；大文件上传受 CF 代理 100MB 请求体限制（§23 速查表）。</li>
+  </ul>
+</section>
+
+<!-- ===================== 7 方案 B Caddy ===================== -->
+<section id="s7">
+  <h2><span class="num">7</span>第二步 · 方案 B：源站反代（Caddy）+ 橙云 Full (strict)</h2>
+  <p>原理：宿主机装 Caddy 监听 80/443 做 HTTPS 反代，CF 橙云回源到 Caddy。适用：需保留直连 IP 冗余通道、源站与 CF 网络质量需调优等场景。</p>
+  <ol class="steps">
+    <li><b>安装 Caddy</b>（Debian/Ubuntu 官方源），<code>Caddyfile</code> 反代到 api：
+<pre><code>zoo1.cn {
+    reverse_proxy 127.0.0.1:8000
+}</code></pre>
+    Caddy 默认自动申请公共证书；生产建议改用 <b>Origin CA 证书</b>（15 年有效，仅 CF 信任）。</li>
+    <li><b>签发 Origin CA 证书（6 步）</b><br>① CF → <code>SSL/TLS</code> → <code>Origin Server</code> → <code>Create Certificate</code>；② 保持默认（RSA 2048 / 15 年 / 覆盖 <code>*.zoo1.cn</code> 与 <code>zoo1.cn</code>）；③ 复制证书与私钥分别存为 <code>/etc/ssl/caddy/origin-cert.pem</code>、<code>origin-key.pem</code>（chmod 600）；④ Caddyfile 改 <code>tls /etc/ssl/caddy/origin-cert.pem /etc/ssl/caddy/origin-key.pem</code>；⑤ <code>systemctl reload caddy</code>；⑥ 验证回源握手：
+<pre><code>openssl s_client -connect 127.0.0.1:443 -servername zoo1.cn \
+  | openssl x509 -noout -subject -dates   # 应显示 Origin CA 签发与长期有效</code></pre></li>
+    <li><b>CF 侧 SSL 模式</b>：设为 <code>Full (strict)</code>（回源验证证书）。<b>禁止 Flexible</b>（回源走 HTTP 且引发重定向循环）。</li>
+    <li><b>防火墙收紧（强烈建议）</b>：80/443 入站规则只放行 <a href="https://www.cloudflare.com/ips/" rel="noopener">CF 回源 IP 段</a>，其余直连扫描全部拒绝——彻底堵住「知道源站 IP 绕过 CF」的旁路。</li>
+    <li><b>验证</b>：<code>curl -sI https://zoo1.cn/</code> 期望 200，<code>server:</code> 头已被 CF 隐藏。</li>
+  </ol>
+</section>
+
+<!-- ===================== 8 方案对比 ===================== -->
+<section id="s8">
+  <h2><span class="num">8</span>方案对比与选型</h2>
+  <table>
+    <tr><th></th><th>方案 A · Tunnel（推荐）</th><th>方案 B · Caddy 反代</th></tr>
+    <tr><td>开放端口</td><td>仅 22</td><td>22 + 80 + 443</td></tr>
+    <tr><td>源站 IP 暴露</td><td>不暴露</td><td>理论可隐藏（需限制回源 IP 段加固）</td></tr>
+    <tr><td>证书管理</td><td>全自动，无证书文件</td><td>Caddy 自动 / Origin CA 手动一次</td></tr>
+    <tr><td>额外组件</td><td>compose 内 1 个容器</td><td>宿主 systemd 服务</td></tr>
+    <tr><td>故障面</td><td>cloudflared 断连即入口断（自动重连）</td><td>Caddy 挂即入口断（systemd 自拉）</td></tr>
+    <tr><td>配置存放</td><td>CF Dashboard（Token 方式）</td><td>源站文件（随 git 走）</td></tr>
+    <tr><td>适用</td><td>默认选择，长期托管</td><td>特殊网络/合规需求</td></tr>
+  </table>
+  <p><b>决策树：</b>没有特殊理由 → 方案 A；需要保留「绕过 CF 直连源站」的应急通道 → 方案 B + 回源 IP 白名单；两者可共存过渡（A 主 B 备）后收敛。</p>
+</section>
+
+<!-- ===================== 9 TLS ===================== -->
+<section id="s9">
+  <h2><span class="num">9</span>TLS / 证书全解</h2>
+  <h3 class="sub">9.1 三类证书的关系</h3>
+  <table>
+    <tr><th>证书</th><th>签发方</th><th>部署位置</th><th>有效期</th><th>被谁信任</th><th>本项目用途</th></tr>
+    <tr><td><b>Edge Certificate</b>（Universal SSL）</td><td>CF（Let's Encrypt 等）</td><td>CF 边缘</td><td>90 天，自动续期</td><td>所有浏览器</td><td>用户 ↔ CF 段加密，免费，覆盖裸域+一级子域</td></tr>
+    <tr><td><b>Origin CA 证书</b></td><td>CF Origin CA</td><td>源站</td><td>最长 15 年</td><td><b>仅 CF 边缘</b>（浏览器不认）</td><td>CF ↔ 源站段（Full strict）回源证书，免续期</td></tr>
+    <tr><td>公共 DV 证书</td><td>Let's Encrypt / ZeroSSL</td><td>源站</td><td>90 天</td><td>所有浏览器</td><td>方案 B 未用 Origin CA 时的替代（Caddy 自动）</td></tr>
+  </table>
+  <div class="callout info"><p>整条链路：<b>用户 —HTTPS(Edge 证书)→ CF 边缘 —HTTPS(Origin CA)→ 源站</b>。Full (strict) 会校验回源证书有效性，是唯一推荐模式；Flexible（回源走 HTTP）与 Full（不验证书）都不要用。</p></div>
+
+  <h3 class="sub">9.2 边缘配置清单（CF → SSL/TLS → Edge Certificates）</h3>
+  <table>
+    <tr><th>配置项</th><th>推荐值</th><th>说明</th></tr>
+    <tr><td>SSL/TLS 模式</td><td><code>Full (strict)</code></td><td>端到端加密 + 回源验证书</td></tr>
+    <tr><td>Minimum TLS Version</td><td><code>TLS 1.2</code></td><td>Stripe 支付链路要求 ≥1.2</td></tr>
+    <tr><td>TLS 1.3</td><td><code>ON</code></td><td>握手更快，现代浏览器全支持</td></tr>
+    <tr><td>Always Use HTTPS</td><td><code>ON</code></td><td>HTTP 301 → HTTPS</td></tr>
+    <tr><td>HSTS</td><td>启用，<code>max-age=6 个月</code>（先不含 preload）</td><td>强制浏览器后续只走 HTTPS；<b>启用前确认无 http:// 混载</b>（preload 提交后浏览器侧几乎不可撤销，观察 1 个月稳定后再考虑）</td></tr>
+    <tr><td>0-RTT</td><td><code>ON</code>（评估后）</td><td>TLS 1.3 会话恢复加速；非幂等请求存在理论重放风险——本站支付走 Stripe 托管域不受影响，自有 API 以幂等 GET 为主，可开</td></tr>
+    <tr><td>Automatic HTTPS Rewrites</td><td><code>ON</code></td><td>自动把页面里 http:// 子资源改写为 https://，缓解混合内容</td></tr>
+  </table>
+  <h3 class="sub">9.3 证书故障速查</h3>
+  <table>
+    <tr><th>现象</th><th>排查</th></tr>
+    <tr><td>525 SSL handshake failed</td><td>回源 TLS 握手失败：源站 443 未监听 / 证书路径配错（<code>openssl s_client</code> 自测，§7 步骤 2）</td></tr>
+    <tr><td>526 Invalid SSL certificate</td><td>Full (strict) 下源站证书无效/过期/自签 → 换 Origin CA 或有效公共证书；或暂时降 Full 观察（修复后立即升回）</td></tr>
+    <tr><td>子域证书不覆盖（如 a.b.zoo1.cn）</td><td>Universal SSL 只覆盖裸域+一级子域；改用一级子域，或购买 ACM</td></tr>
+    <tr><td>浏览器报证书过期</td><td>Edge 证书自动续期依赖 DCV 校验：确保 DNS 记录保持橙云，勿长期灰云</td></tr>
+  </table>
+</section>
+
+<!-- ===================== 10 缓存原理 ===================== -->
+<section id="s10">
+  <h2><span class="num">10</span>缓存机制原理（先懂原理，再配规则）</h2>
+
+  <h3 class="sub">10.1 什么会被缓存、什么不会</h3>
+  <table>
+    <tr><th>判定项</th><th>默认行为</th></tr>
+    <tr><td>请求方法</td><td>仅 <b>GET/HEAD</b> 可能缓存；POST/PUT/DELETE 永不缓存</td></tr>
+    <tr><td>静态扩展名</td><td>js/css/png/jpg/webp/avif/svg/gif/ico/woff/woff2/pdf/mp4 等<b>默认缓存</b>（无需配置）</td></tr>
+    <tr><td>HTML / API 响应</td><td>默认<b>不缓存</b>（<code>DYNAMIC</code>），要缓存须 Cache Rules 显式开启</td></tr>
+    <tr><td>带 <code>Authorization</code> 头的请求</td><td>默认不缓存（防登录态串号）</td></tr>
+    <tr><td>带 <code>Set-Cookie</code> 的响应</td><td>默认不缓存</td></tr>
+    <tr><td><code>Cache-Control: private / no-store</code></td><td>尊重源站，不缓存</td></tr>
+    <tr><td>查询字符串</td><td><b>默认整串参与缓存键</b>：<code>?w=400</code> 与 <code>?w=800</code> 是两份缓存</td></tr>
+  </table>
+
+  <h3 class="sub">10.2 Cache-Control 指令语义速查</h3>
+  <table>
+    <tr><th>指令</th><th>作用层</th><th>含义</th></tr>
+    <tr><td><code>max-age=N</code></td><td>浏览器 + 共享缓存</td><td>N 秒内可直接用副本不再验证</td></tr>
+    <tr><td><code>s-maxage=N</code></td><td>共享缓存（CDN）</td><td>覆盖 max-age，仅对 CDN 生效——<b>给 CF 的专属指令</b></td></tr>
+    <tr><td><code>public / private</code></td><td>共享缓存</td><td>private 表示含个人数据，CDN 不得缓存</td></tr>
+    <tr><td><code>no-cache</code></td><td>双层</td><td>可存副本但每次使用前须协商验证（ETag）</td></tr>
+    <tr><td><code>no-store</code></td><td>双层</td><td>彻底不存（API 敏感响应用）</td></tr>
+    <tr><td><code>immutable</code></td><td>浏览器</td><td>副本期内连协商验证都不发——配合 hash 文件名使用</td></tr>
+    <tr><td><code>stale-while-revalidate=N</code></td><td>双层</td><td>过期后 N 秒内先返回旧副本、后台异步刷新（用户零等待）</td></tr>
+    <tr><td><code>stale-if-error=N</code></td><td>双层</td><td>源站 5xx/超时时，N 秒内继续服务过期副本——<b>源站故障时的保命指令</b></td></tr>
+  </table>
+
+  <h3 class="sub">10.3 TTL 判定优先级（谁说了算）</h3>
+  <div class="arch">1. Cache Rules 显式 Edge TTL        ← 最高优先级(§11 规则里设的)
+2. 源站 Cache-Control (s-maxage > max-age > Expires)
+3. 状态码默认值(源站无任何头时):
+   200 / 206 / 301 → 120 分钟
+   302 / 303       → 20 分钟
+   404 / 410       → 3 分钟
+   其余状态码      → 不缓存
+4. 以上均无法判定 → 动态请求不缓存(DYNAMIC)</div>
+
+  <h3 class="sub">10.4 缓存键组成</h3>
+  <p>默认缓存键 = <b>主机名 + 路径 + 完整查询串</b>。高级定制（按 Cookie/Header 分键、忽略指定参数）部分属企业功能——本项目用「查询参数天然分键」即可满足图片变体需求（<code>?w=</code>/<code>?q=</code> 各自缓存，不串）。注意：<b>不同 Header（如 Accept-Language）默认不参与键</b>，切勿让同一 URL 按请求头返回不同内容，否则会串缓存。</p>
+
+  <h3 class="sub">10.5 CORS 与缓存</h3>
+  <p>跨域响应（带 <code>Access-Control-Allow-Origin</code>）一旦被缓存，会被复用给其他来源的请求导致 CORS 报错。纪律：<b>带 CORS 头的 API 一律 Bypass</b>（§11 规则 1 已覆盖 <code>/api/*</code>）；确需缓存的跨域静态资源用「来源白名单 + 统一 ACAO 头」固定响应。</p>
+</section>
+
+<!-- ===================== 11 缓存实操 ===================== -->
+<section id="s11">
+  <h2><span class="num">11</span>缓存规则实操（Cache Rules）</h2>
+  <p>配置位于 CF → <code>Caching</code> → <code>Cache Rules</code>（新规则引擎；旧 Page Rules 已被取代，新配置一律用 Cache Rules；免费计划可建约 10 条，以控制台配额提示为准）。</p>
+
+  <h3 class="sub">11.1 推荐规则集（按优先级从上到下，先匹配先生效）</h3>
+  <table>
+    <tr><th>#</th><th>规则名</th><th>匹配条件</th><th>动作</th><th>目的</th></tr>
+    <tr><td>1</td><td><code>api-bypass</code></td><td>URI Path <code>starts with /api/</code></td><td><b>Bypass cache</b></td><td>下单/鉴权/购物车动态接口绝不缓存（宁可慢不可脏数据），同时规避 CORS/Authorization 陷阱</td></tr>
+    <tr><td>2</td><td><code>admin-bypass</code></td><td>URI Path <code>starts with /admin</code></td><td><b>Bypass cache</b></td><td>后台含登录态，不缓存</td></tr>
+    <tr><td>3</td><td><code>assets-long</code></td><td>URI Path <code>starts with /assets/</code></td><td>Eligible for cache；Edge TTL = 1 month；Browser TTL = 1 year</td><td>Vite hash 产物，内容变即换名，超长缓存</td></tr>
+    <tr><td>4</td><td><code>images-cache</code></td><td>文件扩展名 in（webp, avif, jpg, png, svg, woff2）</td><td>Eligible for cache；Edge TTL = 7 days</td><td>图片与字体集中缓存</td></tr>
+    <tr><td>5</td><td><code>html-short</code>（可选）</td><td>Hostname eq <code>zoo1.cn</code> 且内容类型 <code>text/html</code></td><td>Edge TTL = 5 min + <code>stale-while-revalidate</code> + <code>stale-if-error</code></td><td>SPA 入口 HTML 短缓存：源站挂了边缘 5 分钟照常出页（§20 防线①）</td></tr>
+  </table>
+  <div class="callout warn"><p><b>Cache Everything 慎用：</b>对 HTML 开「全量缓存」须同时配登录态绕过（cookie 条件），否则购物车/账户页可能被缓存串号。本站用「短 TTL + SWR」替代，安全性更高。另：规则<b>从上到下</b>首条命中即止——bypass 规则务必排在 cache 规则之上。</p></div>
+
+  <h3 class="sub">11.2 源站侧配合（api 容器响应头）</h3>
+  <table>
+    <tr><th>资源</th><th>建议响应头</th><th>说明</th></tr>
+    <tr><td><code>/assets/*</code></td><td><code>Cache-Control: public, max-age=31536000, immutable</code></td><td>hash 文件名（源站或 CF 规则 3 覆盖 Browser TTL，双保险）</td></tr>
+    <tr><td>入口 HTML</td><td><code>Cache-Control: public, max-age=300, s-maxage=300, stale-while-revalidate=600, stale-if-error=86400</code></td><td>短缓存 + 故障续命（配合规则 5）</td></tr>
+    <tr><td><code>/api/*</code></td><td><code>Cache-Control: private, no-store</code></td><td>源站兜底声明，即使 CF 规则配错也不缓存</td></tr>
+    <tr><td>上传图片 <code>/static/uploads/*</code></td><td><code>Cache-Control: public, max-age=604800</code></td><td>7 天；后台替换同名图后按 URL purge（§11.4）</td></tr>
+  </table>
+
+  <h3 class="sub">11.3 验证缓存生效</h3>
+<pre><code># 第一次请求（边缘未命中，回源）
+$ curl -sI https://zoo1.cn/assets/index-B1x2.js | grep -i 'cf-cache-status\|age\|cache-control'
+cf-cache-status: MISS
+age: 0
+
+# 第二次请求（边缘命中）
+$ curl -sI https://zoo1.cn/assets/index-B1x2.js | grep -i 'cf-cache-status\|age'
+cf-cache-status: HIT
+age: 37
+
+# 动态接口必须不缓存
+$ curl -sI https://zoo1.cn/api/catalog/products | grep -i cf-cache-status
+cf-cache-status: DYNAMIC</code></pre>
+
+  <h3 class="sub">11.4 清除缓存（Purge）正确姿势</h3>
+  <table>
+    <tr><th>方式</th><th>粒度</th><th>计划</th><th>适用</th></tr>
+    <tr><td><code>Purge by URL</code></td><td>精准（单次 ≤30 条）</td><td><span class="tag done">免费</span></td><td>替换同名图片/首页 HTML——日常首选</td></tr>
+    <tr><td><code>Purge Everything</code></td><td>全站清空</td><td><span class="tag done">免费</span></td><td>仅排障用；瞬间打空缓存 → 回源洪峰</td></tr>
+    <tr><td>按 Tag / Prefix / Hostname</td><td>批量</td><td><span class="tag gray">企业</span></td><td>按 <code>Cache-Tag</code> 头分组清（如清全部商品图）</td></tr>
+    <tr><td>Purge API</td><td>程序化</td><td><span class="tag done">免费</span></td><td>发布脚本集成（§18.2）</td></tr>
+  </table>
+  <ul>
+    <li><b>发布新版本</b>：hash 文件名变化，新 URL 自动 Miss，<b>无需清缓存</b>；若 HTML 短缓存持有旧引用，按 URL purge 首页即可；</li>
+    <li><b>替换同名图片</b>：按 URL purge 该图（含全部参数变体各清一次）；</li>
+    <li><b>宁精准勿全量</b>：Purge Everything 后密切观察回源 QPS。</li>
+  </ul>
+
+  <h3 class="sub">11.5 缓存命中率优化方法论（目标 &gt;85%）</h3>
+  <ol>
+    <li>先测量（§21 采样脚本 / Analytics 面板）拿到基线与 MISS 构成；</li>
+    <li>MISS 集中在带参 URL → 检查参数是否可控（图片变体收敛到固定几档 <code>?w=</code>）；</li>
+    <li>MISS 集中在 HTML/动态 → 属正常，确认规则 5 是否需要；</li>
+    <li>HIT 但 age 始终很小 → Edge TTL 过短，上调规则 TTL；</li>
+    <li>源站视角核对：回源 QPS ≈ 总 QPS × (1−命中率)，与 nginx 日志对账。</li>
+  </ol>
+
+  <h3 class="sub">11.6 Tiered Cache 与 Cache Reserve（回源削峰两件套）</h3>
+  <table>
+    <tr><th>能力</th><th>原理</th><th>开关位置</th><th>计划</th></tr>
+    <tr><td><b>Smart Tiered Caching</b></td><td>全球 PoP 的回源先汇聚到上层 PoP，同一资源全网只回源一次，回源量典型降 60%+</td><td><code>Caching → Tiered Cache</code> 一键开</td><td><span class="tag done">免费</span><b>（建议必开）</b></td></tr>
+    <tr><td>Cache Reserve</td><td>边缘缓存的持久化层（R2 存储）：对象过期/被逐出后仍可从 Reserve 秒取，不再回源</td><td><code>Caching → Cache Reserve</code></td><td><span class="tag gray">付费</span>（R2 计费）</td></tr>
+  </table>
+</section>
+
+<!-- ===================== 12 性能套件 ===================== -->
+<section id="s12">
+  <h2><span class="num">12</span>性能优化套件（Speed）</h2>
+  <h3 class="sub">12.1 CF 侧开关一览（Speed → Optimization + Network）</h3>
+  <table>
+    <tr><th>功能</th><th>说明</th><th>建议</th><th>计划</th></tr>
+    <tr><td><b>HTTP/3 (QUIC)</b></td><td>基于 UDP 的新传输协议，弱网（移动端）握手与丢包恢复显著优于 HTTP/2</td><td><b>开启</b></td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><b>Early Hints (103)</b></td><td>在源站响应前，边缘先把关键子资源 <code>Link</code> 头推给浏览器预加载（源站发 Link 头或 CF 自动学习），首屏提速</td><td><b>开启</b>（对 LCP 有感）</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><b>Brotli 压缩</b></td><td>比 gzip 小 15-20% 的文本压缩，CF 边缘对 HTML/CSS/JS 自动启用</td><td>保持默认开</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td>Enhanced HTTP/2 Prioritization</td><td>边缘按资源类型智能排序响应（CSS 先于图片）</td><td>开启</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td>0-RTT</td><td>TLS 1.3 会话恢复 0 往返（见 §9.2 风险注）</td><td>评估后开</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td>Argo Smart Routing</td><td>回源路径跨 CF 骨干网智能选路，回源延迟典型降 30%</td><td>大促期临时开（$5/月 + 约 $0.10/GB 回源流量）</td><td><span class="tag pro">付费</span></td></tr>
+    <tr><td>Polish</td><td>边缘图片压缩/转 WebP（Lossless/Lossy 两档）</td><td>图片量大后评估（图片管线见 §19）</td><td><span class="tag pro">Pro</span></td></tr>
+    <tr><td>Mirage</td><td>移动端弱网图片懒加载优化</td><td>与前端 lazy-load 重复，暂不开</td><td><span class="tag pro">Pro</span></td></tr>
+    <tr><td>Rocket Loader</td><td>异步化脚本加载</td><td><b>关闭</b>——改写 script 注入顺序，与 Vue SPA 水合冲突风险高</td><td><span class="tag warn">慎用</span></td></tr>
+    <tr><td>Auto Minify</td><td>JS/CSS/HTML 边缘压缩</td><td><b>已下线</b>（2023-08 CF 移除），压缩由 Vite/esbuild 构建期完成</td><td><span class="tag gray">已废弃</span></td></tr>
+  </table>
+
+  <h3 class="sub">12.2 源站侧配合（api 容器）</h3>
+  <ul>
+    <li><b>文本压缩</b>：FastAPI <code>GZipMiddleware</code>（minimum_size=1024），CF 回源取原稿后在边缘按浏览器能力输出 gzip/brotli——双层压缩互不冲突；</li>
+    <li><b>Keep-Alive</b>：回源连接复用（HTTP/1.1 默认开启），确认源站未主动 <code>Connection: close</code>；</li>
+    <li><b>长缓存头</b>：§11.2 表格逐项落地，源站头是 CF 规则之外的二道保险；</li>
+    <li><b>首屏关键资源</b>：Hero 图 <code>&lt;link rel="preload" as="image"&gt;</code> + AVIF（设计文档 LCP 口径），配合 Early Hints 效果叠加。</li>
+  </ul>
+  <div class="callout tip"><p><b>度量口径：</b>性能改动用 Core Web Vitals 验证——LCP（首屏大图，目标 &lt;2.5s）、INP（交互响应，&lt;200ms）、CLS（布局稳定，&lt;0.1）。CF Web Analytics（§21，免费）可直接看 Core Web Vitals 采样，无需自埋点。</p></div>
+</section>
+
+<!-- ===================== 13 WAF ===================== -->
+<section id="s13">
+  <h2><span class="num">13</span>WAF 与自定义规则</h2>
+  <h3 class="sub">13.1 三层规则体系</h3>
+  <table>
+    <tr><th>层</th><th>内容</th><th>位置</th><th>建议</th></tr>
+    <tr><td><b>托管规则集</b></td><td>CF Managed（通用漏洞）、OWASP Core（注入/XSS 等）、Exposed Credentials（撞库检测）</td><td><code>Security → WAF → Managed rules</code></td><td>免费计划启用基础托管集；OWASP 灵敏度默认即可</td></tr>
+    <tr><td><b>自定义规则</b></td><td>按表达式匹配自家业务特征（免费约 5 条）</td><td><code>Security → WAF → Custom rules</code></td><td>见 13.2 示例</td></tr>
+    <tr><td><b>工具类</b></td><td>IP Access Rules（单 IP/网段/ASN/国家）、User Agent Blocking、安全等级</td><td><code>Security → WAF → Tools</code></td><td>封禁确证恶意 IP；安全等级 Medium</td></tr>
+  </table>
+
+  <h3 class="sub">13.2 自定义规则表达式示例</h3>
+<pre><code># ① 后台路径仅限办公地/家庭 IP（放行白名单，其余质询）
+(http.host eq "zoo1.cn" and starts_with(http.request.uri.path, "/admin")
+ and not ip.src in {203.0.113.10 198.51.100.0/24})
+
+# ② 挡明显扫描器 UA
+(lower(http.user_agent) contains "sqlmap"
+ or lower(http.user_agent) contains "nikto")
+
+# ③ 仅允许目标市场国家访问后台（DTC 主打美/欧）
+(http.request.uri.path contains "/admin"
+ and not ip.geoip.country in {"US" "CA" "GB" "DE" "FR" "CN"})</code></pre>
+  <p>语法要点：字段 <code>http.host / http.request.uri.path / ip.src / ip.geoip.country / http.user_agent</code>；操作符 <code>eq / contains / starts_with / in {...} / not</code>；控制台表达式编辑器带自动补全与测试器。</p>
+
+  <h3 class="sub">13.3 动作（Action）类型对比</h3>
+  <table>
+    <tr><th>动作</th><th>用户体验</th><th>安全强度</th><th>适用</th></tr>
+    <tr><td><b>Block</b></td><td>直接 403</td><td>高</td><td>确定恶意（扫描器 UA、攻击特征）</td></tr>
+    <tr><td><b>Managed Challenge</b>（推荐）</td><td>无感人机验证（通过则放行并记 cookie）</td><td>高</td><td>可疑流量默认选择——比 Block 友好、比 JS 强</td></tr>
+    <tr><td>JS Challenge</td><td>浏览器执行 JS 通过</td><td>中</td><td>轻量质询</td></tr>
+    <tr><td>Interactive Challenge</td><td>验证码交互</td><td>最高</td><td>顽固攻击期</td></tr>
+    <tr><td>Log</td><td>仅记录不拦截</td><td>—</td><td>新规则上线观察期，确认无误伤再改 Block</td></tr>
+    <tr><td>Skip</td><td>跳过后续安全产品（放行）</td><td>—</td><td>合法机器流量白名单（Stripe webhook、拨测）</td></tr>
+  </table>
+
+  <h3 class="sub">13.4 Bot 防护与账户安全</h3>
+  <ul>
+    <li><b>Bot Fight Mode</b>（免费，<code>Security → Bots</code>）：拦截明显爬虫/扫描器。注意 Stripe webhook 是合法机器流量，被误拦时在 Security Events 里为其加 Skip 规则（§23）；</li>
+    <li><b>Super Bot Fight Mode</b>（Pro+）：按 Bot 评分分级处置，图片量大有爬虫困扰时升级；</li>
+    <li><b>账户安全纪律</b>：CF 账号强制 2FA；API 操作一律用<b>最小权限 API Token</b>（§18.1），不用 Global Key；成员按角色授权。</li>
+  </ul>
+  <div class="callout tip"><p><b>新规则上线三步法：</b>动作先 Log → Security Events 观察 24-48h 无误伤 → 改 Managed Challenge/Block。避免上线即 Block 造成真实用户被挡。</p></div>
+</section>
+
+<!-- ===================== 14 限流 ===================== -->
+<section id="s14">
+  <h2><span class="num">14</span>Rate Limiting 分层限流</h2>
+  <p>CF → <code>Security → WAF → Rate limiting rules</code>（免费计划 1 条，挑最高价值规则；付费解锁多条与更细特征）。规则三要素：<b>匹配特征</b>（路径/表达式）→ <b>计数维度</b>（默认按访客 IP）与<b>周期/阈值</b> → <b>动作与时长</b>。</p>
+  <table>
+    <tr><th>优先级</th><th>规则</th><th>匹配</th><th>阈值</th><th>动作</th></tr>
+    <tr><td>1（免费额度用这）</td><td>全站防扫</td><td>任意路径</td><td>同 IP &gt; 300 req / 1 min</td><td>Block 10 min（或 Managed Challenge 减少误伤）</td></tr>
+    <tr><td>2</td><td>登录防爆破</td><td><code>/api/auth/*</code>、<code>/admin</code></td><td>同 IP &gt; 20 req / 1 min</td><td>Managed Challenge</td></tr>
+    <tr><td>3</td><td>结账保护</td><td><code>/api/checkout</code>、<code>/api/payments/*</code></td><td>阈值放宽（真人下单高峰不受误伤）</td><td>观察 → Block</td></tr>
+  </table>
+  <h3 class="sub">14.1 三层限流纵深（与架构 v2 §2.2 对齐）</h3>
+  <div class="arch">[CF 边缘]      Rate Limiting: 同IP 300/min 挡扫描与CC    ← 免费计划
+      ↓ 漏过
+[源站 nginx]   limit_req: IP 60r/min, checkout 独立更高阈值    ← 架构v2 纪律
+      ↓ 漏过
+[应用层]       令牌桶/队列: 秒杀排队 500/s 进结算               ← §22 大促预案
+
+任何一层失效,下层独立兜底; CF 侧日志见 Security Events, 源站见 nginx error log</div>
+  <div class="callout info"><p><b>注意计数口径：</b>CF 边缘统计的是「到达边缘的请求」——命中缓存的静态资源也计数（但已不消耗源站资源）；若只想保护回源，阈值可适当放宽，源站 nginx 层有更精准口径（经 §16 真实 IP 配置后按访客真实 IP 计数）。</p></div>
+</section>
+
+<!-- ===================== 15 Access ===================== -->
+<section id="s15">
+  <h2><span class="num">15</span>Cloudflare Access 保护后台（免费 SSO 门禁）</h2>
+  <p>后台 <code>/admin</code> 目前仅靠应用自身 JWT 登录，登录页暴露公网可被爆破。CF Access（Zero Trust 组件，<b>免费 50 用户</b>）可在边缘加一道<b>邮箱 OTP 门禁</b>：未通过验证的请求根本到不了源站。</p>
+  <h3 class="sub">15.1 配置五步</h3>
+  <ol class="steps">
+    <li><b>开通 Zero Trust</b>：CF → <code>Zero Trust</code> → 设置团队名（如 <code>glowmag</code>）→ 选 Free 计划；</li>
+    <li><b>建应用</b>：<code>Access → Applications → Add → Self-hosted</code>；</li>
+    <li><b>填域名路径</b>：Application domain 填 <code>zoo1.cn</code> + path <code>admin*</code>（后台接口若独立前缀可另加一条规则，注意不影响前台用户接口）；</li>
+    <li><b>配策略</b>：Policy 动作 Allow → Include <code>Emails</code> 填运营/管理成员邮箱（也可用邮箱后缀 <code>ends with @glowmag.com</code>）；</li>
+    <li><b>验证</b>：无痕窗口打开 <code>https://zoo1.cn/admin</code> → 应先弹 CF 登录页 → 输邮箱收验证码 → 通过后才见到后台登录页。</li>
+  </ol>
+  <h3 class="sub">15.2 与应用登录的关系</h3>
+  <table>
+    <tr><th>层</th><th>认证方式</th><th>挡住什么</th></tr>
+    <tr><td>CF Access（边缘）</td><td>邮箱 OTP（一人一码，可开 2FA）</td><td>未授权者<b>根本接触不到</b>后台登录页/接口——爆破面消失</td></tr>
+    <tr><td>应用 JWT（源站）</td><td>账号密码（后台 admin 账号）</td><td>授权成员内的权限与操作审计</td></tr>
+  </table>
+  <div class="callout tip"><p>两层叠加 = 「知道门在哪 + 有钥匙」缺一不可。同理可给 <code>staging.zoo1.cn</code> 整域加 Access，预发环境对公网隐身（比 Basic Auth 优雅，不改代码）。</p></div>
+</section>
+
+<!-- ===================== 16 真实IP ===================== -->
+<section id="s16">
+  <h2><span class="num">16</span>真实 IP 与日志（接 CDN 后必做）</h2>
+  <div class="callout danger"><p><b>问题：</b>接入 CF 后，源站看到的来源 IP 全是 CF 边缘节点 IP。若不做处理——①应用限流/风控把所有用户当成少数几个 CF IP（误伤全局）；②访问日志失去用户归属；③按 IP 的黑名单失效。<b>此节是接 CDN 后的第一件配套工程。</b></p></div>
+  <h3 class="sub">16.1 CF 传递的真实 IP 头</h3>
+  <table>
+    <tr><th>头</th><th>含义</th><th>计划</th></tr>
+    <tr><td><code>CF-Connecting-IP</code></td><td><b>单一真实访客 IP</b>（CF 追加，可信）</td><td><span class="tag done">免费</span>（首选）</td></tr>
+    <tr><td><code>X-Forwarded-For</code></td><td>代理链：<code>真实IP, CF节点IP, ...</code>（取第一跳）</td><td><span class="tag done">免费</span></td></tr>
+    <tr><td><code>True-Client-IP</code></td><td>同 CF-Connecting-IP</td><td><span class="tag gray">企业</span></td></tr>
+  </table>
+  <h3 class="sub">16.2 方案 B：nginx 恢复真实 IP（real_ip 模块）</h3>
+<pre><code># /etc/nginx/conf.d/cloudflare-realip.conf（CF IP 段变更时同步更新,
+# 清单: https://www.cloudflare.com/ips/）
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+real_ip_header CF-Connecting-IP;   # 此后 $remote_addr = 真实访客IP</code></pre>
+  <p>配置后 nginx 访问日志、<code>limit_req</code> 限流、透传给应用的 <code>X-Real-IP</code> 全部自动使用真实 IP。方案 A（Tunnel）同理：nginx/应用层读 <code>CF-Connecting-IP</code>。</p>
+  <h3 class="sub">16.3 应用侧取用（FastAPI 示例）</h3>
+<pre><code>def client_ip(request: Request) -&gt; str:
+    """经 CF 代理后的访客真实 IP：优先 CF 头，兜底 XFF 第一跳。"""
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf
+    xff = request.headers.get("x-forwarded-for", "")
+    return xff.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+
+# 用途: 登录风控 / 评价提交防刷 / AI 客服限流等一律走此函数,
+# 切勿直接用 request.client.host(那是 CF/反代的 IP)</code></pre>
+  <h3 class="sub">16.4 日志留存建议</h3>
+  <ul>
+    <li>nginx 日志格式追加 <code>$http_cf_ray</code>（CF 请求追踪 ID）——源站日志可与 CF Security Events 按 ray 对账定位；</li>
+    <li>合规：访问日志含 IP 属个人信息（GDPR/CCPA），保留期建议 ≤90 天并限制访问权限；深度留存用 Logpush（高阶计划，§21.5）。</li>
+  </ul>
+</section>
+
+<!-- ===================== 17 Workers ===================== -->
+<section id="s17">
+  <h2><span class="num">17</span>Workers 边缘脚本（进阶）</h2>
+  <p>Workers 是跑在 CF 边缘的 Serverless JS 脚本（免费 10 万请求/天，超出按 $5/月档起）。本项目定位「<b>薄边缘</b>」：只做兜底、改头、调度，不放业务逻辑。</p>
+  <h3 class="sub">17.1 兜底页 Worker（完整可用）</h3>
+  <p>绑定路由 <code>zoo1.cn/*</code>（CF → <code>Workers Routes</code>），源站 52x 时返回品牌页（§20 防线②的实现）：</p>
+<pre><code>export default {
+  async fetch(request) {
+    const upstream = await fetch(request);
+    if (upstream.status &gt;= 521 &amp;&amp; upstream.status &lt;= 526) {
+      return new Response(FALLBACK_HTML, {
+        status: 503,
+        headers: { "content-type": "text/html; charset=utf-8",
+                   "retry-after": "300" },
+      });
+    }
+    return upstream;   // 正常响应原样放行
+  },
+};
+
+const FALLBACK_HTML = `&lt;!DOCTYPE html&gt;&lt;html lang="en"&gt;&lt;head&gt;
+&lt;meta charset="utf-8"&gt;&lt;meta name="viewport" content="width=device-width,initial-scale=1"&gt;
+&lt;title&gt;GLOWMAG — Be right back&lt;/title&gt;&lt;/head&gt;
+&lt;body style="font-family:sans-serif;text-align:center;padding:80px 20px"&gt;
+&lt;h1 style="font-size:28px"&gt;GLOWMAG&lt;/h1&gt;
+&lt;p&gt;We're upgrading our salon — back in a few minutes.&lt;/p&gt;
+&lt;p&gt;Questions? &lt;a href="mailto:support@zoo1.cn"&gt;support@zoo1.cn&lt;/a&gt;&lt;/p&gt;
+&lt;/body&gt;&lt;/html&gt;`;</code></pre>
+  <h3 class="sub">17.2 其他常用姿势</h3>
+  <ul>
+    <li><b>安全响应头注入</b>：给 HTML 加 <code>X-Content-Type-Options / Referrer-Policy / X-Frame-Options</code>（边缘做的好处是改配置即全站生效）；</li>
+    <li><b>地域重定向</b>：<code>request.cf.country</code> 判断，非目标市场把营销活动页 302 到对应语言版；</li>
+    <li><b>A/B 分流</b>：按 Cookie 哈希把 5%/25% 流量指向新落地页（配合灰度发布）；</li>
+    <li><b>Workers KV</b>（免费 10 万读/天）：边缘键值存储，存特性开关/简单配置，全球毫秒级读取；</li>
+    <li><b>Snippets</b>（<code>Rules → Snippets</code>）：无需写完整 Worker 的小段改写，轻量场景优先用。</li>
+  </ul>
+  <div class="callout warn"><p><b>纪律：</b>Worker 里 <code>fetch(request)</code> 会绕过边缘缓存直达源站——兜底页 Worker 只在源站故障时改写响应，正常流量务必原样返回 <code>upstream</code>；确需缓存参与时用 <code>caches.default.match/put</code> 显式处理，避免命中率塌方。</p></div>
+</section>
+
+<!-- ===================== 18 API 自动化 ===================== -->
+<section id="s18">
+  <h2><span class="num">18</span>API 自动化（发布集成与观测）</h2>
+  <h3 class="sub">18.1 创建最小权限 API Token</h3>
+  <ol class="steps">
+    <li>CF 右上角头像 → <code>My Profile</code> → <code>API Tokens</code> → <code>Create Token</code>；</li>
+    <li>选 <code>Create Custom Token</code>，权限按用途最小化：
+      <table>
+        <tr><th>用途</th><th>权限组合</th></tr>
+        <tr><td>发布后清缓存</td><td><code>Zone → Cache Purge → Purge</code> + <code>Zone → Zone → Read</code></td></tr>
+        <tr><td>DNS 自动化</td><td><code>Zone → DNS → Edit</code> + <code>Zone → Zone → Read</code></td></tr>
+        <tr><td>拉取分析数据</td><td><code>Analytics → GraphQL → Read</code></td></tr>
+      </table></li>
+    <li>生成后 Token 只显示一次，存入 CI Secrets（GitHub Actions）或 <code>.env</code>（不入库）；泄露即时 Roll 重建。</li>
+  </ol>
+  <h3 class="sub">18.2 Purge Cache API（发布脚本集成）</h3>
+<pre><code># 按清单精准清除(单次 ≤30 条 URL)
+curl -sX POST "https://api.cloudflare.com/client/v4/zones/&lt;ZONE_ID&gt;/purge_cache" \
+  -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+  --data '{"files":["https://zoo1.cn/","https://zoo1.cn/pub_doc/cdn-deployment.html"]}'
+
+# 全量清除(仅排障)
+curl -sX POST "https://api.cloudflare.com/client/v4/zones/&lt;ZONE_ID&gt;/purge_cache" \
+  -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+  --data '{"purge_everything":true}'</code></pre>
+  <p><b>集成点：</b>deploy.md §3 发布流程（git pull → build → migrate → up -d）末尾追加一步 purge 首页 HTML——hash 资源自失效无需清，入口页持有旧引用时这步保证用户立刻拿到新版。</p>
+  <h3 class="sub">18.3 GraphQL Analytics API（免费可拉缓存命中率）</h3>
+<pre><code>curl -s https://api.cloudflare.com/client/v4/graphql \
+  -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+  -d @- &lt;&lt;'EOF'
+{ "query": "query($zone:String!,$from:Date!,$to:Date!){ viewer { zones(filter:{zoneTag:$zone}) {
+    httpRequests1dGroups(limit:7, filter:{date_gt:$from, date_lt:$to}) {
+      dimensions { date }  sum { requests cacheHits }  avg { cacheHitRatio }
+    } } } }",
+  "variables": { "zone": "&lt;ZONE_ID&gt;", "from": "2026-08-21", "to": "2026-08-28" } }
+EOF</code></pre>
+  <p>免费计划数据窗口约 30 天——重要指标按日落到自有监控（§21）。另有 <code>cloudflared</code> 侧 metrics、Terraform <code>cloudflare/cloudflare</code> provider（配置即代码，全量管理 DNS/规则/WAF）与 <code>wrangler</code> CLI（Workers 部署），规模化后引入。</p>
+</section>
+
+<!-- ===================== 19 静态资源与图片 ===================== -->
+<section id="s19">
+  <h2><span class="num">19</span>静态资源与图片管线</h2>
+  <h3 class="sub">19.1 构建产物（已落地）</h3>
+  <ul>
+    <li>前后台 Vue SPA 产物 <code>web/dist</code>（client 在根、admin 在 <code>admin/</code>），随 api 镜像分发；Vite 产物<b>文件名带内容 hash</b> → 1 年浏览器缓存 + 1 月边缘缓存（§11 规则 3），改版零 purge；</li>
+    <li>公开文档目录 <code>web/client/public/pub_doc/</code> → 构建后 <code>dist/pub_doc/</code> → <code>/pub_doc/*.html</code> 免登录直出（本文档即此机制）；</li>
+    <li>首屏 LCP：Hero 图 <code>preload</code> + AVIF（目标 &lt;2.5s @4G），CDN 边缘分发 TTFB &lt;50ms。</li>
+  </ul>
+  <h3 class="sub">19.2 图片管线两模式</h3>
+  <table>
+    <tr><th>模式</th><th>做法</th><th>适用</th></tr>
+    <tr><td><b>模式 1：主域出图</b>（当前默认）</td><td>图片随 dist / <code>/static/uploads/</code> 分发，走主域橙云缓存（§11 规则 4）</td><td>MVP 图片量小，零额外运维</td></tr>
+    <tr><td><b>模式 2：R2 + 自定义域</b></td><td>R2 建 bucket <code>glowmag-media</code> → 绑 <code>cdn.zoo1.cn</code>（自动走 CDN，出口流量免费）→ 后台上传写 R2，商品表 images 存 <code>https://cdn.zoo1.cn/…</code></td><td>图片量大后迁移（P1，见 MVP §E10）</td></tr>
+  </table>
+  <h3 class="sub">19.3 R2 操作与定价</h3>
+<pre><code># ~/.config/rclone/rclone.conf（备份 bucket 与媒体 bucket 共用）
+[r2]
+type = s3
+provider = Cloudflare
+access_key_id = &lt;R2_ACCESS_KEY&gt;
+secret_access_key = &lt;R2_SECRET&gt;
+endpoint = https://&lt;R2_ACCOUNT_ID&gt;.r2.cloudflarestorage.com
+
+rclone lsd r2:glowmag-backups     # 每日备份(deploy.md §4.1)与媒体库分 bucket,权限隔离</code></pre>
+  <table>
+    <tr><th>项</th><th>免费额度</th><th>超出价格</th></tr>
+    <tr><td>存储</td><td>10 GB/月</td><td>≈ $0.015/GB·月</td></tr>
+    <tr><td>操作 Class A（写/列表）</td><td>100 万/月</td><td>≈ $4.50/百万</td></tr>
+    <tr><td>操作 Class B（读）</td><td>1000 万/月</td><td>≈ $0.36/百万</td></tr>
+    <tr><td><b>出口流量</b></td><td colspan="2"><b>永久免费</b>（出图不走带宽计费，R2 核心优势）</td></tr>
+  </table>
+  <h3 class="sub">19.4 图片缓存变体纪律</h3>
+  <ul>
+    <li>尺寸变体用查询参数（<code>?w=400&amp;q=75</code>）——默认查询串参与缓存键，各变体独立缓存不串；变体档位收敛到固定几档（400/800/1200），防参数爆炸稀释命中率；</li>
+    <li><b>同名替换必须 purge</b>（§11.4 按 URL 清，参数变体各清一次）；更优实践：图片 URL 带版本路径（<code>/img/v2/hero.avif</code>），换版换路径零 purge；</li>
+    <li>Pro 计划 Polish 可在边缘再压/转 WebP（模式 1/2 均适用），开启后观察视觉质量再定档。</li>
+  </ul>
+</section>
+
+<!-- ===================== 20 兜底 ===================== -->
+<section id="s20">
+  <h2><span class="num">20</span>兜底页与故障转移</h2>
+  <p>对齐架构 v2 §2.1「源站故障时用户永远打得开」。三道防线按时间窗递进：</p>
+  <table>
+    <tr><th>防线</th><th>触发</th><th>机制</th><th>用户看到</th></tr>
+    <tr><td><b>① 边缘缓存续命</b></td><td>源站宕机 ≤ HTML Edge TTL（§11 规则 5 的 5 min 窗口）</td><td>TTL 内 HTML/静态照常命中；<code>stale-if-error</code> 下过期副本也能在故障期继续返回（§10.2）</td><td>页面正常（数据接口报错，前端有降级 UI）</td></tr>
+    <tr><td><b>② Worker 兜底页</b></td><td>回源 52x（§17.1 完整代码）</td><td>边缘拦截 521-526，返回 503 品牌页（logo+客服邮箱+社媒），带 <code>Retry-After</code></td><td>「We'll be right back」品牌页</td></tr>
+    <tr><td><b>③ 静态资产可用</b></td><td>长时间宕机</td><td>js/css/图仍在边缘服务；已下单用户由 worker 的 outbox 邮件补发（架构 v2 §2.4 落库必达）</td><td>品牌信任保住，交易数据不丢</td></tr>
+  </table>
+  <h3 class="sub">20.1 兜底页制作要点</h3>
+  <ul>
+    <li>内容三要素：品牌视觉 + 客服邮箱（<code>support@zoo1.cn</code>）+ 社媒入口；资源全部内联，不依赖源站；</li>
+    <li>返回 <b>503 + Retry-After</b>（勿返 200），避免搜索引擎把临时页当正文收录；</li>
+    <li>每季度容灾演练时一并演练本防线（架构 v2 §5.3 清单）。</li>
+  </ul>
+  <h3 class="sub">20.2 演进：多源站 Load Balancing（付费，$5/月起）</h3>
+  <p>单机 → 双源站阶段启用：CF LB 对多源站做主动健康检查（间隔/失败阈值可配），主源异常 30s 内 DNS 级切备源；配合 Tunnel 每源一条隧道。架构 v2 §7.2「入口高可用交给云」的完整体。单机阶段不必投入。</p>
+</section>
+
+<!-- ===================== 21 监控 ===================== -->
+<section id="s21">
+  <h2><span class="num">21</span>监控与可观测</h2>
+  <h3 class="sub">21.1 CF 自带观测（免费够用）</h3>
+  <table>
+    <tr><th>面板</th><th>看什么</th><th>阈值/动作</th></tr>
+    <tr><td><b>Analytics</b>（流量）</td><td>请求量/带宽/<b>缓存命中率</b>（目标 &gt;85%）/国家分布</td><td>命中率跌破 80% 触发排查（§11.5）</td></tr>
+    <tr><td><b>Security Events</b></td><td>WAF/限流/Bot 拦截明细（含命中的规则与动作）</td><td>误伤（Stripe webhook、拨测被拦）→ 加 Skip 规则</td></tr>
+    <tr><td><b>Tunnel 页面</b></td><td>隧道连接数（正常 4）/断连时间线</td><td>反复重连 → 查源机网络/Token</td></tr>
+    <tr><td><b>Web Analytics</b></td><td>免费隐私友好访问统计（无 cookie）+ <b>Core Web Vitals</b> 采样</td><td>LCP 劣化 → 查 §12 改动</td></tr>
+  </table>
+  <h3 class="sub">21.2 命中率采样脚本（服务器侧定时跑）</h3>
+<pre><code>#!/usr/bin/env bash
+# cache-sample.sh: 抽样统计 cf-cache-status 分布(输出可接 Prometheus pushgateway)
+URLS="https://zoo1.cn/ https://zoo1.cn/assets/index-1.js https://zoo1.cn/api/health"
+for u in $URLS; do
+  for i in 1 2 3; do
+    echo "$(date -Is) $u $(curl -sI "$u" | grep -i cf-cache-status | tr -d '\r')"
+  done
+done | column -t</code></pre>
+  <h3 class="sub">21.3 GraphQL 定期落库</h3>
+  <p>按 §18.3 脚本每日拉 <code>cacheHitRatio / requests / cacheHits / bytes</code> 落入自有监控（免费计划 CF 侧仅存约 30 天，落库后可看长期趋势）。</p>
+  <h3 class="sub">21.4 外部拨测（上线检查清单要求）</h3>
+  <ul>
+    <li>UptimeRobot（或同类）每 1 min 拨测四链路：<b>首页 / 加购 / 搜索 / checkout</b>，地域覆盖美/欧；</li>
+    <li>拨测 User-Agent 记得加 WAF 白名单（Skip 规则），避免把拨测当攻击拦了造成假告警；</li>
+    <li>告警分级对齐架构 v2 §4：P0 电话（支付/不可用）、P1 即时通讯、P2 邮件。</li>
+  </ul>
+  <h3 class="sub">21.5 高阶：Logpush</h3>
+  <p>高阶计划（Business+）可把每请求日志（含 cf-ray、缓存状态、WAF 动作、Bot 评分）实时外推至 R2/S3，配合分析引擎做全量审计与安全回溯；单机阶段用 Security Events + 采样脚本即可。</p>
+  <h3 class="sub">21.6 日常巡检命令（服务器侧）</h3>
+<pre><code>curl -sI https://zoo1.cn/api/health | head -1        # 200 + cf-ray(经CF)
+curl -s http://127.0.0.1:8000/api/health             # 本地排除CF因素
+docker compose ps tunnel                             # Tunnel 在线
+docker compose logs --tail=20 tunnel                 # 重连日志
+for i in $(seq 1 10); do curl -sI https://zoo1.cn/assets/index-1.js \
+  | grep -i cf-cache-status; done | sort | uniq -c   # 命中率抽样</code></pre>
+</section>
+
+<!-- ===================== 22 大促 ===================== -->
+<section id="s22">
+  <h2><span class="num">22</span>大促 / 流量高峰预案</h2>
+  <p>对齐架构 v2 §3 与 deploy.md §5。CDN 侧动作集中在<b>预热阶段</b>完成（应用侧扩容见对应文档）：</p>
+  <table>
+    <tr><th>阶段</th><th>CDN 动作</th><th>说明</th></tr>
+    <tr><td>预热（上线前）</td><td>关键资源预热</td><td>对 Hero 图/活动页素材清单主动请求，使边缘提前 MISS→HIT，避免 0 点集中首访回源洪峰（脚本见 §22.1）</td></tr>
+    <tr><td>预热</td><td>缓存规则临时全量化</td><td>deploy.md §5「CF 侧开缓存规则（静态站全量缓存）」：活动落地页 HTML 延长 Edge TTL（10 min）+ SWR</td></tr>
+    <tr><td>预热</td><td>Smart Tiered Cache 确认开启</td><td>§11.6，全网回源收敛为一次</td></tr>
+    <tr><td>洪峰中</td><td>（可选）临时开 Argo</td><td>回源智能选路，$5/月按量，会后关</td></tr>
+    <tr><td>洪峰中</td><td>观察回源 QPS 与 429</td><td>Analytics 实时视图；回源占比突增 = 缓存键异常，立即查参数变体爆炸</td></tr>
+    <tr><td>会后</td><td>规则回调 + 精准 purge + 关 Argo</td><td>活动页按 URL purge；临时 TTL 规则恢复常规值</td></tr>
+  </table>
+  <h3 class="sub">22.1 预热脚本示例</h3>
+<pre><code>#!/usr/bin/env bash
+# warmup.sh — 大促前夜跑: 活动页 + Hero/商品图清单逐个"喂"给边缘
+cat &lt;&lt;'EOF' | while read -r u; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "https://zoo1.cn$u")
+  st=$(curl -sI "https://zoo1.cn$u" | grep -i cf-cache-status | tr -d '\r')
+  echo "$(date +%T) $code $st $u"
+done
+/collections/new-drop
+/products/cherry-bomb
+/assets/hero-newdrop.avif?w=1200
+/assets/grid-1.avif?w=800
+EOF
+# 期望: 第一轮 MISS, 复跑一轮全 HIT 即预热完成</code></pre>
+</section>
+
+<!-- ===================== 23 排查 ===================== -->
+<section id="s23">
+  <h2><span class="num">23</span>故障排查大全</h2>
+
+  <h3 class="sub">23.1 CF 52x 错误码对照表（先背这张）</h3>
+  <table>
+    <tr><th>码</th><th>名称</th><th>含义</th><th>最常见根因 → 处置</th></tr>
+    <tr><td><span class="tag warn">520</span></td><td>Unknown Error</td><td>源站返回空/异常响应或响应头非法</td><td>源站 panic/响应头过大 → 看 api 日志；精简超大 Cookie/头（§23.4 限制表）</td></tr>
+    <tr><td><span class="tag warn">521</span></td><td>Web Server Is Down</td><td>源站<b>拒绝</b> TCP 连接</td><td>方案 B：80/443 防火墙没放行 CF 回源段/服务停 → 放行段、起服务；方案 A 出现即查 Tunnel 是否在线</td></tr>
+    <tr><td><span class="tag warn">522</span></td><td>Connection Timed Out</td><td>TCP 连接<b>超时</b>（包被丢，不是拒绝）</td><td>源站过载/丢包/安全组 DROP → <code>docker stats</code> 查负载，放行入站</td></tr>
+    <tr><td><span class="tag warn">523</span></td><td>Origin Is Unreachable</td><td>回源地址不可达</td><td>DNS 记录指向错误 IP / Tunnel 未注册此 hostname → 核对 §5 记录与 §6 步骤 4</td></tr>
+    <tr><td><span class="tag warn">524</span></td><td>A Timeout Occurred</td><td>TCP 已连上，但源站 <b>100 秒</b>内没返回完整响应</td><td>慢查询/死锁 → 拆慢接口为异步任务；企业版可调超时，免费版只能优化源站</td></tr>
+    <tr><td><span class="tag warn">525</span></td><td>SSL Handshake Failed</td><td>回源 TLS 握手失败</td><td>Full 模式下源站 443 无证书 → §9.3 排查；<code>openssl s_client</code> 自测</td></tr>
+    <tr><td><span class="tag warn">526</span></td><td>Invalid SSL Certificate</td><td>Full (strict) 判定源站证书无效</td><td>证书过期/自签/域名不匹配 → 换 Origin CA（§7 步骤 2）</td></tr>
+    <tr><td><span class="tag gray">530</span></td><td>—</td><td>伴随 1xxx 错误码</td><td>页面上找 1xxx 码：1000 DNS 异常 / 1033 Tunnel 断连 / 1015 触发限流 → 对号入座</td></tr>
+  </table>
+  <div class="callout tip"><p><b>通用排查三板斧：</b>① 服务器本地 <code>curl http://127.0.0.1:8000/api/health</code>（本地通 → 问题在 CF↔源站段；不通 → 源站自身）；② <code>docker compose logs tunnel / caddy</code> 看回源通道；③ 把响应里的 <code>cf-ray</code> 记下来，报障/查 Security Events 用它精确定位单个请求。</p></div>
+
+  <h3 class="sub">23.2 案例排查表</h3>
+  <table>
+    <tr><th>症状</th><th>排查步骤</th><th>常见根因 → 处置</th></tr>
+    <tr><td>重定向循环（ERR_TOO_MANY_REDIRECTS）</td><td>CF SSL 模式是否 Flexible</td><td>源站强制 HTTPS + CF Flexible 回源 HTTP → 死循环。改 <b>Full (strict)</b>（§9）</td></tr>
+    <tr><td>接口返回旧数据 / 购物车串号</td><td><code>curl -sI …/api/xxx</code> 看 <code>cf-cache-status</code> 是否 <code>HIT</code></td><td>动态接口被缓存 = Bypass 规则没生效（规则顺序/匹配写错）→ <code>api-bypass</code> 置顶；或源站误发缓存头</td></tr>
+    <tr><td>新版本发布后样式/JS 还是旧的</td><td>资源 URL 是否换了 hash 文件名</td><td>正常无需 purge；若 HTML 被缓存持有旧引用 → 按 URL purge 首页；<b>不要习惯性 Purge Everything</b></td></tr>
+    <tr><td>Stripe webhook 收不到 / 403</td><td>CF Security Events 搜 <code>payments/webhook</code></td><td>合法机器流量被 Bot/WAF 误拦 → 对该路径加 Skip 规则；Stripe 侧确认地址与签名</td></tr>
+    <tr><td>缓存命中率低（&lt;60%）</td><td>Analytics 按 URL 看未命中构成</td><td>查询参数变体过多 → 收敛参数档位（§19.4）；HTML/动态占比高 → 属正常</td></tr>
+    <tr><td>应用限流误伤大量用户</td><td>应用日志里来源 IP 是否全是 CF 段</td><td>未恢复真实 IP → §16 配 real_ip / CF-Connecting-IP，按真实 IP 计数</td></tr>
+    <tr><td>混合内容警告（锁形图标异常）</td><td>浏览器控制台搜 <code>http://</code> 资源</td><td>页面里残留 http:// 子资源 → 修为相对协议/https；临时缓解开 Automatic HTTPS Rewrites（§9.2）</td></tr>
+    <tr><td>跨域接口偶发 CORS 报错</td><td>报错响应的 <code>cf-cache-status</code></td><td>带 ACAO 头的响应被缓存复用给其他来源 → 该接口 Bypass（§10.5）</td></tr>
+    <tr><td>大文件/图集上传失败</td><td>失败请求大小是否 &gt;100MB</td><td>CF 代理请求体上限 100MB（免费/Pro）→ 超大文件直传 R2 预签名 URL，不 经代理</td></tr>
+    <tr><td>慢接口偶发 524</td><td>接口耗时是否接近/超 100s</td><td>回源响应超时上限 → 改异步任务（提交返回任务号 + 轮询），别让 HTTP 请求挂满 100s</td></tr>
+    <tr><td>R2 上传失败（rclone）</td><td><code>rclone lsd r2:</code> 测连通</td><td>Token 过期/权限缺失 → R2 控制台重发 Access Key；endpoint 账号 ID 填错 → §19.3</td></tr>
+    <tr><td>灰云切换后忘改回</td><td>DNS 面板 Proxy 列全橙云</td><td>源站 IP 暴露风险 → 立即恢复橙云；若 IP 已泄露考虑换 IP（Tunnel 方案无此忧）</td></tr>
+    <tr><td>DNS 改了没生效</td><td><code>dig NS zoo1.cn +short @8.8.8.8</code></td><td>本地/递归 DNS 缓存 → 等 TTL（橙云 300s）；注册商 NS 未改成功 → 核对 §5 步骤 2</td></tr>
+  </table>
+
+  <h3 class="sub">23.3 WebSocket / 长连接</h3>
+  <p>CF 免费计划即支持 WebSocket（橙云与 Tunnel 均可）。注意：代理链上的空闲超时（边缘约 100s 无数据可能断）→ 心跳间隔 &lt;60s 或改 HTTP 轮询；本站当前为纯 HTTP API，暂不涉及。</p>
+
+  <h3 class="sub">23.4 Cloudflare 平台限制速查表</h3>
+  <table>
+    <tr><th>限制</th><th>数值</th><th>对齐建议</th></tr>
+    <tr><td>请求体（上传）上限</td><td>免费/Pro 100MB；Business 200MB；Enterprise 500MB+</td><td>UGC 图片单张 &lt;10MB 无碍；超大文件走 R2 预签名直传</td></tr>
+    <tr><td>回源响应超时</td><td>100 秒（免费/Pro 固定；Enterprise 可调）</td><td>长任务异步化：提交任务号 + 轮询/推送</td></tr>
+    <tr><td>URL 长度</td><td>约 16KB</td><td>长参数改 POST body</td></tr>
+    <tr><td>单响应头大小</td><td>单头约 16KB / 总计约 32KB</td><td>别把状态塞超大 Cookie（JWT 越短越好）</td></tr>
+    <tr><td>Purge by URL</td><td>单次 ≤30 条</td><td>大批量分批调用或脚本循环（§18.2）</td></tr>
+    <tr><td>免费计划 Rate Limiting</td><td>1 条规则</td><td>挑全站防扫（§14 表优先级 1）</td></tr>
+    <tr><td>免费计划 Cache Rules</td><td>约 10 条（以控制台为准）</td><td>§11.1 五条基线规则够用</td></tr>
+  </table>
+</section>
+
+<!-- ===================== 24 上线清单 ===================== -->
+<section id="s24">
+  <h2><span class="num">24</span>上线检查清单（CDN 部分）</h2>
+  <p>对应《上线检查清单.md》§1/§2 的 CDN 相关项，逐项勾选：</p>
+  <ul class="checklist">
+    <li><b>[BLOCK]</b> 域名 NS 已托管至 Cloudflare，站点状态 Active（<code>dig NS</code> 验证）</li>
+    <li><b>[BLOCK]</b> 入口二选一就绪：cloudflared Tunnel（推荐，零开放端口）或 Caddy 反代 + 橙云 Full (strict)</li>
+    <li><b>[BLOCK]</b> 防火墙/安全组仅开放 22（SSH）、80/443（仅方案 B，且限 CF 回源段）；8000 与 3306 未对公网开放</li>
+    <li><b>[BLOCK]</b> SSL/TLS = Full (strict)；Always Use HTTPS 开启；Min TLS 1.2；回源证书就位（Origin CA 或有效公共证书）</li>
+    <li>Cache Rules 四条基线规则就位（api-bypass / admin-bypass / assets-long / images-cache），<code>cf-cache-status</code> 验证符合预期（§11.3）</li>
+    <li>Smart Tiered Cache 已开启（§11.6）</li>
+    <li>源站响应头按 §11.2 落地（assets immutable / HTML SWR / API no-store）</li>
+    <li>WAF 托管规则 + Bot Fight Mode 开启；自定义规则按「先 Log 后拦截」流程上线（§13）</li>
+    <li>Rate Limiting 全站防扫规则生效（§14）</li>
+    <li>真实 IP 已恢复：nginx real_ip / 应用 CF-Connecting-IP（§16），限流风控不再按 CF IP 计数</li>
+    <li><code>/admin</code> 已加 CF Access 门禁（§15，可选但强烈推荐）</li>
+    <li>Stripe webhook 地址 <code>https://zoo1.cn/api/payments/webhook</code> 在 Stripe 侧登记且未被 WAF 误拦（§23）</li>
+    <li>兜底方案就位：HTML 短缓存 + stale-if-error + （可选）Worker 兜底页（§17/§20）</li>
+    <li>性能开关确认：HTTP/3、Early Hints、Brotli 开；Rocket Loader 关（§12）</li>
+    <li>外部拨测四链路（首页/加购/搜索/checkout）1 min 频率就绪，覆盖美/欧；拨测 UA 加 WAF 白名单</li>
+    <li>割接 Runbook（§4.1）演练过一次，回滚路径（灰云/NS 回切）验证可用</li>
+    <li>缓存命中率基线记录（上线首日 Analytics 留档，目标 &gt;85%）</li>
+    <li><code>CF_TUNNEL_TOKEN</code>（方案 A）已入 <code>.env</code>，未提交仓库、未进镜像</li>
+    <li>DNSSEC 已开启且 DS 记录在注册商生效（可选，推荐）</li>
+  </ul>
+</section>
+
+<!-- ===================== 25 附录 ===================== -->
+<section id="s25">
+  <h2><span class="num">25</span>附录：计划对比、成本与术语</h2>
+
+  <h3 class="sub">25.1 计划对比（本项目相关能力）</h3>
+  <table>
+    <tr><th>能力</th><th>Free</th><th>Pro（$20/月）</th><th>Business（$200/月）</th></tr>
+    <tr><td>CDN / WAF / DDoS</td><td>✓</td><td>✓ 规则更多</td><td>✓ + Logpush</td></tr>
+    <tr><td>WAF 自定义规则</td><td>约 5 条</td><td>更多</td><td>更多</td></tr>
+    <tr><td>Rate Limiting</td><td>1 条</td><td>多条</td><td>多条</td></tr>
+    <tr><td>Cache Rules</td><td>约 10 条</td><td>更多</td><td>更多</td></tr>
+    <tr><td>Tunnel / Access(50用户) / Workers(10万/天) / R2(10GB)</td><td>✓ 免费额度</td><td>✓</td><td>✓</td></tr>
+    <tr><td>HTTP/3 / Early Hints / Brotli / Tiered Cache</td><td>✓</td><td>✓</td><td>✓</td></tr>
+    <tr><td>Polish / Mirage / Super Bot</td><td>—</td><td>✓</td><td>✓</td></tr>
+    <tr><td>Argo / Load Balancing / Cache Reserve</td><td colspan="3">均为付费附加（Argo $5/月起；LB $5/月起；Reserve 按 R2 计费）</td></tr>
+  </table>
+  <p>结论：<b>免费计划可跑通本文除标注付费外的全部内容</b>；Pro 是图片量/攻击压力上来后的第一步升级。</p>
+
+  <h3 class="sub">25.2 成本参考（单机阶段，架构 v2 §7.0 口径）</h3>
+  <table>
+    <tr><th>项</th><th>计划/规格</th><th>月成本</th></tr>
+    <tr><td>Cloudflare CDN/WAF</td><td>Free</td><td>$0</td></tr>
+    <tr><td>R2（备份+媒体）</td><td>10GB 内</td><td>$0（超出 ≈$1-5）</td></tr>
+    <tr><td>源站服务器 4C8G</td><td>海外/国内</td><td>$40-80（¥150-400）</td></tr>
+    <tr><td>大促临时 Argo（可选）</td><td>按量</td><td>≈$5</td></tr>
+    <tr><td colspan="2"><b>合计</b></td><td><b>≈$100/月内</b></td></tr>
+  </table>
+
+  <h3 class="sub">25.3 术语表</h3>
+  <table>
+    <tr><th>术语</th><th>含义</th></tr>
+    <tr><td>PoP / Anycast</td><td>边缘节点 / 一 IP 多点通告、就近接入的路由技术</td></tr>
+    <tr><td>橙云 / 灰云</td><td>DNS 记录的 Proxy 开关：橙云 = 经 CDN/WAF；灰云 = 纯解析直连</td></tr>
+    <tr><td>回源（Origin Pull）</td><td>边缘缓存未命中时向源站取数据</td></tr>
+    <tr><td>Edge TTL / Browser TTL</td><td>资源在 CF 边缘 / 用户浏览器本地的缓存时长</td></tr>
+    <tr><td><code>cf-cache-status</code></td><td>响应头，标识缓存路径：HIT/MISS/DYNAMIC/BYPASS 等（§2.5 全表）</td></tr>
+    <tr><td><code>cf-ray</code></td><td>响应头，请求经过的 PoP 与唯一追踪 ID（报障时提供给 CF）</td></tr>
+    <tr><td>SWR / stale-if-error</td><td>过期副本先返回后台刷新 / 源站故障时继续用过期副本</td></tr>
+    <tr><td>Tiered Cache</td><td>回源先汇聚上层 PoP，全网同一资源只回源一次</td></tr>
+    <tr><td>Cache Reserve</td><td>边缘缓存的 R2 持久化层（付费）</td></tr>
+    <tr><td>Tunnel</td><td>cloudflared 出站隧道：源站主动连 CF，免开放入站端口</td></tr>
+    <tr><td>R2</td><td>CF 的 S3 兼容对象存储，出口流量免费</td></tr>
+    <tr><td>Origin CA 证书</td><td>仅 CF 信任的源站证书（最长 15 年），用于 Full (strict) 回源</td></tr>
+    <tr><td>Universal SSL</td><td>CF 免费边缘证书，覆盖裸域+一级子域，自动续期</td></tr>
+    <tr><td>QUIC / 0-RTT</td><td>HTTP/3 底层传输协议 / TLS 1.3 会话恢复零往返（有重放风险注）</td></tr>
+    <tr><td>Managed Challenge</td><td>CF 无感人机验证（推荐动作，替代老 CAPTCHA）</td></tr>
+    <tr><td>Purge</td><td>手动清除边缘缓存（按 URL / 全量 / Tag）</td></tr>
+  </table>
+
+  <h3 class="sub">25.4 相关文档索引</h3>
+  <ul>
+    <li><code>docs/deploy.md</code> —— 部署总文档（§2.1 Cloudflare 接入、§4 备份、§5 扩容、§6 故障手册）</li>
+    <li><code>docs/高可用架构设计-v2.md</code> —— §2.1 接入层、§3 大促预案、§7 部署拓扑（方案零/乙/甲）</li>
+    <li><code>docs/上线检查清单.md</code> —— Go-Live Runbook（本文 §24 的全集）</li>
+    <li><code>docs/指甲电商独立站详细设计.md</code> —— §10 环境变量（R2_* 系列）、图片管线</li>
+    <li>本文档自身机制：源文件 <code>web/client/public/pub_doc/cdn-deployment.html</code>，构建后随 <code>web/dist</code> 分发，访问 <code>/pub_doc/cdn-deployment.html</code> 免登录</li>
+  </ul>
+</section>
+
+<footer>
+  <p>GLOWMAG · CDN 部署说明 v2.0（25 节） ｜ 随前台构建发布，访问 <code>/pub_doc/cdn-deployment.html</code>（免登录） ｜ 依据仓库 docs/ 部署文档整理，配置变更请以最新仓库文档为准。</p>
+</footer>
+</main>
+</div>
+</body>
+</html>
