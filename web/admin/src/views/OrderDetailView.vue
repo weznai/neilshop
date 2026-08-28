@@ -726,9 +726,9 @@ async function addrConfirm() {
 .tchip{width:28px;height:28px;flex:none;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
   font-size:14px;background:linear-gradient(135deg,var(--rose-pale),var(--rose-light));box-shadow:inset 0 0 0 1px rgba(232,180,184,.4)}
 
-/* ===== 页面骨架：主栏 1.6fr / 侧栏 1fr，支付物流并排，时间线通栏 ===== */
+/* ===== 页面骨架：主栏 1.6fr / 侧栏 1fr，支付物流与上行同列对齐，时间线通栏 ===== */
 .od-grid{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start;margin-top:16px}
-.duo{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;align-items:start}
+.duo{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;margin-top:16px;align-items:start}
 
 /* ===== 商品明细：条目列表 + 发票式汇总并排 ===== */
 .oi-wrap{display:grid;grid-template-columns:1fr 232px;gap:0 22px;align-items:start}
@@ -828,13 +828,12 @@ async function addrConfirm() {
 
 /* ===== 响应式：窄屏逐级塌缩 ===== */
 @media (max-width:1080px){
-  .od-grid{grid-template-columns:1fr}
+  .od-grid,.duo{grid-template-columns:1fr}
 }
 @media (max-width:768px){
   .hero{padding:16px}
   .hero-amount{text-align:left}
   .hero-ops .btn{flex:1}
-  .duo{grid-template-columns:1fr}
   .oi-wrap{grid-template-columns:1fr}
   .sum{border-left:none;padding-left:0;border-top:1px dashed var(--gray-light);padding-top:14px}
   .tl-time{margin-left:0;width:100%;flex-basis:100%}
