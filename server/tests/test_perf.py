@@ -179,13 +179,8 @@ def count_sql(fn):
     return result, _SQL_COUNT
 
 
-def expected_cards(db, sorts_order, category_ids=None, tag=None, page=1, size=100, cat_first=False):
-    """cat_first=True：模拟前台「全部」浏览型排序（new/best）口径——分类 sort_order 为
-    第一排序键（与 repo.list_products 一致），用于语义快照比对。"""
+def expected_cards(db, sorts_order, category_ids=None, tag=None, page=1, size=100):
     q = db.query(Product).filter(Product.status == 1)
-    if cat_first:
-        q = q.outerjoin(Category, Product.category_id == Category.id)
-        sorts_order = [func.coalesce(Category.sort_order, 999999).asc(), *sorts_order]
     if category_ids:
         q = q.filter(Product.category_id.in_(category_ids))
     if tag:
@@ -271,9 +266,7 @@ def main() -> int:
             ok_all = True
             for sort, order_expr in sorts.items():
                 order = eval(order_expr, {"Product": Product})
-                # new/best 在「全部」视图按分类序分组（指甲在前、睫毛次之），价格排序保持纯序
-                exp = expected_cards(db, [order], page=1, size=100,
-                                     cat_first=sort in ("new", "best"))
+                exp = expected_cards(db, [order], page=1, size=100)
                 act = actual_cards(client.get("/api/catalog/products", params={
                     "sort": sort, "page": 1, "size": 100}).json())
                 if exp != act:
@@ -286,8 +279,7 @@ def main() -> int:
                 "category": fx["cat_root"], "page": 1, "size": 100}).json())
             check("列表语义快照：分类含子树（root→mid 递归）结果一致", exp == act)
 
-            exp = expected_cards(db, [Product.updated_at.desc()], page=2, size=60,
-                                 cat_first=True)
+            exp = expected_cards(db, [Product.updated_at.desc()], page=2, size=60)
             act = actual_cards(client.get("/api/catalog/products", params={
                 "page": 2, "size": 60}).json())
             check("列表语义快照：第 2 页分页一致", exp == act)
