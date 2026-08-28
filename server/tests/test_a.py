@@ -48,18 +48,20 @@ def build_fixtures() -> dict:
                      price_min=1500, price_max=1800, hero_image="/img/bare.jpg",
                      images=["/img/bare-1.jpg", "/img/bare-2.jpg"],
                      tags=["new", "french"], is_new=1, rating_avg=487,
-                     rating_count=12, sold_count=50, published_at=T(1, 2))
+                     rating_count=12, sold_count=50, published_at=T(1, 2),
+                     updated_at=T(1, 3))
         p2 = Product(slug="cherry-pop", title="Cherry Pop",
                      subtitle="Classic red nails", category_id=cat_root.id,
                      status=1, price_min=1200, price_max=1200,
                      hero_image="/img/cherry.jpg", tags=["best"],
                      is_best_seller=1, rating_avg=460, rating_count=8,
-                     sold_count=120, published_at=T(12, 20, 2025))
+                     sold_count=120, published_at=T(12, 20, 2025),
+                     updated_at=T(12, 21, 2025))
         p3 = Product(slug="velvet-matte", title="Velvet Matte",
                      category_id=cat_child.id, status=1, price_min=900,
                      price_max=950, hero_image="/img/velvet.jpg", tags=["new"],
                      is_new=1, rating_avg=400, rating_count=2, sold_count=10,
-                     published_at=T(1, 5))
+                     published_at=T(1, 5), updated_at=T(1, 6))
         p4 = Product(slug="ghost-set", title="Ghost Set",
                      category_id=cat_root.id, status=0, price_min=1000,
                      price_max=1000, hero_image="/img/ghost.jpg")

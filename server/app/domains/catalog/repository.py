@@ -17,7 +17,9 @@ from app.models import (
 )
 
 _SORT_ORDERS = {
-    "new": Product.published_at.desc(),
+    # new = 最近更新序：updated_at 由 onupdate 自动维护（编辑商品/变体变动触发价格区间同步都会刷新），
+    # 最近编辑过的商品排前；定时上架可见性仍由 published_at 把关（见 _visible）
+    "new": Product.updated_at.desc(),
     "best": Product.sold_count.desc(),
     "price_asc": Product.price_min.asc(),
     "price_desc": Product.price_min.desc(),
@@ -117,8 +119,15 @@ def list_products(
             Product.compare_at_price > Product.price_min,
         )
     total = query.count()
+    # 「全部」浏览（未选分类）且浏览型排序（new/best）时：以分类 sort_order 为第一排序键，
+    # 主品类（如指甲）商品整体在前、次品类（睫毛等）依序在后，组内保持时间/销量序；
+    # 价格排序保持纯价格序（分组会破坏最低价优先语义）；已选具体分类时无分组必要。
+    order_cols = [_SORT_ORDERS[sort], Product.id.asc()]
+    if category_id_list is None and sort in ("new", "best"):
+        query = query.outerjoin(Category, Product.category_id == Category.id)
+        order_cols.insert(0, func.coalesce(Category.sort_order, 999999).asc())
     prods = (
-        query.order_by(_SORT_ORDERS[sort], Product.id.asc())
+        query.order_by(*order_cols)
         .offset(offset)
         .limit(limit)
         .all()

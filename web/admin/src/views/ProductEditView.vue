@@ -521,19 +521,40 @@ const varSum = computed(() => ({
 }))
 /* 规格展示：option2 存在且非 Default 时拼接（与库存页一致，如 "Short Almond / XL"） */
 const specText = (v) => (v.option2_value && v.option2_value !== 'Default' ? v.option1_value + ' / ' + v.option2_value : v.option1_value)
-/* 图集缩略图上移/下移/删除：操作 galText 行序并写回（textarea 与 form.images 同步） */
-function moveImg(i, d) {
-  const lines = imgLines(galText.value)
-  const j = i + d
-  if (j < 0 || j >= lines.length) return
-  ;[lines[i], lines[j]] = [lines[j], lines[i]]
-  galText.value = lines.join('\n')
-}
+/* 图集缩略图删除：操作 galText 行序并写回（textarea 与 form.images 同步）；排序走拖拽（onDrop） */
 function removeImg(i) {
   const lines = imgLines(galText.value)
   lines.splice(i, 1)
   galText.value = lines.join('\n')
 }
+
+/* ===== 图集拖拽排序（HTML5 DnD，桌面端）
+ * dragIdx 拖动源 / overIdx 悬停目标：落下重排 galText 行序（同 moveImg 口径），拖出列表外取消 */
+const dragIdx = ref(-1)
+const overIdx = ref(-1)
+function onDragStart(i, e) {
+  dragIdx.value = i
+  e.dataTransfer.effectAllowed = 'move'
+  try { e.dataTransfer.setData('text/plain', String(i)) } catch (_) { /* Firefox 需 setData 才触发 dragover，失败忽略 */ }
+}
+function onDragOver(i, e) {
+  if (dragIdx.value < 0) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'move'
+  overIdx.value = i
+}
+function onDrop(i, e) {
+  e.preventDefault()
+  const from = dragIdx.value
+  dragIdx.value = -1
+  overIdx.value = -1
+  if (from < 0 || from === i) return
+  const lines = imgLines(galText.value)
+  const [moved] = lines.splice(from, 1)
+  lines.splice(i, 0, moved)
+  galText.value = lines.join('\n')
+}
+function onDragEnd() { dragIdx.value = -1; overIdx.value = -1 }
 
 /* ===== 多语言翻译（GET/PUT /products/{id}/translations、DELETE /{locale}；GET 返回裸数组）
  * 契约：locale 须匹配 ^[a-z]{2}-[A-Z]{2}$，title 必填，subtitle/description_md 可选 ===== */
@@ -761,15 +782,14 @@ async function doDelTr() {
           </div>
           <!-- 草稿原文绑定：超 8 行保留仅警告，保存时才截断；计数超限变红 -->
           <textarea v-model="galText" class="input" rows="4" placeholder="https://…"></textarea>
-          <p style="font-size:11.5px" :style="{ color: galLines.length > 8 ? 'var(--error)' : 'var(--gray)' }">{{ galLines.length }}/8</p>
+          <p style="font-size:11.5px" :style="{ color: galLines.length > 8 ? 'var(--error)' : 'var(--gray)' }">{{ galLines.length }}/8 · 缩略图可拖拽排序</p>
           <div v-if="form.images.length" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:4px">
-            <div v-for="(img, i) in form.images" :key="i" style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--rose-pale)">
-              <img v-if="!brokenImgs[i]" :src="img" :alt="'图 ' + (i + 1)" style="width:100%;height:100%;object-fit:cover" @error="brokenImgs[i] = true">
+            <div v-for="(img, i) in form.images" :key="i" class="gal-tile" draggable="true"
+              :class="{ dragging: dragIdx === i, 'drag-over': overIdx === i && dragIdx !== i }"
+              :title="'第 ' + (i + 1) + ' 张（可拖拽调整顺序）'"
+              @dragstart="onDragStart(i, $event)" @dragover="onDragOver(i, $event)" @drop="onDrop(i, $event)" @dragend="onDragEnd">
+              <img v-if="!brokenImgs[i]" :src="img" :alt="'图 ' + (i + 1)" style="width:100%;height:100%;object-fit:cover" draggable="false" @error="brokenImgs[i] = true">
               <div v-else style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--gray-light);color:var(--gray);font-size:11px">图片加载失败</div>
-              <div style="position:absolute;bottom:3px;left:3px;display:flex;gap:3px">
-                <button type="button" class="thumb-btn" :disabled="i === 0" title="上移" @click="moveImg(i, -1)">▲</button>
-                <button type="button" class="thumb-btn" :disabled="i === form.images.length - 1" title="下移" @click="moveImg(i, 1)">▼</button>
-              </div>
               <button type="button" class="thumb-btn" style="position:absolute;top:3px;right:3px;width:auto;height:auto;line-height:1;padding:2px 5px;font-size:11px" :title="'删除第 ' + (i + 1) + ' 张'" @click="removeImg(i)">×</button>
             </div>
           </div>
@@ -908,6 +928,10 @@ async function doDelTr() {
 .thumb-btn{width:18px;height:18px;border:none;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:9px;line-height:18px;padding:0;cursor:pointer}
 .thumb-btn:hover:not(:disabled){background:rgba(0,0,0,.8)}
 .thumb-btn:disabled{opacity:.35;cursor:default}
+/* 图集缩略图拖拽排序：源半透明、目标虚线框高亮 */
+.gal-tile{position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--rose-pale);cursor:grab}
+.gal-tile.dragging{opacity:.4;cursor:grabbing}
+.gal-tile.drag-over{outline:2px dashed var(--plum);outline-offset:-2px}
 /* 吸底保存条：dirty/保存中出现，红点呼吸提示未保存 */
 .save-bar{position:sticky;bottom:12px;z-index:30;display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 16px;background:#fff;border:1px solid var(--gray-light);border-radius:12px;box-shadow:0 6px 22px rgba(31,27,30,.16)}
 .save-dot{width:9px;height:9px;border-radius:50%;background:var(--error);animation:savePulse 1.6s infinite;flex:none}
