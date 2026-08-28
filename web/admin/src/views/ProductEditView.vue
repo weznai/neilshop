@@ -78,6 +78,10 @@ function checkDirty() {
 }
 watch([form, schedAt], checkDirty, { deep: true })
 watch(variants, checkDirty, { deep: true })
+/* 表单快照脏 vs 纯草稿脏：纯草稿（新增变体/行内编辑中）不走主「保存」——
+ * 曾出现误导：草稿脏也弹主保存条，用户点「保存」商品成功但变体草稿仍在 → dirty 不清 → 离开被拦 */
+const formDirty = computed(() => snapForm() !== formSnap.value || snapVars() !== varSnap.value)
+const draftHint = computed(() => (editing.value ? '变体编辑未保存：请点行内「保存」' : '变体草稿未添加：填完后点「＋ 添加」提交'))
 /* 草稿（newVar/editing/trForm）的 dirty 监听在 trForm 声明后注册（见多语言区块） */
 
 /* ===== 离开拦截：SPA 内弹 ConfirmDialog 暂停导航；刷新/关页走原生 beforeunload ===== */
@@ -400,6 +404,8 @@ async function save() {
       markClean()
       router.replace({ path: '/product-edit', query: { id: p.id } })
     }
+    /* 主保存成功后仍有变体草稿：明确提示未提交，防误以为变体已随主表单保存 */
+    if (draftsDirty()) toast(editing.value ? '注意：变体编辑未保存，请点行内「保存」' : '注意：变体草稿未提交，请点「＋ 添加」保存变体', 'error')
   } catch (e) { toast('保存失败：' + (e.data?.detail || e.message), 'error') }
   finally { busy.value = false }
 }
@@ -823,11 +829,12 @@ async function doDelTr() {
   <div v-if="loading" class="load-mask">加载商品数据…</div>
   </fieldset>
 
-  <!-- 吸底保存条：dirty / 保存中才出现（写操作需 catalog:manage） -->
+  <!-- 吸底保存条：dirty / 保存中才出现（写操作需 catalog:manage）；
+       表单脏 → 主「保存」按钮；纯草稿脏 → 指引文案不显示保存按钮（变体须点「＋ 添加」/行内保存，防误点主保存后草稿仍在） -->
   <div v-if="(dirty || busy) && session.hasPerm('catalog:manage')" class="save-bar">
     <span class="save-dot" aria-hidden="true"></span>
-    <span style="flex:1;font-size:13px">有未保存的修改</span>
-    <button class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
+    <span style="flex:1;font-size:13px">{{ formDirty || busy ? '有未保存的修改' : draftHint }}</span>
+    <button v-if="formDirty || busy" class="btn btn-primary" :class="{ loading: busy }" :disabled="busy || loading" @click="save">保存</button>
   </div>
 
   <!-- 多语言添加/编辑弹层（不点遮罩关闭，防误触丢稿，仅右上 × 可关） -->
