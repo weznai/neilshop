@@ -247,16 +247,32 @@ def _describe(route, method: str, path: str) -> str:
 
 # ---------------------------------------------------------------- 路由展平
 def _dep_names(route, inherited) -> set:
+    """依赖名全集：递归展开子依赖树 —— require_perm(...) 返回闭包 _guard，
+    后台守卫依赖 get_admin_user 藏在其子依赖里，只看一层会漏（误判 public）。"""
     names = set(inherited)
-    for d in route.dependant.dependencies:
-        names.add(getattr(d.call, "__name__", ""))
+    stack = [route.dependant]
+    while stack:
+        dep = stack.pop()
+        for d in dep.dependencies:
+            names.add(getattr(d.call, "__name__", ""))
+            if getattr(d, "dependencies", None):
+                stack.append(d)
     for d in getattr(route, "dependencies", None) or []:
         names.add(getattr(getattr(d, "dependency", None), "__name__", ""))
     return names
 
 
+_ADMIN_DEPS = {
+    "require_admin",       # 历史守卫名（兼容）
+    "require_superadmin",  # 超管守卫
+    "_guard",              # require_perm(...) 工厂产物（闭包名）
+    "get_admin_user",      # 后台身份解析（require_perm/_guard 的子依赖，树内命中）
+    "get_admin_session_user",  # 后台会话探测（/api/admin/session/me）
+}
+
+
 def _auth_mark(names: set) -> str:
-    if "require_admin" in names:
+    if names & _ADMIN_DEPS:
         return ADMIN_MARK
     if "get_current_user" in names:
         return USER_MARK

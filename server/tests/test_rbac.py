@@ -3,7 +3,7 @@
 
 覆盖：
 - 后台登录闸门：客服/美甲师可登录，顾客 403
-- /admin/me 下发实时权限集
+- /api/admin/session/me 下发实时权限集
 - 客服：工单/订单只读/会员只读放行，退款/设置/商品写 403
 - 仓库：发货/库存放行，退款/改地址/商品写/设置 403
 - 运营：业务面全放行，管理员账号写 403
@@ -86,18 +86,18 @@ H_CUST = {"Authorization": f"Bearer {create_token(customer.id, customer.role)}"}
 client = TestClient(app)
 
 print("== 登录闸门与会话 ==")
-r = client.post("/api/account/admin/login",
+r = client.post("/api/admin/session/login",
                 json={"email": "cs@glowrbac.com", "password": "rbacpass123"})
 check("客服可登录后台（200 + permissions 下发）",
       r.status_code == 200 and "ticket:manage" in r.json()["user"].get("permissions", []),
       r.text[:160])
-r = client.post("/api/account/admin/login",
+r = client.post("/api/admin/session/login",
                 json={"email": "art@glowrbac.com", "password": "rbacpass123"})
 check("美甲师可登录后台（permissions 仅 chat:manage）",
       r.status_code == 200
       and r.json()["user"].get("permissions") == ["chat:manage"],
       r.text[:160])
-r = client.post("/api/account/admin/login",
+r = client.post("/api/admin/session/login",
                 json={"email": "guest@glowrbac.com", "password": "rbacpass123"})
 check("顾客登录后台 → 403 admin only",
       r.status_code == 403 and r.json()["detail"] == "admin only", r.text[:120])
@@ -182,7 +182,7 @@ r = client.post("/api/admin/ops/admins", headers=H["sup"],
                       "password": "strongpass9", "role": 1})
 check("超管建客服账号 → 201/200 且可登录后台",
       r.status_code in (200, 201)
-      and client.post("/api/account/admin/login",
+      and client.post("/api/admin/session/login",
                       json={"email": "newcs@glowrbac.com", "password": "strongpass9"}
                       ).status_code == 200, r.text[:160])
 

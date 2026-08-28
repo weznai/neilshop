@@ -36,7 +36,8 @@ RATE_WINDOW = 60.0
 # /api/orders/ 前缀（排在 track 之后）覆盖 /api/orders/{order_no} 详情与子动作，
 # 防订单号+邮箱撞库枚举泄露收货地址（track 同款阈值）
 RATE_RULES: list[tuple[str, int]] = [
-    ("/api/account/admin/login", 20),
+    # 后台登录（路由归一后新路径；旧 /api/account/admin/login 仅 307 跳转无登录逻辑）
+    ("/api/admin/session/login", 20),
     ("/api/account/login", 60),
     ("/api/account/register", 30),
     ("/api/account/password-reset", 20),

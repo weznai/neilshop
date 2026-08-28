@@ -1,4 +1,5 @@
-/* 后台会话：HttpOnly Cookie gm_admin_token（/api/account/admin/login 下发，仅后台角色）。
+/* 后台会话：HttpOnly Cookie gm_admin_token（/api/admin/session/login 下发，仅后台角色；
+ * Cookie path=/api/admin 与前台 gm_token 物理隔离，互不串台）。
  * user.permissions 为后端实时下发的权限点数组（core/permissions.py 矩阵），
  * 路由/菜单/按钮权限统一走 hasPerm，不再前端推断角色数字。 */
 import { defineStore } from 'pinia'
@@ -32,17 +33,17 @@ export const useSessionStore = defineStore('session', {
       else localStorage.removeItem('gm_admin_user')
     },
     async login(email, password) {
-      const d = await req('POST', '/api/account/admin/login', { email, password })
+      const d = await req('POST', '/api/admin/session/login', { email, password })
       this._cache(d.user)
       return d.user
     },
     async logout() {
       this._cache(null)
-      try { await req('POST', '/api/account/admin/logout') } catch (_) { /* 幂等 */ }
+      try { await req('POST', '/api/admin/session/logout') } catch (_) { /* 幂等 */ }
     },
     /* 路由守卫 & 页面校验：走后台专用端点（严格只认 gm_admin_token，与前台会话隔离） */
     async verify() {
-      const u = await req('GET', '/api/account/admin/me')
+      const u = await req('GET', '/api/admin/session/me')
       this._cache(u)
       return u
     },

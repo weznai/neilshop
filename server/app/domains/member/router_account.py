@@ -2,8 +2,9 @@
 邮箱修改（双步验证）/Google·Apple 第三方登录。
 
 鉴权双通道：响应体保留 token（API 客户端/测试），同时写 HttpOnly Cookie（浏览器）。
-后台专用 /admin/login 签发独立 gm_admin_token Cookie（短时效 + SameSite=Strict），
-为前后台拆独立域名铺路 —— 拆分后 admin 站点只携带 gm_admin_token。
+后台会话 /api/admin/session/*（旧 /api/account/admin/* 307 兜底）签发独立
+gm_admin_token Cookie（短时效 + SameSite=Strict + path=/api/admin，与前台会话
+物理隔离 —— 同域双 Cookie 不并存，拆独立域名后亦天然按域隔离）。
 """
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Response
@@ -29,6 +30,51 @@ from app.domains.member.schemas import (
 
 router = APIRouter(prefix="/api/account", tags=["account"])
 
+# 后台会话路由（登录/探测/登出）：归一到 /api/admin/session/* 子树，
+# 与全部后台端点同前缀 —— gm_admin_token Cookie 以 /api/admin 为 path 圈住，
+# 限流/网关/监控可按单一前缀一刀切；旧 /api/account/admin/* 路径 307 兜底跳转
+admin_session = APIRouter(prefix="/api/admin/session", tags=["account"])
+
+
+@admin_session.post("/login")
+def admin_login(body: LoginIn, response: Response, db: Session = Depends(get_db)):
+    """后台专用登录：后台角色（客服/运营/仓库/美甲师/超管）才放行，签发短时效 gm_admin_token
+    （SameSite=Strict，path=/api/admin 与前台会话物理隔离）。"""
+    data = service_account.login(db, body, admin=True)
+    set_auth_cookie(response, data["token"], admin=True)
+    return data
+
+
+@admin_session.get("/me")
+def admin_me(user: User = Depends(get_admin_session_user)):
+    """后台会话探测：严格只认 gm_admin_token（与前台 gm_token 完全隔离，互不串台）；
+    附实时权限集（前端路由/菜单/按钮权限判定）。"""
+    return service_account.admin_profile(user)
+
+
+@admin_session.post("/logout")
+def admin_logout(response: Response):
+    """后台登出：清 gm_admin_token（幂等；无需身份，清 Cookie 即达成登出语义）。"""
+    clear_auth_cookie(response, admin=True)
+    return {"ok": True}
+
+
+# ---- 旧路径 307 兜底（已上线前端的缓存版本过渡；307 保留方法与请求体） ----
+
+@router.post("/admin/login", include_in_schema=False)
+def admin_login_legacy(body: LoginIn):  # noqa: ARG001
+    return RedirectResponse("/api/admin/session/login", status_code=307)
+
+
+@router.get("/admin/me", include_in_schema=False)
+def admin_me_legacy():
+    return RedirectResponse("/api/admin/session/me", status_code=307)
+
+
+@router.post("/admin/logout", include_in_schema=False)
+def admin_logout_legacy():
+    return RedirectResponse("/api/admin/session/logout", status_code=307)
+
 
 @router.post("/register", status_code=201)
 def register(body: RegisterIn, response: Response, db: Session = Depends(get_db)):
@@ -48,27 +94,6 @@ def login(body: LoginIn, response: Response, db: Session = Depends(get_db)):
 def logout(response: Response, user: User = Depends(get_current_user_optional)):
     """登出：清前台会话 Cookie（幂等，未登录也 200）。"""
     clear_auth_cookie(response)
-    return {"ok": True}
-
-
-@router.post("/admin/login")
-def admin_login(body: LoginIn, response: Response, db: Session = Depends(get_db)):
-    """后台专用登录：后台角色（客服/运营/仓库/美甲师/超管）才放行，签发短时效 gm_admin_token（SameSite=Strict）。"""
-    data = service_account.login(db, body, admin=True)
-    set_auth_cookie(response, data["token"], admin=True)
-    return data
-
-
-@router.get("/admin/me")
-def admin_me(user: User = Depends(get_admin_session_user)):
-    """后台会话探测：严格只认 gm_admin_token（与前台 gm_token 隔离，双 Cookie 并存不串台）；
-    附实时权限集（前端路由/菜单/按钮权限判定）。"""
-    return service_account.admin_profile(user)
-
-
-@router.post("/admin/logout")
-def admin_logout(response: Response, user: User = Depends(get_current_user_optional)):
-    clear_auth_cookie(response, admin=True)
     return {"ok": True}
 
 

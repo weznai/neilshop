@@ -3,7 +3,7 @@
 设计要点：
 - 权限点格式 `domain:action`，端点挂 require_perm("xxx")，路由层不再出现角色数字；
 - 角色矩阵硬编码于此（小团队固定五种角色，不建 Role/Permission 表避免过度设计），
-  调整角色能力只改本文件，前后端通过 /api/account/admin/me 下发的 permissions 对齐；
+  调整角色能力只改本文件，前后端通过 /api/admin/session/me 下发的 permissions 对齐；
 - 超管恒为全量权限；顾客(0)为空集（守卫统一 403）；
 - 美甲师(4)仅 chat:manage（行级 mine=1 归属校验在 chat 域 service 层）。
 """

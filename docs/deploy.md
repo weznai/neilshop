@@ -93,6 +93,52 @@ curl -sI http://127.0.0.1:8000/admin/      # 期望 200（web/dist/admin 后台 
 
 - **方案 B 源站反代**：宿主安装 Caddy（自动 HTTPS），`Caddyfile` 一行 `your.domain.com { reverse_proxy 127.0.0.1:8000 }`，CF DNS 开代理（橙云），SSL 模式 Full (strict)（源站证书可用 CF Origin CA）。
 
+### 2.2 前后台拆域（可选增强，推荐）
+
+默认同域部署下，后台会话 `gm_admin_token` 已以 `path=/api/admin` 圈住、与前台 `gm_token` 物理隔离（后台路由已归一到 `/api/admin/**`，登录/探测/登出为 `/api/admin/session/*`）。若要进一步把后台从主站剥离开（攻击面/审计/风控独立），把 admin 挂到子域即可 —— **改动只在接入层，应用零改动**：
+
+**拓扑要点**：`admin.<domain>` 与主站反代到**同一上游**。admin 域下的 `/api` 请求是同源的，host-only Cookie 按域天然隔离（admin 域不带 gm_token、主域不带 gm_admin_token），不依赖 CORS 与 `SameSite=None`，不受浏览器第三方 Cookie 政策影响。`GM_ALLOWED_ORIGINS` 保持为空（仅当 admin 前端跨域直连独立 API 域时才需要配置，会自动切 SameSite=None + Secure）。
+
+- **方案 A（cloudflared Tunnel，对齐 §2.1-A）**：CF Tunnel 的 Public Hostname 增加一条 `admin.<domain>` → `http://api:8000`（同一 Tunnel，无需新增 DNS 记录）。可选加固：主域条目对 `/admin*` 加 block 规则，后台入口收敛到子域。
+
+- **方案 B（Caddy 源站反代，对齐 §2.1-B）**：
+
+  ```caddyfile
+  # 主站：可选封掉同域 /admin 后台入口（后台入口收敛到子域）
+  your.domain.com {
+      handle /admin* { respond 404 }
+      handle { reverse_proxy 127.0.0.1:8000 }
+  }
+  # 后台子域：同一上游 —— admin 域下 /api 同源携带 gm_admin_token（host-only）
+  admin.your.domain.com {
+      reverse_proxy 127.0.0.1:8000
+  }
+  ```
+
+- **方案 C（nginx 等价形态）**：
+
+  ```nginx
+  server {
+      listen 443 ssl;
+      server_name your.domain.com;
+      # ssl_certificate ...;
+      location /admin { return 404; }      # 可选：主域封后台入口
+      location / { proxy_pass http://127.0.0.1:8000; }
+  }
+  server {
+      listen 443 ssl;
+      server_name admin.your.domain.com;
+      # ssl_certificate ...;                # 通配符证书或单独一张
+      location / { proxy_pass http://127.0.0.1:8000; }
+  }
+  ```
+
+**行为说明**：
+
+- admin 子域访问 `https://admin.<domain>/admin/` 进入后台（后端仍从 `/admin` 提供后台 SPA）；登录后 `gm_admin_token` 属 admin 域，主站请求永远不携带，反之亦然 —— 与 Cookie path 隔离形成双保险。
+- 后台可独立叠加 CF Access（Zero Trust 邮箱白名单）/ IP 白名单 / 独立 WAF 规则，不影响前台。
+- 管理员浏览器若同时登着前台会员与后台 admin，两套会话各归各域，历史上「新会员被解析成 admin@glowmag.com」一类串号从根上不可能复现。
+
 ## 3. 日常运维
 
 **发布（滚动更新）**：

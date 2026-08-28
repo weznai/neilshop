@@ -88,13 +88,15 @@ def cookie_attrs(raw: str) -> tuple[str, dict[str, str]]:
     return name, attrs
 
 
-def find_cookie(res, cname: str) -> dict[str, str]:
+def find_cookie(res, cname: str, path: str | None = None) -> dict[str, str]:
+    """按名字（可选按 Path 属性）取 Set-Cookie 属性；admin 登录响应含
+    作废旧 path=/ 与写新 path=/api/admin 两条同名 Cookie，属性断言必须按 path 区分。"""
     headers = res.headers
     raws = headers.getlist("set-cookie") if hasattr(headers, "getlist") \
         else headers.get_list("set-cookie")
     for raw in raws:
         name, attrs = cookie_attrs(raw)
-        if name == cname:
+        if name == cname and (path is None or attrs.get("path") == path.lower()):
             return attrs
     return {}
 
@@ -114,10 +116,13 @@ def drain(path: str, limit: int, body: dict) -> None:
 
 print("== RATE_RULES：规则表完整性 ==")
 _expected = {
-    "/api/account/admin/login": 20,
+    "/api/admin/session/login": 20,
     "/api/account/login": 60,
     "/api/account/register": 30,
     "/api/account/password-reset": 20,
+    "/api/account/oauth/authorize": 20,
+    "/api/account/oauth/dev-login": 10,
+    "/api/account/oauth/": 20,
     "/api/account/newsletter": 30,
     "/api/account/consent": 10,
     "/api/account/export": 3,
@@ -142,16 +147,16 @@ _expected = {
     "/api/content/": 30,
 }
 _rules = dict(obs.RATE_RULES)
-check("26 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
+check("29 条规则齐全且阈值符合保守基线", _rules == _expected, _rules)
 check("全局规则不含 /api/ai（域内 30/min 自治，避免双重 429）",
       not any(p.startswith("/api/ai") for p, _ in obs.RATE_RULES))
-check("admin/login 规则排在宽前缀 login 之前",
-      [p for p, _ in obs.RATE_RULES].index("/api/account/admin/login")
+check("admin/session/login 规则排在宽前缀 login 之前",
+      [p for p, _ in obs.RATE_RULES].index("/api/admin/session/login")
       < [p for p, _ in obs.RATE_RULES].index("/api/account/login"))
 
 print("== RATE_RULES：前缀匹配语义（不误伤近邻路径）==")
-check("/api/account/admin/logout 不被 admin/login 规则误伤",
-      obs._check_rate_limit("u1", "/api/account/admin/logout") == (None, 0))
+check("/api/admin/session/logout 不被 session/login 规则误伤",
+      obs._check_rate_limit("u1", "/api/admin/session/logout") == (None, 0))
 check("/api/account/logout 不被 login 规则误伤",
       obs._check_rate_limit("u2", "/api/account/logout") == (None, 0))
 check("/api/promo/giftcard（查询）命中专属 giftcard 规则而非 purchase 规则",
@@ -176,7 +181,7 @@ check("/api/cart/items-batch 先命中专属规则（更具体前缀在前）",
       obs._check_rate_limit("u7", "/api/cart/items-batch")[0] == "/api/cart/items-batch")
 
 print("== 限流：新规则逐条真 429 ==")
-drain("/api/account/admin/login", 20,
+drain("/api/admin/session/login", 20,
       {"email": "ghost@glowmail.dev", "password": "whatever123"})
 drain("/api/promo/giftcard/purchase", 20,
       {"amount_cents": 999, "purchaser_email": "x@glowmail.dev"})
@@ -187,9 +192,13 @@ drain("/api/promo/validate", 60,
 obs._RATE_BUCKETS.clear()
 
 print("== 后台会话探测：未登录 401（而非 500）==")
-r = client.get("/api/account/admin/me")
-check("admin/me 无 Cookie → 401 Not authenticated",
+r = client.get("/api/admin/session/me")
+check("admin/session/me 无 Cookie → 401 Not authenticated",
       r.status_code == 401 and r.json().get("detail") == "Not authenticated", r.text[:120])
+check("旧路径 /api/account/admin/me → 307 跳新路径（缓存旧前端兜底）",
+      client.post("/api/account/admin/login", json={
+          "email": "root@glowmail.dev", "password": "rootpass1234"},
+          follow_redirects=False).status_code == 307)
 
 print("== Cookie：前台 gm_token 属性 ==")
 r = client.post("/api/account/login",
@@ -213,13 +222,18 @@ check("logout 下发 gm_token 删除指令（Max-Age=0）",
       r.status_code == 200 and attrs.get("max-age") == "0", attrs)
 
 print("== Cookie：后台 gm_admin_token 属性 ==")
-r = client.post("/api/account/admin/login",
+r = client.post("/api/admin/session/login",
                 json={"email": "root@glowmail.dev", "password": "rootpass1234"})
 check("root 后台登录 200", r.status_code == 200, r.text[:120])
-attrs = find_cookie(r, "gm_admin_token")
+attrs = find_cookie(r, "gm_admin_token", path="/api/admin")
 check("gm_admin_token HttpOnly", "httponly" in attrs, attrs)
 check("gm_admin_token SameSite=strict（同源部署）", attrs.get("samesite") == "strict", attrs)
 check("gm_admin_token Secure", "secure" in attrs, attrs)
+check("gm_admin_token Path=/api/admin（圈住后台子树，与前台 Cookie 物理隔离）",
+      attrs.get("path") == "/api/admin", attrs)
+check("登录响应同时作废历史 path=/ 旧 admin Cookie（升级过渡清理）",
+      find_cookie(r, "gm_admin_token", path="/").get("max-age") == "0",
+      [raw for raw in r.headers.get_list("set-cookie") if "gm_admin_token" in raw])
 check("gm_admin_token Max-Age=43200 与 admin_token_hours=12 对齐",
       attrs.get("max-age") == "43200", attrs)
 _adm = pyjwt.decode(r.json()["token"], settings.jwt_secret, algorithms=["HS256"])
@@ -232,7 +246,7 @@ settings.allowed_origins = "https://admin.glow.example"
 try:
     resp = Response()
     deps.set_auth_cookie(resp, "tok-admin", admin=True)
-    _a = find_cookie(resp, "gm_admin_token")
+    _a = find_cookie(resp, "gm_admin_token", path="/api/admin")
     check("跨域后台 gm_admin_token SameSite=none", _a.get("samesite") == "none", _a)
     check("SameSite=None 强制 Secure（缺 Secure 会被浏览器丢弃）", "secure" in _a, _a)
     check("跨域后台 Max-Age 仍对齐 43200", _a.get("max-age") == "43200", _a)

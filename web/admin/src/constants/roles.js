@@ -1,7 +1,7 @@
 /* 后台角色与菜单权限常量（UserRole，以 server/app/core/enums.py 真值为准）：
  * 1=客服（工单/在线客服/订单只读） 2=运营（业务面） 3=仓库（发货/库存/商品只读）
  * 4=美甲师（仅在线客服） 9=超管（全部）。
- * 权限点与 server/app/core/permissions.py 一一对应，经 /api/account/admin/me 的
+ * 权限点与 server/app/core/permissions.py 一一对应，经 /api/admin/session/me 的
  * user.permissions 实时下发（改动角色能力只改后端矩阵，前端自动跟随）。 */
 
 /* 角色文案：AdminLayout 侧栏徽标与 SettingsView 管理员表格共用 */

@@ -84,6 +84,8 @@ _ROUTERS = (
 )
 for module in _ROUTERS:
     app.include_router(module.router)
+# 后台会话三件套（/api/admin/session/*，路由归一后与后台端点同前缀）
+app.include_router(account.admin_session)
 
 
 try:
