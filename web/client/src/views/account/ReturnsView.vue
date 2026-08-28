@@ -203,7 +203,7 @@ async function payDiff(x) {
       </div>
       <div class="as-note">
         ✨ {{ tt('30-day free returns · exchanges always free (we reship instantly, you keep the original).', '30 天退货 · 换货永久免费（新款立即补发，旧款无需寄回）。') }}
-        {{ tt('To start one: Orders → Details → After-sales.', '发起入口：订单 → 详情 → 售后。') }}
+        {{ tt('To start one: Orders → Details → Returns & exchanges.', '发起入口：订单 → 详情 → 退换货。') }}
       </div>
     </div>
 

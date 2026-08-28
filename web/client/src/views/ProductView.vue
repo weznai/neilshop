@@ -165,15 +165,17 @@ async function load(keep) {
         .then((hit) => { if (hit && seq === ldSeq) wlDone.value = true })
         .catch(() => { /* 未登录态/接口失败忽略 */ })
     }
-    /* 动态 SEO：OG/JSON-LD（seo.js 监听 gm:seo 事件，路由切换自动复位） */
+    /* 动态 SEO：OG/JSON-LD（seo.js 监听 gm:seo 事件，路由切换自动复位；og:image 由 seo.js absUrl 兜底）
+       JSON-LD image 需绝对地址：/static/uploads/ 本地图片在此补 origin */
     try {
+      const absImg = (u) => (u && u.startsWith('/') ? location.origin + u : u)
       window.dispatchEvent(new CustomEvent('gm:seo', { detail: {
         title: p.value.title + ' · GLOWMAG',
         description: (p.value.subtitle || p.value.description_md || '').slice(0, 160),
         image: p.value.hero_image, type: 'product',
         jsonLd: {
           '@context': 'https://schema.org', '@type': 'Product',
-          name: p.value.title, image: [p.value.hero_image, ...(p.value.images || [])].filter(Boolean).slice(0, 4),
+          name: p.value.title, image: [p.value.hero_image, ...(p.value.images || [])].filter(Boolean).slice(0, 4).map(absImg),
           description: (p.value.subtitle || '').slice(0, 300),
           sku: (p.value.variants && p.value.variants[0] && p.value.variants[0].sku) || undefined,
           offers: {

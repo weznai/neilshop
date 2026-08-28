@@ -19,6 +19,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // 后端静态资源（商品/评价等本地上传图片 /static/uploads 直链，与 admin 口径一致）
+      '/static': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

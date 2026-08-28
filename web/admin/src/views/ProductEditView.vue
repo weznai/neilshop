@@ -110,33 +110,43 @@ watch(() => form.hero_image, () => { brokenHero.value = false })
 watch(() => form.images.join('\n'), () => { Object.keys(brokenImgs).forEach((k) => delete brokenImgs[k]) })
 
 /* ===== 图片上传（POST /api/admin/media/upload，composables/upload 统一 401/403 兜底）
- * 单隐藏 input + 目标槽复用：pickImage 记来源后弹选择框，成功按目标回填；各入口共用一个 uploading ===== */
+ * 单隐藏 input + 目标槽复用：pickImage 记来源后弹选择框，成功按目标回填；图集/变体支持多选批量按序上传；各入口共用一个 uploading ===== */
 const fileInput = ref(null)
 const upTarget = ref(null) /* 'hero' | 'gallery' | 'newVar' | 'editVar' */
 const uploading = ref(false)
+const upProgress = ref('') /* 批量进度如 '2/3'，单张为空 */
+const upText = computed(() => (upProgress.value ? `上传中 ${upProgress.value}…` : '上传中…'))
 function pickImage(t) { if (uploading.value) return; upTarget.value = t; fileInput.value?.click() }
 async function onPickFile(e) {
-  const f = e.target.files && e.target.files[0]
+  const files = Array.from(e.target.files || [])
   e.target.value = '' /* 复位 value，否则重选同一文件不触发 change */
-  if (!f) return
+  if (!files.length) return
+  const list = upTarget.value === 'hero' ? files.slice(0, 1) : files /* 主图单槽，多选只取第一张 */
   uploading.value = true
-  try { applyUpUrl(await uploadMedia(f)) }
-  catch (err) { const m = uploadErrText(err); if (m) toast(m, 'error') }
-  finally { uploading.value = false }
+  upProgress.value = list.length > 1 ? `0/${list.length}` : ''
+  const urls = []
+  for (let i = 0; i < list.length; i++) {
+    try { urls.push(await uploadMedia(list[i])) }
+    catch (err) { const m = uploadErrText(err); if (m) toast(m, 'error') }
+    if (list.length > 1) upProgress.value = `${i + 1}/${list.length}`
+  }
+  if (urls.length) applyUpUrls(urls)
+  uploading.value = false
+  upProgress.value = ''
 }
-/* 回填：主图覆盖；图集/变体图片为追加一行（各守上限，文案与保存校验一致）；图集写 galText 保持草稿同步 */
-function applyUpUrl(url) {
+/* 回填：主图覆盖（取首个）；图集/变体图片按序追加（各守上限，超限一次提示仅回填可容纳部分）；图集写 galText 保持草稿同步 */
+function applyUpUrls(urls) {
   const t = upTarget.value
-  if (t === 'hero') form.hero_image = url
-  else if (t === 'gallery') {
-    if (galLines.value.length >= 8) { toast('图集最多 8 张', 'error'); return }
-    galText.value = appendLine(galText.value, url)
-  } else if (t === 'newVar') {
-    if (imgLines(newVar.imgs).length >= 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
-    newVar.imgs = appendLine(newVar.imgs, url)
-  } else if (t === 'editVar' && editing.value) {
-    if (imgLines(editing.value.imgs).length >= 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
-    editing.value.imgs = appendLine(editing.value.imgs, url)
+  if (t === 'hero') { form.hero_image = urls[0]; return }
+  const isGal = t === 'gallery'
+  const cur = isGal ? galLines.value : imgLines(t === 'newVar' ? newVar.imgs : (editing.value?.imgs || ''))
+  const max = isGal ? 8 : 6
+  const room = Math.max(max - cur.length, 0)
+  if (urls.length > room) toast(isGal ? `图集最多 ${max} 张，仅回填 ${room} 张` : `变体图片最多 ${max} 张，仅回填 ${room} 张`, 'error')
+  for (const url of urls.slice(0, room)) {
+    if (isGal) galText.value = appendLine(galText.value, url)
+    else if (t === 'newVar') newVar.imgs = appendLine(newVar.imgs, url)
+    else if (editing.value) editing.value.imgs = appendLine(editing.value.imgs, url)
   }
 }
 const appendLine = (t, url) => (t && t.trim() ? t.replace(/\s+$/, '') + '\n' + url : url)
@@ -312,8 +322,8 @@ async function loadCopy(id) {
   } finally { loading.value = false }
 }
 
-/* URL 前缀校验：主图/图集/变体图须 http(s):// 开头（空值放行） */
-const badUrl = (u) => !!u && !/^https?:\/\//i.test(u)
+/* URL 前缀校验：主图/图集/变体图须 http(s):// 外链或 /static/uploads/ 本地上传地址（空值放行；与媒体库/评价图口径一致） */
+const badUrl = (u) => !!u && !/^https?:\/\//i.test(u) && !u.startsWith('/static/uploads/')
 
 /* 保存成功后失效 ContentView 的商品标题缓存（键名统一 constants/cacheKeys.js；新建/改名后需重拉） */
 function clearTitleCache() { try { sessionStorage.removeItem(PRODUCT_TITLES_KEY) } catch (_) { /* 存储不可用忽略 */ } }
@@ -339,9 +349,9 @@ async function save() {
     toast(`价格倒挂：最高价（${form.price_max} 分）不能低于最低价（${form.price_min} 分），请修正后再保存`, 'error')
     return
   }
-  if (badUrl(form.hero_image)) { toast('主图 URL 需以 http:// 或 https:// 开头', 'error'); return }
+  if (badUrl(form.hero_image)) { toast('主图 URL 需以 http(s):// 或 /static/uploads/ 开头（可点「上传」生成本地地址）', 'error'); return }
   const gi = form.images.findIndex(badUrl)
-  if (gi >= 0) { toast(`图集第 ${gi + 1} 张 URL 需以 http:// 或 https:// 开头`, 'error'); return }
+  if (gi >= 0) { toast(`图集第 ${gi + 1} 张 URL 需以 http(s):// 或 /static/uploads/ 开头`, 'error'); return }
   /* 图集超 8 张：保存时才截断，并提示忽略数量 */
   if (form.images.length > 8) toast(`图集最多 8 张，已忽略超出部分（${form.images.length - 8} 张）`)
   busy.value = true
@@ -402,7 +412,7 @@ async function addVariant() {
   const imgs = imgLines(newVar.imgs)
   if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
   const vi = imgs.findIndex(badUrl)
-  if (vi >= 0) { toast(`变体图片第 ${vi + 1} 行 URL 需以 http:// 或 https:// 开头`, 'error'); return }
+  if (vi >= 0) { toast(`变体图片第 ${vi + 1} 行 URL 需以 http(s):// 或 /static/uploads/ 开头`, 'error'); return }
   const fullSku = rawSku(form.slug, newVar.option1, newVar.option2)
   if (fullSku.length > 64) toast(`SKU 超长（${fullSku.length} 字符），已截断到 64 字符`, 'error')
   const sku = fullSku.slice(0, 64)
@@ -476,7 +486,7 @@ async function saveEdit() {
   const imgs = imgLines(ed.imgs)
   if (imgs.length > 6) { toast('变体图片最多 6 张（每行一张 URL）', 'error'); return }
   const ei = imgs.findIndex(badUrl)
-  if (ei >= 0) { toast(`变体图片第 ${ei + 1} 行 URL 需以 http:// 或 https:// 开头`, 'error'); return }
+  if (ei >= 0) { toast(`变体图片第 ${ei + 1} 行 URL 需以 http(s):// 或 /static/uploads/ 开头`, 'error'); return }
   try {
     /* images 仅在有输入或原有图时提交：后端缺省/null=保持原值、[]=清空，避免改价时误清图 */
     const body = { price: ed.price, safety_stock: ed.safety }
@@ -672,7 +682,7 @@ async function doDelTr() {
                 <div class="field">
                   <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
                     <label style="margin:0;flex:1;font-size:11px">变体图片 URL（每行一张，≤6）</label>
-                    <button class="btn btn-secondary btn-sm" style="flex:none;height:26px;padding:0 10px;font-size:11px" :disabled="uploading" @click="pickImage('editVar')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+                    <button class="btn btn-secondary btn-sm" style="flex:none;height:26px;padding:0 10px;font-size:11px" :disabled="uploading" @click="pickImage('editVar')">{{ uploading ? upText : '📎 上传' }}</button>
                   </div>
                   <textarea v-model="editing.imgs" class="input" rows="2" style="padding:6px 8px;font-size:12px" placeholder="https://…"></textarea>
                 </div>
@@ -716,7 +726,7 @@ async function doDelTr() {
           <div class="field" style="grid-column:1/-1">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
               <label style="margin:0;flex:1">变体图片 URL（可选，每行一张，≤6）</label>
-              <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('newVar')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+              <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('newVar')">{{ uploading ? upText : '📎 上传（可多选）' }}</button>
             </div>
             <textarea v-model="newVar.imgs" class="input" rows="2" placeholder="https://…"></textarea>
           </div>
@@ -731,7 +741,7 @@ async function doDelTr() {
           <label>主图 URL</label>
           <div style="display:flex;gap:8px">
             <input v-model="form.hero_image" class="input" style="flex:1;min-width:0" maxlength="500" placeholder="https://…">
-            <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('hero')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+            <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('hero')">{{ uploading ? upText : '📎 上传' }}</button>
           </div>
           <div style="margin-top:10px;border-radius:12px;overflow:hidden;aspect-ratio:1;background:var(--rose-pale);max-width:200px">
             <img v-if="form.hero_image && !brokenHero" :src="form.hero_image" alt="主图预览" style="width:100%;height:100%;object-fit:cover" @error="brokenHero = true">
@@ -741,7 +751,7 @@ async function doDelTr() {
         <div class="field">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
             <label style="margin:0;flex:1">图集（每行一个 URL，最多 8 张）</label>
-            <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('gallery')">{{ uploading ? '上传中…' : '📎 上传' }}</button>
+            <button class="btn btn-secondary btn-sm" style="flex:none" :disabled="uploading" @click="pickImage('gallery')">{{ uploading ? upText : '📎 上传（可多选）' }}</button>
           </div>
           <!-- 草稿原文绑定：超 8 行保留仅警告，保存时才截断；计数超限变红 -->
           <textarea v-model="galText" class="input" rows="4" placeholder="https://…"></textarea>
@@ -840,8 +850,8 @@ async function doDelTr() {
     </div>
   </div>
 
-  <!-- 图片上传共用隐藏 input（主图/图集/变体三入口，见 pickImage） -->
-  <input ref="fileInput" type="file" accept=".png,.jpg,.jpeg,.webp,.gif" style="display:none" @change="onPickFile">
+  <!-- 图片上传共用隐藏 input（主图/图集/变体三入口，见 pickImage；图集/变体可多选批量） -->
+  <input ref="fileInput" type="file" accept=".png,.jpg,.jpeg,.webp,.gif" multiple style="display:none" @change="onPickFile">
 
   <!-- 离开确认（SPA 内未保存拦截） -->
   <ConfirmDialog :open="leaveDlg" title="未保存的修改" body="有未保存的修改，确认离开？" danger confirm-text="离开" @confirm="confirmLeave" @close="cancelLeave" />

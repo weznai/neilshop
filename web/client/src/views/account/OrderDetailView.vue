@@ -799,9 +799,9 @@ async function submitReview(it) {
             </div>
           </div>
 
-          <!-- 售后：问题优先引导解决；取消/退款入口为整行红描边按钮（跳三步挽留向导） -->
+          <!-- 退换货：问题优先引导解决；取消/退款入口为整行红描边按钮（跳三步挽留向导） -->
           <div class="card od-card">
-            <h3 class="od-h">{{ tt('After-sales', '售后') }}</h3>
+            <h3 class="od-h">{{ tt('Returns & exchanges', '退换货') }}</h3>
             <p style="font-size:12px;color:var(--gray);margin-bottom:10px">{{ tt('Something off? Most issues solve faster than a refund:', '遇到问题？大部分问题都能比退款更快解决：') }}</p>
             <div style="display:grid;gap:8px">
               <button v-if="addrEditable" type="button" class="od-help" @click="openAddr">✏️ {{ tt('Edit shipping address', '修改收货地址') }}</button>
@@ -1051,7 +1051,7 @@ async function submitReview(it) {
 .ex-stock { font-size: 11px; color: var(--gray); background: var(--gray-light); border-radius: 999px; padding: 1px 8px; flex: none; }
 .ex-stock.out { color: var(--error); background: var(--pale-error); }
 
-/* 售后卡：引导解决为主，取消/退款为整行可见按钮 */
+/* 退换货卡：引导解决为主，取消/退款为整行可见按钮 */
 .od-help { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1.5px solid var(--gray-light); border-radius: 10px; font-size: 13px; font-weight: 500; color: var(--ink); background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; text-decoration: none; font-family: inherit; }
 .od-help:hover { border-color: var(--rose); background: var(--rose-pale); transform: translateY(-1px); }
 .od-help-quiet { border-top: 1px solid var(--gray-light); margin-top: 12px; padding-top: 10px; }
